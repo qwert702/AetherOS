@@ -1,0 +1,11 @@
+[package]
+name = "aether-ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AetherOS AI 运维：日志监控、故障诊断、自修复执行器"
+
+[dependencies]
+aether-ipc = { path = "../aether-ipc" }
+anyhow = { workspace = true }

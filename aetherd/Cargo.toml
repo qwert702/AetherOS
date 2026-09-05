@@ -1,0 +1,15 @@
+[package]
+name = "aetherd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AetherOS AI 中枢守护进程：agent 框架、工具系统、本地/云端混合推理"
+
+[dependencies]
+aether-ipc = { path = "../aether-ipc" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+ureq = { version = "2", features = ["json"] }

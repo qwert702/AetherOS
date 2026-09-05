@@ -1,0 +1,11 @@
+[package]
+name = "aether-init"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AetherOS 自研 init（PID 1）与服务管理器"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }

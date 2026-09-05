@@ -1,0 +1,12 @@
+/target
+**/target
+Cargo.lock.orig
+*.iso
+preview.bmp
+build/rootfs/
+build/downloads/
+__pycache__/
+*.log
+preview.png
+.mimosa/
+.zcode/

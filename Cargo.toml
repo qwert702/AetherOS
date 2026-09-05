@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "aether-ipc",
+    "aether-compositor",
+    "aether-shell",
+    "aetherd",
+    "aether-ops",
+    "aether-init",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["AetherOS Project"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# 软件光栅化是计算密集型：dev 构建不开优化会卡成幻灯片。
+# opt-level=2 让日常 cargo run 接近 release 流畅度，同时保留快速编译。
+[profile.dev]
+opt-level = 2
+debug = "line-tables-only"

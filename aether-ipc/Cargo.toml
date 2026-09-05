@@ -1,0 +1,12 @@
+[package]
+name = "aether-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AetherOS IPC 协议：UI、AI 中枢与系统服务之间的统一通信脊柱"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

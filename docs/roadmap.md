@@ -1,0 +1,60 @@
+# AetherOS 路线图
+
+## M0 — 开发环境与架构设计 ✅（当前）
+- [x] 仓库骨架、Cargo workspace
+- [x] 架构文档、IPC 协议草案、AI 权限模型
+- [x] aether-ipc 协议 crate（含单元测试）
+- [x] aether-compositor 渲染预览模式（Windows 可运行）
+- [ ] WSL2 + QEMU 环境（需用户手动安装，见下）
+- [ ] Linux 侧冒烟：WSL2 里 cargo build 全 workspace
+
+> Linux 环境用 Ubuntu 虚拟机（用户选择 VirtualBox/VMware，不用 WSL2）：
+> 1. 安装 VirtualBox → 创建 Ubuntu 24.04 VM（4GB+ 内存）
+> 2. 项目文件夹设为共享文件夹挂进 VM
+> 3. VM 内：`sudo apt install -y build-essential qemu-system-x86 ollama pkg-config libwayland-dev`
+> 4. 系统镜像构建（M3）与 Wayland 后端测试（M1）都在 VM 内完成
+
+## M1 — 第一个自研窗口：合成器 MVP（进行中）
+- [x] draw.rs 视觉迭代：中文字体渲染（fontdue）、抗锯齿圆角/描边、柔和投影
+- [x] 窗口内容渲染（终端/文件管理示意）、顶栏（品牌/工作区/时钟/AI 状态）、AI 面板
+- [x] 主机预览交互：拖拽窗口、点击置顶（`cargo run -p aether-compositor`）
+- [x] `--shot` 单帧截图自检管线（BMP→PNG）
+- [x] 窗口布局引擎：两列/三列/独占/自由四种模式 + 缓动动画（layout.rs，含单元测试）
+- [x] 拖拽边缘吸附（左半屏/右半屏/最大化）+ 实时吸附预览
+- [x] 布局切换 Toast 反馈 + AI 指令入口（A 键模拟"把窗口排成两列"，将来由 aetherd 经 IPC 触发同一逻辑）
+- [x] 多布局截图自检通过（--shot 1-4）
+- [ ] Ubuntu VM（VirtualBox，替代 WSL2 方案）中跑通 smithay 后端，真 Wayland 客户端上屏
+- 验收：虚拟机里出现自绘桌面 + 可移动窗口
+
+## M2 — 自研 Shell 雏形
+- [ ] 顶栏、启动器、工作区、通知
+- [ ] UI 组件库沉淀
+- 验收：键盘鼠标全流程操作
+
+## M3 — 系统地基 ★
+- [ ] aether-init：PID 1、服务编排、ipc service_control
+- [ ] Buildroot rootfs 配方 + ISO 打包
+- 验收：ISO 开机直达自研桌面，链路中无任何现成桌面组件
+
+## M4 — AI 中枢 aetherd ★（第一阶段完成）
+- [x] 权限模型落地：L0–L3 闸门 + 审计日志（perm.rs，带测试）
+- [x] 混合推理路由：隐私强制本地 / 复杂任务上云 / 双侧降级（router.rs，6 项测试）
+- [x] 工具系统：罐头探针 + read_file + sys_info，闸门→审计→执行管线（tools.rs，4 项测试）
+- [x] LLM 客户端：OpenAI 兼容协议（GLM / Ollama /v1 通用）
+- [x] chat CLI：单轮 agent（路由 → LLM → 工具循环 → 回答），探活失败优雅降级
+- [x] `serve` 常驻模式：TCP 127.0.0.1:7311 + aether-ipc NDJSON 协议（端到端烟雾测试通过）
+- [x] 离线快速意图通道：布局/时间/状态等系统指令免 LLM 直接执行（intent.rs，5 项测试）——"快慢双思"架构
+- [x] 合成器 AI 指令条真实输入：Enter 发送 → ChatChunk 回复气泡 + Action 执行布局切换
+- [x] IPC Action 通道：`layout_set` 等 aetherd → Shell 桌面行为指令
+- [ ] LLM 深度接入桌面：布局引擎/窗口管理作为 LLM tools 暴露（目前仅离线意图覆盖）
+- [ ] L2+ 确认卡片 UI（NEEDS_CONFIRMATION → 确认弹窗 → 带 approval 重试）
+- [ ] 中文输入支持（预览期受 minifb 限制仅英文，M2 字体子系统解决）
+- 验收：自然语言操作整台"电脑"
+
+## M5 — AI 运维自修复
+- [ ] 日志监听、异常预警、诊断与一键修复
+- 验收：注入故障被 AI 发现并修复
+
+## M6 — 0.1 发布
+- [ ] 安装器、品牌（Logo/开机动画/壁纸）、README+截图
+- 验收：ISO 安装到虚拟硬盘，脱离 ISO 独立运行

@@ -1,0 +1,21 @@
+[package]
+name = "aether-compositor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AetherOS 自研 Wayland 合成器"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+fontdue = "0.9"
+aether-ipc = { path = "../aether-ipc" }
+serde_json = { workspace = true }
+
+# Windows/Linux 桌面主机的渲染预览后端（M1 开发迭代用）
+minifb = "0.27"
+
+[target.'cfg(unix)'.dependencies]
+# Wayland 合成器后端在 Linux/WSL2 上启用（M1 后期接入 smithay）
+# smithay = { version = "0.5", features = ["backend_winit"] }

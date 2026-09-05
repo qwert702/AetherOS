@@ -1,0 +1,5 @@
+# 本机没有 MSVC Build Tools，且 PATH 中的 w64devkit mingw 缺 libgcc_eh。
+# 改用 Rust 自带的 rust-lld 链接器 + 自包含 mingw 运行库，零外部依赖。
+[target.x86_64-pc-windows-gnu]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "link-self-contained=yes"]
