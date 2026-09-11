@@ -1,0 +1,1 @@
+{"name": "ops", "deps": ["aetherd"], "restart": false}

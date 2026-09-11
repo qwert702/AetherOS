@@ -199,22 +199,48 @@ pub struct Win {
     pub floating: bool,
 }
 
-/// 帧渲染器：持有跨帧缓存（背景层等）。
+/// 每帧的 UI 瞬态（由 main.rs 组装）。
+pub struct UiState<'a> {
+    pub snap: Option<Rect>,
+    pub toast: Option<(&'a str, f32)>,
+    pub ai_input: &'a str,
+    pub ai_reply: Option<(&'a str, f32)>,
+    pub mouse: (f32, f32),
+    pub open_menu: Option<usize>,
+}
+
+/// 帧渲染器：持有跨帧缓存（背景层等）与可点击区域登记（供命中测试）。
 pub struct Renderer {
     bg: Vec<u32>,
     frames_since_bg: u32,
     bg_w: usize,
     bg_h: usize,
+    /// 菜单栏各菜单标签的命中区（每帧更新）
+    pub menubar_menus: Vec<Rect>,
+    /// 搜索胶囊命中区
+    pub search_pill: Rect,
+    /// Dock 图标命中区
+    pub dock_icons: Vec<Rect>,
+    /// 当前展开的下拉菜单：(各项命中区, 文案)
+    pub dropdown: Option<(Vec<Rect>, Vec<&'static str>)>,
 }
 
 impl Renderer {
     pub fn new(w: usize, h: usize) -> Self {
-        Self { bg: vec![0; w * h], frames_since_bg: u32::MAX, bg_w: w, bg_h: h }
+        Self {
+            bg: vec![0; w * h],
+            frames_since_bg: u32::MAX,
+            bg_w: w,
+            bg_h: h,
+            menubar_menus: Vec::new(),
+            search_pill: Rect { x: 0, y: 0, w: 0, h: 0 },
+            dock_icons: Vec::new(),
+            dropdown: None,
+        }
     }
 
     /// 渲染一帧。背景每 BG_REFRESH_FRAMES 帧才重算一次（柔光漂移是
     /// 4 秒级的变化，逐帧重算纯属浪费），其余帧只是一次内存拷贝。
-    #[allow(clippy::too_many_arguments)]
     pub fn render_frame(
         &mut self,
         buf: &mut [u32],
@@ -222,10 +248,7 @@ impl Renderer {
         h: usize,
         t: f32,
         desktop: &Desktop,
-        snap: Option<Rect>,
-        toast: Option<(&str, f32)>,
-        ai_input: &str,
-        ai_reply: Option<(&str, f32)>,
+        ui: &UiState,
         tr: Option<&TextRenderer>,
     ) {
         const BG_REFRESH_FRAMES: u32 = 240;
@@ -241,7 +264,7 @@ impl Renderer {
         self.frames_since_bg += 1;
         buf.copy_from_slice(&self.bg);
 
-        if let Some(z) = snap {
+        if let Some(z) = ui.snap {
             rounded_rect(buf, w, h, z, 12.0, palette::ACCENT, 0.08);
             rounded_outline(buf, w, h, z, 12.0, palette::ACCENT, 0.5);
         }
@@ -250,14 +273,19 @@ impl Renderer {
             draw_window(buf, w, h, win.rect, win.title, i == desktop.active, t, tr);
         }
 
-        draw_menubar(buf, w, h, tr);
-        if let Some((reply, age)) = ai_reply {
+        self.draw_menubar(buf, w, h, ui, tr);
+        if ui.open_menu.is_some() {
+            self.draw_dropdown(buf, w, h, ui, tr);
+        }
+        if let Some((reply, age)) = ui.ai_reply {
             draw_reply(buf, w, h, reply, age, tr);
         }
-        draw_ai_bar(buf, w, h, ai_input, tr);
-        draw_dock(buf, w, h, tr);
+        self.draw_ai_bar(buf, w, h, ui.ai_input, tr);
 
-        if let Some((msg, age)) = toast {
+        let open_titles: Vec<&str> = desktop.wins.iter().map(|x| x.title).collect();
+        self.draw_dock(buf, w, h, &open_titles, tr);
+
+        if let Some((msg, age)) = ui.toast {
             draw_toast(buf, w, h, msg, age, tr);
         }
     }
@@ -328,63 +356,103 @@ fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
 }
 
 // ---------------------------------------------------------------------------
-// 菜单栏：发丝底 + 品牌 + 菜单 + 搜索胶囊 + 电池 + 时钟
+// 菜单栏：发丝底 + 品牌 + 菜单（可点击）+ 搜索胶囊 + 电池 + 时钟
 // ---------------------------------------------------------------------------
 
 pub const MENUBAR_H: i32 = 32;
 
-fn draw_menubar(buf: &mut [u32], w: usize, h: usize, tr: Option<&TextRenderer>) {
-    let bar = Rect { x: 0, y: 0, w: w as i32, h: MENUBAR_H };
-    fill_rect(buf, w, h, bar, palette::PANEL_DEEP, 0.72);
-    fill_rect(buf, w, h, Rect { x: 0, y: MENUBAR_H - 1, w: w as i32, h: 1 }, palette::HAIRLINE, 0.10);
+impl Renderer {
+    fn draw_menubar(&mut self, buf: &mut [u32], w: usize, h: usize, ui: &UiState, tr: Option<&TextRenderer>) {
+        let bar = Rect { x: 0, y: 0, w: w as i32, h: MENUBAR_H };
+        fill_rect(buf, w, h, bar, palette::PANEL_DEEP, 0.72);
+        fill_rect(buf, w, h, Rect { x: 0, y: MENUBAR_H - 1, w: w as i32, h: 1 }, palette::HAIRLINE, 0.10);
 
-    let Some(tr) = tr else { return };
+        let Some(tr) = tr else { return };
 
-    // 品牌：小三角徽标 + 粗体 Aether
-    let (bx, by) = (12i32, 8i32);
-    for row in 0..16 {
-        let half = row / 2;
-        for col in 0..(half + 1) {
-            let px = bx + half - col;
-            let py = by + 15 - row;
-            if px >= 0 && py >= 0 {
-                blend_pixel(buf, py as usize * w + px as usize, palette::ACCENT, 0.95);
+        // 品牌：小三角徽标 + 粗体 Aether
+        let (bx, by) = (12i32, 8i32);
+        for row in 0..16 {
+            let half = row / 2;
+            for col in 0..(half + 1) {
+                let px = bx + half - col;
+                let py = by + 15 - row;
+                if px >= 0 && py >= 0 {
+                    blend_pixel(buf, py as usize * w + px as usize, palette::ACCENT, 0.95);
+                }
             }
         }
+        let brand_x = 32.0;
+        tr.draw_bold(buf, w, h, brand_x, 8.0, strings::BRAND, 14.0, palette::TEXT, 0.98);
+        let mut mx = brand_x + tr.measure_bold(strings::BRAND, 14.0) + 18.0;
+
+        // 菜单标签（登记命中区；打开中的菜单高亮）
+        self.menubar_menus.clear();
+        for (i, menu) in strings::MENUS.iter().enumerate() {
+            let mw = tr.measure(menu, 13.0);
+            let hit = Rect { x: mx as i32 - 8, y: 0, w: mw as i32 + 16, h: MENUBAR_H };
+            let hovered = hit.contains(ui.mouse.0, ui.mouse.1);
+            let opened = ui.open_menu == Some(i);
+            if opened || hovered {
+                rounded_rect(buf, w, h, Rect { x: hit.x + 2, y: 4, w: hit.w - 4, h: MENUBAR_H - 8 }, 6.0, palette::HAIRLINE, if opened { 0.14 } else { 0.07 });
+            }
+            draw_text(tr, buf, w, h, mx, 9.0, menu, 13.0, palette::TEXT, if opened { 1.0 } else { 0.85 });
+            self.menubar_menus.push(hit);
+            mx += mw + 16.0;
+        }
+
+        // 右侧：电池、AI 状态、搜索胶囊、时钟
+        let clock = crate::text::clock_str();
+        let clock_w = tr.measure_bold(&clock, 14.0);
+        let clock_x = w as f32 - 16.0 - clock_w;
+        tr.draw_bold(buf, w, h, clock_x, 8.0, &clock, 14.0, palette::TEXT, 0.95);
+
+        let pill = Rect { x: clock_x as i32 - 208, y: 5, w: 192, h: 22 };
+        rounded_rect(buf, w, h, pill, 11.0, palette::HAIRLINE, 0.08);
+        rounded_outline(buf, w, h, pill, 11.0, palette::HAIRLINE, 0.14);
+        draw_text(tr, buf, w, h, (pill.x + 12) as f32, 7.0, "搜索", 12.0, palette::TEXT_DIM, 0.8);
+        let key = Rect { x: pill.x + pill.w - 22, y: 8, w: 16, h: 16 };
+        rounded_rect(buf, w, h, key, 4.0, palette::HAIRLINE, 0.12);
+        draw_text(tr, buf, w, h, (key.x + 4) as f32, 9.0, "K", 11.0, palette::TEXT_DIM, 0.85);
+        self.search_pill = pill;
+
+        let ai_w = tr.measure(strings::LOCAL_AI, 12.0);
+        let ai_x = pill.x as f32 - 16.0 - ai_w;
+        fill_rect(buf, w, h, Rect { x: ai_x as i32 - 12, y: 13, w: 6, h: 6 }, palette::ZOOM, 0.9);
+        draw_text(tr, buf, w, h, ai_x, 9.0, strings::LOCAL_AI, 12.0, palette::TEXT_DIM, 0.85);
+
+        let batt = Rect { x: ai_x as i32 - 56, y: 10, w: 26, h: 12 };
+        rounded_outline(buf, w, h, batt, 3.5, palette::TEXT_DIM, 0.55);
+        fill_rect(buf, w, h, Rect { x: batt.x + batt.w, y: 13, w: 2, h: 6 }, palette::TEXT_DIM, 0.55);
+        fill_rect(buf, w, h, Rect { x: batt.x + 2, y: batt.y + 2, w: 16, h: 8 }, palette::ZOOM, 0.85);
     }
-    let brand_x = 32.0;
-    tr.draw_bold(buf, w, h, brand_x, 8.0, strings::BRAND, 14.0, palette::TEXT, 0.98);
-    let mut mx = brand_x + tr.measure_bold(strings::BRAND, 14.0) + 18.0;
-    for menu in strings::MENUS {
-        mx = draw_text(tr, buf, w, h, mx, 9.0, menu, 13.0, palette::TEXT_DIM, 0.85) + 16.0;
+
+    /// 展开中的下拉菜单（登记各项命中区，悬停高亮）。
+    fn draw_dropdown(&mut self, buf: &mut [u32], w: usize, h: usize, ui: &UiState, tr: Option<&TextRenderer>) {
+        let Some(mi) = ui.open_menu else { return };
+        let Some(label) = self.menubar_menus.get(mi) else { return };
+        let Some(tr) = tr else { return };
+        let items = strings::MENU_ITEMS[mi];
+        let panel_w = items
+            .iter()
+            .map(|s| tr.measure(s, 13.0))
+            .fold(120.0f32, f32::max)
+            + 44.0;
+        let panel = Rect { x: label.x, y: MENUBAR_H + 4, w: panel_w as i32, h: items.len() as i32 * 30 + 8 };
+        shadow(buf, w, h, panel, 8.0, 0.9);
+        rounded_rect(buf, w, h, panel, 10.0, palette::PANEL, 0.97);
+        rounded_outline(buf, w, h, panel, 10.0, palette::HAIRLINE, 0.12);
+
+        let mut rects = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            let ir = Rect { x: panel.x + 4, y: panel.y + 4 + i as i32 * 30, w: panel.w - 8, h: 30 };
+            if ir.contains(ui.mouse.0, ui.mouse.1) {
+                rounded_rect(buf, w, h, Rect { x: ir.x + 4, y: ir.y + 3, w: ir.w - 8, h: ir.h - 6 }, 6.0, palette::ACCENT, 0.22);
+            }
+            draw_text(tr, buf, w, h, (ir.x + 16) as f32, (ir.y + 8) as f32, item, 13.0, palette::TEXT, 0.92);
+            rects.push(ir);
+        }
+        self.dropdown = Some((rects, items.to_vec()));
     }
-
-    // 右侧：电池、AI 状态、搜索胶囊、时钟
-    let clock = crate::text::clock_str();
-    let clock_w = tr.measure_bold(&clock, 14.0);
-    let clock_x = w as f32 - 16.0 - clock_w;
-    tr.draw_bold(buf, w, h, clock_x, 8.0, &clock, 14.0, palette::TEXT, 0.95);
-
-    // 搜索胶囊
-    let pill = Rect { x: clock_x as i32 - 208, y: 5, w: 192, h: 22 };
-    rounded_rect(buf, w, h, pill, 11.0, palette::HAIRLINE, 0.08);
-    rounded_outline(buf, w, h, pill, 11.0, palette::HAIRLINE, 0.14);
-    draw_text(tr, buf, w, h, (pill.x + 12) as f32, 7.0, "搜索", 12.0, palette::TEXT_DIM, 0.8);
-    let key = Rect { x: pill.x + pill.w - 22, y: 8, w: 16, h: 16 };
-    rounded_rect(buf, w, h, key, 4.0, palette::HAIRLINE, 0.12);
-    draw_text(tr, buf, w, h, (key.x + 4) as f32, 9.0, "K", 11.0, palette::TEXT_DIM, 0.85);
-
-    // AI 状态点 + 文字
-    let ai_w = tr.measure(strings::LOCAL_AI, 12.0);
-    let ai_x = pill.x as f32 - 16.0 - ai_w;
-    fill_rect(buf, w, h, Rect { x: ai_x as i32 - 12, y: 13, w: 6, h: 6 }, palette::ZOOM, 0.9);
-    draw_text(tr, buf, w, h, ai_x, 9.0, strings::LOCAL_AI, 12.0, palette::TEXT_DIM, 0.85);
-
-    // 电池
-    let batt = Rect { x: ai_x as i32 - 56, y: 10, w: 26, h: 12 };
-    rounded_outline(buf, w, h, batt, 3.5, palette::TEXT_DIM, 0.55);
-    fill_rect(buf, w, h, Rect { x: batt.x + batt.w, y: 13, w: 2, h: 6 }, palette::TEXT_DIM, 0.55);
-    fill_rect(buf, w, h, Rect { x: batt.x + 2, y: batt.y + 2, w: 16, h: 8 }, palette::ZOOM, 0.85);
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +546,8 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, tr: Option<&
 // AI 指令条：悬浮胶囊（Spotlight 气质），可真实输入
 // ---------------------------------------------------------------------------
 
-fn draw_ai_bar(buf: &mut [u32], w: usize, h: usize, input: &str, tr: Option<&TextRenderer>) {
+impl Renderer {
+    fn draw_ai_bar(&mut self, buf: &mut [u32], w: usize, h: usize, input: &str, tr: Option<&TextRenderer>) {
     let bar_w = 560i32;
     let bar = Rect { x: w as i32 / 2 - bar_w / 2, y: h as i32 - crate::layout::BOTTOM_DOCK - 52 - 16, w: bar_w, h: 52 };
     shadow(buf, w, h, bar, 12.0, 0.9);
@@ -518,6 +587,7 @@ fn draw_ai_bar(buf: &mut [u32], w: usize, h: usize, input: &str, tr: Option<&Tex
     let key = Rect { x: bar.x + bar.w - hw as i32 - 12, y: bar.y + 15, w: hw as i32, h: 22 };
     rounded_rect(buf, w, h, key, 6.0, palette::HAIRLINE, 0.10);
     draw_text(tr, buf, w, h, (key.x + 6) as f32, (key.y + 4) as f32, hint, 11.0, palette::TEXT_DIM, 0.8);
+    }
 }
 
 fn input_tail_visible<'a>(tr: &TextRenderer, input: &'a str, x: f32, max_right: f32) -> &'a str {
@@ -571,64 +641,65 @@ fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, age: f32, tr: Opt
 const DOCK_ICON: i32 = 46;
 const DOCK_PAD: i32 = 10;
 
-fn draw_dock(buf: &mut [u32], w: usize, h: usize, tr: Option<&TextRenderer>) {
-    let icons: [([u8; 3], [u8; 3]); 5] = [
-        ([64, 150, 235], [42, 108, 205]),   // 文件
-        ([62, 62, 72], [36, 36, 44]),       // 终端
-        ([64, 200, 208], [36, 152, 168]),   // 浏览器
-        ([255, 122, 150], [225, 85, 125]),  // 音乐
-        ([128, 132, 142], [92, 96, 106]),   // 设置
-    ];
-    let n = icons.len() as i32;
-    let tray_w = n * DOCK_ICON + (n + 1) * DOCK_PAD;
-    let tray_h = DOCK_ICON + 2 * DOCK_PAD;
-    let tray = Rect { x: w as i32 / 2 - tray_w / 2, y: h as i32 - crate::layout::BOTTOM_DOCK, w: tray_w, h: tray_h };
-    shadow(buf, w, h, tray, 10.0, 0.8);
-    rounded_rect(buf, w, h, tray, 20.0, palette::PANEL_DEEP, 0.60);
-    rounded_outline(buf, w, h, tray, 20.0, palette::HAIRLINE, 0.12);
+impl Renderer {
+    /// Dock：磨砂托盘 + 渐变图标 + 运行指示点（真实反映已打开窗口）。
+    fn draw_dock(&mut self, buf: &mut [u32], w: usize, h: usize, open_titles: &[&str], tr: Option<&TextRenderer>) {
+        let apps: [(&str, [u8; 3], [u8; 3]); 5] = [
+            (strings::WIN_FILES, [64, 150, 235], [42, 108, 205]),
+            (strings::WIN_TERM, [62, 62, 72], [36, 36, 44]),
+            (strings::WIN_BROWSER, [64, 200, 208], [36, 152, 168]),
+            (strings::WIN_MUSIC, [255, 122, 150], [225, 85, 125]),
+            (strings::WIN_SETTINGS, [128, 132, 142], [92, 96, 106]),
+        ];
+        let n = apps.len() as i32;
+        let tray_w = n * DOCK_ICON + (n + 1) * DOCK_PAD;
+        let tray_h = DOCK_ICON + 2 * DOCK_PAD;
+        let tray = Rect { x: w as i32 / 2 - tray_w / 2, y: h as i32 - crate::layout::BOTTOM_DOCK, w: tray_w, h: tray_h };
+        shadow(buf, w, h, tray, 10.0, 0.8);
+        rounded_rect(buf, w, h, tray, 20.0, palette::PANEL_DEEP, 0.60);
+        rounded_outline(buf, w, h, tray, 20.0, palette::HAIRLINE, 0.12);
 
-    for (i, (top, bottom)) in icons.iter().enumerate() {
-        let ix = tray.x + DOCK_PAD + i as i32 * (DOCK_ICON + DOCK_PAD);
-        let iy = tray.y + DOCK_PAD;
-        let tile = Rect { x: ix, y: iy, w: DOCK_ICON, h: DOCK_ICON };
-        gradient_tile(buf, w, h, tile, 11.0, *top, *bottom, 0.95);
-        rounded_outline(buf, w, h, tile, 11.0, palette::HAIRLINE, 0.18);
+        self.dock_icons.clear();
+        for (i, (name, top, bottom)) in apps.iter().enumerate() {
+            let ix = tray.x + DOCK_PAD + i as i32 * (DOCK_ICON + DOCK_PAD);
+            let iy = tray.y + DOCK_PAD;
+            let tile = Rect { x: ix, y: iy, w: DOCK_ICON, h: DOCK_ICON };
+            self.dock_icons.push(tile);
+            gradient_tile(buf, w, h, tile, 11.0, *top, *bottom, 0.95);
+            rounded_outline(buf, w, h, tile, 11.0, palette::HAIRLINE, 0.18);
 
-        // 图标 glyph
-        match i {
-            0 => {
-                // 文件夹
-                fill_rect(buf, w, h, Rect { x: ix + 10, y: iy + 14, w: 14, h: 6 }, palette::TEXT, 0.95);
-                rounded_rect(buf, w, h, Rect { x: ix + 10, y: iy + 18, w: 26, h: 16 }, 3.0, palette::TEXT, 0.95);
-            }
-            1 => {
-                if let Some(tr) = tr {
-                    tr.draw_bold(buf, w, h, (ix + 8) as f32, (iy + 12) as f32, ">_", 15.0, palette::TEXT, 0.95);
+            // 图标 glyph
+            match i {
+                0 => {
+                    fill_rect(buf, w, h, Rect { x: ix + 10, y: iy + 14, w: 14, h: 6 }, palette::TEXT, 0.95);
+                    rounded_rect(buf, w, h, Rect { x: ix + 10, y: iy + 18, w: 26, h: 16 }, 3.0, palette::TEXT, 0.95);
+                }
+                1 => {
+                    if let Some(tr) = tr {
+                        tr.draw_bold(buf, w, h, (ix + 8) as f32, (iy + 12) as f32, ">_", 15.0, palette::TEXT, 0.95);
+                    }
+                }
+                2 => {
+                    rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: 30 }, 15.0, palette::TEXT, 0.95);
+                    fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 20, w: 6, h: 6 }, palette::TEXT, 0.95);
+                }
+                3 => {
+                    fill_rect(buf, w, h, Rect { x: ix + 26, y: iy + 12, w: 3, h: 20 }, palette::TEXT, 0.95);
+                    rounded_rect(buf, w, h, Rect { x: ix + 16, y: iy + 26, w: 13, h: 10 }, 5.0, palette::TEXT, 0.95);
+                }
+                _ => {
+                    rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, palette::TEXT, 0.95);
+                    fill_rect(buf, w, h, Rect { x: ix + 21, y: iy + 21, w: 4, h: 4 }, palette::TEXT, 0.95);
+                    for (dx, dy) in [(0, -14), (0, 12), (-14, 0), (12, 0)] {
+                        fill_rect(buf, w, h, Rect { x: ix + 22 + dx, y: iy + 21 + dy, w: 3, h: 3 }, palette::TEXT, 0.8);
+                    }
                 }
             }
-            2 => {
-                // 罗盘环 + 指针点
-                rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: 30 }, 15.0, palette::TEXT, 0.95);
-                fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 20, w: 6, h: 6 }, palette::TEXT, 0.95);
-            }
-            3 => {
-                // 音符
-                fill_rect(buf, w, h, Rect { x: ix + 26, y: iy + 12, w: 3, h: 20 }, palette::TEXT, 0.95);
-                rounded_rect(buf, w, h, Rect { x: ix + 16, y: iy + 26, w: 13, h: 10 }, 5.0, palette::TEXT, 0.95);
-            }
-            _ => {
-                // 齿轮环 + 辐点
-                rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, palette::TEXT, 0.95);
-                fill_rect(buf, w, h, Rect { x: ix + 21, y: iy + 21, w: 4, h: 4 }, palette::TEXT, 0.95);
-                for (dx, dy) in [(0, -14), (0, 12), (-14, 0), (12, 0)] {
-                    fill_rect(buf, w, h, Rect { x: ix + 22 + dx, y: iy + 21 + dy, w: 3, h: 3 }, palette::TEXT, 0.8);
-                }
-            }
-        }
 
-        // 前两个应用运行中：指示点
-        if i < 2 {
-            fill_rect(buf, w, h, Rect { x: ix + DOCK_ICON / 2 - 2, y: iy + DOCK_ICON + 5, w: 4, h: 4 }, palette::TEXT, 0.75);
+            // 运行指示点：真实反映打开的窗口
+            if open_titles.contains(name) {
+                fill_rect(buf, w, h, Rect { x: ix + DOCK_ICON / 2 - 2, y: iy + DOCK_ICON + 5, w: 4, h: 4 }, palette::TEXT, 0.85);
+            }
         }
     }
 }

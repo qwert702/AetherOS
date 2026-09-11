@@ -71,6 +71,9 @@ pub enum Response {
 /// aetherd serve 的默认监听端口。
 pub const DEFAULT_PORT: u16 = 7311;
 
+/// aether-init 服务控制（PID 1）的监听端口。
+pub const INIT_PORT: u16 = 7312;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SysInfoScope {

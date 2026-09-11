@@ -1,0 +1,5 @@
+menu "AetherOS"
+	# AetherOS 组件以预编译 musl 静态二进制直接安装（见 build-iso.sh），
+	# 不经 Buildroot 包系统编译，因此这里没有额外 package 选项。
+	# 未来接入用户态应用商店时在此扩展。
+endmenu

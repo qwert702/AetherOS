@@ -33,11 +33,15 @@ pub fn try_handle(text: &str) -> Option<Intent> {
     if contains_any(&t, &["三列", "排成三列", "three", "三栏"]) {
         return Some(("好的，已把窗口排成三列。".into(), Some(DesktopAction::layout("three_col"))));
     }
-    if contains_any(&t, &["独占", "堆叠", "monocle", "铺满"]) {
+    if contains_any(&t, &["独占", "堆叠", "monocle", "铺满", "最大化桌面"]) {
         return Some(("好的，已切换为独占堆叠。".into(), Some(DesktopAction::layout("monocle"))));
     }
     if contains_any(&t, &["自由布局", "自由模式", "float"]) {
         return Some(("好的，已切换为自由布局。".into(), Some(DesktopAction::layout("float"))));
+    }
+    // 模糊指令的确定性解释："整理桌面" = 平铺全部窗口
+    if contains_any(&t, &["整理", "收拾", "排列窗口", "tidy"]) {
+        return Some(("已为您整理桌面：窗口平铺成两列。".into(), Some(DesktopAction::layout("two_col"))));
     }
 
     // 时间
@@ -91,5 +95,18 @@ mod tests {
     fn privacy_thing_not_matched_here() {
         // 含"密码"的请求不走快速通道，交给路由器（会强制本地 LLM）
         assert!(try_handle("帮我生成一个强密码").is_none());
+    }
+
+    #[test]
+    fn tidy_desktop_maps_to_tiling() {
+        let (reply, action) = try_handle("帮我整理一下桌面").unwrap();
+        assert!(reply.contains("整理"));
+        assert_eq!(action.unwrap().arguments["layout"], "two_col");
+    }
+
+    #[test]
+    fn open_app_intent_via_action_tool_only() {
+        // 打开应用走 desktop 工具（LLM 或后续规则扩展），快速通道不处理
+        assert!(try_handle("打开终端").is_none());
     }
 }

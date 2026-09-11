@@ -1,0 +1,32 @@
+# AetherOS Buildroot defconfig（首个版本：initramfs 文本模式）
+# 策略：先打通"内核 → /init → aether-init → 服务"全链路，
+# 图形栈（mesa/DRM + smithay 合成器）在链路验证后加入。
+#
+# 架构
+BR2_x86_64=y
+
+# 系统配置
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_AETHER_PATH)/../overlay"
+# /init 由 overlay 提供（shell 脚本，exec aether-init --pid1）
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y
+
+# 内核（模块签名未启用，无需 host openssl）
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG=y
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_AETHER_PATH)/board/aether/linux.fragment"
+
+# initramfs：全部进内存，ISO 直接引导
+BR2_TARGET_ROOTFS_INITRAMFS=y
+BR2_TARGET_ROOTFS_ISO9660=y
+BR2_TARGET_ROOTFS_ISO9660_BOOT_MENU_LABEL="AetherOS 0.1"
+BR2_TARGET_ROOTFS_ISO9660_BOOT_MENU="$(BR2_EXTERNAL_AETHER_PATH)/isolinux.cfg"
+
+# 引导
+
+# 用户态基础（最小集；图形栈后加）
+BR2_PACKAGE_BUSYBOX=y
+BR2_PACKAGE_E2FSPROGS=y
+BR2_TARGET_SYSLINUX=y
+BR2_TARGET_SYSLINUX_ISOLINUX=y
+BR2_TARGET_ROOTFS_ISO9660_ISOLINUX=y
+

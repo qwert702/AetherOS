@@ -1,0 +1,3 @@
+# AetherOS Buildroot 外部树描述
+name: AETHER
+desc: AetherOS 系统组件与 rootfs 定制

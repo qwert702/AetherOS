@@ -1,7 +1,7 @@
 //! 文本渲染：fontdue 光栅化 + 亚像素混合，天然抗锯齿。
 //!
-//! Windows 预览期加载系统微软雅黑（常规 + 粗体，覆盖中英文）；将来
-//! Linux 侧换成打包进 rootfs 的 Noto Sans CJK，接口不变。
+//! 字体按平台择优加载：Linux（ISO 内）用打包进 rootfs 的文泉驿微米黑
+//! （中文屏显，覆盖中英文）；Windows 预览期回退到系统微软雅黑。
 
 use crate::draw::blend_pixel;
 
@@ -13,18 +13,28 @@ pub struct TextRenderer {
 }
 
 const REGULAR_FONTS: &[&str] = &[
+    // Linux：打包进 rootfs 的中文屏显字体（由 platform/build-iso.sh 从宿主拷入）
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    // Windows 预览
     "C:/Windows/Fonts/msyh.ttc",
     "C:/Windows/Fonts/msyh.ttf",
     "C:/Windows/Fonts/simsun.ttc",
 ];
-const BOLD_FONTS: &[&str] = &["C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/msyhbd.ttf"];
+// 注意：wqy-microhei 无独立粗体，Linux 下粗体仍用同一 CJK 字体，
+// 避免粗体回退到无中文字形的 DejaVu-Bold 导致中文标题缺字。
+const BOLD_FONTS: &[&str] = &[
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "C:/Windows/Fonts/msyhbd.ttf",
+];
 
 fn load_font(paths: &[&str]) -> Option<fontdue::Font> {
     for path in paths {
         let Ok(bytes) = std::fs::read(path) else {
             continue;
         };
-        if let Ok(font) = fontdue::Font::from_bytes(
+        match fontdue::Font::from_bytes(
             bytes,
             fontdue::FontSettings {
                 collection_index: 0,
@@ -32,9 +42,17 @@ fn load_font(paths: &[&str]) -> Option<fontdue::Font> {
                 load_substitutions: false,
             },
         ) {
-            return Some(font);
+            Ok(font) => {
+                eprintln!("aether-compositor: 字体已加载 {path}");
+                return Some(font);
+            }
+            Err(e) => {
+                // 解析失败要显式报出来：曾出现字体文件在位但因格式不被支持而静默缺字
+                eprintln!("aether-compositor: 字体解析失败 {path}: {e}");
+            }
         }
     }
+    eprintln!("aether-compositor: 无可用字体，尝试过 {paths:?}");
     None
 }
 

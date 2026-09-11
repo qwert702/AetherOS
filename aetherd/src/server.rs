@@ -56,9 +56,14 @@ fn handle_request(line: &str, cfg: &Config, gate: &Gate) -> Vec<Response> {
         Request::Ping => vec![Response::Pong],
         Request::Chat { session_id, text } => handle_chat(&session_id, &text, cfg, gate),
         Request::ToolCall { tool, arguments, .. } => {
-            let output = tools::execute(gate, &tool, &arguments, false)
+            let mut ctx = tools::ToolCtx::default();
+            let output = tools::execute(gate, &mut ctx, &tool, &arguments, false)
                 .unwrap_or_else(|e| format!("[工具错误] {e}"));
-            vec![Response::ToolResult { tool, ok: true, output }]
+            let mut out = vec![Response::ToolResult { tool, ok: true, output }];
+            for a in ctx.desktop_actions {
+                out.push(Response::Action { name: a.name, arguments: a.arguments });
+            }
+            out
         }
         Request::SysInfo { .. } => vec![Response::SysInfo(sys_report())],
         Request::ServiceControl { unit, action } => vec![Response::ServiceAck {
@@ -83,13 +88,19 @@ fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate) -> Vec<R
         return out;
     }
 
-    // 未命中快速意图：交给 LLM（可能较慢，连接线程阻塞在此处即可）
+    // 未命中快速意图：交给 LLM agent（可能较慢，连接线程阻塞在此处即可）
     match crate::agent_run(cfg, gate, text) {
-        Ok(answer) => vec![Response::ChatChunk {
-            session_id: session_id.into(),
-            delta: answer,
-            done: true,
-        }],
+        Ok((answer, actions)) => {
+            let mut out = vec![Response::ChatChunk {
+                session_id: session_id.into(),
+                delta: answer,
+                done: true,
+            }];
+            for a in actions {
+                out.push(Response::Action { name: a.name, arguments: a.arguments });
+            }
+            out
+        }
         Err(e) => vec![Response::Error {
             code: 503,
             message: format!("AI 通道不可用: {e}"),

@@ -1,0 +1,1 @@
+{"name": "aetherd", "deps": ["network"], "essential": true}

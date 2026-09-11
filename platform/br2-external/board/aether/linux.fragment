@@ -1,0 +1,14 @@
+# AetherOS 内核配置片：DRM 虚拟显卡 + fbdev 模拟（合成器直接写 /dev/fb0）
+CONFIG_DRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+# VBox 虚拟显卡（vmsvga → vmwgfx；vboxvga → vboxvideo）
+CONFIG_DRM_VMWGFX=y
+CONFIG_DRM_VBOXVIDEO=y
+# QEMU 虚拟显卡（virtio-gpu / bochs VBE）
+CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_DRM_BOCHS=y
+CONFIG_FB=y
+# 不靠 VESA：由 DRM 的 fbdev 模拟提供 /dev/fb0
+# CONFIG_FB_VESA is not set
+# 不开 FRAMEBUFFER_CONSOLE：避免 fbcon 与合成器争抢帧缓冲
+# CONFIG_FRAMEBUFFER_CONSOLE is not set

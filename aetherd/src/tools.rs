@@ -4,9 +4,17 @@
 //! 安全设计：所有进程执行均为"罐头探针"——命令与参数全部是编译期
 //! 常量，AI 只能在探针集合里选择，不存在用户输入进入命令行的路径。
 
+use crate::intent::DesktopAction;
 use crate::perm::{Gate, Level, Verdict};
 use anyhow::{bail, Result};
 use serde_json::Value;
+
+/// 工具执行上下文：桌面类工具产生的行为指令在此累积，
+/// 由 agent 循环结束后经 IPC Action 通道下发给 Shell/合成器执行。
+#[derive(Default)]
+pub struct ToolCtx {
+    pub desktop_actions: Vec<DesktopAction>,
+}
 
 /// 工具定义。
 pub struct Tool {
@@ -16,7 +24,7 @@ pub struct Tool {
     /// JSON Schema 风格的参数说明（喂给 LLM 的 tools 字段）
     pub parameters: Value,
     /// 执行体
-    pub run: fn(&Value) -> Result<String>,
+    pub run: fn(&Value, &mut ToolCtx) -> Result<String>,
 }
 
 pub fn registry() -> Vec<Tool> {
@@ -58,12 +66,39 @@ pub fn registry() -> Vec<Tool> {
             }),
             run: tool_sys_probe,
         },
+        Tool {
+            name: "desktop",
+            description: "操作桌面：切换窗口布局（layout_set）、打开应用窗口（open_app）、关闭当前活动窗口（close_active）",
+            level: Level::L1,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["layout_set", "open_app", "close_active"],
+                        "description": "桌面操作类型"
+                    },
+                    "layout": {
+                        "type": "string",
+                        "enum": ["two_col", "three_col", "monocle", "float"],
+                        "description": "action=layout_set 时的目标布局"
+                    },
+                    "app": {
+                        "type": "string",
+                        "enum": ["文件", "终端", "浏览器", "音乐", "设置"],
+                        "description": "action=open_app 时的应用名"
+                    }
+                },
+                "required": ["action"]
+            }),
+            run: tool_desktop,
+        },
     ]
 }
 
 /// 执行工具：闸门裁决 → 审计 → 运行。需确认的操作未批准时返回
 /// NEEDS_CONFIRMATION 语义错误，由上层翻译成 UI 确认卡片。
-pub fn execute(gate: &Gate, name: &str, args: &Value, approved: bool) -> Result<String> {
+pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approved: bool) -> Result<String> {
     let Some(tool) = registry().into_iter().find(|t| t.name == name) else {
         bail!("未知工具: {name}");
     };
@@ -76,7 +111,7 @@ pub fn execute(gate: &Gate, name: &str, args: &Value, approved: bool) -> Result<
     };
     let _ = gate.audit(name, tool.level, &args_str, verdict_str);
     match verdict {
-        Verdict::Allowed => (tool.run)(args),
+        Verdict::Allowed => (tool.run)(args, ctx),
         Verdict::NeedsConfirmation => {
             bail!("NEEDS_CONFIRMATION: 工具 {name} 需要 L{} 级用户确认", tool.level as u8)
         }
@@ -84,7 +119,7 @@ pub fn execute(gate: &Gate, name: &str, args: &Value, approved: bool) -> Result<
     }
 }
 
-fn tool_sys_info(args: &Value) -> Result<String> {
+fn tool_sys_info(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("memory");
     match scope {
         "memory" => {
@@ -104,7 +139,7 @@ fn tool_sys_info(args: &Value) -> Result<String> {
     }
 }
 
-fn tool_read_file(args: &Value) -> Result<String> {
+fn tool_read_file(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
         bail!("缺少 path 参数");
     };
@@ -113,8 +148,8 @@ fn tool_read_file(args: &Value) -> Result<String> {
     Ok(truncated)
 }
 
-/// 罐头探针：命令与参数全部为编译期常量。
-fn tool_sys_probe(args: &Value) -> Result<String> {
+/// 罐头探针执行体：命令与参数全部为编译期常量。
+fn tool_sys_probe(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let which = args.get("probe").and_then(|v| v.as_str()).unwrap_or("uname");
     let output = match which {
         "uname" => std::process::Command::new("uname").arg("-a").output(),
@@ -132,10 +167,50 @@ fn tool_sys_probe(args: &Value) -> Result<String> {
     Ok(out.chars().take(4000).collect())
 }
 
+const KNOWN_APPS: &[&str] = &["文件", "终端", "浏览器", "音乐", "设置"];
+const KNOWN_LAYOUTS: &[&str] = &["two_col", "three_col", "monocle", "float"];
+
+/// 桌面操作工具：LLM 操作桌面的手。参数经白名单校验后，
+/// 以 DesktopAction 形式入队，由 agent 循环下发合成器执行。
+fn tool_desktop(args: &Value, ctx: &mut ToolCtx) -> Result<String> {
+    let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    match action {
+        "layout_set" => {
+            let layout = args.get("layout").and_then(|v| v.as_str()).unwrap_or("");
+            if !KNOWN_LAYOUTS.contains(&layout) {
+                bail!("未知布局: {layout}");
+            }
+            ctx.desktop_actions.push(DesktopAction {
+                name: "layout_set".into(),
+                arguments: serde_json::json!({ "layout": layout }),
+            });
+            Ok(format!("已切换桌面布局为 {layout}"))
+        }
+        "open_app" => {
+            let app = args.get("app").and_then(|v| v.as_str()).unwrap_or("");
+            if !KNOWN_APPS.contains(&app) {
+                bail!("未知应用: {app}");
+            }
+            ctx.desktop_actions.push(DesktopAction {
+                name: "open_app".into(),
+                arguments: serde_json::json!({ "app": app }),
+            });
+            Ok(format!("已打开应用「{app}」"))
+        }
+        "close_active" => {
+            ctx.desktop_actions.push(DesktopAction {
+                name: "close_active".into(),
+                arguments: serde_json::json!({}),
+            });
+            Ok("已关闭当前活动窗口".into())
+        }
+        other => bail!("未知桌面操作: {other}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn gate() -> Gate {
         Gate::for_test()
@@ -143,25 +218,51 @@ mod tests {
 
     #[test]
     fn unknown_tool_rejected() {
-        assert!(execute(&gate(), "format_disk", &serde_json::json!({}), true).is_err());
+        let mut ctx = ToolCtx::default();
+        assert!(execute(&gate(), &mut ctx, "format_disk", &serde_json::json!({}), true).is_err());
     }
 
     #[test]
     fn l0_runs_without_approval() {
-        let r = execute(&gate(), "sys_info", &serde_json::json!({"scope":"services"}), false);
+        let mut ctx = ToolCtx::default();
+        let r = execute(&gate(), &mut ctx, "sys_info", &serde_json::json!({"scope":"services"}), false);
         assert!(r.is_ok());
     }
 
     #[test]
     fn probe_runs_without_approval() {
-        let r = execute(&gate(), "sys_probe", &serde_json::json!({"probe":"uname"}), false);
+        let mut ctx = ToolCtx::default();
+        let r = execute(&gate(), &mut ctx, "sys_probe", &serde_json::json!({"probe":"uname"}), false);
         assert!(r.is_ok(), "probe failed: {r:?}");
     }
 
     #[test]
     fn unknown_probe_rejected() {
-        let r = execute(&gate(), "sys_probe", &serde_json::json!({"probe":"format_everything"}), true);
+        let mut ctx = ToolCtx::default();
+        let r = execute(&gate(), &mut ctx, "sys_probe", &serde_json::json!({"probe":"format_everything"}), true);
         let err = r.unwrap_err().to_string();
         assert!(err.contains("未知探针"));
+    }
+
+    #[test]
+    fn desktop_layout_queued() {
+        let mut ctx = ToolCtx::default();
+        let r = execute(&gate(), &mut ctx, "desktop", &serde_json::json!({"action":"layout_set","layout":"two_col"}), false);
+        assert!(r.is_ok());
+        assert_eq!(ctx.desktop_actions.len(), 1);
+        assert_eq!(ctx.desktop_actions[0].name, "layout_set");
+        assert_eq!(ctx.desktop_actions[0].arguments["layout"], "two_col");
+    }
+
+    #[test]
+    fn desktop_app_whitelist() {
+        let mut ctx = ToolCtx::default();
+        let ok = execute(&gate(), &mut ctx, "desktop", &serde_json::json!({"action":"open_app","app":"终端"}), false);
+        assert!(ok.is_ok());
+        assert_eq!(ctx.desktop_actions.len(), 1);
+        // 白名单外的应用直接拒绝，不产生任何行为
+        let bad = execute(&gate(), &mut ctx, "desktop", &serde_json::json!({"action":"open_app","app":"勒索软件"}), false);
+        assert!(bad.is_err());
+        assert_eq!(ctx.desktop_actions.len(), 1);
     }
 }

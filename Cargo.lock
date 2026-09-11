@@ -15,6 +15,7 @@ dependencies = [
  "aether-ipc",
  "anyhow",
  "fontdue",
+ "libc",
  "log",
  "minifb",
  "serde_json",
@@ -24,8 +25,11 @@ dependencies = [
 name = "aether-init"
 version = "0.1.0"
 dependencies = [
+ "aether-ipc",
  "anyhow",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

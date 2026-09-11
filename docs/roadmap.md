@@ -31,10 +31,18 @@
 - [ ] UI 组件库沉淀
 - 验收：键盘鼠标全流程操作
 
-## M3 — 系统地基 ★
-- [ ] aether-init：PID 1、服务编排、ipc service_control
-- [ ] Buildroot rootfs 配方 + ISO 打包
-- 验收：ISO 开机直达自研桌面，链路中无任何现成桌面组件
+## M3 — 系统地基 ★（核心里程碑达成！）
+- [x] aether-init：白名单服务模型（编译期字面量命令，杜绝注入）+ 状态机 + 拓扑排序 + 环依赖检测 + 监督退避重启（8 项测试）
+- [x] aether-init：服务控制 IPC（端口 7312：start/stop/restart/status/sys_info）
+- [x] 服务定义：network → aetherd → compositor/getty/ops，dry-run 冒烟通过
+- [x] Buildroot 外部树 + defconfig（initramfs + isolinux 引导）+ rootfs overlay（/init + 服务定义）+ build-iso.sh
+- [x] VM 全自动化：VirtualBox 7.2.16 静默安装（TUNA 镜像）、Ubuntu 24.04.3 无人值守、SSH/免密 sudo/国内镜像、VDI 迁移 D 盘
+- [x] **首次构建出 AetherOS ISO（26MB）并在测试 VM 启动成功：内核 → /init → aether-init(PID 1) → 拓扑启动服务 → aetherd IPC 上线** ✅
+- [x] 修复遗留启动报错：三组件（init/aetherd/ops）musl 编译入 ISO、udhcpc 修正为 /sbin/udhcpc、compositor 延后至 smithay 就绪、VBox 光驱缓存需 detach/attach 刷新
+- [x] **完整开机验证：network 服务通过 udhcpc 获取 IP（10.0.2.15）+ DNS 配置成功——AetherOS 联网；监督退避重启机制在真实环境运转（ops/network 退出后按 2^n 退避自动拉起）** ✅
+- [ ] 图形栈接入：mesa/DRM + smithay 合成器后端，开机直达自研桌面
+- 验收：ISO 开机，从内核到桌面整条链路上没有任何现成桌面/发行版组件
+- 验收：ISO 开机，从内核到桌面整条链路上没有任何现成桌面/发行版组件
 
 ## M4 — AI 中枢 aetherd ★（第一阶段完成）
 - [x] 权限模型落地：L0–L3 闸门 + 审计日志（perm.rs，带测试）
@@ -46,9 +54,11 @@
 - [x] 离线快速意图通道：布局/时间/状态等系统指令免 LLM 直接执行（intent.rs，5 项测试）——"快慢双思"架构
 - [x] 合成器 AI 指令条真实输入：Enter 发送 → ChatChunk 回复气泡 + Action 执行布局切换
 - [x] IPC Action 通道：`layout_set` 等 aetherd → Shell 桌面行为指令
-- [ ] LLM 深度接入桌面：布局引擎/窗口管理作为 LLM tools 暴露（目前仅离线意图覆盖）
+- [x] LLM 深度接入桌面：`desktop` 工具（layout_set/open_app/close_active，白名单校验）+ ToolCtx 行为队列 → IPC Action → 合成器执行（端到端验证通过）
+- [x] 离线快速意图扩展：整理桌面/铺满 等模糊指令的确定性解释
 - [ ] L2+ 确认卡片 UI（NEEDS_CONFIRMATION → 确认弹窗 → 带 approval 重试）
 - [ ] 中文输入支持（预览期受 minifb 限制仅英文，M2 字体子系统解决）
+- [ ] 接入真实 LLM 验证模糊指令全链路（需 Ollama 或 GLM API Key）
 - 验收：自然语言操作整台"电脑"
 
 ## M5 — AI 运维自修复

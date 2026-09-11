@@ -1,2 +1,3 @@
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+# 平台无关：Windows 解析为 x86_64-pc-windows-gnu，Linux 解析为 x86_64-unknown-linux-gnu
+channel = "stable"

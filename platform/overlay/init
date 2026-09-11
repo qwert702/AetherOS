@@ -1,0 +1,11 @@
+#!/bin/sh
+# AetherOS /init — 内核引导的第一个用户态程序（rootfs overlay）
+# initramfs 启动后以 PID 1 执行本脚本，交接给 aether-init。
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+echo "[init] AetherOS 0.1 — 交接给 aether-init"
+exec /usr/bin/aether-init --pid1

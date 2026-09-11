@@ -13,7 +13,13 @@ fontdue = "0.9"
 aether-ipc = { path = "../aether-ipc" }
 serde_json = { workspace = true }
 
-# Windows/Linux 桌面主机的渲染预览后端（M1 开发迭代用）
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+# Windows/Linux 桌面主机的渲染预览后端（M1 开发迭代用）。
+# musl 静态编译（ISO rootfs）只需 fbdev 路径，minifb 的 X11 链接不可用，
+# 故排除 musl target。
+[target.'cfg(all(not(target_os = "linux"), not(target_env = "musl")))'.dependencies]
 minifb = "0.27"
 
 [target.'cfg(unix)'.dependencies]

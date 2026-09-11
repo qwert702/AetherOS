@@ -17,8 +17,9 @@ use anyhow::{Context, Result};
 use perm::Gate;
 use std::path::PathBuf;
 
-const SYSTEM_PROMPT: &str = "你是 Aether，AetherOS 操作系统的 AI 中枢。你可以调用工具来查询和操作这台电脑。\
-回答使用用户的语言，简洁、可执行。涉及系统操作时优先使用提供的工具而不是给出口头指令。";
+const SYSTEM_PROMPT: &str = "你是 Aether，AetherOS 操作系统的 AI 中枢。你可以调用工具查询和操作这台电脑：\
+用 desktop 工具切换窗口布局、打开应用、关闭窗口；用 sys_probe/sys_info 了解系统状态。\
+回答使用用户的语言，简洁、可执行。用户说'整理桌面'时调用 desktop 的 layout_set two_col。";
 
 #[derive(Clone)]
 struct Config {
@@ -62,9 +63,11 @@ fn tools_json() -> serde_json::Value {
 }
 
 /// Agent 主循环：最多 MAX_ROUNDS 轮工具调用。
-fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<String> {
+/// 返回最终回答 + LLM 产生的桌面行为队列（经 IPC Action 下发合成器）。
+pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<(String, Vec<crate::intent::DesktopAction>)> {
     const MAX_ROUNDS: usize = 4;
     let local_ok = llm::local_available(&cfg.local.base_url);
+    let mut ctx = tools::ToolCtx::default();
     let mut messages = vec![
         llm::Message { role: "system".into(), content: SYSTEM_PROMPT.into(), tool_calls: None, tool_call_id: None, name: None },
         llm::Message { role: "user".into(), content: user_text.into(), tool_calls: None, tool_call_id: None, name: None },
@@ -95,7 +98,7 @@ fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<String> {
 
         // 无工具调用 → 最终回答
         let Some(calls) = resp.tool_calls.clone() else {
-            return Ok(resp.content);
+            return Ok((resp.content, std::mem::take(&mut ctx.desktop_actions)));
         };
 
         // 有工具调用：逐个执行（目前处理第一个，多并行调用在后续版本支持）
@@ -112,7 +115,7 @@ fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<String> {
 
         eprintln!("[aetherd] 工具调用: {name} {args}");
         // 敏感工具（L2+）需用户确认：当前无 UI 通道，返回确认语义错误让模型向用户解释
-        let result = tools::execute(gate, &name, &args, false).unwrap_or_else(|e| {
+        let result = tools::execute(gate, &mut ctx, &name, &args, false).unwrap_or_else(|e| {
             let msg = e.to_string();
             if msg.contains("NEEDS_CONFIRMATION") {
                 format!("[需用户确认后重试] {msg}")
@@ -128,7 +131,7 @@ fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<String> {
             name: Some(name),
         });
     }
-    Ok("（已达本轮工具调用上限，请拆分任务）".into())
+    Ok(("（已达本轮工具调用上限，请拆分任务）".into(), Vec::new()))
 }
 
 fn main() -> Result<()> {
@@ -142,7 +145,7 @@ fn main() -> Result<()> {
             }
             let cfg = config_from_env();
             let gate = Gate::new(PathBuf::from("aether-audit.log"));
-            let answer = agent_run(&cfg, &gate, &text).context("agent 运行失败")?;
+            let (answer, _actions) = agent_run(&cfg, &gate, &text).context("agent 运行失败")?;
             println!("{answer}");
         }
         Some("serve") => {
