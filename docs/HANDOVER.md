@@ -8,8 +8,14 @@
 ## 零、本次更新摘要（2026-09-11）
 
 **里程碑**：M3 打通 —— **AetherOS 桌面已在虚拟机中真实渲染上屏**（首个可用桌面）。
-验证截图见 `docs/screenshot-desktop.png`（QEMU，1280x800：顶栏 + 两列窗口「文件」「终端」+
-AI 指令条 + Dock + 深色极光壁纸，中英文文字均正常）。
+
+| 环境 | 显卡控制器 | DRM 驱动 | 分辨率 | 状态 |
+|------|-----------|---------|--------|------|
+| QEMU | `-vga std` / `-vga virtio` | `bochs-drm` / `virtio-gpu` | 1280x800 | ✅ 截图 `docs/screenshot-desktop.png` |
+| VirtualBox | `--graphicscontroller vboxvga` | `vboxvideo` | 1024x768 | ✅ 截图 `docs/screenshot-vbox.png` |
+
+> ⚠️ VBox **不要用默认的 `vmsvga`**：它走 `vmwgfx`，而该驱动在 VBox 上明确拒绝工作
+> （见 5.1）。
 
 **原报告把 M3 阻塞归结为"build-iso.sh 漏了 compositor"，实际是三层叠加问题**，只修一层都不出桌面：
 
@@ -38,7 +44,7 @@ AI 指令条 + Dock + 深色极光壁纸，中英文文字均正常）。
 | M0 开发与架构设计 | ✅ 完成 | WSL/Buildroot 环境、仓库骨架、rust-toolchain、ARCHITECTURE.md | cargo test/build 通过 |
 | M1 合成器 MVP | ✅ 完成 | minifb 预览（Windows）、拖拽/缩放窗口、4 种布局、AI 指令条 | preview.bmp 正常 |
 | M2 Shell 雏形 | ✅ 完成 | 顶栏、启动器、通知区、任务栏、毛玻璃面板 | Windows 预览完整 |
-| M3 系统地基 | ✅ **完成** | ISO 开机 → **compositor 渲染桌面并上屏**（1280x800） | QEMU 截图 `docs/screenshot-desktop.png` |
+| M3 系统地基 | ✅ **完成** | ISO 开机 → **compositor 渲染桌面并上屏** | QEMU(1280x800) + VBox(1024x768) 双环境截图，见 `docs/screenshot-*.png` |
 | M4 AI 中枢 aetherd | 🟡 部分完成 | IPC 已通、tool calling 框架就绪 | compositor 的 Action 执行层已接入代码，未联调 |
 | M5 AI 运维 | ❌ 未开始 | ops 骨架已建，自修复未实现 | - |
 | M6 安装器 0.1 发布 | ❌ 未开始 | - | - |
@@ -54,8 +60,8 @@ AetherOS 的显示通路是：**内核 DRM → fbdev 模拟 → /dev/fb0 → com
 ```
 CONFIG_DRM=y
 CONFIG_DRM_FBDEV_EMULATION=y      # 关键：由 DRM 提供 /dev/fb0
-CONFIG_DRM_VMWGFX=y               # VBox vmsvga
-CONFIG_DRM_VBOXVIDEO=y            # VBox vboxvga
+CONFIG_DRM_VBOXVIDEO=y            # VBox vboxvga（✅ VBox 用这个）
+CONFIG_DRM_VMWGFX=y               # VBox vmsvga（❌ 该驱动在 VBox 上拒绝工作，见 5.1）
 CONFIG_DRM_VIRTIO_GPU=y           # QEMU virtio-gpu
 CONFIG_DRM_BOCHS=y                # QEMU -vga std
 CONFIG_FB=y
@@ -91,12 +97,14 @@ libc::ioctl(fd, FBIOPUT_VSCREENINFO, &mut var);   // → drm_fb_helper_set_par �
 
 ### 2.4 诊断手段（环境相关的坑）
 
-- **VBox 7.2 的串口（`--uartmode1 file:/server:`）会导致 VM `Power up failed`**，
-  且串口文件始终为空 —— VBox 下**没有任何可用的日志通路**。
-- 因此 compositor 增加了 `tty_log()`：把关键诊断写到 `/dev/tty0`（VGA 文本控制台），
-  可在无串口环境下从截图看到。
-- **QEMU 是可靠的验证环境**：工具见 `scripts/qemu-verify.sh`、`scripts/qemu-shot.py`、
+- **VBox**：串口是唯一日志通路，但 `--uartmode1 file` 的路径**必须用正斜杠**，
+  否则 VM `Power up failed`（详见 5.1.1）。另外 VBox 下 VGA 文本控制台在 DRM 接管后
+  就不再刷新，**截图会停在引导文本，这不代表 guest 卡住**——务必以串口日志为准。
+- **QEMU**：工具见 `scripts/qemu-verify.sh`、`scripts/qemu-shot.py`、
   `scripts/vnc-shot.py`、`scripts/ppm2png.py`（串口落盘 + QMP screendump + VNC 抓屏，全部纯标准库）。
+- compositor 内置 `tty_log()`：把关键诊断写到 `/dev/tty0`（VGA 文本控制台），
+  在完全没有串口的场合可从截图看到。
+- 内核 cmdline 已含 `console=tty0`，因此**内核启动日志也会出现在屏幕上**，便于定位早期问题。
 
 ---
 
@@ -118,15 +126,16 @@ Aether/
 │   ├── br2-external/
 │   │   ├── configs/aetheros_defconfig
 │   │   ├── board/aether/linux.fragment
-│   │   └── isolinux.cfg         # APPEND console=ttyS0,115200n8（无 vga=，DRM 自己 modeset）
+│   │   └── isolinux.cfg         # APPEND console=tty0 console=ttyS0,115200n8（无 vga=，DRM 自己 modeset）
 │   ├── overlay/
 │   │   ├── init                 # exec aether-init --pid1
 │   │   ├── etc/aether/services/*.json
 │   │   └── usr/bin/             # 四个 musl 静态二进制（构建时拷入）
-│   └── build-iso.sh             # 一键构建（COMPONENTS 含 aether-compositor）
+│   └── build-iso.sh             # 一键构建（COMPONENTS 含 aether-compositor + 拷入 CJK 字体）
 ├── scripts/                     # VM 辅助 + QEMU 验证工具
 ├── docs/
-│   ├── screenshot-desktop.png   # ✅ M3 桌面验证截图
+│   ├── screenshot-desktop.png   # ✅ QEMU 1280x800 验证截图
+│   ├── screenshot-vbox.png      # ✅ VBox 1024x768 验证截图
 │   └── HANDOVER.md              # 本文件
 └── aetheros-0.1-amd64.iso       # 当前产物（29.6MB，含 CJK 字体）
 ```
@@ -155,7 +164,9 @@ bash /home/aether/rebuild-comp.sh      # 增量（只改了 compositor）
 （本次调试就踩过：本地旧的 26.8MB ISO 覆盖了 VM 上新出的 29.6MB）。
 本地要更新 ISO，用 `get` 从 VM 取回。
 
-### 4.2 验证（QEMU，构建 VM 内已装 qemu-system-x86）
+### 4.2 验证
+
+**QEMU（构建 VM 内已装 qemu-system-x86，推荐日常用）**
 
 ```bash
 bash scripts/qemu-verify.sh std                 # 启动（VNC + 串口落盘 + QMP）
@@ -163,18 +174,60 @@ python3 scripts/qemu-shot.py /home/aether/x.png # QMP screendump → PNG
 grep aether-compositor /home/aether/qemu-serial.log   # 看 compositor 日志
 ```
 
-串口是**唯一可靠**的日志通路，务必用它确认：
-`自启动序列` 是否含 `compositor`、`aether-compositor: fbdev WxH @bpp ... put=0`、`已渲染 N 帧`。
+**VirtualBox（桌面 VM `AetherOS-Demo`）**
+
+```bash
+VBoxManage modifyvm "AetherOS-Demo" --graphicscontroller vboxvga --vram 32   # 不要用 vmsvga
+VBoxManage modifyvm "AetherOS-Demo" --uart1 0x3f8 4
+VBoxManage modifyvm "AetherOS-Demo" --uartmode1 file "D:/aether-vm/serial.txt"  # 正斜杠！
+VBoxManage startvm "AetherOS-Demo" --type headless
+VBoxManage controlvm "AetherOS-Demo" screenshotpng out.png
+```
+
+**务必确认这三条日志**（QEMU 看串口文件，VBox 看 `D:/aether-vm/serial.txt`）：
+`自启动序列` 含 `compositor`、`aether-compositor: fbdev WxH @bpp ... put=0`（modeset 成功）、`已渲染 N 帧`。
 
 ---
 
 ## 五、已知问题与待办
 
-### 5.1 🟡 VBox 下桌面未上屏（QEMU 已通过）
-VBox（vmsvga/vboxvga，headless 与 GUI 均试）屏幕停留在引导文本模式，
-且**串口不可用 / tty0 诊断也不刷新**，无法定位。
-QEMU 同 ISO 可正常出桌面，判断是 VBox 侧显示或驱动差异。
-**建议**：优先用 QEMU 做验证；若要支持 VBox，需先解决 VBox 的日志通路。
+### 5.1 ✅ 已解决：VBox 下桌面未上屏
+**根因**：VBox 默认控制器 `vmsvga` 由 `vmwgfx` 驱动，而 **vmwgfx 是 VMware 的驱动，
+在 VirtualBox 上明确拒绝工作**：
+
+```
+vmwgfx 0000:00:02.0: [drm] *ERROR* vmwgfx seems to be running on an unsupported hypervisor.
+vmwgfx 0000:00:02.0: [drm] *ERROR* This configuration is likely broken.
+```
+
+驱动仍会创建 fb0，但显示通路是坏的，屏幕停在引导文本。
+
+**修复**：VBox 侧改用 `vboxvga` 控制器（走 `vboxvideo` 驱动）：
+
+```bash
+VBoxManage modifyvm <vm> --graphicscontroller vboxvga --vram 32
+```
+
+`vboxvideo` 干净初始化，compositor 正常 modeset（1024x768，`put=0`）并出桌面。
+
+**注意**：两种环境用不同驱动，内核 fragment 里**两者都已启用**，无需切换内核：
+QEMU 用 `bochs` / `virtio-gpu`，VBox 用 `vboxvideo`。
+
+### 5.1.1 ⚠️ VBox 串口的正确用法（否则拿不到任何日志）
+VBox 7.2 下 `--uartmode1 file` 的**路径必须用正斜杠**，反斜杠会让 VM `Power up failed`
+且不报明显错误：
+
+```bash
+# 正确
+VBoxManage modifyvm <vm> --uart1 0x3f8 4
+VBoxManage modifyvm <vm> --uartmode1 file "D:/path/to/serial.txt"
+# 错误（反斜杠）→ Failed to open host device ... Power up failed
+#   --uartmode1 file "D:\path\to\serial.txt"
+```
+
+这是本次调试最大的坑：因为拿不到 VBox 日志，一度误判为"guest 卡死"，
+实际 guest 一切正常（compositor 稳定渲染 100+ 帧），只是 VGA 文本控制台不再刷新。
+**排查 VBox 问题前，先把串口配通。**
 
 ### 5.2 ✅ 已解决：桌面文字（中文字体）
 `aether-compositor/src/text.rs` 的字体路径原本是 **Windows 专有**（`C:/Windows/Fonts/msyh.ttf`），
