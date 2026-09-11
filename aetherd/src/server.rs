@@ -75,30 +75,33 @@ fn handle_request(line: &str, cfg: &Config, gate: &Gate) -> Vec<Response> {
 }
 
 /// Chat 请求：快速意图 → 命中则回复+桌面行为；未命中 → LLM agent。
+/// 注意：Action 必须在 done 前发送——客户端（compositor）收到 done 即停止读取。
 fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate) -> Vec<Response> {
     if let Some((reply, action)) = intent::try_handle(text) {
-        let mut out = vec![Response::ChatChunk {
-            session_id: session_id.into(),
-            delta: reply,
-            done: true,
-        }];
+        let mut out = Vec::new();
         if let Some(a) = action {
             out.push(Response::Action { name: a.name, arguments: a.arguments });
         }
+        out.push(Response::ChatChunk {
+            session_id: session_id.into(),
+            delta: reply,
+            done: true,
+        });
         return out;
     }
 
     // 未命中快速意图：交给 LLM agent（可能较慢，连接线程阻塞在此处即可）
     match crate::agent_run(cfg, gate, text) {
         Ok((answer, actions)) => {
-            let mut out = vec![Response::ChatChunk {
-                session_id: session_id.into(),
-                delta: answer,
-                done: true,
-            }];
+            let mut out = Vec::new();
             for a in actions {
                 out.push(Response::Action { name: a.name, arguments: a.arguments });
             }
+            out.push(Response::ChatChunk {
+                session_id: session_id.into(),
+                delta: answer,
+                done: true,
+            });
             out
         }
         Err(e) => vec![Response::Error {

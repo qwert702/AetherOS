@@ -11,6 +11,8 @@
 mod draw;
 #[cfg(target_os = "linux")]
 mod fbdev;
+#[cfg(target_os = "linux")]
+mod input;
 mod layout;
 mod text;
 
@@ -38,7 +40,8 @@ fn tty_log(msg: &str) {
 }
 
 /// 系统内 framebuffer 模式：以屏幕真实分辨率渲染 Essence 桌面。
-/// （键盘/鼠标的 evdev 接入在后续迭代；当前为持续渲染的演示桌面）
+/// evdev 键盘/鼠标接入（M4）：AI 指令条可输入、Dock/菜单可点击、
+/// 窗口可拖拽；Enter 发送指令到 aetherd（离线意图优先），Action 落地为桌面行为。
 #[cfg(target_os = "linux")]
 fn run_fbdev() -> anyhow::Result<()> {
     tty_log("启动，正在打开 /dev/fb0");
@@ -57,28 +60,195 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut desktop = demo_desktop_sized(w, h);
     let tr = text::TextRenderer::load();
     let mut renderer = draw::Renderer::new(w, h);
+    let (input_tx, input_rx) = mpsc::channel();
+    input::spawn(input_tx);
+    let (ai_tx, ai_rx) = mpsc::channel::<AiEvent>();
+
     let start = Instant::now();
     let mut frames: u64 = 0;
+
+    // 输入/UI 状态
+    let mut mouse = (w as f32 / 2.0, h as f32 / 2.0);
+    let mut mouse_down = false;
+    let mut drag: Option<(usize, f32, f32)> = None;
+    let mut snap_zone = layout::Snap::None;
+    let mut toast: Option<(String, Instant)> = None;
+    let mut ai_input = String::new();
+    let mut ai_reply: Option<(String, Instant)> = None;
+    let mut open_menu: Option<usize> = None;
+
     loop {
         let t = start.elapsed().as_secs_f32();
-        if frames < 6 {
-            eprintln!("[c] 帧{frames} 开始 t={t:.2}");
-        }
-        let work = layout::work_area(w, h);
-        let tiled = layout::tiled_targets(desktop.wins.len(), desktop.layout, work);
-        for (i, win) in desktop.wins.iter_mut().enumerate() {
-            if let Some(tg) = tiled[i] {
-                win.rect = tg;
+
+        // ---- 1. evdev 输入（drain 本帧积累的全部事件）----
+        while let Ok(ev) = input_rx.try_recv() {
+            match ev {
+                input::UiEvent::MouseMove { dx, dy } => {
+                    // 位移在事件流里累积，不受 10fps 渲染帧率影响；
+                    // 倍率只是手感（PS/2 相对计数偏小）
+                    mouse.0 = (mouse.0 + dx as f32 * 2.0).clamp(0.0, (w - 1) as f32);
+                    mouse.1 = (mouse.1 + dy as f32 * 2.0).clamp(0.0, (h - 1) as f32);
+                }
+                input::UiEvent::MouseDown => mouse_down = true,
+                input::UiEvent::MouseUp => {
+                    mouse_down = false;
+                    if let Some((i, _, _)) = drag.take() {
+                        if snap_zone != layout::Snap::None {
+                            let work = layout::work_area(w, h);
+                            desktop.wins[i].target = Some(layout::rect(snap_zone, work));
+                            toast = Some((snap_zone.label().to_string(), Instant::now()));
+                        }
+                    }
+                    snap_zone = layout::Snap::None;
+                }
+                input::UiEvent::Char(c) => ai_input.push(c),
+                input::UiEvent::Backspace => {
+                    ai_input.pop();
+                }
+                input::UiEvent::Escape => open_menu = None,
+                input::UiEvent::LayoutKey(n) => {
+                    if let Some(msg) = set_layout(&mut desktop, layout::Layout::ALL[(n - 1).clamp(0, 3)]) {
+                        toast = Some((msg, Instant::now()));
+                    }
+                }
+                input::UiEvent::Enter => {
+                    if !ai_input.trim().is_empty() {
+                        let text = ai_input.trim().to_string();
+                        ai_input.clear();
+                        ai_reply = Some(("…思考中".into(), Instant::now()));
+                        let tx = ai_tx.clone();
+                        std::thread::spawn(move || query_aether(text, 15, tx));
+                    }
+                }
             }
         }
-        renderer.render_frame(&mut buf, w, h, t, &desktop, &ui_stub(), tr.as_ref());
-        if frames < 6 {
-            eprintln!("[c] 帧{frames} 渲染完成");
+
+        // ---- 2. AI 事件轮询（非阻塞）----
+        while let Ok(ev) = ai_rx.try_recv() {
+            match ev {
+                AiEvent::Reply(text) => ai_reply = Some((text, Instant::now())),
+                AiEvent::Error(text) => ai_reply = Some((format!("⚠ {text}"), Instant::now())),
+                AiEvent::Action(name, args) => {
+                    if let Some(msg) = apply_action(&mut desktop, &name, &args) {
+                        toast = Some((format!("Aether 执行 · {msg}"), Instant::now()));
+                    }
+                }
+            }
         }
+
+        // ---- 3. 鼠标交互（拖拽优先，其次 UI 命中测试）----
+        if mouse_down {
+            if let Some((i, lx, ly)) = drag {
+                let win = &mut desktop.wins[i].rect;
+                win.x += (mouse.0 - lx) as i32;
+                win.y = (win.y + (mouse.1 - ly) as i32).max(layout::TOP_BAR);
+                drag = Some((i, mouse.0, mouse.1));
+                snap_zone = if desktop.wins[i].floating {
+                    layout::detect(mouse.0, mouse.1, w, h)
+                } else {
+                    layout::Snap::None
+                };
+            } else if mouse.1 < layout::TOP_BAR as f32 {
+                let hit_menu = renderer
+                    .menubar_menus
+                    .iter()
+                    .position(|r| r.contains(mouse.0, mouse.1));
+                if let Some(mi) = hit_menu {
+                    open_menu = if open_menu == Some(mi) { None } else { Some(mi) };
+                } else if renderer.search_pill.contains(mouse.0, mouse.1) {
+                    toast = Some(("搜索：先试试下面的 AI 指令条".into(), Instant::now()));
+                    open_menu = None;
+                } else if open_menu.is_some() {
+                    open_menu = None;
+                }
+            } else if let Some((items, _)) = renderer.dropdown.clone() {
+                if let Some(i) = items.iter().position(|r| r.contains(mouse.0, mouse.1)) {
+                    let (t, r) = run_menu_item(&mut desktop, open_menu.unwrap_or(0), i);
+                    if let Some(m) = t {
+                        toast = Some((m, Instant::now()));
+                    }
+                    if let Some(r) = r {
+                        ai_reply = Some((r, Instant::now()));
+                    }
+                }
+                open_menu = None;
+            } else if let Some(icon) = renderer.dock_icons.iter().position(|r| r.contains(mouse.0, mouse.1)) {
+                if let Some(msg) = open_app(&mut desktop, icon) {
+                    toast = Some((msg, Instant::now()));
+                }
+            } else {
+                open_menu = None;
+                for i in (0..desktop.wins.len()).rev() {
+                    let r = desktop.wins[i].rect;
+                    let title_hit = draw::Rect { x: r.x, y: r.y, w: r.w, h: 34 };
+                    if title_hit.contains(mouse.0, mouse.1) {
+                        let clicked = desktop.wins.remove(i);
+                        desktop.wins.push(clicked);
+                        desktop.active = desktop.wins.len() - 1;
+                        let wi = desktop.wins.len() - 1;
+                        desktop.wins[wi].floating = true;
+                        desktop.wins[wi].target = None;
+                        drag = Some((wi, mouse.0, mouse.1));
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ---- 4. 布局目标 → 缓动动画 ----
+        let lay = desktop.layout;
+        let work = layout::work_area(w, h);
+        let tiled = layout::tiled_targets(desktop.wins.len(), lay, work);
+        for (i, win) in desktop.wins.iter_mut().enumerate() {
+            if lay != layout::Layout::Float && !win.floating {
+                win.target = tiled[i];
+            }
+            if let Some(tg) = win.target {
+                const EASE: f32 = 0.22;
+                win.rect.x = draw::lerp(win.rect.x as f32, tg.x as f32, EASE).round() as i32;
+                win.rect.y = draw::lerp(win.rect.y as f32, tg.y as f32, EASE).round() as i32;
+                win.rect.w = draw::lerp(win.rect.w as f32, tg.w as f32, EASE).round() as i32;
+                win.rect.h = draw::lerp(win.rect.h as f32, tg.h as f32, EASE).round() as i32;
+                let settled = (win.rect.x - tg.x).abs() < 2
+                    && (win.rect.y - tg.y).abs() < 2
+                    && (win.rect.w - tg.w).abs() < 2
+                    && (win.rect.h - tg.h).abs() < 2;
+                if settled {
+                    win.rect = tg;
+                    win.target = None;
+                }
+            }
+        }
+
+        let snap_preview = drag
+            .filter(|_| snap_zone != layout::Snap::None)
+            .map(|_| layout::rect(snap_zone, work));
+        let toast_now = match toast.take() {
+            Some((msg, t0)) if t0.elapsed().as_secs_f32() < 1.6 => {
+                Some((msg, t0.elapsed().as_secs_f32()))
+            }
+            _ => None,
+        };
+        let reply_now = match ai_reply.take() {
+            Some((msg, t0)) if t0.elapsed().as_secs_f32() < 6.0 => {
+                Some((msg, t0.elapsed().as_secs_f32()))
+            }
+            _ => None,
+        };
+        let ui = draw::UiState {
+            snap: snap_preview,
+            toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
+            ai_input: &ai_input,
+            ai_reply: reply_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
+            mouse,
+            open_menu,
+        };
+
+        // ---- 5. 渲染 + 软件光标 + 上屏 ----
+        renderer.render_frame(&mut buf, w, h, t, &desktop, &ui, tr.as_ref());
+        draw::draw_cursor(&mut buf, w, h, mouse.0, mouse.1);
         fb.blit(&buf, w, h);
-        if frames < 6 {
-            eprintln!("[c] 帧{frames} blit 完成");
-        }
+
         frames += 1;
         // 心跳：确认渲染循环在持续推进（串口/文本控制台可见）
         if frames == 1 {
@@ -87,23 +257,7 @@ fn run_fbdev() -> anyhow::Result<()> {
         } else if frames % 100 == 0 {
             println!("aether-compositor: 已渲染 {frames} 帧");
         }
-        std::thread::sleep(Duration::from_millis(100)); // 10fps，无输入场景足够
-        if frames < 6 {
-            eprintln!("[c] 帧{frames} sleep 完成");
-        }
-    }
-}
-
-
-#[cfg(target_os = "linux")]
-fn ui_stub<'a>() -> draw::UiState<'a> {
-    draw::UiState {
-        snap: None,
-        toast: None,
-        ai_input: text::strings::AI_BAR_HINT,
-        ai_reply: None,
-        mouse: (-1.0, -1.0),
-        open_menu: None,
+        std::thread::sleep(Duration::from_millis(100)); // 10fps；QEMU TCG 下渲染本身还要数秒
     }
 }
 
@@ -146,11 +300,16 @@ enum AiEvent {
 }
 
 /// 在后台线程里连接 aetherd、发送 Chat、收集响应直到 done。
-fn query_aether(text: String, tx: mpsc::Sender<AiEvent>) {
+/// 每一步都打串口/控制台日志（QEMU TCG 下截图窗口太窄，日志是可靠诊断通路）。
+fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
     let run = || -> anyhow::Result<()> {
-        let mut stream = TcpStream::connect(("127.0.0.1", aether_ipc::DEFAULT_PORT))
-            .map_err(|e| anyhow::anyhow!("aetherd 未运行（127.0.0.1:{}）：{e}", aether_ipc::DEFAULT_PORT))?;
-        stream.set_read_timeout(Some(Duration::from_secs(130))).ok();
+        println!("aether-compositor: AI 查询「{text}」连接 aetherd…");
+        // connect_timeout：aetherd 不可达时快速失败，而不是无限阻塞
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+            .map_err(|e| anyhow::anyhow!("aetherd 不可达（127.0.0.1:{}）：{e}", aether_ipc::DEFAULT_PORT))?;
+        println!("aether-compositor: AI 查询已连接，发送请求（超时 {timeout_secs}s）");
+        stream.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok();
         stream.write_all(
             aether_ipc::encode(&Request::Chat { session_id: "shell-preview".into(), text }).as_bytes(),
         )?;
@@ -170,7 +329,10 @@ fn query_aether(text: String, tx: mpsc::Sender<AiEvent>) {
                         break;
                     }
                 }
-                Ok(Response::Action { name, arguments }) => action = Some((name, arguments)),
+                Ok(Response::Action { name, arguments }) => {
+                    println!("aether-compositor: 收到 Action {name} {arguments}");
+                    action = Some((name, arguments));
+                }
                 Ok(Response::Error { message, .. }) => {
                     reply = format!("⚠ {message}");
                     break;
@@ -178,6 +340,7 @@ fn query_aether(text: String, tx: mpsc::Sender<AiEvent>) {
                 _ => {}
             }
         }
+        println!("aether-compositor: AI 查询完成，回复 {} 字", reply.chars().count());
         let _ = tx.send(AiEvent::Reply(reply));
         if let Some((name, args)) = action {
             let _ = tx.send(AiEvent::Action(name, args));
@@ -185,6 +348,7 @@ fn query_aether(text: String, tx: mpsc::Sender<AiEvent>) {
         Ok(())
     };
     if let Err(e) = run() {
+        println!("aether-compositor: AI 查询失败: {e}");
         let _ = tx.send(AiEvent::Error(e.to_string()));
     }
 }
@@ -384,7 +548,7 @@ fn preview_main() -> anyhow::Result<()> {
                         ai_input.clear();
                         ai_reply = Some(("…思考中".into(), Instant::now()));
                         let tx = tx.clone();
-                        std::thread::spawn(move || query_aether(text, tx));
+                        std::thread::spawn(move || query_aether(text, 130, tx));
                     }
                 }
                 minifb::Key::Key1 => {

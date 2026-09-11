@@ -705,6 +705,33 @@ impl Renderer {
 }
 
 // ---------------------------------------------------------------------------
+// 软件光标（fbdev 无硬件指针；白箭头 + 黑描边，指向左上）
+// ---------------------------------------------------------------------------
+
+pub fn draw_cursor(buf: &mut [u32], w: usize, h: usize, mx: f32, my: f32) {
+    let (cx, cy) = (mx.round() as i32, my.round() as i32);
+    let inside = |x: i32, y: i32| x >= 0 && x <= 10 && y >= x && y <= 15 - x / 2;
+    for dy in -1..=16 {
+        for dx in -1..=11 {
+            let (x, y) = (cx + dx, cy + dy);
+            if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
+                continue;
+            }
+            let idx = y as usize * w + x as usize;
+            if inside(dx, dy) {
+                blend_pixel(buf, idx, [255, 255, 255], 0.95);
+            } else if inside(dx, dy - 1)
+                || inside(dx, dy + 1)
+                || inside(dx - 1, dy)
+                || inside(dx + 1, dy)
+            {
+                blend_pixel(buf, idx, [10, 10, 14], 0.9);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Toast
 // ---------------------------------------------------------------------------
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""极简 RFB/VNC 客户端：查询 guest 显示尺寸并抓取整屏 → PNG。
-用法: vnc-shot.py [out.png] [host] [port]"""
+"""极简 RFB/VNC 客户端：查询 guest 显示尺寸并抓取整屏 → PNG（stdout）。
+用法: vnc-shot.py [host] [port] > out.png"""
 import socket, struct, sys, zlib
 
-png = sys.argv[1] if len(sys.argv) > 1 else '/home/aether/vnc.png'
-host = sys.argv[2] if len(sys.argv) > 2 else '127.0.0.1'
-port = int(sys.argv[3]) if len(sys.argv) > 3 else 5900
+port = 5900
+host = '127.0.0.1'
+if len(sys.argv) > 2:
+    host = sys.argv[1]
+    port = int(sys.argv[2])
 
 s = socket.create_connection((host, port), timeout=15)
 s.settimeout(20)
@@ -71,9 +73,9 @@ for yy in range(h):
     rows.append(0); rows += canvas[yy*w*3:(yy+1)*w*3]
 def chunk(t, x):
     return struct.pack('>I', len(x)) + t + x + struct.pack('>I', zlib.crc32(t+x) & 0xffffffff)
-open(png, 'wb').write(b'\x89PNG\r\n\x1a\n' +
+sys.stdout.buffer.write(b'\x89PNG\r\n\x1a\n' +
     chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) +
     chunk(b'IDAT', zlib.compress(bytes(rows), 6)) + chunk(b'IEND', b''))
 nz = sum(1 for k in range(0, len(canvas), 3*211) if canvas[k:k+3] != b'\x00\x00\x00')
-print('PNG %s  %dx%d  非黑采样 %d/%d' % (png, w, h, nz, len(range(0, len(canvas), 3*211))))
+print('PNG stdout  %dx%d  非黑采样 %d/%d' % (w, h, nz, len(range(0, len(canvas), 3*211))), file=sys.stderr)
 s.close()

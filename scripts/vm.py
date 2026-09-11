@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""AetherOS build VM helper: sync files & run commands over SSH (password auth)."""
+"""AetherOS build VM helper: run commands over SSH (password auth).
+文件上传统一走 scripts/transfer.py（路径重定根 + putfo + 重试）。"""
+import os
+import posixpath
 import sys
 import paramiko
 
@@ -39,18 +42,12 @@ def sh(cmd, timeout=60):
         c.close()
 
 
-def put(local_rel, vm_path):
-    c = client()
-    try:
-        sftp = c.open_sftp()
-        local = LOCAL_ROOT + "\\" + local_rel.replace("/", "\\")
-        data = open(local, "rb").read()
-        with sftp.open(vm_path, "wb") as f:
-            f.write(data)
-        print(f"put {local_rel} -> {vm_path} ({sftp.stat(vm_path).st_size} bytes)")
-        sftp.close()
-    finally:
-        c.close()
+def vm_path_of(vm_rel):
+    """把目标路径规范到 /home/aether 之下（防穿越）：拒绝 ..，越界段一律重定根。"""
+    if ".." in vm_rel.replace("\\", "/").split("/"):
+        raise SystemExit(f"VM 路径越界: {vm_rel}")
+    clean = posixpath.normpath("/" + vm_rel.replace("\\", "/").strip("/"))
+    return "/home/aether" + ("" if clean == "/" else clean)
 
 
 if __name__ == "__main__":
@@ -58,7 +55,11 @@ if __name__ == "__main__":
     if mode == "sh":
         sh(sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 60)
     elif mode == "put":
-        put(sys.argv[2], sys.argv[3])
+        # 上传统一到 scripts/transfer.py（带路径重定根与重试；Git Bash 下
+        # 需 MSYS2_ARG_CONV_EXCL="*"，否则 /home/... 参数被 MSYS 改写）。
+        print("请改用: MSYS2_ARG_CONV_EXCL=* python scripts/transfer.py <本地相对路径> <VM绝对路径>",
+              file=sys.stderr)
+        sys.exit(2)
     else:
-        print("usage: vm.py sh <cmd> [timeout] | put <local-rel> <vm-path>", file=sys.stderr)
+        print("usage: vm.py sh <cmd> [timeout] | put(→transfer.py)", file=sys.stderr)
         sys.exit(2)

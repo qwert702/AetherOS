@@ -7,5 +7,9 @@ mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
+# 回环接口必须显式拉起：内核默认 lo 是 down 的。不拉起则 aetherd（127.0.0.1:7311）
+# 虽能 bind 却等不到任何连接，compositor 的 AI 查询 connect 无限期阻塞。
+ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
+
 echo "[init] AetherOS 0.1 — 交接给 aether-init"
 exec /usr/bin/aether-init --pid1

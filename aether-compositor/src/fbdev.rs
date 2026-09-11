@@ -92,17 +92,17 @@ impl Fbdev {
 
         let mut var = VarScreeninfo::default();
         let mut fix = FixScreeninfo::default();
-        let rc_v = unsafe { libc::ioctl(fd, FBIOGET_VSCREENINFO, &mut var) };
-        let rc_f = unsafe { libc::ioctl(fd, FBIOGET_FSCREENINFO, &mut fix) };
+        let rc_v = unsafe { libc::ioctl(fd, FBIOGET_VSCREENINFO as _, &mut var) };
+        let rc_f = unsafe { libc::ioctl(fd, FBIOGET_FSCREENINFO as _, &mut fix) };
 
         // 关键：内核的 DRM fbdev 模拟只创建 fb0，不会自动点亮 CRTC
         // （实测 crtc.enable=0、plane.fb=0 → 屏幕停留在引导文本模式）。
         // FBIOPUT_VSCREENINFO 会走到 drm_fb_helper_set_par，从而执行一次真正的
         // modeset，让 CRTC/平面接管显示。
         var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
-        let rc_put = unsafe { libc::ioctl(fd, FBIOPUT_VSCREENINFO, &mut var) };
+        let rc_put = unsafe { libc::ioctl(fd, FBIOPUT_VSCREENINFO as _, &mut var) };
         unsafe {
-            libc::ioctl(fd, FBIOGET_VSCREENINFO, &mut var);
+            libc::ioctl(fd, FBIOGET_VSCREENINFO as _, &mut var);
         }
 
         let width = if var.xres > 0 { var.xres as usize } else { 800 };
