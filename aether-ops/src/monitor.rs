@@ -153,6 +153,78 @@ pub fn service_control(unit: &str, action: ServiceAction) -> anyhow::Result<Stri
     }
 }
 
+/// 服务日志目录（与 aether-init logtee 保持一致）。
+pub const LOG_DIR: &str = "/tmp/log";
+
+/// 日志异常模式（字面量罐头；命中即告警）。
+pub const ALERT_PATTERNS: [&str; 5] =
+    ["panic", "Segmentation fault", "ERROR", "查询失败", "无法连接"];
+
+/// 增量扫描一段新增日志文本，返回命中的告警行（每行截断到 120 字符）。
+pub fn scan_new_lines(new_text: &str) -> Vec<String> {
+    new_text
+        .lines()
+        .filter(|l| ALERT_PATTERNS.iter().any(|p| l.contains(p)))
+        .map(|l| l.chars().take(120).collect())
+        .collect()
+}
+
+/// 日志监听器：按文件维护读取偏移，每轮只扫新增内容（文件变小视为轮转/截断，从头重扫）。
+pub struct LogWatch {
+    offsets: std::collections::HashMap<String, u64>,
+}
+
+impl Default for LogWatch {
+    fn default() -> Self {
+        Self { offsets: std::collections::HashMap::new() }
+    }
+}
+
+impl LogWatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 扫描目录下所有 .log 文件的新增内容；`skip` 为要跳过的单元名（ops 自身，防自告警循环）。
+    /// 返回 (单元名, 告警行) 列表。
+    pub fn scan_dir(&mut self, dir: &str, skip: &str) -> Vec<(String, String)> {
+        let mut alerts = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return alerts;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            if path.extension().and_then(|e| e.to_str()) != Some("log") || name == skip {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(&path) else { continue };
+            let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            let offset = self.offsets.entry(name.to_string()).or_insert(0);
+            if len < *offset {
+                *offset = 0; // 截断/轮转
+            }
+            if len == *offset {
+                continue;
+            }
+            use std::io::{Read, Seek, SeekFrom};
+            let mut f = std::fs::File::open(&path).expect("log reopen");
+            if f.seek(SeekFrom::Start(*offset)).is_err() {
+                continue;
+            }
+            let mut text = String::new();
+            if f.read_to_string(&mut text).is_err() {
+                continue; // 非 UTF-8 片段（半行截断）留给下一轮
+            }
+            *offset = len;
+            for line in scan_new_lines(&text) {
+                alerts.push((name.to_string(), line));
+            }
+        }
+        alerts
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +292,50 @@ mod tests {
         assert!(m.mem_pressure());
         let ok = Metrics { mem_total_mb: Some(512), mem_avail_mb: Some(200), uptime_secs: None };
         assert!(!ok.mem_pressure());
+    }
+
+    #[test]
+    fn log_scan_hits_literals_only() {
+        let alerts = scan_new_lines(
+            "starting ok\nthread 'main' panicked at foo\n[aetherd] LLM 请求失败: timeout\nnothing wrong here\n",
+        );
+        assert_eq!(alerts.len(), 2);
+        assert!(alerts[0].contains("panicked"));
+        assert!(alerts[1].contains("请求失败"));
+        assert!(scan_new_lines("all good\n").is_empty());
+    }
+
+    #[test]
+    fn log_watch_incremental_and_skip_self() {
+        let dir = std::env::temp_dir().join(format!("aether-ops-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("aetherd.log"), "[aetherd] 通道: Local\n").unwrap();
+        std::fs::write(dir.join("ops.log"), "ops: 自修复 → 重启 x 失败\n").unwrap();
+
+        let mut w = LogWatch::new();
+        let alerts = w.scan_dir(dir.to_str().unwrap(), "ops");
+        assert!(alerts.is_empty(), "正常行不告警");
+
+        // 追加异常行 → 下一轮扫到
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("aetherd.log")).unwrap();
+        f.write_all("[aetherd] LLM 无法连接: refused\n".as_bytes()).unwrap();
+        let alerts = w.scan_dir(dir.to_str().unwrap(), "ops");
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].0, "aetherd");
+        assert!(alerts[0].1.contains("无法连接"));
+
+        // 已扫过的不再重复告警
+        let alerts = w.scan_dir(dir.to_str().unwrap(), "ops");
+        assert!(alerts.is_empty());
+
+        // 文件截断 → 从头重扫
+        std::fs::write(dir.join("aetherd.log"), "panic: boom\n").unwrap();
+        let alerts = w.scan_dir(dir.to_str().unwrap(), "ops");
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].1.contains("panic"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

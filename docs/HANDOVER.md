@@ -96,7 +96,7 @@ VMX 要点：`bios.bootOrder = "cdrom"` + **SATA 光驱**（IDE 光驱引导不�
 | M2 Shell 雏形 | ✅ 完成 | 顶栏、启动器、通知区、任务栏、毛玻璃面板 | Windows 预览完整 |
 | M3 系统地基 | ✅ 完成 | ISO 开机 → compositor 渲染桌面并上屏 | QEMU(1280x800) + VBox(1024x768) 双环境截图 |
 | M4 AI 中枢 aetherd | ✅ **完成** | fbdev 路径：evdev 输入 + AI 指令条 + Action 全链路 | **QEMU 实测**：注入 "three"+Enter → 离线意图 → `layout_set three_col` → 三列动画落地；Dock 点击开窗；软件光标随鼠标移动 |
-| M5 AI 运维 | ✅ **v1 完成** | 巡检自修复 agent（15s/轮、真实指标、ServiceControl 自愈、冷却防风暴）+ aetherd 状态接真实数据 | **全部实测**：①巡检心跳真实内存/服务；②AI "status" 回复「内存 451/467MB，已运行 2 分钟；5/5 服务运行中」；③**自愈实测**：root 登录 tty1 `killall aether-compositor` → ops 一轮内发现 → `自修复 → 重启 compositor` → 新实例恢复渲染 |
+| M5 AI 运维 | ✅ **v1 完成** | 巡检自修复 agent（15s/轮、真实指标、ServiceControl 自愈、冷却防风暴）+ aetherd 状态接真实数据 + **日志监听预警**（aether-init logtee 落盘 /tmp/log/*.log + ops 增量扫描字面量模式告警） | **全部实测**：①巡检心跳真实内存/服务；②AI "status" 回复「内存 451/467MB，已运行 2 分钟；5/5 服务运行中」；③**自愈实测**：root 登录 tty1 `killall aether-compositor` → ops 一轮内发现 → `自修复 → 重启 compositor` → 新实例恢复渲染；④**告警实测**：AI 条输入乱串 → aetherd 记 `ERROR LLM 请求失败` → ops `📢 aetherd 日志异常` |
 | M6 安装器 0.1 发布 | ❌ 未开始 | - | - |
 
 ---
@@ -164,6 +164,9 @@ python scripts/vm.py sh "python3 /home/aether/qmp-verify.py mouse 264 364 click"
 2. **构建机 sftp-server 偶发 NO_SUCH_FILE**：真实存在的间歇抽风（同一代码时好时坏）。
    `transfer.py` 已带 base64-over-ssh 兜底通道（stdin 管道，不经命令行参数），主通道失败自动降级。
 3. Git Bash 的 MSYS 参数改写是**理论风险**（实测本机未触发），`MSYS2_ARG_CONV_EXCL="*"` 作无害保险。
+4. **重建脚本必须 `set -euo pipefail`**：`cargo build | tail -1` 的管道退出码是 tail 的，
+   编译失败会被静默吞掉、然后 cp 拷到**旧二进制**混出新 ISO（本次真实踩坑：
+   ops 少个常量编译失败，ISO 照样出炉、行为悄悄回退）。rebuild-m4.sh 已修。
 
 ### 5.6 ⭐ Mimosa 安全门禁与提交
 本仓库 git commit 被 Mimosa hook 门禁拦截：**argv 派生路径 → 文件写原语（open 'wb'/putfo/rename）**
@@ -190,10 +193,17 @@ Windows 写文件带 `\r\n`；`transfer.py`/`vm.py` 上传时自动归一为 `\n
 
 ## 六、未完成清单
 
-### 6.1 M5 剩余（P1）
-1. **日志监听预警**：监听服务 stderr 异常模式主动告警（当前只有周期巡检）
-2. **故障诊断报告**：采集→根因→方案→一键执行的结构化输出（接 aetherd LLM 通道）
-3. 内存紧张（512MB guest）只告警不行动——可加"回收字体缓存/降帧"等罐头动作
+### 6.1 M5 剩余（P2）
+1. **故障诊断报告**：采集→根因→方案→一键执行的结构化输出（接 aetherd LLM 通道）
+2. 内存紧张（512MB guest）只告警不行动——可加"回收字体缓存/降帧"等罐头动作
+3. 告警模式表目前 5 个字面量（monitor.rs ALERT_PATTERNS），可按需扩充/加每模式冷却
+
+> **如何在 QEMU 里做 guest 内实验**（自愈实测的方法，已验证）：QMP `sendkey` 的键会同时到达
+> evdev（compositor AI 条）和 tty 层（tty1 的 getty）。节奏：`ret` → 等 2s → `r o o t` → `ret`
+> → 等 3s → 命令（**空格的 qcode 是 `spc` 不是 `space`**，`-` 是 `minus`）→ `ret`。
+> 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。compositor 已设
+> `restart:false`，其崩溃由 ops 自愈（监督器不接管）——这是刻意设计，让 M5 自愈有真实职责。
+> 触发告警的最快方法：AI 条输入乱串（如 `asdf`+回车）→ aetherd 记 `ERROR LLM 请求失败` → ops 📢。
 
 > **如何在 QEMU 里做 guest 内实验**（自愈实测的方法，已验证）：QMP `sendkey` 的键会同时到达
 > evdev（compositor AI 条）和 tty 层（tty1 的 getty）。节奏：`ret` → 等 2s → `r o o t` → `ret`

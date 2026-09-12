@@ -7,6 +7,7 @@
 //! 设计：小而美。不做 socket 激活/定时器/cgroup，先做对、做小。
 
 mod ipc;
+mod logtee;
 mod manager;
 mod unit;
 

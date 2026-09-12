@@ -110,7 +110,7 @@ impl Manager {
         self.start_order(&names)
     }
 
-    /// 启动服务（白名单字面量命令）。
+    /// 启动服务（白名单字面量命令）。stdout/stderr 接日志管道（logtee）。
     pub fn start(&mut self, name: &str) -> Result<SvcStatus> {
         let Some(svc) = self.services.get_mut(name) else {
             bail!("服务 {name} 不存在");
@@ -118,12 +118,19 @@ impl Manager {
         if svc.state == SvcState::Running {
             return Ok(svc.status());
         }
-        let child = svc
+        let mut command = svc
             .spec
             .validate()?
-            .spawn_command()
+            .spawn_command();
+        use std::process::Stdio;
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("启动 {name} 失败: {e}"))?;
+        crate::logtee::tee_child(name, &mut child);
         svc.state = SvcState::Running;
         svc.child = Some(child);
         Ok(svc.status())

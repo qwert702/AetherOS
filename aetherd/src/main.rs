@@ -94,7 +94,8 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<(S
         };
         eprintln!("[aetherd] 通道: {:?} · 模型: {}", channel, endpoint.model);
 
-        let resp = llm::complete(endpoint, &messages, Some(&tools_json()))?;
+        let resp = llm::complete(endpoint, &messages, Some(&tools_json()))
+            .inspect_err(|e| eprintln!("[aetherd] ERROR LLM 请求失败（{}/{}）: {e}", endpoint.base_url, endpoint.model))?;
 
         // 无工具调用 → 最终回答
         let Some(calls) = resp.tool_calls.clone() else {

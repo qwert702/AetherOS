@@ -1,9 +1,10 @@
 //! aether-ops — AetherOS AI 运维与自修复。
 //!
-//! M5 v0.1：常驻巡检 agent。每 15s 采集 /proc 指标 + aether-init(7312) 服务状态，
-//! 发现服务异常（Exited/Failed）经 7312 ServiceControl 自修复重启（带冷却），
-//! 巡检报告打串口日志。决策核心在 monitor.rs（纯函数、单测覆盖）。
-//! 后续：日志监听预警、故障诊断报告、自然语言系统设置。
+//! M5：常驻巡检 + 日志监听。每 15s 采集 /proc 指标 + aether-init(7312) 服务状态
+//! + 各服务日志（/tmp/log/*.log，由 aether-init logtee 落盘）增量扫描：
+//! 服务异常（Exited/Failed）经 7312 ServiceControl 自修复重启（带冷却），
+//! 日志异常行即时告警，全部打串口。决策核心在 monitor.rs（纯函数、单测覆盖）。
+//! 后续：故障诊断报告、自然语言系统设置。
 
 #[cfg(target_os = "linux")]
 mod monitor;
@@ -42,6 +43,7 @@ fn run() -> anyhow::Result<()> {
     );
     // unit -> (最近一次触发重启的轮次, 累计次数)
     let mut attempts: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut logwatch = monitor::LogWatch::new();
     let mut round: u64 = 0;
     loop {
         round += 1;
@@ -54,6 +56,11 @@ fn run() -> anyhow::Result<()> {
         let r = monitor::plan(&services, &metrics, &attempts, round, COOLDOWN_ROUNDS);
         for line in &r.lines {
             println!("aether-ops: {line}");
+        }
+
+        // 日志监听：增量扫描各服务日志，异常行即时告警
+        for (unit, line) in logwatch.scan_dir(monitor::LOG_DIR, "ops") {
+            println!("aether-ops: 📢 {unit} 日志异常: {line}");
         }
 
         for action in r.actions {
