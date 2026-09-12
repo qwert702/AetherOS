@@ -158,9 +158,109 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// 快速意图用：当前系统状态一句话摘要（离线通道的"状态"答复）。
+/// 从 /proc/meminfo 文本解析 (已用MB, 总MB)。解析失败返回 None。
+pub(crate) fn parse_mem_mb(meminfo: &str) -> Option<(u64, u64)> {
+    let mut total = None;
+    let mut avail = None;
+    for line in meminfo.lines() {
+        let mut it = line.split_whitespace();
+        let key = it.next().unwrap_or("");
+        let val: Option<u64> = it.next().and_then(|v| v.parse().ok());
+        // /proc/meminfo 数值单位 kB
+        match key {
+            "MemTotal:" => total = val.map(|kv| kv / 1024),
+            "MemAvailable:" => avail = val.map(|kv| kv / 1024),
+            _ => {}
+        }
+    }
+    match (total, avail) {
+        (Some(t), Some(a)) if t >= a => Some((t - a, t)),
+        _ => None,
+    }
+}
+
+/// 从 /proc/uptime 文本解析运行秒数。解析失败返回 None。
+pub(crate) fn parse_uptime_secs(uptime: &str) -> Option<u64> {
+    uptime
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|f| f as u64)
+}
+
+/// 向 aether-init（127.0.0.1:7312）查询服务状态列表。
+#[cfg(target_os = "linux")]
+fn query_init_services() -> anyhow::Result<Vec<aether_ipc::ServiceStatus>> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr: SocketAddr = ([127, 0, 0, 1], aether_ipc::INIT_PORT).into();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    stream.write_all(
+        aether_ipc::encode(&aether_ipc::Request::SysInfo {
+            scope: aether_ipc::SysInfoScope::Services,
+        })
+        .as_bytes(),
+    )?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    match aether_ipc::decode::<aether_ipc::Response>(&line)? {
+        aether_ipc::Response::SysInfo(r) => Ok(r.services),
+        aether_ipc::Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
+        _ => Err(anyhow::anyhow!("aether-init 返回了意外响应")),
+    }
+}
+
+/// 汇总真实系统状态：/proc 内存/运行时长 + aether-init 服务列表。
+/// 拿不到的部分保持 None/空（调用方按缺省展示）。非 Linux（单测）返回空报告。
+pub(crate) fn collect_sys_report() -> aether_ipc::SysReport {
+    #[cfg(target_os = "linux")]
+    {
+        let mem = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| parse_mem_mb(&s));
+        let uptime = std::fs::read_to_string("/proc/uptime")
+            .ok()
+            .and_then(|s| parse_uptime_secs(&s));
+        let services = query_init_services().unwrap_or_default();
+        aether_ipc::SysReport {
+            cpu_percent: None,
+            mem_used_mb: mem.map(|(u, _)| u),
+            mem_total_mb: mem.map(|(_, t)| t),
+            uptime_secs: uptime,
+            services,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    aether_ipc::SysReport::default()
+}
+
+/// 快速意图用：当前系统状态一句话摘要（真实数据，离线可用）。
 pub fn sys_brief() -> String {
-    "运行中: aetherd（AI 中枢）、aether-compositor（桌面）。内存/磁盘的实时数据将在 M3 接入 aether-init 后提供。".into()
+    let r = collect_sys_report();
+    if r.services.is_empty() && r.mem_total_mb.is_none() {
+        return "系统状态暂时取不到（aether-init 未响应）。".into();
+    }
+    let mem = match (r.mem_used_mb, r.mem_total_mb) {
+        (Some(u), Some(t)) => format!("内存 {u}/{t}MB"),
+        _ => "内存未知".into(),
+    };
+    let up = r
+        .uptime_secs
+        .map(|s| format!("，已运行 {} 分钟", s / 60))
+        .unwrap_or_default();
+    let ok = r.services.iter().filter(|s| s.state == "Running").count();
+    let detail = r
+        .services
+        .iter()
+        .map(|s| {
+            let mark = if s.state == "Running" { "✓" } else { "✗" };
+            format!("{}{mark}", s.unit)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{mem}{up}；{ok}/{} 服务运行中（{detail}）。", r.services.len())
 }
 
 /// 快速意图用：HH:MM 时钟（预览期按北京时间简化处理）。
@@ -171,4 +271,34 @@ pub fn text_clock() -> String {
         .unwrap_or(0)
         + 8 * 3600;
     format!("{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meminfo_parse() {
+        let s = "MemTotal:        524288 kB\nMemFree:          102400 kB\nMemAvailable:      40960 kB\n";
+        assert_eq!(parse_mem_mb(s), Some((472, 512)));
+    }
+
+    #[test]
+    fn meminfo_garbage_is_none() {
+        assert_eq!(parse_mem_mb("hello world"), None);
+        assert_eq!(parse_mem_mb(""), None);
+    }
+
+    #[test]
+    fn uptime_parse() {
+        assert_eq!(parse_uptime_secs("123.45 678.90"), Some(123));
+        assert_eq!(parse_uptime_secs("garbage"), None);
+    }
+
+    #[test]
+    fn sys_brief_degrades_gracefully() {
+        // 非 Linux/拿不到数据时必须返回降级文案而非 panic
+        let s = sys_brief();
+        assert!(!s.is_empty());
+    }
 }

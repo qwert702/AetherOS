@@ -112,15 +112,6 @@ fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate) -> Vec<R
 }
 
 fn sys_report() -> SysReport {
-    // M3 后由 aether-init / aether-ops 填充真实数据
-    SysReport {
-        cpu_percent: None,
-        mem_used_mb: None,
-        mem_total_mb: None,
-        uptime_secs: None,
-        services: vec![
-            aether_ipc::ServiceStatus { unit: "aetherd".into(), state: "running".into(), pid: None },
-            aether_ipc::ServiceStatus { unit: "aether-compositor".into(), state: "running".into(), pid: None },
-        ],
-    }
+    // 真实数据：/proc 内存 + aether-init 服务列表（collect_sys_report 内部按缺省降级）
+    crate::collect_sys_report()
 }

@@ -341,6 +341,8 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
             }
         }
         println!("aether-compositor: AI 查询完成，回复 {} 字", reply.chars().count());
+        let preview: String = reply.chars().take(96).collect();
+        println!("aether-compositor: AI 回复: {preview}");
         let _ = tx.send(AiEvent::Reply(reply));
         if let Some((name, args)) = action {
             let _ = tx.send(AiEvent::Action(name, args));

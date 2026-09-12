@@ -96,7 +96,7 @@ VMX 要点：`bios.bootOrder = "cdrom"` + **SATA 光驱**（IDE 光驱引导不�
 | M2 Shell 雏形 | ✅ 完成 | 顶栏、启动器、通知区、任务栏、毛玻璃面板 | Windows 预览完整 |
 | M3 系统地基 | ✅ 完成 | ISO 开机 → compositor 渲染桌面并上屏 | QEMU(1280x800) + VBox(1024x768) 双环境截图 |
 | M4 AI 中枢 aetherd | ✅ **完成** | fbdev 路径：evdev 输入 + AI 指令条 + Action 全链路 | **QEMU 实测**：注入 "three"+Enter → 离线意图 → `layout_set three_col` → 三列动画落地；Dock 点击开窗；软件光标随鼠标移动 |
-| M5 AI 运维 | 🟡 **v0.1 完成** | aether-ops 巡检自修复 agent（15s/轮、真实指标、ServiceControl 自愈、6 单测） | QEMU 串口实测：`巡检#1 up=4s mem=59/467MB 服务=aetherd=✓ …`；内存紧张告警正确触发 |
+| M5 AI 运维 | ✅ **v1 完成** | 巡检自修复 agent（15s/轮、真实指标、ServiceControl 自愈、冷却防风暴）+ aetherd 状态接真实数据 | **全部实测**：①巡检心跳真实内存/服务；②AI "status" 回复「内存 451/467MB，已运行 2 分钟；5/5 服务运行中」；③**自愈实测**：root 登录 tty1 `killall aether-compositor` → ops 一轮内发现 → `自修复 → 重启 compositor` → 新实例恢复渲染 |
 | M6 安装器 0.1 发布 | ❌ 未开始 | - | - |
 
 ---
@@ -191,10 +191,15 @@ Windows 写文件带 `\r\n`；`transfer.py`/`vm.py` 上传时自动归一为 `\n
 ## 六、未完成清单
 
 ### 6.1 M5 剩余（P1）
-1. **日志监听预警**：监听 aether-init/服务 stderr，异常模式主动告警（当前只有周期巡检）
+1. **日志监听预警**：监听服务 stderr 异常模式主动告警（当前只有周期巡检）
 2. **故障诊断报告**：采集→根因→方案→一键执行的结构化输出（接 aetherd LLM 通道）
-3. **自愈实测**：目前所有服务健康，自愈路径靠 6 个单测覆盖；需要在 guest 里人为杀一个 restart:false 的服务做实测
-4. aetherd `sys_brief`（"系统状态"指令）可改为代理 aether-init SysInfo，拿到真实内存/服务数据
+3. 内存紧张（512MB guest）只告警不行动——可加"回收字体缓存/降帧"等罐头动作
+
+> **如何在 QEMU 里做 guest 内实验**（自愈实测的方法，已验证）：QMP `sendkey` 的键会同时到达
+> evdev（compositor AI 条）和 tty 层（tty1 的 getty）。节奏：`ret` → 等 2s → `r o o t` → `ret`
+> → 等 3s → 命令（**空格的 qcode 是 `spc` 不是 `space`**，`-` 是 `minus`）→ `ret`。
+> 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。compositor 已设
+> `restart:false`，其崩溃由 ops 自愈（监督器不接管）——这是刻意设计，让 M5 自愈有真实职责。
 
 ### 6.2 M6（排期后续）
 1. 简易安装器（当前 ISO 完全内存驻留，无持久化）
