@@ -43,11 +43,16 @@ def sh(cmd, timeout=60):
 
 
 def vm_path_of(vm_rel):
-    """把目标路径规范到 /home/aether 之下（防穿越）：拒绝 ..，越界段一律重定根。"""
-    if ".." in vm_rel.replace("\\", "/").split("/"):
+    """把目标路径规范到 /home/aether 之下（防穿越）：拒绝 ..，越界段一律重定根。
+    已带 /home/aether 前缀的绝对路径保持不变（勿重复拼接！）。"""
+    p = vm_rel.replace("\\", "/")
+    if ".." in p.split("/"):
         raise SystemExit(f"VM 路径越界: {vm_rel}")
-    clean = posixpath.normpath("/" + vm_rel.replace("\\", "/").strip("/"))
-    return "/home/aether" + ("" if clean == "/" else clean)
+    clean = posixpath.normpath("/" + p.strip("/"))
+    root = "/home/aether"
+    if clean == root or clean.startswith(root + "/"):
+        return clean
+    return root + clean
 
 
 if __name__ == "__main__":

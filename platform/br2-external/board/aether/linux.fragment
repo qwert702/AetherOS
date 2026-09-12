@@ -8,6 +8,8 @@ CONFIG_DRM_VBOXVIDEO=y
 CONFIG_DRM_VIRTIO_GPU=y
 CONFIG_DRM_BOCHS=y
 CONFIG_FB=y
+# VMware 默认虚拟网卡（AMD PCnet32，Am79C970A）；无此驱动则 udhcpc 报 No such device 循环重启
+CONFIG_PCNET32=y
 # 不靠 VESA：由 DRM 的 fbdev 模拟提供 /dev/fb0
 # CONFIG_FB_VESA is not set
 # 不开 FRAMEBUFFER_CONSOLE：避免 fbcon 与合成器争抢帧缓冲

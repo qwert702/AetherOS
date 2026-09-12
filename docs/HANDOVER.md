@@ -60,6 +60,15 @@ AI 指令条真实连通 aetherd（离线意图）、Action 端到端落地（AI
 |------|-----------|---------|--------|------|
 | QEMU | `-vga std` / `-vga virtio` | `bochs-drm` / `virtio-gpu` | 1280x800 | `docs/screenshot-desktop.png`、`docs/screenshot-m4-interactive.png` |
 | VirtualBox | `--graphicscontroller vboxvga` | `vboxvideo` | 1024x768 | `docs/screenshot-vbox.png` |
+| **VMware Workstation** | 默认 SVGA | `vmwgfx`（原生主场） | 1280x800 | `docs/screenshot-vmware.png` |
+
+**VMware 已实测可用**（Workstation 17，绿色版在 `D:\CBN-HT\Desktop\asdf\`，
+VM 在 `D:\aether-vm\AetherOS-VMware\`）：vmwgfx modeset 成功、桌面完整渲染、
+evdev 收到 5 个输入设备（含 vmmouse）、宿主鼠标点击能操作 guest UI、
+**网络已通**（内核 `CONFIG_PCNET32=y` → eth0 → NAT DHCP 拿到 IP，五服务全 ✓）。
+VMX 要点：`bios.bootOrder = "cdrom"` + **SATA 光驱**（IDE 光驱引导不起来）+
+`serial0` 落盘到 serial.txt（唯一的日志通路；重启时 VMware 会弹"替换/附加"对话框）。
+启动：`vmrun start AetherOS.vmx`。
 
 > ⚠️ VBox **不要用默认的 `vmsvga`**（走 `vmwgfx`，该驱动在 VBox 上拒绝工作）。
 > ⚠️ QEMU 默认 `-m 512` 对桌面偏紧（initramfs 全在内存，巡检会报"内存紧张"是真实压力），演示建议 `-m 1024`。
@@ -146,14 +155,15 @@ python scripts/vm.py sh "python3 /home/aether/qmp-verify.py mouse 264 364 click"
 
 ## 五、坑（本次新增 + 历史保留）
 
-### 5.5 ⭐ Git Bash 的 MSYS 路径改写（本次排查最久的坑）
-Git Bash 调 Windows 原生程序时，命令行参数里形如 `/home/aether/...` 的 POSIX 绝对路径
-会被 MSYS 自动"翻译"成 `C:\Program Files\Git\home\aether\...` —— SFTP 服务器报
-`SSHFX_NO_SUCH_FILE`（paramiko 显示为 `FileNotFoundError: [Errno 2]`），
-**看起来像玄学间歇故障，实际 100% 复现**。路径写在脚本/`python -c` 字符串里则不受影响。
-
-**对策**：`export MSYS2_ARG_CONV_EXCL="*"`（或 `MSYS_NO_PATHCONV=1`）再调用
-`transfer.py` / `vm.py put`。诊断这类问题时先跑一个最小探针（写 `zzz.txt`）区分"路径问题"与"权限问题"。
+### 5.5 ⭐ 传输 ENOENT 的真凶：路径双拼 + SFTP 偶发抽风
+1. **vm_path_of 双前缀（已修复的教训）**：防穿越重定根函数曾对已带 `/home/aether`
+   前缀的绝对路径**再拼一层**，得到 `/home/aether/home/aether/...` —— SFTP 报
+   `SSHFX_NO_SUCH_FILE`，100% 复现且极像玄学。该函数现在对已带根前缀的路径原样放行。
+   **诊断这类问题的最快手段：用 stderr/报错把"服务器实际收到的路径"打出来**（本次是
+   base64 兜底通道的 bash 报错暴露的），不要对着 paramiko 的 `FileNotFoundError` 猜。
+2. **构建机 sftp-server 偶发 NO_SUCH_FILE**：真实存在的间歇抽风（同一代码时好时坏）。
+   `transfer.py` 已带 base64-over-ssh 兜底通道（stdin 管道，不经命令行参数），主通道失败自动降级。
+3. Git Bash 的 MSYS 参数改写是**理论风险**（实测本机未触发），`MSYS2_ARG_CONV_EXCL="*"` 作无害保险。
 
 ### 5.6 ⭐ Mimosa 安全门禁与提交
 本仓库 git commit 被 Mimosa hook 门禁拦截：**argv 派生路径 → 文件写原语（open 'wb'/putfo/rename）**
