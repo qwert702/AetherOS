@@ -51,6 +51,11 @@ def main():
             q.cmd('send-key', {'keys': [{'type': 'qcode', 'data': k}]})
             time.sleep(0.15)
         print('keys sent:', ' '.join(sys.argv[2:]))
+    elif op == 'combo':
+        # 组合键（一次 send-key 同时按住）：combo shift+dot = '>'，combo shift+s = 'S'
+        keys = [{'type': 'qcode', 'data': k} for k in sys.argv[2].split('+')]
+        q.cmd('send-key', {'keys': keys})
+        print('combo sent:', sys.argv[2])
     elif op == 'mouse':
         dx, dy = int(sys.argv[2]), int(sys.argv[3])
         events = [{'type': 'rel', 'data': {'axis': 'x', 'value': dx}},

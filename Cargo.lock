@@ -33,6 +33,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-install"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "aether-ipc"
 version = "0.1.0"
 dependencies = [

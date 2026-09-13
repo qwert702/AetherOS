@@ -93,6 +93,19 @@ pub fn registry() -> Vec<Tool> {
             }),
             run: tool_desktop,
         },
+        Tool {
+            name: "install_disk",
+            description: "把当前系统整盘安装到指定磁盘（isohybrid 镜像 dd 覆盖写，安装后从该盘引导）。整盘覆盖，目标盘数据将丢失！",
+            level: Level::L1,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "disk": {"type": "string", "description": "目标块设备（如 /dev/vda、/dev/sda），整盘覆盖"}
+                },
+                "required": ["disk"]
+            }),
+            run: tool_install_disk,
+        },
     ]
 }
 
@@ -169,6 +182,37 @@ fn tool_sys_probe(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
 
 const KNOWN_APPS: &[&str] = &["文件", "终端", "浏览器", "音乐", "设置"];
 const KNOWN_LAYOUTS: &[&str] = &["two_col", "three_col", "monocle", "float"];
+
+/// 安装目标盘白名单校验：仅接受 /dev/<纯字母数字> 形式（如 /dev/vda、/dev/sda），
+/// 拒绝子目录、..、通配符等一切花哨形式。防呆的主体仍是 aether-install 的
+/// 块设备/容量校验与显式 --yes；这里挡住路径注入面。
+fn valid_disk_path(disk: &str) -> bool {
+    disk.starts_with("/dev/")
+        && disk.len() > "/dev/".len()
+        && disk[5..].chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// 整盘安装工具：调 aether-install（其内部为罐头 dd，目标值仅作参数）。
+fn tool_install_disk(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let Some(disk) = args.get("disk").and_then(|v| v.as_str()) else {
+        bail!("缺少 disk 参数");
+    };
+    if !valid_disk_path(disk) {
+        bail!("磁盘参数必须是 /dev/<盘符> 形式（如 /dev/vda），拒绝: {disk}");
+    }
+    let out = std::process::Command::new("/usr/bin/aether-install")
+        .arg("--disk")
+        .arg(disk)
+        .arg("--yes")
+        .output()
+        .map_err(|e| anyhow::anyhow!("安装器运行失败: {e}"))?;
+    let mut s = String::from_utf8_lossy(&out.stdout).to_string();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        bail!("安装失败（{}）: {}", out.status, s.chars().take(400).collect::<String>());
+    }
+    Ok(s.chars().take(800).collect())
+}
 
 /// 桌面操作工具：LLM 操作桌面的手。参数经白名单校验后，
 /// 以 DesktopAction 形式入队，由 agent 循环下发合成器执行。
@@ -264,5 +308,20 @@ mod tests {
         let bad = execute(&gate(), &mut ctx, "desktop", &serde_json::json!({"action":"open_app","app":"勒索软件"}), false);
         assert!(bad.is_err());
         assert_eq!(ctx.desktop_actions.len(), 1);
+    }
+
+    #[test]
+    fn install_disk_rejects_path_injection() {
+        let mut ctx = ToolCtx::default();
+        for bad in ["/etc/passwd", "/dev/sda/../../x", "/dev/sda;rm", "/dev/", ""] {
+            let r = execute(&gate(), &mut ctx, "install_disk", &serde_json::json!({"disk": bad}), true);
+            assert!(r.is_err(), "{bad} 应被拒绝");
+        }
+        // 正常路径形式通过校验层（真实写入只发生在有块设备的系统内）
+        let good = execute(&gate(), &mut ctx, "install_disk", &serde_json::json!({"disk":"/dev/vda"}), true);
+        match good {
+            Err(e) => assert!(!e.to_string().contains("拒绝"), "路径校验不应拦截 /dev/vda: {e}"),
+            Ok(_) => {}
+        }
     }
 }

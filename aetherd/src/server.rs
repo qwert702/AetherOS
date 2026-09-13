@@ -11,9 +11,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn serve(cfg: Config) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", aether_ipc::DEFAULT_PORT))?;
+    // 默认只听回环；guest 内经 /init 设 AETHER_BIND=0.0.0.0 以支持宿主 hostfwd 调试
+    let bind = std::env::var("AETHER_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let listener = TcpListener::bind((bind.as_str(), aether_ipc::DEFAULT_PORT))?;
     eprintln!(
-        "[aetherd] IPC 服务已启动: 127.0.0.1:{} · 云端: {}",
+        "[aetherd] IPC 服务已启动: {bind}:{} · 云端: {}",
         aether_ipc::DEFAULT_PORT,
         cfg.cloud.is_some()
     );

@@ -97,7 +97,7 @@ VMX 要点：`bios.bootOrder = "cdrom"` + **SATA 光驱**（IDE 光驱引导不�
 | M3 系统地基 | ✅ 完成 | ISO 开机 → compositor 渲染桌面并上屏 | QEMU(1280x800) + VBox(1024x768) 双环境截图 |
 | M4 AI 中枢 aetherd | ✅ **完成** | fbdev 路径：evdev 输入 + AI 指令条 + Action 全链路 | **QEMU 实测**：注入 "three"+Enter → 离线意图 → `layout_set three_col` → 三列动画落地；Dock 点击开窗；软件光标随鼠标移动 |
 | M5 AI 运维 | ✅ **v1 完成** | 巡检自修复 agent（15s/轮、真实指标、ServiceControl 自愈、冷却防风暴）+ aetherd 状态接真实数据 + **日志监听预警**（aether-init logtee 落盘 /tmp/log/*.log + ops 增量扫描字面量模式告警） | **全部实测**：①巡检心跳真实内存/服务；②AI "status" 回复「内存 451/467MB，已运行 2 分钟；5/5 服务运行中」；③**自愈实测**：root 登录 tty1 `killall aether-compositor` → ops 一轮内发现 → `自修复 → 重启 compositor` → 新实例恢复渲染；④**告警实测**：AI 条输入乱串 → aetherd 记 `ERROR LLM 请求失败` → ops `📢 aetherd 日志异常` |
-| M6 安装器 0.1 发布 | ❌ 未开始 | - | - |
+| M6 安装器 0.1 发布 | ✅ **v0.1 完成** | `aether-install` 组件（isohybrid dd 方案）+ aetherd `install_disk` 工具 + 重建流程 isohybrid 化 | **全链路实测**：ToolCall（hostfwd→7311）→ 安装器写盘（`55 aa` 签名）→ **无光驱纯磁盘引导** → 桌面/五服务/巡检全部正常 |
 
 ---
 
@@ -211,10 +211,28 @@ Windows 写文件带 `\r\n`；`transfer.py`/`vm.py` 上传时自动归一为 `\n
 > 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。compositor 已设
 > `restart:false`，其崩溃由 ops 自愈（监督器不接管）——这是刻意设计，让 M5 自愈有真实职责。
 
-### 6.2 M6（排期后续）
-1. 简易安装器（当前 ISO 完全内存驻留，无持久化）
-2. 品牌设计：Logo、开机动画、默认壁纸
-3. smithay 真 Wayland 合成器（长期方向，当前 fbdev 软渲染是刻意选择）
+### 6.2 M6 剩余（v0.2+）
+1. **持久化 rootfs**：安装后系统仍是内存驻留（initramfs），需把磁盘扩为真实 root 分区 + overlay 写入，重启才有状态
+2. **安装向导 UI**：目前是 CLI/ToolCall；做成桌面安装器应用（选盘、进度、确认卡片走权限 L2）
+3. 安装器细节：进度百分比、安装后自动扩容
+4. 品牌设计：Logo、开机动画、默认壁纸
+5. smithay 真 Wayland 合成器（长期方向，当前 fbdev 软渲染是刻意选择）
+
+### 6.3 安装器工作原理（M6 v0.1，接手必读）
+- ISO 在重建流程末尾经 host `isohybrid` 处理（`55 aa` MBR 签名 + 隐藏 ISO 分区表），
+  **dd 到块设备即可 BIOS 引导**——零额外引导器依赖（extlinux host 二进制是 glibc 动态链接，musl guest 跑不了）
+- `aether-install --disk <块设备> --yes`：防呆（块设备/sysfs 容量≥64MB/显式 --yes）
+  → `dd if=/dev/sr0 of=<盘> bs=4M` → sync。目标路径白名单校验在 aetherd 工具层再做一道
+- **触发方式（实测推荐）**：QEMU `-netdev user,hostfwd=tcp:127.0.0.1:17311-:7311` →
+  宿主直调 `ToolCall{tool:"install_disk", arguments:{disk:"/dev/vda"}}` → 同步等 ToolResult
+  （构建机上的驱动：/home/aether/m6-toolcall.py）。guest 的 aetherd 需 `AETHER_BIND=0.0.0.0`
+  （/init 已设，仅 NAT VM 调试用；真实部署删掉）
+- 验证看两处：ToolResult 的 output + `od -j510 -N2 dist.raw` 应为 `55 aa`
+- 块设备 `metadata().len()` 恒为 0，容量必须读 `/sys/block/<盘>/size`（扇区×512）
+- 测试盘：qemu-verify.sh 自动建 /home/aether/dist.raw（virtio → guest /dev/vda）
+- tty1 盲打的坑：手动 shell 程序的输出**不会**进串口（tty1 ≠ console）；
+  观测要么重定向 `/dev/ttyS0`（qmp-verify `combo shift+dot` 打 '>'，`combo shift+s` 打 'S'），
+  要么走上面的 ToolCall 路线（推荐，全程可观测）
 
 ---
 

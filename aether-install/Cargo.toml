@@ -1,0 +1,10 @@
+[package]
+name = "aether-install"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AetherOS 磁盘安装器：把引导介质（isohybrid 镜像）安装到目标磁盘"
+
+[dependencies]
+anyhow = { workspace = true }
