@@ -97,7 +97,7 @@ VMX 要点：`bios.bootOrder = "cdrom"` + **SATA 光驱**（IDE 光驱引导不�
 | M3 系统地基 | ✅ 完成 | ISO 开机 → compositor 渲染桌面并上屏 | QEMU(1280x800) + VBox(1024x768) 双环境截图 |
 | M4 AI 中枢 aetherd | ✅ **完成** | fbdev 路径：evdev 输入 + AI 指令条 + Action 全链路 | **QEMU 实测**：注入 "three"+Enter → 离线意图 → `layout_set three_col` → 三列动画落地；Dock 点击开窗；软件光标随鼠标移动 |
 | M5 AI 运维 | ✅ **v1 完成** | 巡检自修复 agent（15s/轮、真实指标、ServiceControl 自愈、冷却防风暴）+ aetherd 状态接真实数据 + **日志监听预警**（aether-init logtee 落盘 /tmp/log/*.log + ops 增量扫描字面量模式告警） | **全部实测**：①巡检心跳真实内存/服务；②AI "status" 回复「内存 451/467MB，已运行 2 分钟；5/5 服务运行中」；③**自愈实测**：root 登录 tty1 `killall aether-compositor` → ops 一轮内发现 → `自修复 → 重启 compositor` → 新实例恢复渲染；④**告警实测**：AI 条输入乱串 → aetherd 记 `ERROR LLM 请求失败` → ops `📢 aetherd 日志异常` |
-| M6 安装器 0.1 发布 | ✅ **v0.1 完成** | `aether-install` 组件（isohybrid dd 方案）+ aetherd `install_disk` 工具 + 重建流程 isohybrid 化 | **全链路实测**：ToolCall（hostfwd→7311）→ 安装器写盘（`55 aa` 签名）→ **无光驱纯磁盘引导** → 桌面/五服务/巡检全部正常 |
+| M6 安装器 0.1 发布 | ✅ **v0.2（含持久化）** | `aether-install`（isohybrid dd + 持久化分区）+ aetherd `install_disk` 工具 + aether-init 启动挂载 /var | **全链路实测**：ToolCall 装机（`55 aa` + ext4 卷标 AETHER）→ 无光驱纯磁盘引导 → `/dev/vda2 → /var` 挂载 → **两轮重启后 boot.log 累积「启动（第 1/2 次）」、服务日志跨重启保留** |
 
 ---
 
@@ -211,28 +211,49 @@ Windows 写文件带 `\r\n`；`transfer.py`/`vm.py` 上传时自动归一为 `\n
 > 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。compositor 已设
 > `restart:false`，其崩溃由 ops 自愈（监督器不接管）——这是刻意设计，让 M5 自愈有真实职责。
 
-### 6.2 M6 剩余（v0.2+）
-1. **持久化 rootfs**：安装后系统仍是内存驻留（initramfs），需把磁盘扩为真实 root 分区 + overlay 写入，重启才有状态
+### 6.2 M6 剩余（v0.3+）
+1. **持久化范围扩大**：当前只有 /var 落在磁盘（日志/诊断/审计已持久）；
+   /etc 的用户改动、/home、AI 会话历史尚未持久
 2. **安装向导 UI**：目前是 CLI/ToolCall；做成桌面安装器应用（选盘、进度、确认卡片走权限 L2）
-3. 安装器细节：进度百分比、安装后自动扩容
+3. 安装器细节：进度百分比、多盘选择、卸载光盘后的引导菜单
 4. 品牌设计：Logo、开机动画、默认壁纸
 5. smithay 真 Wayland 合成器（长期方向，当前 fbdev 软渲染是刻意选择）
 
-### 6.3 安装器工作原理（M6 v0.1，接手必读）
+### 6.3 安装器与持久化原理（M6，接手必读）
+**引导（v0.1）**
 - ISO 在重建流程末尾经 host `isohybrid` 处理（`55 aa` MBR 签名 + 隐藏 ISO 分区表），
   **dd 到块设备即可 BIOS 引导**——零额外引导器依赖（extlinux host 二进制是 glibc 动态链接，musl guest 跑不了）
-- `aether-install --disk <块设备> --yes`：防呆（块设备/sysfs 容量≥64MB/显式 --yes）
-  → `dd if=/dev/sr0 of=<盘> bs=4M` → sync。目标路径白名单校验在 aetherd 工具层再做一道
-- **触发方式（实测推荐）**：QEMU `-netdev user,hostfwd=tcp:127.0.0.1:17311-:7311` →
-  宿主直调 `ToolCall{tool:"install_disk", arguments:{disk:"/dev/vda"}}` → 同步等 ToolResult
-  （构建机上的驱动：/home/aether/m6-toolcall.py）。guest 的 aetherd 需 `AETHER_BIND=0.0.0.0`
-  （/init 已设，仅 NAT VM 调试用；真实部署删掉）
-- 验证看两处：ToolResult 的 output + `od -j510 -N2 dist.raw` 应为 `55 aa`
+- `aether-install --disk <块设备> --yes [--no-persist]`：防呆（块设备/容量≥64MB/显式 --yes）
+  → `dd if=/dev/sr0 of=<盘> bs=4M` → （持久化）→ sync
+- **自动化触发（实测推荐）**：QEMU `-netdev user,hostfwd=tcp:127.0.0.1:17311-:7311`
+  → 宿主直调 `ToolCall{tool:"install_disk", arguments:{disk:"/dev/vda"}}` → 等 ToolResult
+  （构建机上的驱动：`/home/aether/m6-toolcall.py`）。guest 的 aetherd 需 `AETHER_BIND=0.0.0.0`
+  （`/init` 已设，仅 NAT VM 调试用；真实部署删掉该行）；目标路径白名单校验在 aetherd 工具层
+
+**持久化（v0.2）**
+- ISO 镜像在盘上只占 ~30MB（分区 1，类型 0x17，0..59392 扇区），其余空间空闲。
+  安装器直接改写 MBR 第 2 项（`MbrEntry`，纯函数 + 单测）追加一个 ext4 数据分区
+  （起始扇区 65536 = 32MB，2048 对齐，类型 0x83）→ `ioctl(BLKRRPART)` 重扫
+  → `/sbin/mkfs.ext4 -L AETHER` → 挂载建骨架（`log/ diag/ lib/ tmp/ spool/` + `run -> /run` 软链）
+  → 写 `log/install-id` 与 `boot.log` → 卸载
+- 启动时 `aether-init` 的 persist 模块按候选表（`/dev/vda2 → sda2 → hda2 → nvme0n1p2`）
+  逐个尝试挂载到 **/var**，成功即止；光盘启动则全部失败，静默退回内存态
+- 挂载点选 /var 的原因：日志（logtee）、诊断报告（ops）、审计都在 /var 下，
+  挂上就全部持久化；骨架里补了 `run` 软链以免丢掉 Buildroot 原有的 pid 目录语义
+- 每次挂载成功往 `/var/boot.log` 追加「启动（第 N 次）」——**持久化的自证**
+- 持久化失败**不判安装失败**（只告警）：引导已就绪，系统可跑只是不保留状态
+- 宿主机检查持久化内容：`sudo mount -o loop,offset=33554432 dist.raw /mnt/pp`
+  （**必须可写挂载**：拔电后 ext4 日志未回放，`-o ro` 会失败）
+
+**验证要点**
+- 分区表：`od -A d -t x1 -N 48 -j 446 dist.raw` 应见第 1 项 0x17 + 第 2 项 0x83
+- ext4 魔数：`od -j $((65536*512+1080)) -N 2 dist.raw` 应为 `53 ef`，卷标偏移 +1144 应为 `AETHER`
+- 脚本：`scripts/qemu-disk-boot.sh`（无光驱磁盘引导）、`scripts/inspect-persist.sh`（loop 挂载后检查）
 - 块设备 `metadata().len()` 恒为 0，容量必须读 `/sys/block/<盘>/size`（扇区×512）
 - 测试盘：qemu-verify.sh 自动建 /home/aether/dist.raw（virtio → guest /dev/vda）
 - tty1 盲打的坑：手动 shell 程序的输出**不会**进串口（tty1 ≠ console）；
   观测要么重定向 `/dev/ttyS0`（qmp-verify `combo shift+dot` 打 '>'，`combo shift+s` 打 'S'），
-  要么走上面的 ToolCall 路线（推荐，全程可观测）
+  要么走 ToolCall 路线（推荐，全程可观测）
 
 ---
 

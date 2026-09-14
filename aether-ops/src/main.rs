@@ -24,9 +24,9 @@ const INTERVAL_SECS: u64 = 15;
 /// 同一单元两次自修复重启之间的冷却轮数（20 轮 × 15s = 5min）。
 #[cfg(target_os = "linux")]
 const COOLDOWN_ROUNDS: u64 = 20;
-/// 诊断报告目录（tmpfs；M6 持久化分区就绪后迁往 /var）。
+/// 诊断报告目录（有持久化分区时随 /var 落盘保留）。
 #[cfg(target_os = "linux")]
-const DIAG_DIR: &str = "/tmp/diag";
+const DIAG_DIR: &str = "/var/diag";
 /// 日志尾部采样大小（字节）。
 #[cfg(target_os = "linux")]
 const TAIL_BYTES: u64 = 8192;

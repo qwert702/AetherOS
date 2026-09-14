@@ -153,8 +153,8 @@ pub fn service_control(unit: &str, action: ServiceAction) -> anyhow::Result<Stri
     }
 }
 
-/// 服务日志目录（与 aether-init logtee 保持一致）。
-pub const LOG_DIR: &str = "/tmp/log";
+/// 服务日志目录（与 aether-init logtee 保持一致；持久化时在真磁盘上）。
+pub const LOG_DIR: &str = "/var/log/aether";
 
 /// 日志异常模式（字面量罐头；命中即告警）。
 pub const ALERT_PATTERNS: [&str; 5] =

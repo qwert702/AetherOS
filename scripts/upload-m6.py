@@ -11,10 +11,15 @@ import vm  # noqa: E402
 
 PAIRS = [
     ("aether-install/src/main.rs", "/home/aether/aether-install/src/main.rs"),
-    ("Cargo.toml", "/home/aether/Cargo.toml"),
     ("aether-install/Cargo.toml", "/home/aether/aether-install/Cargo.toml"),
+    ("aether-init/src/persist.rs", "/home/aether/aether-init/src/persist.rs"),
+    ("aether-init/src/main.rs", "/home/aether/aether-init/src/main.rs"),
+    ("aether-init/src/logtee.rs", "/home/aether/aether-init/src/logtee.rs"),
+    ("aether-ops/src/monitor.rs", "/home/aether/aether-ops/src/monitor.rs"),
+    ("aether-ops/src/main.rs", "/home/aether/aether-ops/src/main.rs"),
     ("scripts/rebuild-m4.sh", "/home/aether/rebuild-m4.sh"),
-    ("scripts/qemu-verify.sh", "/home/aether/qemu-verify.sh"),
+    ("scripts/qemu-disk-boot.sh", "/home/aether/qemu-disk-boot.sh"),
+    ("scripts/inspect-persist.sh", "/home/aether/inspect-persist.sh"),
 ]
 
 

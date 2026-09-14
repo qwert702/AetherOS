@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "AetherOS 磁盘安装器：把引导介质（isohybrid 镜像）安装到目标磁盘"
+description = "AetherOS 磁盘安装器：把引导介质（isohybrid 镜像）安装到目标磁盘并建立持久化分区"
 
 [dependencies]
 anyhow = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

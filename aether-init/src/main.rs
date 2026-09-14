@@ -9,6 +9,7 @@
 mod ipc;
 mod logtee;
 mod manager;
+mod persist;
 mod unit;
 
 use manager::Manager;
@@ -55,6 +56,11 @@ fn run_pid1() -> anyhow::Result<()> {
         }
     }
     eprintln!("[aether-init] PID 1 启动");
+    // 持久化分区在服务之前挂载：logtee 写 /var/log/aether 时已是真磁盘
+    #[cfg(target_os = "linux")]
+    {
+        persist::mount_persist();
+    }
     run_loop("/etc/aether/services")
 }
 
