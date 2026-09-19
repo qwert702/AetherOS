@@ -211,13 +211,26 @@ Windows 写文件带 `\r\n`；`transfer.py`/`vm.py` 上传时自动归一为 `\n
 > 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。compositor 已设
 > `restart:false`，其崩溃由 ops 自愈（监督器不接管）——这是刻意设计，让 M5 自愈有真实职责。
 
-### 6.2 M6 剩余（v0.3+）
+### 6.2 M6 剩余（v0.4+）
 1. **持久化范围扩大**：当前只有 /var 落在磁盘（日志/诊断/审计已持久）；
    /etc 的用户改动、/home、AI 会话历史尚未持久
-2. **安装向导 UI**：目前是 CLI/ToolCall；做成桌面安装器应用（选盘、进度、确认卡片走权限 L2）
-3. 安装器细节：进度百分比、多盘选择、卸载光盘后的引导菜单
-4. 品牌设计：Logo、开机动画、默认壁纸
-5. smithay 真 Wayland 合成器（长期方向，当前 fbdev 软渲染是刻意选择）
+2. 安装向导细节：进度百分比、多盘选择 UX、安装后提示拔盘自动重启
+3. 品牌设计：Logo、开机动画、默认壁纸
+4. smithay 真 Wayland 合成器（长期方向，当前 fbdev 软渲染是刻意选择）
+
+### 6.4 桌面安装向导（v0.3，实测闭环）
+- Live ISO 会话（`/dev/sr0` 存在）在 Dock 末尾显示"安装"图标 → 打开向导窗口：
+  磁盘列表（扫描 /sys/block，排除 loop/ram/zram/sr/fd/dm-）→ 点选 →
+  "开始安装"按钮或 **Enter** → 经 aetherd `ToolCall{install_disk}` 执行 →
+  完成态绿色按钮"完成 · 重启后从磁盘引导"
+- 状态机在 compositor（`Installer`），安装走既有 IPC 工具通路（审计留痕、串口日志
+  「安装器 → 请求/完成」）
+- 截图：`docs/screenshot-installer-wizard.png` / `docs/screenshot-installer-done.png`
+- **QMP 点击测试须知**：`input-send-event` 把 btn down+up 放同一批时，PS/2 设备层
+  可能合并为"无变化"——guest 收不到任何按钮事件（慢速点击脚本
+  `scripts/qmp-slow-click.py` 把 down/up 分隔 8s 注入，跨帧必中）。
+  compositor 侧已加 MouseUp→click_pending 帧间锁存（同一 drain 内的 down+up
+  不再丢失），真人点击不受影响
 
 ### 6.3 安装器与持久化原理（M6，接手必读）
 **引导（v0.1）**
