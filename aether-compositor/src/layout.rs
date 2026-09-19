@@ -6,9 +6,9 @@
 
 use crate::draw::Rect;
 
-pub const GAP: i32 = 14;
-pub const TOP_BAR: i32 = 32;
-pub const BOTTOM_DOCK: i32 = 104;
+// 布局骨架尺寸的单一事实来源在 draw::theme::metric；这里按布局语义再导出
+// （TOP_BAR = 菜单栏高度的工作区视角别名）。
+pub use crate::draw::theme::metric::{BOTTOM_DOCK, GAP, MENUBAR_H as TOP_BAR};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layout {

@@ -18,6 +18,7 @@ mod text;
 
 use aether_ipc::{Request, Response};
 use draw::{Desktop, Rect, Win};
+use draw::theme::metric;
 #[cfg(target_os = "linux")]
 use draw::{InstallerPhase, InstallerUi};
 #[cfg(not(target_os = "linux"))]
@@ -265,7 +266,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 open_menu = None;
                 for i in (0..desktop.wins.len()).rev() {
                     let r = desktop.wins[i].rect;
-                    let title_hit = draw::Rect { x: r.x, y: r.y, w: r.w, h: 34 };
+                    let title_hit = draw::Rect { x: r.x, y: r.y, w: r.w, h: metric::TITLE_HIT_H };
                     if title_hit.contains(mouse.0, mouse.1) {
                         let clicked = desktop.wins.remove(i);
                         desktop.wins.push(clicked);
@@ -862,7 +863,7 @@ fn preview_main() -> anyhow::Result<()> {
                 open_menu = None;
                 for i in (0..desktop.wins.len()).rev() {
                     let r = desktop.wins[i].rect;
-                    let title_hit = Rect { x: r.x, y: r.y, w: r.w, h: 34 };
+                    let title_hit = Rect { x: r.x, y: r.y, w: r.w, h: metric::TITLE_HIT_H };
                     if title_hit.contains(mx, my) {
                         let clicked = desktop.wins.remove(i);
                         desktop.wins.push(clicked);
