@@ -27,6 +27,7 @@ version = "0.1.0"
 dependencies = [
  "aether-ipc",
  "anyhow",
+ "libc",
  "log",
  "serde",
  "serde_json",

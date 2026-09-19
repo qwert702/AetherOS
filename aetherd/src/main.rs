@@ -3,7 +3,7 @@
 //! 形态：
 //! - `aetherd chat "指令"` —— 单轮 agent：路由 → LLM → 工具调用循环 → 回答
 //! - `aetherd serve`      —— 常驻 IPC 服务（127.0.0.1:7311，NDJSON），
-//!     供 Shell 指令条调用；离线快速意图先行，LLM 兜底
+//!   供 Shell 指令条调用；离线快速意图先行，LLM 兜底
 //! - 所有工具执行经过权限闸门（docs/ai-permissions.md）+ 审计日志
 
 mod intent;
@@ -98,41 +98,51 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<(S
             .inspect_err(|e| eprintln!("[aetherd] ERROR LLM 请求失败（{}/{}）: {e}", endpoint.base_url, endpoint.model))?;
 
         // 无工具调用 → 最终回答
-        let Some(calls) = resp.tool_calls.clone() else {
+        let Some(raw_calls) = resp.tool_calls.clone() else {
             return Ok((resp.content, std::mem::take(&mut ctx.desktop_actions)));
         };
+        let calls = raw_calls.as_array().cloned().unwrap_or_default();
 
-        // 有工具调用：逐个执行（目前处理第一个，多并行调用在后续版本支持）
+        // 空 tool_calls 数组：模型本轮没调用工具，content 即回答（与"轮次耗尽"区分开）
+        if calls.is_empty() {
+            let answer = if resp.content.trim().is_empty() { "（模型未返回有效回答）".into() } else { resp.content };
+            return Ok((answer, std::mem::take(&mut ctx.desktop_actions)));
+        }
+
+        // 有工具调用：逐个执行，并为每个 tool_call 补一条结果消息。
+        // OpenAI 兼容协议要求每个 tool_call.id 都有对应 tool 消息，
+        // 缺失则下一轮请求直接 400。
         messages.push(resp);
-        let Some(call) = calls.get(0) else { break };
-        let id = call.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let name = call
-            .pointer("/function/name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let raw_args = call.pointer("/function/arguments").and_then(|v| v.as_str()).unwrap_or("{}");
-        let args: serde_json::Value = serde_json::from_str(raw_args).unwrap_or(serde_json::json!({}));
+        for call in &calls {
+            let id = call.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = call
+                .pointer("/function/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let raw_args = call.pointer("/function/arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+            let args: serde_json::Value = serde_json::from_str(raw_args).unwrap_or(serde_json::json!({}));
 
-        eprintln!("[aetherd] 工具调用: {name} {args}");
-        // 敏感工具（L2+）需用户确认：当前无 UI 通道，返回确认语义错误让模型向用户解释
-        let result = tools::execute(gate, &mut ctx, &name, &args, false).unwrap_or_else(|e| {
-            let msg = e.to_string();
-            if msg.contains("NEEDS_CONFIRMATION") {
-                format!("[需用户确认后重试] {msg}")
-            } else {
-                format!("[工具错误] {msg}")
-            }
-        });
-        messages.push(llm::Message {
-            role: "tool".into(),
-            content: result,
-            tool_calls: None,
-            tool_call_id: if id.is_empty() { None } else { Some(id) },
-            name: Some(name),
-        });
+            eprintln!("[aetherd] 工具调用: {name} {args}");
+            // 敏感工具（L2+）需用户确认：当前无 UI 通道，返回确认语义错误让模型向用户解释
+            let result = tools::execute(gate, &mut ctx, &name, &args, false).unwrap_or_else(|e| {
+                let msg = e.to_string();
+                if msg.contains("NEEDS_CONFIRMATION") {
+                    format!("[需用户确认后重试] {msg}")
+                } else {
+                    format!("[工具错误] {msg}")
+                }
+            });
+            messages.push(llm::Message {
+                role: "tool".into(),
+                content: result,
+                tool_calls: None,
+                tool_call_id: if id.is_empty() { None } else { Some(id) },
+                name: Some(name),
+            });
+        }
     }
-    Ok(("（已达本轮工具调用上限，请拆分任务）".into(), Vec::new()))
+    Ok(("（已达本轮工具调用上限，请拆分任务）".into(), std::mem::take(&mut ctx.desktop_actions)))
 }
 
 fn main() -> Result<()> {
@@ -160,6 +170,7 @@ fn main() -> Result<()> {
 }
 
 /// 从 /proc/meminfo 文本解析 (已用MB, 总MB)。解析失败返回 None。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_mem_mb(meminfo: &str) -> Option<(u64, u64)> {
     let mut total = None;
     let mut avail = None;
@@ -181,6 +192,7 @@ pub(crate) fn parse_mem_mb(meminfo: &str) -> Option<(u64, u64)> {
 }
 
 /// 从 /proc/uptime 文本解析运行秒数。解析失败返回 None。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_uptime_secs(uptime: &str) -> Option<u64> {
     uptime
         .split_whitespace()
@@ -189,14 +201,13 @@ pub(crate) fn parse_uptime_secs(uptime: &str) -> Option<u64> {
         .map(|f| f as u64)
 }
 
-/// 向 aether-init（127.0.0.1:7312）查询服务状态列表。
+/// 向 aether-init（Unix socket /run/aether-init.sock）查询服务状态列表。
 #[cfg(target_os = "linux")]
 fn query_init_services() -> anyhow::Result<Vec<aether_ipc::ServiceStatus>> {
     use std::io::{BufRead, BufReader, Write};
-    use std::net::{SocketAddr, TcpStream};
+    use std::os::unix::net::UnixStream;
     use std::time::Duration;
-    let addr: SocketAddr = ([127, 0, 0, 1], aether_ipc::INIT_PORT).into();
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+    let mut stream = UnixStream::connect(aether_init_socket())?;
     stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
     stream.write_all(
         aether_ipc::encode(&aether_ipc::Request::SysInfo {
@@ -211,6 +222,12 @@ fn query_init_services() -> anyhow::Result<Vec<aether_ipc::ServiceStatus>> {
         aether_ipc::Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
         _ => Err(anyhow::anyhow!("aether-init 返回了意外响应")),
     }
+}
+
+/// aether-init 服务控制通道路径（与 aether-init/ipc.rs 保持一致）。
+#[cfg(target_os = "linux")]
+fn aether_init_socket() -> &'static str {
+    "/run/aether-init.sock"
 }
 
 /// 汇总真实系统状态：/proc 内存/运行时长 + aether-init 服务列表。

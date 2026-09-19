@@ -12,6 +12,25 @@ use std::process::Child;
 
 pub const LOG_DIR: &str = "/var/log/aether";
 
+/// 单服务日志上限：超过即轮转为 .log.1（保留一份旧档），
+/// 防止长期运行把持久化分区撑满（P3-5）。
+const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 打开（必要时先轮转）服务日志文件。全程容错：打不开只丢文件侧。
+fn open_log(unit: &str) -> Option<std::fs::File> {
+    let path = format!("{LOG_DIR}/{unit}.log");
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > MAX_LOG_BYTES {
+            let _ = std::fs::rename(&path, format!("{LOG_DIR}/{unit}.log.1"));
+        }
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()
+}
+
 /// 接管 child 的 stdout/stderr（必须在 spawn 后、wait 前调用）。
 pub fn tee_child(unit: &str, child: &mut Child) {
     let _ = std::fs::create_dir_all(LOG_DIR);
@@ -19,11 +38,7 @@ pub fn tee_child(unit: &str, child: &mut Child) {
     let err = child.stderr.take().map(|r| Box::new(r) as Box<dyn Read + Send>);
     for pipe in [out, err] {
         let Some(mut pipe) = pipe else { continue };
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(format!("{LOG_DIR}/{unit}.log"))
-            .ok();
+        let log = open_log(unit);
         let console = std::fs::OpenOptions::new()
             .write(true)
             .open("/dev/console")

@@ -109,6 +109,16 @@ pub struct ServiceStatus {
     pub unit: String,
     pub state: String,
     pub pid: Option<u32>,
+    /// 服务定义的重启策略：巡检方据此统一 restart 行为（默认 true 兼容旧端点）
+    #[serde(default = "default_true")]
+    pub restart: bool,
+    /// 关键服务标记：崩溃时告警升级
+    #[serde(default)]
+    pub essential: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 把一条请求编码为一行 JSON（newline-delimited JSON，socket 帧协议）。

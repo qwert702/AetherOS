@@ -8,6 +8,9 @@
 //! - 每次成功挂载都往 /var/boot.log 追加一条启动记录（持久化的自证）。
 //! - 与平台相关仅限 Linux；其余平台为 no-op（可编译、可单测纯逻辑）。
 
+// 挂载路径在非 Linux 平台不被调用，但代码保留为可读文档与单测载体
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 /// 持久化分区候选：virtio 优先，其次 SATA/IDE（VMware/VBox 常用），最后 nvme。
 pub const PERSIST_CANDIDATES: [&str; 4] =
     ["/dev/vda2", "/dev/sda2", "/dev/hda2", "/dev/nvme0n1p2"];

@@ -11,9 +11,8 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null
 # 虽能 bind 却等不到任何连接，compositor 的 AI 查询 connect 无限期阻塞。
 ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
 
-# NAT 虚拟机环境：允许宿主经 QEMU/VBox hostfwd 直连 AI 中枢做调试与自动化
-# （安装器 ToolCall、Ping 等）。真实部署时应移除此行（默认代码仍只听回环）。
-export AETHER_BIND=0.0.0.0
+# AI 中枢只听回环（aetherd 默认 127.0.0.1）。宿主调试需要 hostfwd 直连时，
+# 由调试脚本显式注入 AETHER_BIND=0.0.0.0，出厂镜像绝不对外暴露 IPC。
 
 echo "[init] AetherOS 0.1 — 交接给 aether-init"
 exec /usr/bin/aether-init --pid1

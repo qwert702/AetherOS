@@ -1,10 +1,10 @@
 //! aether-ops — AetherOS AI 运维与自修复。
 //!
-//! M5：常驻巡检 + 日志监听。每 15s 采集 /proc 指标 + aether-init(7312) 服务状态
-//! + 各服务日志（/tmp/log/*.log，由 aether-init logtee 落盘）增量扫描：
-//! 服务异常（Exited/Failed）经 7312 ServiceControl 自修复重启（带冷却），
-//! 日志异常行即时告警，全部打串口。决策核心在 monitor.rs（纯函数、单测覆盖）。
-//! 后续：故障诊断报告、自然语言系统设置。
+//! M5：常驻巡检 + 日志监听。每 15s 采集 /proc 指标 + aether-init（Unix socket
+//! /run/aether-init.sock）服务状态 + 各服务日志（/var/log/aether，由 aether-init
+//! logtee 落盘）增量扫描：服务异常（Exited/Failed）经 ServiceControl 自修复重启
+//! （带冷却，且只对 restart=true 的服务），日志异常行即时告警，全部打串口。
+//! 决策核心在 monitor.rs（纯函数、单测覆盖）。后续：自然语言系统设置。
 
 #[cfg(target_os = "linux")]
 mod diagnose;
@@ -17,6 +17,10 @@ use monitor::HealAction;
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
+
+/// aether-init 服务控制 socket（与 aether-init/ipc.rs 保持一致）。
+#[cfg(target_os = "linux")]
+pub const INIT_SOCKET: &str = "/run/aether-init.sock";
 
 /// 巡检间隔（秒）。
 #[cfg(target_os = "linux")]
@@ -88,7 +92,7 @@ fn main() {
 #[cfg(target_os = "linux")]
 fn run() -> anyhow::Result<()> {
     println!(
-        "aether-ops: 巡检 agent 启动（{INTERVAL_SECS}s/轮 · 自修复冷却 {COOLDOWN_ROUNDS} 轮 · 通道 aether-init:7312）"
+        "aether-ops: 巡检 agent 启动（{INTERVAL_SECS}s/轮 · 自修复冷却 {COOLDOWN_ROUNDS} 轮 · 通道 {INIT_SOCKET}）"
     );
     // unit -> (最近一次触发重启的轮次, 累计次数)
     let mut attempts: HashMap<String, (u64, u64)> = HashMap::new();

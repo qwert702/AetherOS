@@ -141,24 +141,33 @@ impl ServiceSpec {
 }
 
 /// 从目录加载全部服务定义（*.json）。
-pub fn load_dir(dir: &Path) -> Result<Vec<ServiceSpec>> {
+/// 单个文件损坏只跳过并记录告警（文件级故障不该让整机失去全部服务）；
+/// 目录本身不可读时返回 Err，由调用方决定是否致命。
+pub fn load_dir(dir: &Path) -> Result<(Vec<ServiceSpec>, Vec<String>)> {
     let mut specs = Vec::new();
+    let mut warnings = Vec::new();
     let entries =
         std::fs::read_dir(dir).with_context(|| format!("读取服务目录 {dir:?} 失败"))?;
-    for entry in entries {
-        let entry = entry?;
+    for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let raw =
-            std::fs::read_to_string(&path).with_context(|| format!("读取服务文件 {path:?} 失败"))?;
-        let spec: ServiceSpec =
-            serde_json::from_str(&raw).with_context(|| format!("解析 {path:?} 失败"))?;
-        spec.validate()?;
-        specs.push(spec);
+        let parsed = std::fs::read_to_string(&path)
+            .with_context(|| format!("读取服务文件 {path:?} 失败"))
+            .and_then(|raw| {
+                serde_json::from_str::<ServiceSpec>(&raw)
+                    .with_context(|| format!("解析 {path:?} 失败"))
+            });
+        match parsed {
+            Ok(spec) => match spec.validate() {
+                Ok(_) => specs.push(spec),
+                Err(e) => warnings.push(format!("{}: {e}", path.display())),
+            },
+            Err(e) => warnings.push(format!("{e:#}")),
+        }
     }
-    Ok(specs)
+    Ok((specs, warnings))
 }
 
 #[cfg(test)]

@@ -76,6 +76,10 @@ pub struct Fbdev {
     pub width: usize,
     pub height: usize,
     pub bpp: u32,
+    /// 行距（字节）：驱动可能要求 line_length != width * bpp/8，逐行写入时必须遵守
+    stride: usize,
+    /// 复用的帧缓冲（避免每帧 ~4MB 分配，10fps 下 ≈ 39MB/s 的分配压力）
+    frame: Vec<u8>,
     /// 诊断信息只打印一次
     reported: bool,
 }
@@ -98,32 +102,41 @@ impl Fbdev {
         // 关键：内核的 DRM fbdev 模拟只创建 fb0，不会自动点亮 CRTC
         // （实测 crtc.enable=0、plane.fb=0 → 屏幕停留在引导文本模式）。
         // FBIOPUT_VSCREENINFO 会走到 drm_fb_helper_set_par，从而执行一次真正的
-        // modeset，让 CRTC/平面接管显示。
-        var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
-        let rc_put = unsafe { libc::ioctl(fd, FBIOPUT_VSCREENINFO as _, &mut var) };
-        unsafe {
-            libc::ioctl(fd, FBIOGET_VSCREENINFO as _, &mut var);
-        }
+        // modeset，让 CRTC/平面接管显示。GET 失败时 var 全 0，此时回写等于
+        // 请求 0x0 显示模式——只在 GET 成功时才 PUT。
+        let rc_put = if rc_v == 0 {
+            var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
+            let rc_put = unsafe { libc::ioctl(fd, FBIOPUT_VSCREENINFO as _, &mut var) };
+            unsafe {
+                libc::ioctl(fd, FBIOGET_VSCREENINFO as _, &mut var);
+            }
+            rc_put
+        } else {
+            -1
+        };
 
         let width = if var.xres > 0 { var.xres as usize } else { 800 };
         let height = if var.yres > 0 { var.yres as usize } else { 600 };
         let bpp = if var.bits_per_pixel > 0 { var.bits_per_pixel } else { 32 };
         let bytes_pp = (bpp / 8).max(1) as usize;
-        let line_length = if fix.line_length > 0 {
+        let stride = if fix.line_length > 0 {
             fix.line_length as usize
         } else {
             width * bytes_pp
         };
         eprintln!(
             "aether-compositor: fbdev {}x{} @{}bpp stride={} ioctl(get var={},fix={} put={}) 通路=write",
-            width, height, bpp, line_length, rc_v, rc_f, rc_put
+            width, height, bpp, stride, rc_v, rc_f, rc_put
         );
 
+        let frame = vec![0u8; stride * height.max(1)];
         Ok(Self {
             file,
             width,
             height,
             bpp,
+            stride,
+            frame,
             reported: false,
         })
     }
@@ -135,9 +148,12 @@ impl Fbdev {
     pub fn blit(&mut self, buf: &[u32], w: usize, h: usize) {
         let fw = w.min(self.width);
         let fh = h.min(self.height);
+        let row_bytes = fw * ((self.bpp / 8).max(1) as usize);
+        let stride = self.stride.max(row_bytes);
 
-        let mut bytes = Vec::with_capacity(fw * fh * 4);
+        // 逐行按硬件 stride 排布进复用缓冲：行距大于行宽时，行尾 padding 保持黑色
         for row in 0..fh {
+            let mut dst = row * stride;
             for &p in &buf[row * w..row * w + fw] {
                 let r = (p >> 16) & 0xff;
                 let g = (p >> 8) & 0xff;
@@ -147,18 +163,21 @@ impl Fbdev {
                         let v = (((r >> 3) as u16) << 11)
                             | (((g >> 2) as u16) << 5)
                             | ((b >> 3) as u16);
-                        bytes.extend_from_slice(&v.to_le_bytes()[..]);
+                        self.frame[dst..dst + 2].copy_from_slice(&v.to_le_bytes());
+                        dst += 2;
                     }
                     24 => {
-                        bytes.push(b as u8);
-                        bytes.push(g as u8);
-                        bytes.push(r as u8);
+                        self.frame[dst] = b as u8;
+                        self.frame[dst + 1] = g as u8;
+                        self.frame[dst + 2] = r as u8;
+                        dst += 3;
                     }
                     _ => {
-                        bytes.push(b as u8);
-                        bytes.push(g as u8);
-                        bytes.push(r as u8);
-                        bytes.push(0xff);
+                        self.frame[dst] = b as u8;
+                        self.frame[dst + 1] = g as u8;
+                        self.frame[dst + 2] = r as u8;
+                        self.frame[dst + 3] = 0xff;
+                        dst += 4;
                     }
                 }
             }
@@ -166,14 +185,14 @@ impl Fbdev {
 
         use std::io::{Seek, SeekFrom, Write};
         let _ = self.file.seek(SeekFrom::Start(0));
-        match self.file.write(&bytes) {
-            Ok(n) if n == bytes.len() => {}
+        match self.file.write(&self.frame[..stride * fh]) {
+            Ok(n) if n == stride * fh => {}
             Ok(n) => {
                 if !self.reported {
                     self.reported = true;
                     eprintln!(
                         "aether-compositor: fb 短写 {n}/{} 字节（驱动限制了单次写入量）",
-                        bytes.len()
+                        stride * fh
                     );
                 }
             }

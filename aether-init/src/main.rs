@@ -61,20 +61,34 @@ fn run_pid1() -> anyhow::Result<()> {
     {
         persist::mount_persist();
     }
-    run_loop("/etc/aether/services")
+    run_loop("/etc/aether/services", true)
 }
 
 /// 开发自检：任意平台可跑，加载服务定义、启动、监督。
 fn run_dry_run(dir: Option<&str>) -> anyhow::Result<()> {
     eprintln!("[aether-init] dry-run 模式（服务目录 {}）", dir.unwrap_or("./services"));
-    run_loop(dir.unwrap_or("./services"))
+    run_loop(dir.unwrap_or("./services"), false)
 }
 
-fn run_loop(services_dir: &str) -> anyhow::Result<()> {
-    let specs = unit::load_dir(&PathBuf::from(services_dir)).unwrap_or_else(|e| {
-        eprintln!("[aether-init] 警告: 加载服务定义失败（{e}），以空服务集继续");
-        Vec::new()
+fn run_loop(services_dir: &str, pid1: bool) -> anyhow::Result<()> {
+    let (specs, warnings) = unit::load_dir(&PathBuf::from(services_dir)).unwrap_or_else(|e| {
+        eprintln!("[aether-init] 错误: {e:#}");
+        (Vec::new(), Vec::new())
     });
+    for w in &warnings {
+        eprintln!("[aether-init] 服务定义告警（已跳过）: {w}");
+    }
+    if specs.is_empty() {
+        let msg = format!("服务目录 {services_dir} 无可用服务定义");
+        if pid1 {
+            // 救援模式：PID 1 不能退出（退出即内核 panic），保持存活等待人工修复
+            eprintln!("[aether-init] 致命: {msg} —— 进入救援模式（不启动任何服务与 IPC）");
+            loop {
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+        }
+        anyhow::bail!("{msg}");
+    }
     let mut mgr = Manager::new(specs)?;
     let boot = mgr.boot_sequence()?;
     eprintln!("[aether-init] 自启动序列: {boot:?}");
@@ -89,7 +103,13 @@ fn run_loop(services_dir: &str) -> anyhow::Result<()> {
 
     // 监督主循环
     loop {
-        let events = mgr.lock().expect("aether-init: manager 毒锁").tick();
+        // 毒锁恢复：持锁线程 panic 不应带崩 PID 1（Mutex 数据仍可用）。
+        // 孤儿进程收割在 Manager::tick 内完成（须与受管子进程的收割互斥，
+        // 避免 waitpid(-1) 把受管进程"偷收"导致状态失真）。
+        let events = mgr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tick();
         for e in events {
             eprintln!("[aether-init] {e}");
         }

@@ -17,7 +17,9 @@ mod layout;
 mod text;
 
 use aether_ipc::{Request, Response};
-use draw::{Desktop, InstallerPhase, InstallerUi, Rect, Win};
+use draw::{Desktop, Rect, Win};
+#[cfg(target_os = "linux")]
+use draw::{InstallerPhase, InstallerUi};
 #[cfg(not(target_os = "linux"))]
 use draw::UiState;
 use layout::Layout;
@@ -43,6 +45,10 @@ fn tty_log(msg: &str) {
 #[cfg(target_os = "linux")]
 fn begin_install(installer: &mut Installer, tx: &mpsc::Sender<InstallEvent>) -> bool {
     if installer.running || installer.disks.is_empty() {
+        return false;
+    }
+    // 已成功完成时禁止再次发起（防误点造成二次整盘擦除）；失败后允许重试
+    if matches!(&installer.message, Some((_, false))) {
         return false;
     }
     let disk = installer.disks[installer.selected].0.clone();
@@ -112,14 +118,15 @@ fn run_fbdev() -> anyhow::Result<()> {
                 input::UiEvent::MouseDown => mouse_down = true,
                 input::UiEvent::MouseUp => {
                     mouse_down = false;
-                    let was_drag = drag.is_some();
-                    if let Some((i, _, _)) = drag.take() {
-                        if snap_zone != layout::Snap::None {
-                            let work = layout::work_area(w, h);
-                            desktop.wins[i].target = Some(layout::rect(snap_zone, work));
+                let was_drag = drag.is_some();
+                if let Some((i, _, _)) = drag.take() {
+                    if snap_zone != layout::Snap::None {
+                        if let Some(win) = desktop.wins.get_mut(i) {
+                            win.target = Some(layout::rect(snap_zone, layout::work_area(w, h)));
                             toast = Some((snap_zone.label().to_string(), Instant::now()));
                         }
                     }
+                }
                     snap_zone = layout::Snap::None;
                     // 非拖拽的按下-抬起 = 一次点击。QMP/真机都可能把 down+up
                     // 打进同一批事件，在帧间锁存，否则快速点击会被吞掉。
@@ -206,15 +213,23 @@ fn run_fbdev() -> anyhow::Result<()> {
             }
         } else if mouse_down || click_pending {
             if let Some((i, lx, ly)) = drag {
-                let win = &mut desktop.wins[i].rect;
-                win.x += (mouse.0 - lx) as i32;
-                win.y = (win.y + (mouse.1 - ly) as i32).max(layout::TOP_BAR);
-                drag = Some((i, mouse.0, mouse.1));
-                snap_zone = if desktop.wins[i].floating {
-                    layout::detect(mouse.0, mouse.1, w, h)
-                } else {
-                    layout::Snap::None
-                };
+                // 窗口数组可能在拖拽中被修改（如 AI 关窗），索引失效即取消拖拽
+                match desktop.wins.get_mut(i) {
+                    Some(win) => {
+                        win.rect.x += (mouse.0 - lx) as i32;
+                        win.rect.y = (win.rect.y + (mouse.1 - ly) as i32).max(layout::TOP_BAR);
+                        snap_zone = if win.floating {
+                            layout::detect(mouse.0, mouse.1, w, h)
+                        } else {
+                            layout::Snap::None
+                        };
+                        drag = Some((i, mouse.0, mouse.1));
+                    }
+                    None => {
+                        drag = None;
+                        snap_zone = layout::Snap::None;
+                    }
+                }
             } else if mouse.1 < layout::TOP_BAR as f32 {
                 let hit_menu = renderer
                     .menubar_menus
@@ -473,7 +488,8 @@ fn run_install(disk: String, tx: mpsc::Sender<InstallEvent>) {
         let req = Request::ToolCall {
             session_id: "installer".into(),
             tool: "install_disk".into(),
-            arguments: serde_json::json!({ "disk": disk }),
+            // confirm 与 disk 相同：L3 双重确认的回显（用户已在向导里选盘并点确认）
+            arguments: serde_json::json!({ "disk": disk, "confirm": disk }),
         };
         stream.write_all(aether_ipc::encode(&req).as_bytes())?;
         let mut line = String::new();
@@ -574,8 +590,8 @@ fn apply_action(desktop: &mut Desktop, name: &str, args: &serde_json::Value) -> 
         "open_app" => {
             let app = args.get("app").and_then(|v| v.as_str())?;
             let icon = APP_TITLES.iter().position(|t| *t == app)?;
-            open_app(desktop, icon);
-            Some(format!("已打开「{app}」"))
+            // open_app 返回 Some 时是拒绝/上限提示，不能谎报"已打开"（P3-3）
+            Some(open_app(desktop, icon).unwrap_or_else(|| format!("已打开「{app}」")))
         }
         "close_active" => {
             if desktop.wins.len() > 1 {
@@ -860,15 +876,12 @@ fn preview_main() -> anyhow::Result<()> {
                 }
             }
         } else {
-            open_menu = open_menu.filter(|_| {
-                // 松手时若鼠标不在任何 UI 上不主动关闭菜单（菜单靠再次点击关闭）
-                true
-            });
             if let Some((i, _, _)) = drag.take() {
                 if snap_zone != layout::Snap::None {
-                    let work = layout::work_area(WIDTH, HEIGHT);
-                    desktop.wins[i].target = Some(layout::rect(snap_zone, work));
-                    toast = Some((snap_zone.label().to_string(), Instant::now()));
+                    if let Some(win) = desktop.wins.get_mut(i) {
+                        win.target = Some(layout::rect(snap_zone, layout::work_area(WIDTH, HEIGHT)));
+                        toast = Some((snap_zone.label().to_string(), Instant::now()));
+                    }
                 }
                 snap_zone = layout::Snap::None;
             }

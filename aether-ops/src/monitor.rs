@@ -44,7 +44,9 @@ pub struct Round {
 /// 巡检决策：
 /// - `Running` 健康；`Stopped` 视为人工停止（不干预，避免和操作者打架）；
 /// - `Exited`/`Failed` 请求重启，但同一单元要过 `cooldown_rounds` 轮冷却，
-///   防止与 aether-init 的监督退避叠加成重启风暴。
+///   且只对 `restart: true` 的服务生效 —— 重启策略以服务定义（aether-init）
+///   为唯一事实来源，ops 不再对 `restart: false` 的服务擅自冷拉起（P1-3）；
+/// - 关键服务（`essential: true`）异常时输出升级告警行（P1-2）。
 /// - `attempts`: unit -> (最近一次触发重启的轮次, 累计次数)
 pub fn plan(
     services: &[ServiceStatus],
@@ -64,6 +66,17 @@ pub fn plan(
         }
         if s.state == "Stopped" {
             r.lines.push(format!("○ {} 已被人工停止（不干预）", s.unit));
+            continue;
+        }
+        // 关键服务异常：升级告警（无论是否可重启）
+        if s.essential {
+            r.lines
+                .push(format!("‼ 关键服务 {} 异常（状态 {}），需优先排查", s.unit, s.state));
+        }
+        // 重启策略归 aether-init 服务定义：restart=false 的服务 ops 不冷拉起
+        if !s.restart {
+            r.lines
+                .push(format!("○ {} 状态 {}（重启策略为不重启，不干预）", s.unit, s.state));
             continue;
         }
         let cooling = attempts
@@ -118,14 +131,27 @@ pub fn read_metrics() -> Metrics {
     parse_metrics(&meminfo, &uptime)
 }
 
-/// 向 aether-init（127.0.0.1:7312）发一条请求并取回单个响应。
+/// 向 aether-init 发一条请求并取回单个响应。
+/// Linux 走 Unix socket（与 aether-init 的 0600 服务控制通道一致）；
+/// 非 Linux（开发自检）走回环 TCP。
 pub fn call_init(req: &Request) -> anyhow::Result<Response> {
-    let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::INIT_PORT).into();
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
-    stream.set_read_timeout(Some(Duration::from_secs(8))).ok();
-    stream.write_all(aether_ipc::encode(req).as_bytes())?;
+    #[cfg(target_os = "linux")]
+    let mut writer = {
+        use std::os::unix::net::UnixStream;
+        let stream = UnixStream::connect(crate::INIT_SOCKET)?;
+        stream.set_read_timeout(Some(Duration::from_secs(8))).ok();
+        stream
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut writer = {
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::INIT_PORT).into();
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+        stream.set_read_timeout(Some(Duration::from_secs(8))).ok();
+        stream
+    };
+    writer.write_all(aether_ipc::encode(req).as_bytes())?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    BufReader::new(writer).read_line(&mut line)?;
     Ok(aether_ipc::decode::<Response>(&line)?)
 }
 
@@ -198,7 +224,7 @@ impl LogWatch {
             if path.extension().and_then(|e| e.to_str()) != Some("log") || name == skip {
                 continue;
             }
-            let Ok(file) = std::fs::File::open(&path) else { continue };
+            let Ok(mut file) = std::fs::File::open(&path) else { continue };
             let len = file.metadata().map(|m| m.len()).unwrap_or(0);
             let offset = self.offsets.entry(name.to_string()).or_insert(0);
             if len < *offset {
@@ -208,15 +234,16 @@ impl LogWatch {
                 continue;
             }
             use std::io::{Read, Seek, SeekFrom};
-            let mut f = std::fs::File::open(&path).expect("log reopen");
-            if f.seek(SeekFrom::Start(*offset)).is_err() {
+            // 复用上面已打开的句柄：失败降级为跳过本轮，绝不 panic
+            if file.seek(SeekFrom::Start(*offset)).is_err() {
                 continue;
             }
             let mut text = String::new();
-            if f.read_to_string(&mut text).is_err() {
+            if file.read_to_string(&mut text).is_err() {
                 continue; // 非 UTF-8 片段（半行截断）留给下一轮
             }
-            *offset = len;
+            // 偏移推进按实际读取字节数：metadata 与读取之间文件增长时不会重复扫描
+            *offset += text.len() as u64;
             for line in scan_new_lines(&text) {
                 alerts.push((name.to_string(), line));
             }
@@ -230,7 +257,13 @@ mod tests {
     use super::*;
 
     fn svc(unit: &str, state: &str) -> ServiceStatus {
-        ServiceStatus { unit: unit.into(), state: state.into(), pid: None }
+        ServiceStatus {
+            unit: unit.into(),
+            state: state.into(),
+            pid: None,
+            restart: true,
+            essential: false,
+        }
     }
 
     #[test]
@@ -278,6 +311,26 @@ mod tests {
         let services = vec![svc("ops", "Exited { code: 1 }")];
         let r = plan(&services, &Metrics::default(), &HashMap::new(), 1, 20);
         assert!(r.actions.is_empty());
+    }
+
+    #[test]
+    fn no_restart_policy_is_respected() {
+        // 服务定义 restart=false：ops 不得冷拉起（P1-3）
+        let mut s = svc("compositor", "Exited { code: 101 }");
+        s.restart = false;
+        let r = plan(&[s], &Metrics::default(), &HashMap::new(), 1, 20);
+        assert!(r.actions.is_empty());
+        assert!(r.lines.iter().any(|l| l.contains("不重启")));
+    }
+
+    #[test]
+    fn essential_crash_escalates() {
+        // 关键服务崩溃：输出升级告警行（P1-2）
+        let mut s = svc("aetherd", "Exited { code: 101 }");
+        s.essential = true;
+        let r = plan(&[s], &Metrics::default(), &HashMap::new(), 1, 20);
+        assert!(r.lines.iter().any(|l| l.contains("关键服务")));
+        assert_eq!(r.actions.len(), 1); // 仍然重启（restart 默认 true）
     }
 
     #[test]

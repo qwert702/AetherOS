@@ -52,7 +52,9 @@ pub fn tiled_targets(n: usize, lay: Layout, work: Rect) -> Vec<Option<Rect>> {
         return vec![];
     }
     match lay {
-        Layout::Float | Layout::Monocle => vec![None; n],
+        // 独占堆叠：所有窗口占满工作区，靠点击置顶切换可见窗口
+        Layout::Monocle => vec![Some(work); n],
+        Layout::Float => vec![None; n],
         Layout::TwoCol => {
             let mut t = vec![None; n];
             let left = n.div_ceil(2);
@@ -168,5 +170,16 @@ mod tests {
         let r = rect(Snap::Right, W);
         assert_eq!(l.x + l.w + GAP, r.x);
         assert_eq!(l.h, W.h);
+    }
+
+    #[test]
+    fn monocle_fills_work_area() {
+        // 独占堆叠：每个窗口都占满工作区（P2-2 修复回归）
+        let t = tiled_targets(3, Layout::Monocle, W);
+        assert_eq!(t.len(), 3);
+        for r in t {
+            let r = r.unwrap();
+            assert_eq!((r.x, r.y, r.w, r.h), (W.x, W.y, W.w, W.h));
+        }
     }
 }

@@ -25,33 +25,43 @@ pub type Intent = (String, Option<DesktopAction>);
 /// 对用户输入做快速意图匹配；命中返回 (回复, 行为)，未命中返回 None（交给 LLM）。
 pub fn try_handle(text: &str) -> Option<Intent> {
     let t = text.replace(' ', "");
+    let lower = text.to_lowercase();
+    // 英文触发词用"完整短语或整词"匹配原始输入：过宽的子串（如 "time"、"float"）
+    // 会把 "解释 time complexity"、"把 float 变量改成 int" 误当成系统指令（P2-16）。
+    // 中文短语不受词边界影响，继续在剥离空格的文本上匹配。
+    let en_phrase = |p: &str| lower.contains(p);
+    let en_word = |w: &str| {
+        lower
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .any(|tok| tok == w)
+    };
 
     // 布局指令（支持中英混合说法）
-    if contains_any(&t, &["两列", "排成两列", "two", "两栏"]) {
+    if contains_any(&t, &["两列", "排成两列", "两栏"]) || en_phrase("two columns") || en_phrase("two col") {
         return Some(("好的，已把窗口排成两列。".into(), Some(DesktopAction::layout("two_col"))));
     }
-    if contains_any(&t, &["三列", "排成三列", "three", "三栏"]) {
+    if contains_any(&t, &["三列", "排成三列", "三栏"]) || en_phrase("three columns") || en_phrase("three col") {
         return Some(("好的，已把窗口排成三列。".into(), Some(DesktopAction::layout("three_col"))));
     }
-    if contains_any(&t, &["独占", "堆叠", "monocle", "铺满", "最大化桌面"]) {
+    if contains_any(&t, &["独占", "堆叠", "铺满", "最大化桌面"]) || en_word("monocle") {
         return Some(("好的，已切换为独占堆叠。".into(), Some(DesktopAction::layout("monocle"))));
     }
-    if contains_any(&t, &["自由布局", "自由模式", "float"]) {
+    if contains_any(&t, &["自由布局", "自由模式"]) || en_phrase("float layout") || en_phrase("floating layout") {
         return Some(("好的，已切换为自由布局。".into(), Some(DesktopAction::layout("float"))));
     }
     // 模糊指令的确定性解释："整理桌面" = 平铺全部窗口
-    if contains_any(&t, &["整理", "收拾", "排列窗口", "tidy"]) {
+    if contains_any(&t, &["整理", "收拾", "排列窗口"]) || en_word("tidy") {
         return Some(("已为您整理桌面：窗口平铺成两列。".into(), Some(DesktopAction::layout("two_col"))));
     }
 
     // 时间
-    if contains_any(&t, &["几点", "时间", "time"]) {
+    if contains_any(&t, &["几点", "时间"]) || en_phrase("what time") || en_phrase("current time") {
         let clock = crate::text_clock();
         return Some((format!("现在是 {clock}。"), None));
     }
 
     // 系统状态
-    if contains_any(&t, &["系统状态", "内存", "服务状态", "status"]) {
+    if contains_any(&t, &["系统状态", "内存", "服务状态"]) || en_phrase("system status") || en_phrase("status report") {
         return Some((crate::sys_brief(), None));
     }
 
@@ -77,6 +87,14 @@ mod tests {
     fn three_col_with_english() {
         let (_, action) = try_handle("three columns please").unwrap();
         assert_eq!(action.unwrap().arguments["layout"], "three_col");
+    }
+
+    #[test]
+    fn english_substrings_do_not_misfire() {
+        // 英文关键词过宽会误命中普通对话（P2-16 回归）
+        assert!(try_handle("解释一下 time complexity").is_none());
+        assert!(try_handle("把 float 变量改成 int").is_none());
+        assert!(try_handle("sort these two numbers").is_none());
     }
 
     #[test]

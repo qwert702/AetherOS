@@ -74,6 +74,10 @@ impl Rect {
 }
 
 pub fn fill_rect(buf: &mut [u32], w: usize, h: usize, rect: Rect, rgb: [u8; 3], alpha: f32) {
+    // 负宽/高是空操作：`as usize` 会把负值回卷成巨值再被钳成整屏填充
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
     let x0 = rect.x.max(0) as usize;
     let y0 = rect.y.max(0) as usize;
     let x1 = ((rect.x + rect.w) as usize).min(w);
@@ -214,6 +218,7 @@ pub struct UiState<'a> {
 }
 
 /// 安装向导的阶段（渲染用；状态机在 main.rs）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallerPhase {
     Idle,
@@ -755,6 +760,7 @@ impl Renderer {
 // 软件光标（fbdev 无硬件指针；白箭头 + 黑描边，指向左上）
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn draw_cursor(buf: &mut [u32], w: usize, h: usize, mx: f32, my: f32) {
     let (cx, cy) = (mx.round() as i32, my.round() as i32);
     let inside = |x: i32, y: i32| x >= 0 && x <= 10 && y >= x && y <= 15 - x / 2;
@@ -856,7 +862,7 @@ impl Renderer {
         let (label, alpha) = match inst.phase {
             InstallerPhase::Idle => ("开始安装（整盘覆盖）", 0.85),
             InstallerPhase::Running => ("安装中…", 0.45),
-            InstallerPhase::Done => ("完成 · 重启后从磁盘引导", 0.85),
+            InstallerPhase::Done => ("完成 · 重启后从磁盘引导", 0.35),
             InstallerPhase::Failed => ("重试安装", 0.85),
         };
         rounded_rect(buf, w, h, button, 10.0, palette::ACCENT, alpha);

@@ -95,14 +95,15 @@ pub fn registry() -> Vec<Tool> {
         },
         Tool {
             name: "install_disk",
-            description: "把当前系统整盘安装到指定磁盘（isohybrid 镜像 dd 覆盖写，安装后从该盘引导）。整盘覆盖，目标盘数据将丢失！",
-            level: Level::L1,
+            description: "把当前系统整盘安装到指定磁盘（isohybrid 镜像 dd 覆盖写，安装后从该盘引导）。整盘覆盖，目标盘数据将丢失！L3 危险操作：需用户确认，且 confirm 参数必须与 disk 完全一致。",
+            level: Level::L3,
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "disk": {"type": "string", "description": "目标块设备（如 /dev/vda、/dev/sda），整盘覆盖"}
+                    "disk": {"type": "string", "description": "目标块设备（如 /dev/vda、/dev/sda），整盘覆盖"},
+                    "confirm": {"type": "string", "description": "回显确认：必须与 disk 完全相同，否则拒绝执行"}
                 },
-                "required": ["disk"]
+                "required": ["disk", "confirm"]
             }),
             run: tool_install_disk,
         },
@@ -122,11 +123,25 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
         Verdict::NeedsConfirmation => "needs_confirmation",
         Verdict::Denied(_) => "denied",
     };
-    let _ = gate.audit(name, tool.level, &args_str, verdict_str);
+    // 审计失败不阻断执行，但必须显式可见：错误随输出返回调用方，并落 stderr。
+    let audit_warn = gate.audit(name, tool.level, &args_str, verdict_str).err().map(|e| {
+        eprintln!("[aetherd] 审计日志写入失败: {e}");
+        format!("⚠ 审计日志写入失败（{e}），本次操作未留痕\n")
+    });
     match verdict {
-        Verdict::Allowed => (tool.run)(args, ctx),
+        Verdict::Allowed => {
+            let out = (tool.run)(args, ctx)?;
+            Ok(match audit_warn {
+                Some(w) => format!("{w}{out}"),
+                None => out,
+            })
+        }
         Verdict::NeedsConfirmation => {
-            bail!("NEEDS_CONFIRMATION: 工具 {name} 需要 L{} 级用户确认", tool.level as u8)
+            bail!(
+                "{}NEEDS_CONFIRMATION: 工具 {name} 需要 L{} 级用户确认",
+                audit_warn.unwrap_or_default(),
+                tool.level as u8
+            )
         }
         Verdict::Denied(reason) => bail!("DENIED: {reason}"),
     }
@@ -193,12 +208,19 @@ fn valid_disk_path(disk: &str) -> bool {
 }
 
 /// 整盘安装工具：调 aether-install（其内部为罐头 dd，目标值仅作参数）。
+/// L3 双重确认的第二道：confirm 参数必须回显目标盘设备名。
 fn tool_install_disk(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let Some(disk) = args.get("disk").and_then(|v| v.as_str()) else {
         bail!("缺少 disk 参数");
     };
     if !valid_disk_path(disk) {
         bail!("磁盘参数必须是 /dev/<盘符> 形式（如 /dev/vda），拒绝: {disk}");
+    }
+    let confirm = args.get("confirm").and_then(|v| v.as_str()).unwrap_or("");
+    if confirm != disk {
+        bail!(
+            "整盘擦除需回显确认：请将 confirm 参数设为与 disk 完全相同（{disk}）以确认目标盘数据将丢失"
+        );
     }
     let out = std::process::Command::new("/usr/bin/aether-install")
         .arg("--disk")
@@ -314,14 +336,57 @@ mod tests {
     fn install_disk_rejects_path_injection() {
         let mut ctx = ToolCtx::default();
         for bad in ["/etc/passwd", "/dev/sda/../../x", "/dev/sda;rm", "/dev/", ""] {
-            let r = execute(&gate(), &mut ctx, "install_disk", &serde_json::json!({"disk": bad}), true);
+            let r = execute(
+                &gate(),
+                &mut ctx,
+                "install_disk",
+                &serde_json::json!({"disk": bad, "confirm": bad}),
+                true,
+            );
             assert!(r.is_err(), "{bad} 应被拒绝");
         }
         // 正常路径形式通过校验层（真实写入只发生在有块设备的系统内）
-        let good = execute(&gate(), &mut ctx, "install_disk", &serde_json::json!({"disk":"/dev/vda"}), true);
-        match good {
-            Err(e) => assert!(!e.to_string().contains("拒绝"), "路径校验不应拦截 /dev/vda: {e}"),
-            Ok(_) => {}
+        let good = execute(
+            &gate(),
+            &mut ctx,
+            "install_disk",
+            &serde_json::json!({"disk":"/dev/vda", "confirm":"/dev/vda"}),
+            true,
+        );
+        if let Err(e) = good {
+            assert!(!e.to_string().contains("拒绝"), "路径校验不应拦截 /dev/vda: {e}");
         }
+    }
+
+    #[test]
+    fn install_disk_requires_confirm_echo() {
+        let mut ctx = ToolCtx::default();
+        // confirm 缺失或与 disk 不一致都拒绝
+        for confirm in [serde_json::json!(""), serde_json::json!("/dev/sda"), serde_json::Value::Null] {
+            let r = execute(
+                &gate(),
+                &mut ctx,
+                "install_disk",
+                &serde_json::json!({"disk":"/dev/vda", "confirm": confirm}),
+                true,
+            );
+            let err = r.unwrap_err().to_string();
+            assert!(err.contains("回显确认"), "confirm={confirm} 应触发回显确认: {err}");
+        }
+    }
+
+    #[test]
+    fn install_disk_needs_confirmation_without_approval() {
+        // L3 危险操作：无用户批准时不得进入工具体（连路径校验都不该执行）
+        let mut ctx = ToolCtx::default();
+        let r = execute(
+            &gate(),
+            &mut ctx,
+            "install_disk",
+            &serde_json::json!({"disk":"/dev/vda", "confirm":"/dev/vda"}),
+            false,
+        );
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("NEEDS_CONFIRMATION"), "L3 未批准应要求确认: {err}");
     }
 }

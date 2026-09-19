@@ -26,6 +26,10 @@ pub struct SvcStatus {
     pub state: SvcState,
     pub pid: Option<u32>,
     pub restarts: u32,
+    /// 服务定义的策略标记：ops 巡检据此遵守 init 的重启策略（P1-3）
+    pub restart: bool,
+    /// 关键服务标记：崩溃时告警升级（P1-2）
+    pub essential: bool,
 }
 
 pub struct Service {
@@ -35,7 +39,12 @@ pub struct Service {
     pub restarts: u32,
     /// 上次退出时刻，用于重启退避
     pub last_exit: Option<Instant>,
+    /// 最近一次启动时刻：连续运行足够久后重启计数归零（P3-1）
+    pub last_start: Option<Instant>,
 }
+
+/// 进程连续运行超过此时长后的退出视为"新故障"，重启计数重新计。
+const STABLE_RUNTIME: Duration = Duration::from_secs(60);
 
 pub struct Manager {
     services: HashMap<String, Service>,
@@ -118,21 +127,17 @@ impl Manager {
         if svc.state == SvcState::Running {
             return Ok(svc.status());
         }
-        let mut command = svc
-            .spec
-            .validate()?
-            .spawn_command();
-        use std::process::Stdio;
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("启动 {name} 失败: {e}"))?;
-        crate::logtee::tee_child(name, &mut child);
+        // spawn 失败进入 Failed 态：监督循环随后按退避策略接管重试
+        let child = match spawn_with_logs(&svc.spec) {
+            Ok(c) => c,
+            Err(e) => {
+                svc.state = SvcState::Failed { reason: e.to_string() };
+                return Err(e);
+            }
+        };
         svc.state = SvcState::Running;
         svc.child = Some(child);
+        svc.last_start = Some(Instant::now());
         Ok(svc.status())
     }
 
@@ -162,6 +167,14 @@ impl Manager {
                         let code = code.code().unwrap_or(-1);
                         svc.child = None;
                         svc.last_exit = Some(now);
+                        // 稳定运行过一段时间后的退出是"新故障"，重启计数归零
+                        if svc
+                            .last_start
+                            .map(|t0| now.duration_since(t0) >= STABLE_RUNTIME)
+                            .unwrap_or(false)
+                        {
+                            svc.restarts = 0;
+                        }
                         svc.state = SvcState::Exited { code };
                         events.push(format!(
                             "{} 退出 (code={code}, restarts={})",
@@ -184,29 +197,72 @@ impl Manager {
                     .map(|t| now.duration_since(t) >= backoff)
                     .unwrap_or(true);
                 if ready {
-                    let mut command = match svc.spec.validate() {
-                        Ok(k) => k.spawn_command(),
-                        Err(e) => {
-                            svc.state = SvcState::Failed { reason: e.to_string() };
-                            continue;
-                        }
-                    };
-                    match command.spawn() {
+                    // spawn 失败同样推进退避时钟与计数，否则 200ms 后立刻重试形成风暴
+                    match spawn_with_logs(&svc.spec) {
                         Ok(child) => {
                             svc.restarts += 1;
                             svc.state = SvcState::Running;
                             svc.child = Some(child);
+                            svc.last_start = Some(now);
                             events.push(format!("{} 已重启 (第 {} 次)", svc.spec.name, svc.restarts));
                         }
                         Err(e) => {
+                            svc.restarts += 1;
+                            svc.last_exit = Some(now);
                             svc.state = SvcState::Failed { reason: e.to_string() };
-                            events.push(format!("{} 重启失败: {e}", svc.spec.name));
+                            events.push(format!("{} 重启失败（第 {} 次）: {e}", svc.spec.name, svc.restarts));
                         }
                     }
                 }
             }
         }
+        // PID 1 兜底收割：waitpid(-1) 收走全部已退出子进程（含孤儿）。
+        // 收到的是受管服务进程时用 pid 匹配记账，状态不与上面的 try_wait 重复。
+        #[cfg(target_os = "linux")]
+        self.reap_all(&mut events, now);
         events
+    }
+
+    /// Linux 专用：循环 waitpid(-1, WNOHANG) 收割所有待收子进程。
+    /// 孤儿（双 fork daemon、服务自己起的子进程）不收割会永久堆积为僵尸；
+    /// 受管服务进程若在此处被收走，同样在此处记账（避免 Child::try_wait 撞 ECHILD）。
+    #[cfg(target_os = "linux")]
+    fn reap_all(&mut self, events: &mut Vec<String>, now: Instant) {
+        loop {
+            let mut status: i32 = 0;
+            let rc = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+            if rc <= 0 {
+                // 0 = 仍有活着的子进程；-1 = 暂无待收者（ECHILD）
+                break;
+            }
+            let pid = rc as u32;
+            if let Some(svc) = self
+                .services
+                .values_mut()
+                .find(|s| s.child.as_ref().map(|c| c.id()) == Some(pid))
+            {
+                let code = if unsafe { libc::WIFEXITED(status) } {
+                    unsafe { libc::WEXITSTATUS(status) }
+                } else {
+                    -1
+                };
+                svc.child = None;
+                svc.last_exit = Some(now);
+                if svc
+                    .last_start
+                    .map(|t0| now.duration_since(t0) >= STABLE_RUNTIME)
+                    .unwrap_or(false)
+                {
+                    svc.restarts = 0;
+                }
+                svc.state = SvcState::Exited { code };
+                events.push(format!(
+                    "{} 退出 (code={code}, restarts={})",
+                    svc.spec.name, svc.restarts
+                ));
+            }
+            // 非受管孤儿：waitpid 已完成收割，直接丢弃
+        }
     }
 
     pub fn status_all(&self) -> Vec<SvcStatus> {
@@ -222,7 +278,14 @@ impl Manager {
 
 impl Service {
     fn new(spec: ServiceSpec) -> Self {
-        Self { spec, state: SvcState::Stopped, child: None, restarts: 0, last_exit: None }
+        Self {
+            spec,
+            state: SvcState::Stopped,
+            child: None,
+            restarts: 0,
+            last_exit: None,
+            last_start: None,
+        }
     }
 
     fn status(&self) -> SvcStatus {
@@ -231,8 +294,28 @@ impl Service {
             state: self.state.clone(),
             pid: self.child.as_ref().map(|c| c.id()),
             restarts: self.restarts,
+            restart: self.spec.restart,
+            essential: self.spec.essential,
         }
     }
+}
+
+/// 统一的启动原语：白名单命令 + 管道化 stdio + 日志 tee。
+/// start() 与 tick() 的自动重启共用，保证重启后的日志仍进
+/// /var/log/aether/<unit>.log（ops 异常检测依赖它）。
+fn spawn_with_logs(spec: &ServiceSpec) -> Result<Child> {
+    use std::process::Stdio;
+    let name = &spec.name;
+    let mut command = spec.validate()?.spawn_command();
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("启动 {name} 失败: {e}"))?;
+    crate::logtee::tee_child(name, &mut child);
+    Ok(child)
 }
 
 #[cfg(test)]
@@ -285,6 +368,25 @@ mod tests {
         assert!(Manager::new(vec![spec("x", &["ghost"], true)]).is_err());
     }
 
+    /// 带截止时间的轮询：反复 tick 直到状态满足条件或超时。
+    /// 不硬编码 sleep —— Windows 上 `cmd /C exit 0` 需 600–850ms 才可回收，
+    /// 固定 150ms 等待是确定性竞态（见 CODE-REVIEW P2-11）。
+    fn wait_for_state(
+        m: &mut Manager,
+        pred: impl Fn(&SvcState) -> bool,
+        timeout: Duration,
+    ) -> SvcState {
+        let deadline = Instant::now() + timeout;
+        loop {
+            m.tick();
+            let state = m.status_all()[0].state.clone();
+            if pred(&state) || Instant::now() >= deadline {
+                return state;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn supervision_restarts_and_backs_off() {
         // noop 服务立即退出 → tick 收割 → 退避后重启 → stop 后不再重启
@@ -295,9 +397,16 @@ mod tests {
         let mut m = Manager::new(vec![s]).unwrap();
         m.start("noop").unwrap();
         assert_eq!(m.status_all()[0].state, SvcState::Running);
-        std::thread::sleep(Duration::from_millis(150));
-        m.tick();
-        assert!(matches!(m.status_all()[0].state, SvcState::Exited { code: 0 }));
+        // 轮询等待子进程退出被收割（跨平台时序安全）
+        let st = wait_for_state(
+            &mut m,
+            |st| matches!(st, SvcState::Exited { .. }),
+            Duration::from_secs(5),
+        );
+        assert!(
+            matches!(st, SvcState::Exited { code: 0 }),
+            "noop 应以 0 退出，实际: {st:?}"
+        );
         // 退避窗口内不重启
         m.tick();
         assert!(matches!(m.status_all()[0].state, SvcState::Exited { code: 0 }));
@@ -311,5 +420,34 @@ mod tests {
         std::thread::sleep(Duration::from_millis(600));
         m.tick();
         assert_eq!(m.status_all()[0].state, SvcState::Stopped);
+    }
+
+    #[test]
+    fn spawn_failure_backs_off() {
+        // 二进制缺失时 spawn 失败必须推进退避时钟，不得形成 200ms 级重试风暴
+        let s: ServiceSpec = serde_json::from_value(serde_json::json!({
+            "name": "network", "restart": true
+        }))
+        .unwrap();
+        let mut m = Manager::new(vec![s]).unwrap();
+        // 非 Linux 白名单占位命令 noop-placeholder-network 不存在 → spawn 失败
+        if cfg!(target_os = "linux") {
+            return; // Linux 上 /sbin/udhcpc 可能真实存在，跳过本用例
+        }
+        let _ = m.start("network"); // 首次启动失败 → Failed，交给监督循环
+        assert!(matches!(
+            m.status_all()[0].state,
+            SvcState::Failed { .. }
+        ));
+        let deadline = Instant::now() + Duration::from_millis(700);
+        let mut attempts = 0;
+        while Instant::now() < deadline {
+            m.tick();
+            attempts = m.status_all()[0].restarts as usize;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // 退避生效：t=0 首试 + t≈500ms 第二次，700ms 内最多 2 次
+        //（修复前每 50ms tick 都会重试，约 13 次）
+        assert!(attempts <= 2, "spawn 失败应退避，实际重试 {attempts} 次");
     }
 }

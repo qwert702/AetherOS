@@ -179,6 +179,11 @@ pub fn set_partition_entry(
 /// 在 MBR 空闲项里追加一个 Linux 数据分区；返回 (分区号, 起始 LBA, 扇区数)。
 /// 已有空闲项不足时返回 None（不覆盖既有分区）。
 pub fn plan_persist_partition(mbr: &[u8; 512], total_sectors: u64) -> Option<(usize, u32, u32)> {
+    // MBR 分区项只有 32 位扇区数：>2TB 的盘无法在 MBR 里如实表达，
+    // 截断写入会产生错误的分区大小——宁可放弃持久化分区也不能写错表。
+    if total_sectors > u32::MAX as u64 {
+        return None;
+    }
     let start = PERSIST_LBA_START as u64;
     if total_sectors < start + PERSIST_MIN_SECTORS as u64 {
         return None; // 盘太小，放不下持久化分区
@@ -245,8 +250,11 @@ fn setup_persist(disk: &str) -> Result<String> {
     }
 
     // 2. 规划并写入分区项
-    let (index, start, sectors) = plan_persist_partition(&mbr, total)
-        .ok_or_else(|| anyhow::anyhow!("磁盘剩余空间不足以创建持久化分区（需 ≥{}MB）", PERSIST_MIN_SECTORS / 2048))?;
+    let (index, start, sectors) = plan_persist_partition(&mbr, total).ok_or_else(|| {
+        anyhow::anyhow!(
+            "磁盘放不下持久化分区（剩余空间不足，或 >2TB 超出 MBR 可表达范围）；系统仍可引导但运行在内存里"
+        )
+    })?;
     let entry = MbrEntry {
         bootable: false,
         part_type: PART_TYPE_LINUX,
@@ -322,6 +330,10 @@ fn main() -> Result<()> {
     let (disk, yes, persist) = parse_args(&args)?;
 
     let mb = validate_disk(&disk)?;
+    // 目标盘不得是安装源自己：--disk /dev/sr0 会变成 dd if=/dev/sr0 of=/dev/sr0 自读自写
+    if disk == SOURCE {
+        bail!("目标盘不能是安装源（{SOURCE}）：拒绝自读自写");
+    }
     println!("aether-install: 目标 {disk}（{mb}MB），源 {SOURCE}");
     if !yes {
         bail!("将整盘覆盖写入 {disk} —— 确认无误后追加 --yes 执行");
@@ -460,6 +472,14 @@ mod tests {
         let mbr = isohybrid_mbr();
         assert!(plan_persist_partition(&mbr, 40960).is_none()); // 20MB
         assert!(plan_persist_partition(&mbr, 131071).is_none()); // 略小于起点+最小
+    }
+
+    #[test]
+    fn plan_persist_skips_beyond_mbr_capacity() {
+        // >2TB（u32::MAX 扇区）超出 MBR 可表达范围：宁可放弃持久化也不截断扇区数
+        let mbr = isohybrid_mbr();
+        let huge = u32::MAX as u64 + 1;
+        assert!(plan_persist_partition(&mbr, huge).is_none());
     }
 
     #[test]
