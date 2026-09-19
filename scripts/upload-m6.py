@@ -10,16 +10,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 import vm  # noqa: E402
 
 PAIRS = [
+    ("aether-compositor/src/main.rs", "/home/aether/aether-compositor/src/main.rs"),
+    ("aether-compositor/src/draw.rs", "/home/aether/aether-compositor/src/draw.rs"),
+    ("aether-compositor/src/text.rs", "/home/aether/aether-compositor/src/text.rs"),
+    ("aetherd/src/perm.rs", "/home/aether/aetherd/src/perm.rs"),
+    ("aetherd/src/server.rs", "/home/aether/aetherd/src/server.rs"),
+    ("aetherd/src/main.rs", "/home/aether/aetherd/src/main.rs"),
     ("aether-install/src/main.rs", "/home/aether/aether-install/src/main.rs"),
-    ("aether-install/Cargo.toml", "/home/aether/aether-install/Cargo.toml"),
-    ("aether-init/src/persist.rs", "/home/aether/aether-init/src/persist.rs"),
-    ("aether-init/src/main.rs", "/home/aether/aether-init/src/main.rs"),
-    ("aether-init/src/logtee.rs", "/home/aether/aether-init/src/logtee.rs"),
-    ("aether-ops/src/monitor.rs", "/home/aether/aether-ops/src/monitor.rs"),
-    ("aether-ops/src/main.rs", "/home/aether/aether-ops/src/main.rs"),
     ("scripts/rebuild-m4.sh", "/home/aether/rebuild-m4.sh"),
-    ("scripts/qemu-disk-boot.sh", "/home/aether/qemu-disk-boot.sh"),
-    ("scripts/inspect-persist.sh", "/home/aether/inspect-persist.sh"),
 ]
 
 

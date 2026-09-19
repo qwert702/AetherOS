@@ -207,6 +207,29 @@ pub struct UiState<'a> {
     pub ai_reply: Option<(&'a str, f32)>,
     pub mouse: (f32, f32),
     pub open_menu: Option<usize>,
+    /// 是否显示"安装"Dock 图标（仅 Live ISO 会话）
+    pub show_installer: bool,
+    /// 安装向导窗口（None = 关闭）
+    pub installer: Option<InstallerUi<'a>>,
+}
+
+/// 安装向导的阶段（渲染用；状态机在 main.rs）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallerPhase {
+    Idle,
+    Running,
+    Done,
+    Failed,
+}
+
+/// 安装向导窗口的一帧快照。
+pub struct InstallerUi<'a> {
+    /// (设备, 容量MB) 候选列表
+    pub disks: &'a [(String, u64)],
+    pub selected: usize,
+    pub phase: InstallerPhase,
+    /// Done/Failed 时附带的结果说明
+    pub message: Option<&'a str>,
 }
 
 /// 帧渲染器：持有跨帧缓存（背景层等）与可点击区域登记（供命中测试）。
@@ -223,6 +246,10 @@ pub struct Renderer {
     pub dock_icons: Vec<Rect>,
     /// 当前展开的下拉菜单：(各项命中区, 文案)
     pub dropdown: Option<(Vec<Rect>, Vec<&'static str>)>,
+    /// 安装向导磁盘行的命中区 (矩形, 设备名, 容量MB)
+    pub installer_rows: Vec<(Rect, String, u64)>,
+    /// "开始安装"按钮命中区
+    pub installer_button: Rect,
 }
 
 impl Renderer {
@@ -236,6 +263,8 @@ impl Renderer {
             search_pill: Rect { x: 0, y: 0, w: 0, h: 0 },
             dock_icons: Vec::new(),
             dropdown: None,
+            installer_rows: Vec::new(),
+            installer_button: Rect { x: 0, y: 0, w: 0, h: 0 },
         }
     }
 
@@ -283,7 +312,12 @@ impl Renderer {
         self.draw_ai_bar(buf, w, h, ui.ai_input, tr);
 
         let open_titles: Vec<&str> = desktop.wins.iter().map(|x| x.title).collect();
-        self.draw_dock(buf, w, h, &open_titles, tr);
+        self.draw_dock(buf, w, h, &open_titles, ui, tr);
+
+        // 安装向导浮在最上层（Toast 之下）
+        if let Some(inst) = &ui.installer {
+            self.draw_installer(buf, w, h, inst, tr);
+        }
 
         if let Some((msg, age)) = ui.toast {
             draw_toast(buf, w, h, msg, age, tr);
@@ -643,14 +677,19 @@ const DOCK_PAD: i32 = 10;
 
 impl Renderer {
     /// Dock：磨砂托盘 + 渐变图标 + 运行指示点（真实反映已打开窗口）。
-    fn draw_dock(&mut self, buf: &mut [u32], w: usize, h: usize, open_titles: &[&str], tr: Option<&TextRenderer>) {
-        let apps: [(&str, [u8; 3], [u8; 3]); 5] = [
+    /// Live ISO 会话（ui.show_installer）在末尾附加"安装"图标。
+    fn draw_dock(&mut self, buf: &mut [u32], w: usize, h: usize, open_titles: &[&str], ui: &UiState, tr: Option<&TextRenderer>) {
+        let mut apps: Vec<(&str, [u8; 3], [u8; 3])> = vec![
             (strings::WIN_FILES, [64, 150, 235], [42, 108, 205]),
             (strings::WIN_TERM, [62, 62, 72], [36, 36, 44]),
             (strings::WIN_BROWSER, [64, 200, 208], [36, 152, 168]),
             (strings::WIN_MUSIC, [255, 122, 150], [225, 85, 125]),
             (strings::WIN_SETTINGS, [128, 132, 142], [92, 96, 106]),
         ];
+        if ui.show_installer {
+            apps.push((strings::INSTALLER, [96, 108, 222], [64, 72, 168]));
+        }
+        let apps = apps;
         let n = apps.len() as i32;
         let tray_w = n * DOCK_ICON + (n + 1) * DOCK_PAD;
         let tray_h = DOCK_ICON + 2 * DOCK_PAD;
@@ -686,6 +725,14 @@ impl Renderer {
                 3 => {
                     fill_rect(buf, w, h, Rect { x: ix + 26, y: iy + 12, w: 3, h: 20 }, palette::TEXT, 0.95);
                     rounded_rect(buf, w, h, Rect { x: ix + 16, y: iy + 26, w: 13, h: 10 }, 5.0, palette::TEXT, 0.95);
+                }
+                _ if *name == strings::INSTALLER => {
+                    // 安装：向下箭头 + 底座（"写入磁盘"造型）
+                    fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 10, w: 6, h: 12 }, palette::TEXT, 0.95);
+                    for r in 0..6i32 {
+                        fill_rect(buf, w, h, Rect { x: ix + 14 + r, y: iy + 22 + r, w: 18 - 2 * r, h: 2 }, palette::TEXT, 0.95);
+                    }
+                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 33, w: 22, h: 3 }, palette::TEXT, 0.95);
                 }
                 _ => {
                     rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, palette::TEXT, 0.95);
@@ -728,6 +775,94 @@ pub fn draw_cursor(buf: &mut [u32], w: usize, h: usize, mx: f32, my: f32) {
                 blend_pixel(buf, idx, [10, 10, 14], 0.9);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 安装向导窗口（Live ISO → Dock"安装"图标打开）
+// ---------------------------------------------------------------------------
+
+impl Renderer {
+    fn draw_installer(&mut self, buf: &mut [u32], w: usize, h: usize, inst: &InstallerUi, tr: Option<&TextRenderer>) {
+        let win_w = 640i32;
+        let win_h = 400i32;
+        let win = Rect {
+            x: w as i32 / 2 - win_w / 2,
+            y: ((h as i32 - win_h) / 2 - 30).max(56),
+            w: win_w,
+            h: win_h,
+        };
+        shadow(buf, w, h, win, 16.0, 1.2);
+        rounded_rect(buf, w, h, win, 14.0, palette::PANEL, 0.97);
+        rounded_outline(buf, w, h, win, 14.0, palette::HAIRLINE, 0.16);
+        let Some(tr) = tr else { return };
+
+        // 标题栏
+        tr.draw_bold(buf, w, h, (win.x + 18) as f32, (win.y + 10) as f32, "安装 AetherOS", 15.0, palette::TEXT, 0.95);
+        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + 36, w: win.w - 2, h: 1 }, palette::HAIRLINE, 0.08);
+
+        // 提示行
+        draw_text(tr, buf, w, h, (win.x + 18) as f32, (win.y + 48) as f32,
+                  "选择目标磁盘并确认。整盘覆盖，目标盘上的数据将丢失。", 12.5, palette::TEXT_DIM, 0.85);
+
+        // 磁盘行
+        self.installer_rows.clear();
+        let row_y0 = win.y + 74;
+        for (i, (dev, mb)) in inst.disks.iter().enumerate() {
+            let r = Rect { x: win.x + 16, y: row_y0 + i as i32 * 50, w: win.w - 32, h: 44 };
+            if inst.selected == i {
+                rounded_rect(buf, w, h, r, 10.0, palette::ACCENT, 0.16);
+                rounded_outline(buf, w, h, r, 10.0, palette::ACCENT, 0.45);
+                fill_rect(buf, w, h, Rect { x: r.x + 12, y: r.y + 17, w: 10, h: 10 }, palette::ACCENT, 0.95);
+            } else {
+                rounded_rect(buf, w, h, r, 10.0, palette::HAIRLINE, 0.05);
+                rounded_outline(buf, w, h, r, 10.0, palette::HAIRLINE, 0.10);
+                rounded_outline(buf, w, h, Rect { x: r.x + 11, y: r.y + 16, w: 12, h: 12 }, 6.0, palette::TEXT_DIM, 0.7);
+            }
+            tr.draw_bold(buf, w, h, (r.x + 34) as f32, (r.y + 8) as f32, dev, 13.5, palette::TEXT, 0.92);
+            let sz = format!("{mb} MB 可用");
+            let sw = tr.measure(&sz, 12.0);
+            draw_text(tr, buf, w, h, (r.x + r.w - 16) as f32 - sw, (r.y + 12) as f32, &sz, 12.0, palette::TEXT_DIM, 0.8);
+            self.installer_rows.push((r, dev.clone(), *mb));
+        }
+
+        // 阶段信息行
+        let msg_y = (win.y + win_h - 104) as f32;
+        match (inst.phase, inst.message) {
+            (InstallerPhase::Running, _) => {
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "正在写入磁盘，请勿关机…", 13.0, palette::ACCENT, 0.95);
+            }
+            (InstallerPhase::Done, Some(m)) => {
+                let mut shown: String = m.to_string();
+                while tr.measure(&shown, 12.5) > (win.w - 36) as f32 && shown.chars().count() > 4 {
+                    shown.remove(0);
+                }
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, 12.5, palette::ZOOM, 0.95);
+            }
+            (InstallerPhase::Failed, Some(m)) => {
+                let mut shown: String = m.to_string();
+                while tr.measure(&shown, 12.5) > (win.w - 36) as f32 && shown.chars().count() > 4 {
+                    shown.remove(0);
+                }
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, 12.5, palette::CLOSE, 0.95);
+            }
+            _ => {
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "就绪。也可以选中磁盘后按 Enter 开始。", 12.5, palette::TEXT_DIM, 0.75);
+            }
+        }
+
+        // 主按钮
+        let button = Rect { x: win.x + win.w / 2 - 160, y: win.y + win_h - 62, w: 320, h: 44 };
+        let (label, alpha) = match inst.phase {
+            InstallerPhase::Idle => ("开始安装（整盘覆盖）", 0.85),
+            InstallerPhase::Running => ("安装中…", 0.45),
+            InstallerPhase::Done => ("完成 · 重启后从磁盘引导", 0.85),
+            InstallerPhase::Failed => ("重试安装", 0.85),
+        };
+        rounded_rect(buf, w, h, button, 10.0, palette::ACCENT, alpha);
+        let lw = tr.measure_bold(label, 13.5);
+        tr.draw_bold(buf, w, h, (button.x + button.w / 2) as f32 - lw / 2.0, (button.y + 13) as f32, label, 13.5, palette::TEXT, 0.97);
+        self.installer_button = button;
     }
 }
 

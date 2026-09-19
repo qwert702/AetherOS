@@ -145,7 +145,7 @@ fn main() -> Result<()> {
                 std::process::exit(2);
             }
             let cfg = config_from_env();
-            let gate = Gate::new(PathBuf::from("aether-audit.log"));
+            let gate = Gate::new(PathBuf::from("/var/log/aether/aether-audit.log"));
             let (answer, _actions) = agent_run(&cfg, &gate, &text).context("agent 运行失败")?;
             println!("{answer}");
         }

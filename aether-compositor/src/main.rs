@@ -17,7 +17,7 @@ mod layout;
 mod text;
 
 use aether_ipc::{Request, Response};
-use draw::{Desktop, Rect, Win};
+use draw::{Desktop, InstallerPhase, InstallerUi, Rect, Win};
 #[cfg(not(target_os = "linux"))]
 use draw::UiState;
 use layout::Layout;
@@ -37,6 +37,20 @@ fn tty_log(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/dev/tty0") {
         let _ = write!(f, "\r\n[AETHER compositor] {msg}\r\n");
     }
+}
+
+/// 启动安装线程（按钮/键盘共用）；返回是否真正启动。
+#[cfg(target_os = "linux")]
+fn begin_install(installer: &mut Installer, tx: &mpsc::Sender<InstallEvent>) -> bool {
+    if installer.running || installer.disks.is_empty() {
+        return false;
+    }
+    let disk = installer.disks[installer.selected].0.clone();
+    installer.running = true;
+    installer.message = None;
+    let tx = tx.clone();
+    std::thread::spawn(move || run_install(disk, tx));
+    true
 }
 
 /// 系统内 framebuffer 模式：以屏幕真实分辨率渲染 Essence 桌面。
@@ -63,6 +77,10 @@ fn run_fbdev() -> anyhow::Result<()> {
     let (input_tx, input_rx) = mpsc::channel();
     input::spawn(input_tx);
     let (ai_tx, ai_rx) = mpsc::channel::<AiEvent>();
+    // Live ISO（有光驱）才显示"安装"Dock 图标
+    let live_installer = std::path::Path::new("/dev/sr0").exists();
+    let mut installer = Installer::new();
+    let (inst_tx, inst_rx) = mpsc::channel::<InstallEvent>();
 
     let start = Instant::now();
     let mut frames: u64 = 0;
@@ -70,6 +88,8 @@ fn run_fbdev() -> anyhow::Result<()> {
     // 输入/UI 状态
     let mut mouse = (w as f32 / 2.0, h as f32 / 2.0);
     let mut mouse_down = false;
+    // 本帧待处理的点击（按下-抬起可能同帧到达）
+    let mut click_pending = false;
     let mut drag: Option<(usize, f32, f32)> = None;
     let mut snap_zone = layout::Snap::None;
     let mut toast: Option<(String, Instant)> = None;
@@ -92,6 +112,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 input::UiEvent::MouseDown => mouse_down = true,
                 input::UiEvent::MouseUp => {
                     mouse_down = false;
+                    let was_drag = drag.is_some();
                     if let Some((i, _, _)) = drag.take() {
                         if snap_zone != layout::Snap::None {
                             let work = layout::work_area(w, h);
@@ -100,19 +121,38 @@ fn run_fbdev() -> anyhow::Result<()> {
                         }
                     }
                     snap_zone = layout::Snap::None;
+                    // 非拖拽的按下-抬起 = 一次点击。QMP/真机都可能把 down+up
+                    // 打进同一批事件，在帧间锁存，否则快速点击会被吞掉。
+                    if !was_drag {
+                        click_pending = true;
+                    }
                 }
-                input::UiEvent::Char(c) => ai_input.push(c),
+                input::UiEvent::Char(c) => {
+                    // 向导打开时键盘让位给向导（Enter=安装、Esc=关闭），字符不进指令条
+                    if !installer.open {
+                        ai_input.push(c);
+                    }
+                }
                 input::UiEvent::Backspace => {
                     ai_input.pop();
                 }
-                input::UiEvent::Escape => open_menu = None,
+                input::UiEvent::Escape => {
+                    open_menu = None;
+                    if installer.open && !installer.running {
+                        installer.open = false;
+                    }
+                }
                 input::UiEvent::LayoutKey(n) => {
                     if let Some(msg) = set_layout(&mut desktop, layout::Layout::ALL[(n - 1).clamp(0, 3)]) {
                         toast = Some((msg, Instant::now()));
                     }
                 }
                 input::UiEvent::Enter => {
-                    if !ai_input.trim().is_empty() {
+                    if installer.open {
+                        if begin_install(&mut installer, &inst_tx) {
+                            tty_log("安装向导 → 开始安装（键盘确认）");
+                        }
+                    } else if !ai_input.trim().is_empty() {
                         let text = ai_input.trim().to_string();
                         ai_input.clear();
                         ai_reply = Some(("…思考中".into(), Instant::now()));
@@ -135,9 +175,36 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
             }
         }
+        // 安装器结果轮询
+        while let Ok(ev) = inst_rx.try_recv() {
+            installer.running = false;
+            match ev {
+                InstallEvent::Done(output) => {
+                    let last = output.lines().last().unwrap_or("安装完成").to_string();
+                    installer.message = Some((last, false));
+                }
+                InstallEvent::Failed(e) => installer.message = Some((e, true)),
+            }
+        }
 
-        // ---- 3. 鼠标交互（拖拽优先，其次 UI 命中测试）----
-        if mouse_down {
+        // ---- 3. 鼠标交互 ----
+        let press = mouse_down || click_pending;
+        // 3.0 安装向导打开时独占命中（选盘 / 开始按钮）
+        if installer.open {
+            if press && !installer.running {
+                if let Some(i) = renderer
+                    .installer_rows
+                    .iter()
+                    .position(|(r, _, _)| r.contains(mouse.0, mouse.1))
+                {
+                    installer.selected = i;
+                } else if renderer.installer_button.contains(mouse.0, mouse.1)
+                    && begin_install(&mut installer, &inst_tx)
+                {
+                    tty_log("安装向导 → 开始安装（按钮确认）");
+                }
+            }
+        } else if mouse_down || click_pending {
             if let Some((i, lx, ly)) = drag {
                 let win = &mut desktop.wins[i].rect;
                 win.x += (mouse.0 - lx) as i32;
@@ -173,7 +240,10 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 open_menu = None;
             } else if let Some(icon) = renderer.dock_icons.iter().position(|r| r.contains(mouse.0, mouse.1)) {
-                if let Some(msg) = open_app(&mut desktop, icon) {
+                // Live ISO 时第 6 个图标是"安装"向导
+                if live_installer && icon == APP_TITLES.len() {
+                    installer.open();
+                } else if let Some(msg) = open_app(&mut desktop, icon) {
                     toast = Some((msg, Instant::now()));
                 }
             } else {
@@ -185,10 +255,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                         let clicked = desktop.wins.remove(i);
                         desktop.wins.push(clicked);
                         desktop.active = desktop.wins.len() - 1;
-                        let wi = desktop.wins.len() - 1;
-                        desktop.wins[wi].floating = true;
-                        desktop.wins[wi].target = None;
-                        drag = Some((wi, mouse.0, mouse.1));
+                        // 点击（tap）只抬升置顶；按住才进入拖拽
+                        if mouse_down {
+                            let wi = desktop.wins.len() - 1;
+                            desktop.wins[wi].floating = true;
+                            desktop.wins[wi].target = None;
+                            drag = Some((wi, mouse.0, mouse.1));
+                        }
                         break;
                     }
                 }
@@ -242,12 +315,16 @@ fn run_fbdev() -> anyhow::Result<()> {
             ai_reply: reply_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             mouse,
             open_menu,
+            show_installer: live_installer,
+            installer: installer.snapshot(),
         };
 
         // ---- 5. 渲染 + 软件光标 + 上屏 ----
         renderer.render_frame(&mut buf, w, h, t, &desktop, &ui, tr.as_ref());
         draw::draw_cursor(&mut buf, w, h, mouse.0, mouse.1);
         fb.blit(&buf, w, h);
+        // 点击锁存只对本帧有效
+        click_pending = false;
 
         frames += 1;
         // 心跳：确认渲染循环在持续推进（串口/文本控制台可见）
@@ -297,6 +374,127 @@ enum AiEvent {
     Reply(String),
     Action(String, serde_json::Value),
     Error(String),
+}
+
+/// 安装向导状态（仅 Live ISO 会话；run_fbdev 持有）。
+#[cfg(target_os = "linux")]
+struct Installer {
+    open: bool,
+    disks: Vec<(String, u64)>,
+    selected: usize,
+    running: bool,
+    /// (结果文案, 是否错误)
+    message: Option<(String, bool)>,
+}
+
+#[cfg(target_os = "linux")]
+impl Installer {
+    fn new() -> Self {
+        Self { open: false, disks: Vec::new(), selected: 0, running: false, message: None }
+    }
+
+    /// 打开向导并扫描磁盘（每次打开重扫，热插拔友好）。
+    fn open(&mut self) {
+        self.disks = scan_disks();
+        if self.selected >= self.disks.len() {
+            self.selected = 0;
+        }
+        self.open = true;
+        tty_log(&format!("安装向导打开，发现 {} 块磁盘", self.disks.len()));
+    }
+
+    fn snapshot(&self) -> Option<InstallerUi<'_>> {
+        if !self.open {
+            return None;
+        }
+        let phase = if self.running {
+            InstallerPhase::Running
+        } else {
+            match &self.message {
+                Some((_, false)) => InstallerPhase::Done,
+                Some((_, true)) => InstallerPhase::Failed,
+                None => InstallerPhase::Idle,
+            }
+        };
+        Some(InstallerUi {
+            disks: &self.disks,
+            selected: self.selected,
+            phase,
+            message: self.message.as_ref().map(|(m, _)| m.as_str()),
+        })
+    }
+}
+
+/// 扫描候选安装盘：/sys/block，排除 loop/ram/zram/sr/fd/dm。
+#[cfg(target_os = "linux")]
+fn scan_disks() -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir("/sys/block") {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let skip = name.starts_with("loop")
+                || name.starts_with("ram")
+                || name.starts_with("zram")
+                || name.starts_with("sr")
+                || name.starts_with("fd")
+                || name.starts_with("dm-");
+            if skip {
+                continue;
+            }
+            if let Ok(sz) = std::fs::read_to_string(format!("/sys/block/{name}/size")) {
+                if let Ok(sectors) = sz.trim().parse::<u64>() {
+                    let mb = sectors * 512 / 1024 / 1024;
+                    if mb > 0 {
+                        out.push((format!("/dev/{name}"), mb));
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// 安装事件（后台线程 → 渲染主循环）。
+#[cfg(target_os = "linux")]
+enum InstallEvent {
+    Done(String),
+    Failed(String),
+}
+
+/// 经 aetherd ToolCall 执行整盘安装（与 AI 指令条同一通路，审计留痕）。
+#[cfg(target_os = "linux")]
+fn run_install(disk: String, tx: mpsc::Sender<InstallEvent>) {
+    let run = || -> anyhow::Result<String> {
+        println!("aether-compositor: 安装器 → 请求安装到 {disk}");
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+        stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
+        let req = Request::ToolCall {
+            session_id: "installer".into(),
+            tool: "install_disk".into(),
+            arguments: serde_json::json!({ "disk": disk }),
+        };
+        stream.write_all(aether_ipc::encode(&req).as_bytes())?;
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line)?;
+        match aether_ipc::decode::<Response>(&line)? {
+            Response::ToolResult { ok, output, .. } if ok => Ok(output),
+            Response::ToolResult { output, .. } => Err(anyhow::anyhow!("{output}")),
+            Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
+            _ => Err(anyhow::anyhow!("aetherd 返回了意外响应")),
+        }
+    };
+    let _ = tx.send(match run() {
+        Ok(output) => {
+            println!("aether-compositor: 安装器 → 完成: {}", output.lines().last().unwrap_or(""));
+            InstallEvent::Done(output)
+        }
+        Err(e) => {
+            println!("aether-compositor: 安装器 → 失败: {e}");
+            InstallEvent::Failed(e.to_string())
+        }
+    });
 }
 
 /// 在后台线程里连接 aetherd、发送 Chat、收集响应直到 done。
@@ -402,6 +600,9 @@ const APP_TITLES: [&str; 5] = [
 ];
 
 fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
+    if icon >= APP_TITLES.len() {
+        return Some("未知应用".into());
+    }
     if desktop.wins.len() >= 8 {
         return Some("窗口数量已达上限（8）".into());
     }
@@ -476,6 +677,8 @@ fn main() -> anyhow::Result<()> {
             ai_reply: Some((sample_reply, 0.5)),
             mouse: if args.contains(&"--menu".to_string()) { (700.0, 120.0) } else { (0.0, 0.0) },
             open_menu: if args.contains(&"--menu".to_string()) { Some(2) } else { None },
+            show_installer: false,
+            installer: None,
         };
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         draw::write_bmp("preview.bmp", &buf, WIDTH, HEIGHT)?;
@@ -719,6 +922,8 @@ fn preview_main() -> anyhow::Result<()> {
             ai_reply: reply_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             mouse: (mx, my),
             open_menu,
+            show_installer: false,
+            installer: None,
         };
 
         // 空闲降帧：没有任何动画/交互时不必跑满 60fps

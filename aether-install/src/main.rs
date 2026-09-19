@@ -290,7 +290,7 @@ fn setup_persist(disk: &str) -> Result<String> {
     if !st.success() {
         bail!("挂载 {node_s} 到 {PERSIST_MNT} 失败");
     }
-    for d in ["log", "diag", "lib", "tmp", "spool"] {
+    for d in ["log", "diag", "lib", "tmp", "spool", "home"] {
         std::fs::create_dir_all(format!("{PERSIST_MNT}/{d}")).ok();
     }
     // /var/run 在本系统里指向 /run（tmpfs）：持久分区上保持同样的软链，

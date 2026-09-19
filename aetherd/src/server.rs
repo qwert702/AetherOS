@@ -20,7 +20,7 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
         cfg.cloud.is_some()
     );
     let cfg = Arc::new(cfg);
-    let gate = Arc::new(Gate::new(PathBuf::from("aether-audit.log")));
+    let gate = Arc::new(Gate::new(PathBuf::from("/var/log/aether/aether-audit.log")));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let cfg = cfg.clone();

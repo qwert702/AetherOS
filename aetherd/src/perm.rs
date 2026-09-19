@@ -53,7 +53,11 @@ pub enum Verdict {
 }
 
 impl Gate {
+    /// 审计日志固定在 /var/log/aether/（持久化分区挂载点），跨重启保留。
     pub fn new(audit_path: PathBuf) -> Self {
+        if let Some(parent) = audit_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         Self { audit_path, auto_approve_below: Level::L2 }
     }
 

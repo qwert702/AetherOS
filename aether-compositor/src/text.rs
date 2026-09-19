@@ -189,6 +189,8 @@ pub mod strings {
     pub const WIN_BROWSER: &str = "浏览器";
     pub const WIN_MUSIC: &str = "音乐";
     pub const WIN_SETTINGS: &str = "设置";
+    /// Dock 第 6 图标（仅 Live ISO 会话显示）：打开安装向导
+    pub const INSTALLER: &str = "安装";
     pub const LOCAL_AI: &str = "本地模型在线";
 }
 
