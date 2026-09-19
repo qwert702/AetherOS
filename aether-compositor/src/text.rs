@@ -56,6 +56,18 @@ fn load_font(paths: &[&str]) -> Option<fontdue::Font> {
     None
 }
 
+/// 小字号覆盖增益：fontdue 是无 hinting 的解析式光栅化，≤14px 时细笔画
+/// 覆盖率偏低、中文发灰发虚。对覆盖率做低段线性增益换回清晰度——
+/// 只改覆盖率曲线，不动字形几何（基线修复的 ymin 约定不受影响）。
+fn sharpen(cov: f32, px: f32) -> f32 {
+    if px >= 14.0 || cov <= 0.0 {
+        return cov;
+    }
+    // 14px → 增益 1.0，11px → 1.45（每小 1px +0.15）
+    let gain = 1.0 + 0.15 * (14.0 - px).max(0.0);
+    (cov * gain).min(1.0)
+}
+
 impl TextRenderer {
     pub fn load() -> Option<Self> {
         let regular = load_font(REGULAR_FONTS)?;
@@ -82,6 +94,9 @@ impl TextRenderer {
         alpha: f32,
         bold: bool,
     ) -> f32 {
+        // 光栅化字号取整：非整数 px（过渡字号 12.5/13.5）的 AA 字形明显发虚。
+        // 渲染与测量在各自入口做同一取整，布局不因取整漂移。
+        let px = px.round();
         let scale = px / 40.0;
         let baseline = y + self.base_ascent * scale;
         let mut cx = x;
@@ -96,15 +111,15 @@ impl TextRenderer {
                 cx += m.advance_width;
                 continue;
             }
-            let gx = cx as i32 + m.xmin;
+            let gx = cx.round() as i32 + m.xmin;
             // fontdue 约定：ymin = 位图**底边**相对基线的偏移（+y 向上，负 = 低于基线）。
             // 屏幕坐标 y 向下，故位图顶行 = baseline - ymin - height。
             // 曾误写成 baseline + ymin（把底边当顶边），导致字形整体坠到基线下方：
             // 句点/下划线飞到半空、中英文基线错位。
-            let gy = baseline as i32 - m.ymin - m.height as i32;
+            let gy = baseline.round() as i32 - m.ymin - m.height as i32;
             for row in 0..m.height {
                 for col in 0..m.width {
-                    let cov = bitmap[row * m.width + col] as f32 / 255.0 * alpha;
+                    let cov = sharpen(bitmap[row * m.width + col] as f32 / 255.0, px) * alpha;
                     if cov <= 0.003 {
                         continue;
                     }
@@ -163,6 +178,8 @@ impl TextRenderer {
     }
 
     fn measure_with(&self, text: &str, px: f32, bold: bool) -> f32 {
+        // 与 render() 同步取整，保证测量宽度 == 实际绘制宽度
+        let px = px.round();
         let mut w = 0.0;
         for ch in text.chars() {
             if ch == ' ' {

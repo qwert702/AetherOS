@@ -703,6 +703,37 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // 字体标本模式：`--fonttest` 渲染 11–15px 中英文/粗细同屏单帧（文字渲染质量调参用）
+    #[cfg(not(target_os = "linux"))]
+    if args.iter().any(|a| a == "--fonttest") {
+        let tr = text::TextRenderer::load().expect("字体标本模式需要可用字体");
+        let (fw, fh) = (920usize, 560usize);
+        let mut buf = vec![0u32; fw * fh];
+        for p in buf.iter_mut() {
+            *p = (28 << 16) | (29 << 8) | 36;
+        }
+        let sentence = "中文清晰度：把窗口排成两列，打开终端与文件管理器。";
+        let latin = "Aether 0.1.0 — install_disk /dev/vda [OK]";
+        let mut y = 20.0f32;
+        for px in [11.0f32, 12.0, 13.0, 14.0, 15.0] {
+            for (bold, label) in [(false, "常规"), (true, "粗体")] {
+                let tag = format!("{px:.0}px {label}");
+                tr.draw(&mut buf, fw, fh, 16.0, y, &tag, 11.0, draw::theme::color::TEXT_DIM, 0.9);
+                let x = 96.0;
+                let x = tr.draw(&mut buf, fw, fh, x, y, sentence, px, draw::theme::color::TEXT, 0.98);
+                if bold {
+                    tr.draw_bold(&mut buf, fw, fh, x + 12.0, y, latin, px, draw::theme::color::TEXT, 0.98);
+                } else {
+                    tr.draw(&mut buf, fw, fh, x + 12.0, y, latin, px, draw::theme::color::TEXT_DIM, 0.9);
+                }
+                y += px * 1.9 + 6.0;
+            }
+        }
+        draw::write_bmp("fonttest.bmp", &buf, fw, fh)?;
+        println!("fonttest.bmp written");
+        return Ok(());
+    }
+
     // 桌面预览模式（minifb，仅非 Linux 主机开发迭代用；musl/系统内走 fbdev）
     #[cfg(not(target_os = "linux"))]
     {
