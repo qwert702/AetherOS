@@ -97,7 +97,11 @@ impl TextRenderer {
                 continue;
             }
             let gx = cx as i32 + m.xmin;
-            let gy = baseline as i32 + m.ymin;
+            // fontdue 约定：ymin = 位图**底边**相对基线的偏移（+y 向上，负 = 低于基线）。
+            // 屏幕坐标 y 向下，故位图顶行 = baseline - ymin - height。
+            // 曾误写成 baseline + ymin（把底边当顶边），导致字形整体坠到基线下方：
+            // 句点/下划线飞到半空、中英文基线错位。
+            let gy = baseline as i32 - m.ymin - m.height as i32;
             for row in 0..m.height {
                 for col in 0..m.width {
                     let cov = bitmap[row * m.width + col] as f32 / 255.0 * alpha;
