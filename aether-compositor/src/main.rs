@@ -205,8 +205,12 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
-                AiEvent::Reply(text) => {
-                    ai_status = draw::AiStatus::Local;
+                AiEvent::Reply(text, channel) => {
+                    ai_status = match channel.as_deref() {
+                        Some("cloud") => draw::AiStatus::Cloud,
+                        // 本地通道、未知通道均按本地展示（离线由 Error 事件接管）
+                        _ => draw::AiStatus::Local,
+                    };
                     thinking = false;
                     ai_reply = Some((text, draw::BubbleKind::Ai, Instant::now()));
                 }
@@ -550,7 +554,9 @@ fn dispatch_approved(req: ConfirmRequest, tx: &mpsc::Sender<AiEvent>) {
 /// AI 事件（后台线程 → 渲染主循环）。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum AiEvent {
-    Reply(String),
+    /// 回复文本 + 推理通道（Some("local")/Some("cloud")；None = 未知）。
+    /// 顶栏 AI 三态（本地青/云端紫/离线灰）据此更新（ui-design-handover 4.1）。
+    Reply(String, Option<String>),
     Action(String, serde_json::Value),
     Error(String),
     /// 工具调用需要用户确认（L2+）
@@ -716,14 +722,19 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
         let mut reply = String::new();
         let mut action: Option<(String, serde_json::Value)> = None;
         let mut confirm: Option<ConfirmRequest> = None;
+        // 最后一条 ChatChunk 携带的推理通道（"local"/"cloud"），决定顶栏三态
+        let mut channel: Option<String> = None;
         loop {
             line.clear();
             if reader.read_line(&mut line)? == 0 {
                 break;
             }
             match aether_ipc::decode::<Response>(&line) {
-                Ok(Response::ChatChunk { delta, done, .. }) => {
+                Ok(Response::ChatChunk { delta, done, channel: ch, .. }) => {
                     reply.push_str(&delta);
+                    if let Some(c) = ch {
+                        channel = Some(c);
+                    }
                     if done {
                         break;
                     }
@@ -753,7 +764,7 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
         println!("aether-compositor: AI 查询完成，回复 {} 字", reply.chars().count());
         let preview: String = reply.chars().take(96).collect();
         println!("aether-compositor: AI 回复: {preview}");
-        let _ = tx.send(AiEvent::Reply(reply));
+        let _ = tx.send(AiEvent::Reply(reply, channel));
         if let Some((name, args)) = action {
             let _ = tx.send(AiEvent::Action(name, args));
         }
@@ -915,14 +926,26 @@ fn main() -> anyhow::Result<()> {
             echo_required: if level >= 3 { Some("/dev/vda") } else { None },
             echo_input: echo_seed,
         });
+        // `--ai-status local|cloud|offline`：顶栏 AI 三态走查（4.1 验收依据）
+        let ai_status = match args.iter().position(|a| a == "--ai-status").and_then(|i| args.get(i + 1)) {
+            Some(s) if s == "cloud" => draw::AiStatus::Cloud,
+            Some(s) if s == "offline" => draw::AiStatus::Offline,
+            _ => draw::AiStatus::Local,
+        };
+        // `--bubble user|ai|tool`：三类回复气泡走查（4.2 验收依据）
+        let sample_bubble = match args.iter().position(|a| a == "--bubble").and_then(|i| args.get(i + 1)) {
+            Some(s) if s == "user" => draw::BubbleKind::User,
+            Some(s) if s == "tool" => draw::BubbleKind::Tool,
+            _ => draw::BubbleKind::Ai,
+        };
         let ui = draw::UiState {
             snap: None,
             toast: None,
             ai_input: sample_input,
             ai_focused: true,
             ai_thinking: args.iter().any(|a| a == "--thinking"),
-            ai_status: draw::AiStatus::Local,
-            ai_reply: Some((sample_reply, draw::BubbleKind::Ai, 0.5)),
+            ai_status,
+            ai_reply: Some((sample_reply, sample_bubble, 0.5)),
             mouse,
             mouse_down: false,
             open_menu: if args.contains(&"--menu".to_string()) { Some(2) } else { None },
@@ -1071,8 +1094,11 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                AiEvent::Reply(text) => {
-                    ai_status = draw::AiStatus::Local;
+                AiEvent::Reply(text, channel) => {
+                    ai_status = match channel.as_deref() {
+                        Some("cloud") => draw::AiStatus::Cloud,
+                        _ => draw::AiStatus::Local,
+                    };
                     thinking = false;
                     ai_reply = Some((text, draw::BubbleKind::Ai, Instant::now()));
                 }

@@ -10,6 +10,17 @@ pub enum Channel {
     Cloud,
 }
 
+impl Channel {
+    /// IPC 通道标识（"local"/"cloud"）：随 ChatChunk 回传客户端，
+    /// 合成器顶栏 AI 三态据此渲染（ui-design-handover 4.1）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::Local => "local",
+            Channel::Cloud => "cloud",
+        }
+    }
+}
+
 /// 路由决策依据。
 #[derive(Clone, Debug)]
 pub struct Task<'a> {
@@ -112,5 +123,12 @@ mod tests {
         let mut t2 = task("打开终端");
         t2.cloud_available = false;
         assert_eq!(route(&t2), Channel::Local);
+    }
+
+    #[test]
+    fn channel_labels_are_stable() {
+        // IPC 通道标识是线协议的一部分：改动会破坏顶栏状态渲染，须显式回归
+        assert_eq!(Channel::Local.label(), "local");
+        assert_eq!(Channel::Cloud.label(), "cloud");
     }
 }

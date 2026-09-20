@@ -50,6 +50,11 @@ pub enum Response {
         session_id: String,
         delta: String,
         done: bool,
+        /// 本轮回答实际使用的推理通道（"local"/"cloud"；None = 旧客户端/未知，
+        /// 顶栏 AI 三态据此渲染）。`#[serde(default)]` 保证向后兼容：
+        /// 旧客户端收新包、新客户端收旧包都不崩。
+        #[serde(default)]
+        channel: Option<String>,
     },
     ToolResult {
         tool: String,
@@ -177,5 +182,34 @@ mod tests {
     fn response_decodes() {
         let r: Response = decode(r#"{"type":"pong","payload":null}"#).unwrap();
         assert!(matches!(r, Response::Pong));
+    }
+
+    #[test]
+    fn chat_chunk_roundtrip_with_channel() {
+        let r = Response::ChatChunk {
+            session_id: "s1".into(),
+            delta: "好的".into(),
+            done: true,
+            channel: Some("local".into()),
+        };
+        let back: Response = decode(&encode(&r)).unwrap();
+        match back {
+            Response::ChatChunk { channel, delta, done, .. } => {
+                assert_eq!(channel.as_deref(), Some("local"));
+                assert_eq!(delta, "好的");
+                assert!(done);
+            }
+            other => panic!("应为 ChatChunk，实得 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_chunk_without_channel_decodes_to_none() {
+        // 向后兼容：旧服务端下发的无 channel 包也能解析
+        let r: Response = decode(r#"{"type":"chat_chunk","payload":{"session_id":"s1","delta":"hi","done":false}}"#).unwrap();
+        match r {
+            Response::ChatChunk { channel, .. } => assert_eq!(channel, None),
+            other => panic!("应为 ChatChunk，实得 {other:?}"),
+        }
     }
 }

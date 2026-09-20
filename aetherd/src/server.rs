@@ -149,6 +149,8 @@ fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate, approval
             session_id: session_id.into(),
             delta: reply,
             done: true,
+            // 快速意图是确定性本地通道，无需 LLM
+            channel: Some("local".into()),
         });
         return out;
     }
@@ -177,6 +179,8 @@ fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate, approval
                 session_id: session_id.into(),
                 delta: outcome.answer,
                 done: true,
+                // 本轮实际推理通道（"local"/"cloud"），顶栏三态据此渲染
+                channel: outcome.channel,
             });
             out
         }

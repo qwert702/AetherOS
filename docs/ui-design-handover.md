@@ -3,13 +3,13 @@
 日期：2026-09-20
 分支：`feat/ui-design-system`（基于 `fix/m3-desktop-render`）
 计划依据：`docs/ui-design-plan.md`
-当前状态：**Step 1–4 的代码已完成并验证；Step 4 有 3 项收尾、Step 5 未开始**
+当前状态：**Step 1–4 的代码已完成并验证；Step 4 收尾项 4.1/4.2/4.3（协议+UI 视觉）已于 2026-09-20 完成（见 §8），4.3 真机点击与 Step 5 未开始**
 
 ---
 
 ## 0. 一句话交接
 
-设计令牌体系（`draw.rs::theme`）已落地，四个核心组件已按 §3 重绘，**L2+ 权限确认从协议到弹窗全链路打通并实测通过**。接手方需要做的是：3 项 Step 4 收尾（都列在第 4 节）、Step 5 的走查与归档、以及需要实机环境才能做的截图更新。
+设计令牌体系（`draw.rs::theme`）已落地，四个核心组件已按 §3 重绘，**L2+ 权限确认从协议到弹窗全链路打通并实测通过**。接手方需要做的是：4.3 的真机点击端到端（需要交互式桌面/实机）、Step 5 的走查与归档、以及需要实机环境才能做的截图更新（§8.5 已推进协议侧与文档侧）。
 
 ---
 
@@ -28,10 +28,10 @@ a0f1268  代码审查 P0–P3 修复（37 项）← 本分支基线的成果，�
 
 | 检查 | 命令 | 当前结果 |
 |---|---|---|
-| 测试 | `cargo test --workspace` | 62 项全绿 |
+| 测试 | `cargo test --workspace` | 65 项全绿（Windows 宿主；含 Linux 专属共 82 项定义）|
 | 编译 | `cargo check --workspace --all-targets` | 零警告零错误 |
 | 像素回归 | 见 §5.3（`scripts/shot-diff.py`） | Step 1 时掩码外差异 0 像素 |
-| 权限链路 | `python scripts/e2e-permission-confirm.py`（需先起 aetherd） | 13 项断言全过 |
+| 权限链路 | `python scripts/e2e-permission-confirm.py`（需先起 aetherd） | 13 项断言全过（2026-09-20 代码变更后重跑仍全过） |
 
 ---
 
@@ -109,6 +109,8 @@ a0f1268  代码审查 P0–P3 修复（37 项）← 本分支基线的成果，�
 --installer        渲染安装向导单帧（demo 磁盘列表，非真实会话）
 --confirm 2|3      渲染 L2/L3 权限确认弹窗
 --echo             配合 --confirm，预填回显（走查"已匹配"态）
+--bubble user|ai|tool  回复气泡走查（4.2 新增）：默认 ai
+--ai-status local|cloud|offline  顶栏 AI 三态走查（4.1 新增）：默认 local
 --thinking         指令条思考动效态
 --fonttest         11–15px 字体标本 + 打印真实字体度量 → fonttest.bmp
 ```
@@ -237,3 +239,55 @@ python scripts/e2e-permission-confirm.py   # 13 项断言
 4. P2 的 4.6（roadmap 勾选）——成本极低，避免文档继续落后
 5. P2 的 4.4（走查）——纯核对，无风险
 6. P2 的 4.5 + P3（实机）——需要 Linux 虚拟机环境，建议单独一轮做
+
+---
+
+## 8. 实施推进记录（2026-09-20，按 §7 顺序执行）
+
+### 8.1 4.1 `AiStatus::Cloud` 接线 ✅
+
+| 改动点 | 变更 |
+|---|---|
+| `aether-ipc/src/lib.rs` | `Response::ChatChunk` 新增 `channel: Option<String>`（`#[serde(default)]` 向后兼容）；新增往返 + 旧包兼容 2 项单测 |
+| `aetherd/src/router.rs` | `Channel::label()`（"local"/"cloud"）+ 稳定标识单测 |
+| `aetherd/src/main.rs` | `AgentOutcome.channel`；`agent_run` 记录每轮实际路由通道并随四个返回点带上 |
+| `aetherd/src/server.rs` | 快速意图 → `channel:"local"`；LLM 路径 → `outcome.channel` |
+| `aether-compositor/src/main.rs` | `AiEvent::Reply(text, channel)`；`query_aether` 从 ChatChunk 捕获；fbdev 与 preview 两条路径按 channel 设置 `AiStatus::{Local,Cloud}`；`--shot` 新增 `--ai-status local\|cloud\|offline` 走查参数 |
+
+**验证（像素断言，`analyze.ps1` 18 项全过）**：顶栏状态点 本地=24 个青色像素、云端=24 个紫色像素、离线=0 彩色像素 + 灰色实心块。即「走云端=紫、仅本地=青、aetherd 停=灰」三态均已落地。
+**接受的验收标准**：云端配 `AETHER_API_KEY` 时顶栏紫色「云端模型」——已由 `--ai-status cloud` 走查截图覆盖渲染侧；真机配 Key 后由 §8.3 通路自然生效。
+
+### 8.2 4.2 气泡三类视觉验证 ✅
+
+- `aether-compositor/src/main.rs`：`--shot` 新增 `--bubble user|ai|tool`（默认 ai）
+- 生成三张走查图并做像素断言：三类气泡在气泡带内彼此差异显著（16k/5k/18k 像素），带外（掩码时钟/光标/气泡+阴影包络）差异 0/166 像素 → 确认参数只影响气泡本身；工具气泡含绿色状态条（68px）；用户气泡为 SURFACE_3 底色（6738 vs 362px）
+- 对齐目视结论：用户类靠右、AI/工具类靠左的偏移符合 `draw_reply` 公式
+
+### 8.3 4.3 确认弹窗交互 ✅（协议层 + UI 视觉；真机点击待实机）
+
+- **协议层**：重建 `aetherd` 后 `aetherd serve` + `python scripts/e2e-permission-confirm.py` → **13 项断言全过**（无令牌拦下/令牌放行/重放 403/篡改参数 403/L1 不受影响）
+- **UI 视觉**：`--confirm 2` / `--confirm 3` / `--confirm 3 --echo` 像素断言全过：L3 红徽章（1142px）、L2 黄徽章（988px）、回显匹配后描边转绿（未匹配 0 → 匹配 1128px）、遮罩压暗（38.1 → 29.0 平均亮度）
+- **未覆盖**：真实鼠标"点允许一次/点拒绝"的端到端点击（需交互式桌面或实机；Windows 预览点击无法脚本化）。单 `Option<confirm>` 并发覆盖的已知限制未变（合成器同一时刻仅一条 AI 查询在飞）
+
+### 8.4 4.4 全界面走查 ✅（核对结论，未改视觉）
+
+对照 §3 token 表 + 计划 §3 逐项核对 `draw.rs`/`layout.rs`：
+
+| 核对项 | 结论 |
+|---|---|
+| 圆角档位 | 全部落到 `radius::{SM,MD,LG}` 或标注为组件局部几何（26/20/11/7 等），观感一致，按 Step 1 约定可接受 |
+| 间距网格 | `GAP=14` 是计划 §3.3 明确保留的例外；其余间距遵循 4px 网格 |
+| 裸字号 | 文本绘制全部走 `font::` 令牌或 `--fonttest` 标的局部值；`div_ceil`/radius 非文本参数不含字号 |
+
+未发现需要修改的漏网令牌；P4-1（vcenter 依赖字体度量）与 P4-2（阴影性能未掐帧）维持原状。
+
+### 8.5 4.6 文档更新 ✅
+
+- `docs/roadmap.md`：按 git 历史与实测复核，M0–M6 全部勾选至完成态并补事实备注（smithay 未接入→fbdev 路径、Shell 职责由 compositor 承担、L2+ 确认链路、M5/M6 实测记录）；新增「UI 设计系统」章节
+- `docs/INDEX.md`：行数/组件表/测试分布/走查参数同步（7,500 行、65+17=82 项测试）
+
+### 8.6 遗留（需实机环境，未在本轮完成）
+
+- §4.5 `docs/screenshot-*.png` 实机重拍（需 QEMU/VBox/VMware）
+- §4.3 真实点击端到端（交互桌面）；P3 全部项（fbdev stride/modeset、init 救援、Unix socket 权限、ISO 引导链）
+- §P1 之外的已知限制：中文输入、接入真实 LLM 验证、`AiStatus::Cloud` 的真实云端触发（结构已通，等 API Key）

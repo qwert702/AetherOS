@@ -77,6 +77,8 @@ pub(crate) struct AgentOutcome {
     pub actions: Vec<crate::intent::DesktopAction>,
     /// 有值表示本次因 L2+ 操作暂停，UI 确认后由 `ToolCall + approval` 重发执行
     pub pending: Option<PendingConfirm>,
+    /// 本轮回答实际使用的推理通道（"local"/"cloud"），随 ChatChunk 回传客户端
+    pub channel: Option<String>,
 }
 
 /// Agent 主循环：最多 MAX_ROUNDS 轮工具调用。
@@ -85,6 +87,8 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
     const MAX_ROUNDS: usize = 4;
     let local_ok = llm::local_available(&cfg.local.base_url);
     let mut ctx = tools::ToolCtx::default();
+    // 记录每轮实际路由的通道：最终回答的 channel 随 ChatChunk 回传客户端
+    let mut last_channel: Option<router::Channel> = None;
     let mut messages = vec![
         llm::Message { role: "system".into(), content: SYSTEM_PROMPT.into(), tool_calls: None, tool_call_id: None, name: None },
         llm::Message { role: "user".into(), content: user_text.into(), tool_calls: None, tool_call_id: None, name: None },
@@ -100,6 +104,7 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
             cloud_available: cfg.cloud.is_some(),
         };
         let channel = router::route(&task);
+        last_channel = Some(channel);
         let endpoint = match (channel, &cfg.cloud) {
             (router::Channel::Cloud, Some(cloud)) => cloud,
             _ => {
@@ -120,6 +125,7 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
                 answer: resp.content,
                 actions: std::mem::take(&mut ctx.desktop_actions),
                 pending: None,
+                channel: last_channel.map(|c| c.label().to_string()),
             });
         };
         let calls = raw_calls.as_array().cloned().unwrap_or_default();
@@ -131,6 +137,7 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
                 answer,
                 actions: std::mem::take(&mut ctx.desktop_actions),
                 pending: None,
+                channel: last_channel.map(|c| c.label().to_string()),
             });
         }
 
@@ -165,6 +172,7 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
                             consequence: consequence.to_string(),
                             echo_required,
                         }),
+                        channel: last_channel.map(|c| c.label().to_string()),
                     });
                 }
                 Err(e) => format!("[工具错误] {e}"),
@@ -182,6 +190,7 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
         answer: "（已达本轮工具调用上限，请拆分任务）".into(),
         actions: std::mem::take(&mut ctx.desktop_actions),
         pending: None,
+        channel: last_channel.map(|c| c.label().to_string()),
     })
 }
 

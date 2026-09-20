@@ -347,12 +347,11 @@ pub enum BubbleKind {
 
 /// AI 通路状态（§4 三态：本地青 / 云端紫 / 离线灰）。
 ///
-/// 待接线：`Cloud` 需要 aetherd 在响应里回传实际使用的通道
-/// （见 docs/ui-design-system-handover.md 的未完成项）。
+/// 三态均已接线：`Cloud` 由 aetherd 在 ChatChunk.channel=="cloud" 时驱动
+/// （协议扩展见 ui-design-handover §8.1）；`Offline` 由连接失败驱动。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AiStatus {
     Local,
-    #[allow(dead_code)]
     Cloud,
     Offline,
 }
