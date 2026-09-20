@@ -330,6 +330,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             ai_input: &ai_input,
             ai_reply: reply_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             mouse,
+            mouse_down,
             open_menu,
             show_installer: live_installer,
             installer: installer.snapshot(),
@@ -687,15 +688,34 @@ fn main() -> anyhow::Result<()> {
         let mut renderer = draw::Renderer::new(WIDTH, HEIGHT);
         let sample_input = "把窗口排成两列";
         let sample_reply = "好的，已把窗口排成两列。";
+        // `--mouse X Y`：把指针放到指定位置，便于截图覆盖悬停态（红绿灯符号、Dock hover…）
+        let mouse = args
+            .iter()
+            .position(|a| a == "--mouse")
+            .and_then(|i| {
+                let x = args.get(i + 1)?.parse::<f32>().ok()?;
+                let y = args.get(i + 2)?.parse::<f32>().ok()?;
+                Some((x, y))
+            })
+            .unwrap_or(if args.contains(&"--menu".to_string()) { (700.0, 120.0) } else { (0.0, 0.0) });
+        // `--installer`：渲染安装向导单帧（视觉走查用，非真实会话）
+        let demo_disks = vec![("/dev/vda".to_string(), 20_480u64), ("/dev/vdb".to_string(), 8_192)];
+        let installer = args.iter().any(|a| a == "--installer").then(|| draw::InstallerUi {
+            disks: &demo_disks,
+            selected: 0,
+            phase: draw::InstallerPhase::Idle,
+            message: None,
+        });
         let ui = draw::UiState {
             snap: None,
             toast: None,
             ai_input: sample_input,
             ai_reply: Some((sample_reply, 0.5)),
-            mouse: if args.contains(&"--menu".to_string()) { (700.0, 120.0) } else { (0.0, 0.0) },
+            mouse,
+            mouse_down: false,
             open_menu: if args.contains(&"--menu".to_string()) { Some(2) } else { None },
-            show_installer: false,
-            installer: None,
+            show_installer: args.iter().any(|a| a == "--installer"),
+            installer,
         };
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         draw::write_bmp("preview.bmp", &buf, WIDTH, HEIGHT)?;
@@ -707,6 +727,8 @@ fn main() -> anyhow::Result<()> {
     #[cfg(not(target_os = "linux"))]
     if args.iter().any(|a| a == "--fonttest") {
         let tr = text::TextRenderer::load().expect("字体标本模式需要可用字体");
+        // 打印真实 metrics：垂直居中的换算依赖它，靠猜会在换字体后错位
+        tr.dump_metrics(&[11.0, 12.0, 13.0, 14.0, 20.0]);
         let (fw, fh) = (920usize, 560usize);
         let mut buf = vec![0u32; fw * fh];
         for p in buf.iter_mut() {
@@ -966,6 +988,7 @@ fn preview_main() -> anyhow::Result<()> {
             ai_input: &ai_input,
             ai_reply: reply_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             mouse: (mx, my),
+            mouse_down: down,
             open_menu,
             show_installer: false,
             installer: None,

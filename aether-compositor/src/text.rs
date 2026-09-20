@@ -69,6 +69,40 @@ fn sharpen(cov: f32, px: f32) -> f32 {
 }
 
 impl TextRenderer {
+    /// 打印字号相关的真实度量（垂直居中与行高换算的依据）。
+    /// 换字体或升级 fontdue 后用 `--fonttest` 复跑，确认偏移量仍然成立。
+    pub fn dump_metrics(&self, sizes: &[f32]) {
+        eprintln!("aether-compositor: base_ascent={}", self.base_ascent);
+        for &px in sizes {
+            let m = self.regular.horizontal_line_metrics(px);
+            let (lm, _) = self.regular.rasterize('国', px);
+            let ink_c = lm.ymin as f32 + lm.height as f32 / 2.0; // 墨迹中心相对基线（+y 向上）
+            eprintln!(
+                "  {px}px: ascent={:?} descent={:?} line_gap={:?} | 国 ymin={} h={} → 墨迹中心距基线 {:.1}px",
+                m.map(|m| m.ascent), m.map(|m| m.descent), m.map(|m| m.line_gap),
+                lm.ymin, lm.height, ink_c
+            );
+        }
+    }
+
+    /// 在高度 `height` 的条带内垂直居中一行文本，返回 draw()/draw_bold() 的 y。
+    ///
+    /// draw() 的 y 是"行顶部"（baseline = y + ascent）。要让**字形墨迹**居中，
+    /// 需从条带中心减掉 ascent，再加回字形墨迹中心到基线的距离——后者用
+    /// "国"（CJK 字面基本占满 em 方框）代表，混排以中文为主时这是正确的基准。
+    /// 换字体后用 `--fonttest` 复跑 dump_metrics 即可确认。
+    pub fn vcenter(&self, top: f32, height: f32, px: f32) -> f32 {
+        let px = px.round();
+        let ascent = self
+            .regular
+            .horizontal_line_metrics(px)
+            .map(|m| m.ascent)
+            .unwrap_or(self.base_ascent * px / 40.0);
+        let (m, _) = self.regular.rasterize('国', px);
+        let ink_c = m.ymin as f32 + m.height as f32 / 2.0;
+        top + height / 2.0 - ascent + ink_c
+    }
+
     pub fn load() -> Option<Self> {
         let regular = load_font(REGULAR_FONTS)?;
         let bold = load_font(BOLD_FONTS).unwrap_or_else(|| {
