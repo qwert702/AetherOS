@@ -27,7 +27,8 @@ pub struct Tool {
     pub run: fn(&Value, &mut ToolCtx) -> Result<String>,
     /// 一句话后果说明（L2+ 确认卡片展示给用户；L0/L1 留空）
     pub consequence: &'static str,
-    /// L3 回显确认的目标参数名（如 "disk"）：用户须原样输入该参数值
+    /// L3 回显确认：需原样输入的参数名（如 "disk"）。上抛确认请求时会被
+    /// 解析成该参数的**实际值**（如 "/dev/vda"）——用户要回显的是目标本身。
     pub echo_field: Option<&'static str>,
 }
 
@@ -136,7 +137,8 @@ pub enum ExecOutcome {
         level: Level,
         arguments: Value,
         consequence: &'static str,
-        echo_required: Option<&'static str>,
+        /// L3 回显目标（参数实际值，运行时才知道，故为 String）
+        echo_required: Option<String>,
     },
 }
 
@@ -170,7 +172,12 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
             level: tool.level,
             arguments: args.clone(),
             consequence: tool.consequence,
-            echo_required: tool.echo_field,
+            // 回显目标取参数实际值：用户要确认的是"/dev/vda"，不是字段名"disk"
+            echo_required: tool
+                .echo_field
+                .and_then(|field| args.get(field))
+                .and_then(|v| v.as_str())
+                .map(String::from),
         }),
         Verdict::Denied(reason) => bail!("DENIED: {reason}"),
     }
@@ -420,8 +427,8 @@ mod tests {
             Ok(ExecOutcome::NeedsConfirmation { tool, level, echo_required, consequence, .. }) => {
                 assert_eq!(tool, "install_disk");
                 assert_eq!(level as u8, 3);
-                // L3 必须要求回显目标盘名，且给出后果说明
-                assert_eq!(echo_required, Some("disk"));
+                // L3 必须要求回显目标盘名（实际值而非字段名），且给出后果说明
+                assert_eq!(echo_required.as_deref(), Some("/dev/vda"));
                 assert!(!consequence.is_empty(), "确认卡片需要后果说明");
             }
             other => panic!("L3 未批准应返回确认请求，实得: {other:?}"),

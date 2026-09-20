@@ -78,7 +78,7 @@ pub enum Response {
         arguments: serde_json::Value,
         /// 一句话后果说明
         consequence: String,
-        /// L3 需回显确认的目标文本（如 "/dev/vda"）；None = 只需点确认
+        /// L3 需回显确认的**目标值**（如 "/dev/vda"）；None = 只需点确认
         echo_required: Option<String>,
         /// 一次性确认令牌（5 分钟内有效，用后即废）
         token: String,

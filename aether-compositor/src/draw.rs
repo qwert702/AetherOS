@@ -239,6 +239,36 @@ pub fn rounded_outline(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32
     }
 }
 
+/// 水平渐变圆角轮廓（焦点环用：左青 → 右紫，AI 元素的极光出口）。
+pub fn gradient_outline(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, left: [u8; 3], right: [u8; 3], alpha: f32) {
+    let x0 = (r.x - 2).max(0) as usize;
+    let y0 = (r.y - 2).max(0) as usize;
+    let x1 = ((r.x + r.w) as usize + 2).min(w);
+    let y1 = ((r.y + r.h) as usize + 2).min(h);
+    let cx = r.x as f32 + r.w as f32 / 2.0;
+    let cy = r.y as f32 + r.h as f32 / 2.0;
+    let qx_half = r.w as f32 / 2.0 - radius;
+    let qy_half = r.h as f32 / 2.0 - radius;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let dx = (x as f32 + 0.5 - cx).abs() - qx_half;
+            let dy = (y as f32 + 0.5 - cy).abs() - qy_half;
+            let outside = dx.max(0.0).hypot(dy.max(0.0)) + (dx.max(dy)).min(0.0);
+            let d = outside - radius;
+            if d < 0.5 && d > -1.5 {
+                let cov = (0.5 - d).clamp(0.0, 1.0);
+                let t = ((x as f32 - r.x as f32) / r.w.max(1) as f32).clamp(0.0, 1.0);
+                let rgb = [
+                    lerp(left[0] as f32, right[0] as f32, t) as u8,
+                    lerp(left[1] as f32, right[1] as f32, t) as u8,
+                    lerp(left[2] as f32, right[2] as f32, t) as u8,
+                ];
+                blend_pixel(buf, y * w + x, rgb, alpha * cov);
+            }
+        }
+    }
+}
+
 /// 大而柔的多层投影（近似大半径高斯）。
 /// 层数与半径是性能关键：每层都是一次全区域 SDF 扫描。
 /// `strength` 取 theme::elevation 的档位值（值即影子总强度）。
@@ -304,12 +334,90 @@ pub struct Win {
     pub floating: bool,
 }
 
+/// AI 回复气泡的类别（用户/AI/工具调用三类样式，语义一眼可分）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BubbleKind {
+    /// 用户发出的指令（中性底、偏右）
+    User,
+    /// AI 的自然语言回复（青紫焦点环）
+    Ai,
+    /// 工具调用结果（带工具名与成败标记）
+    Tool,
+}
+
+/// AI 通路状态（§4 三态：本地青 / 云端紫 / 离线灰）。
+///
+/// 待接线：`Cloud` 需要 aetherd 在响应里回传实际使用的通道
+/// （见 docs/ui-design-system-handover.md 的未完成项）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AiStatus {
+    Local,
+    #[allow(dead_code)]
+    Cloud,
+    Offline,
+}
+
+impl AiStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            AiStatus::Local => "本地模型在线",
+            AiStatus::Cloud => "云端模型",
+            AiStatus::Offline => "AI 离线",
+        }
+    }
+
+    /// 状态色：青 / 紫 / 灰
+    pub fn color(self) -> [u8; 3] {
+        match self {
+            AiStatus::Local => color::ACCENT,
+            AiStatus::Cloud => color::ACCENT_VIOLET,
+            AiStatus::Offline => color::TEXT_FAINT,
+        }
+    }
+}
+
+/// L2+ 权限确认弹窗的一帧快照。
+pub struct ConfirmUi<'a> {
+    pub tool: &'a str,
+    /// 2 = L2 敏感写，3 = L3 危险
+    pub level: u8,
+    /// 参数明文（逐项原样展示，不做美化）
+    pub arguments: &'a [(String, String)],
+    /// 一句话后果说明
+    pub consequence: &'a str,
+    /// L3 需回显确认的目标文本；None = 只需点确认
+    pub echo_required: Option<&'a str>,
+    /// 用户已输入的回显文本
+    pub echo_input: &'a str,
+}
+
+impl ConfirmUi<'_> {
+    /// 回显是否已匹配（L2 恒为 true，L3 需原样输入目标）
+    pub fn echo_ok(&self) -> bool {
+        match self.echo_required {
+            Some(target) => self.echo_input.trim() == target,
+            None => true,
+        }
+    }
+
+    /// 风险等级徽章配色：L2 黄 / L3 红
+    pub fn badge_color(&self) -> [u8; 3] {
+        if self.level >= 3 { color::DANGER } else { color::WARNING }
+    }
+}
+
 /// 每帧的 UI 瞬态（由 main.rs 组装）。
 pub struct UiState<'a> {
     pub snap: Option<Rect>,
     pub toast: Option<(&'a str, f32)>,
     pub ai_input: &'a str,
-    pub ai_reply: Option<(&'a str, f32)>,
+    /// 指令条是否处于焦点（画青紫渐变环）
+    pub ai_focused: bool,
+    /// 是否在等待 AI 回复（呼吸动效）
+    pub ai_thinking: bool,
+    pub ai_status: AiStatus,
+    /// 回复气泡：(文本, 类别, 已显示时长)
+    pub ai_reply: Option<(&'a str, BubbleKind, f32)>,
     pub mouse: (f32, f32),
     /// 左键是否按下（组件的按下态用）
     pub mouse_down: bool,
@@ -318,6 +426,8 @@ pub struct UiState<'a> {
     pub show_installer: bool,
     /// 安装向导窗口（None = 关闭）
     pub installer: Option<InstallerUi<'a>>,
+    /// L2+ 权限确认弹窗（None = 无待确认操作）
+    pub confirm: Option<ConfirmUi<'a>>,
 }
 
 /// 安装向导的阶段（渲染用；状态机在 main.rs）。
@@ -340,6 +450,14 @@ pub struct InstallerUi<'a> {
     pub message: Option<&'a str>,
 }
 
+/// 权限确认弹窗的按钮语义。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConfirmButton {
+    /// 允许一次（无"永久允许"：安全决策，不做）
+    Allow,
+    Deny,
+}
+
 /// 帧渲染器：持有跨帧缓存（背景层等）与可点击区域登记（供命中测试）。
 pub struct Renderer {
     bg: Vec<u32>,
@@ -358,6 +476,10 @@ pub struct Renderer {
     pub installer_rows: Vec<(Rect, String, u64)>,
     /// "开始安装"按钮命中区
     pub installer_button: Rect,
+    /// 权限确认弹窗的按钮命中区
+    pub confirm_buttons: Vec<(Rect, ConfirmButton)>,
+    /// 权限确认弹窗的回显输入框命中区
+    pub confirm_echo: Rect,
 }
 
 impl Renderer {
@@ -373,6 +495,8 @@ impl Renderer {
             dropdown: None,
             installer_rows: Vec::new(),
             installer_button: Rect { x: 0, y: 0, w: 0, h: 0 },
+            confirm_buttons: Vec::new(),
+            confirm_echo: Rect { x: 0, y: 0, w: 0, h: 0 },
         }
     }
 
@@ -414,10 +538,10 @@ impl Renderer {
         if ui.open_menu.is_some() {
             self.draw_dropdown(buf, w, h, ui, tr);
         }
-        if let Some((reply, age)) = ui.ai_reply {
-            draw_reply(buf, w, h, reply, age, tr);
+        if let Some((reply, kind, age)) = ui.ai_reply {
+            draw_reply(buf, w, h, reply, kind, age, tr);
         }
-        self.draw_ai_bar(buf, w, h, ui.ai_input, ui.mouse, tr);
+        self.draw_ai_bar(buf, w, h, ui, t, tr);
 
         let open_titles: Vec<&str> = desktop.wins.iter().map(|x| x.title).collect();
         self.draw_dock(buf, w, h, &open_titles, ui, tr);
@@ -425,6 +549,15 @@ impl Renderer {
         // 安装向导浮在最上层（Toast 之下）
         if let Some(inst) = &ui.installer {
             self.draw_installer(buf, w, h, inst, ui.mouse, ui.mouse_down, tr);
+        }
+
+        // 权限确认是模态：盖在安装向导之上（安装向导的"开始安装"也会走它）
+        match &ui.confirm {
+            Some(c) => self.draw_confirm(buf, w, h, c, ui.mouse, ui.mouse_down, t, tr),
+            None => {
+                self.confirm_buttons.clear();
+                self.confirm_echo = Rect { x: 0, y: 0, w: 0, h: 0 };
+            }
         }
 
         if let Some((msg, age)) = ui.toast {
@@ -565,11 +698,12 @@ impl Renderer {
         draw_text(tr, buf, w, h, (key.x + 4) as f32, tr.vcenter(key.y as f32, key.h as f32, font::LABEL), "K", font::LABEL, color::TEXT_DIM, 0.85);
         self.search_pill = pill;
 
-        // AI 状态指示：本地模型=青点（§4 三态色的第一态；云端紫/离线灰随 Step 4）
-        let ai_w = tr.measure(strings::LOCAL_AI, font::CAPTION);
+        // AI 状态指示（§4 三态：本地青 / 云端紫 / 离线灰）
+        let ai_label = ui.ai_status.label();
+        let ai_w = tr.measure(ai_label, font::CAPTION);
         let ai_x = pill.x as f32 - 16.0 - ai_w;
-        rounded_rect(buf, w, h, Rect { x: ai_x as i32 - 12, y: 13, w: 6, h: 6 }, 3.0, color::ACCENT, 0.95);
-        draw_text(tr, buf, w, h, ai_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::CAPTION), strings::LOCAL_AI, font::CAPTION, color::TEXT_DIM, 0.85);
+        rounded_rect(buf, w, h, Rect { x: ai_x as i32 - 12, y: 13, w: 6, h: 6 }, 3.0, ui.ai_status.color(), 0.95);
+        draw_text(tr, buf, w, h, ai_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::CAPTION), ai_label, font::CAPTION, color::TEXT_DIM, 0.85);
 
         // 电池：状态用中性色（在线/电量语义留给文字，避免与强调色抢注意力）
         let batt = Rect { x: ai_x as i32 - 56, y: 10, w: 26, h: 12 };
@@ -739,13 +873,21 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, mouse: (f32,
 // ---------------------------------------------------------------------------
 
 impl Renderer {
-    fn draw_ai_bar(&mut self, buf: &mut [u32], w: usize, h: usize, input: &str, mouse: (f32, f32), tr: Option<&TextRenderer>) {
+    fn draw_ai_bar(&mut self, buf: &mut [u32], w: usize, h: usize, ui: &UiState, t: f32, tr: Option<&TextRenderer>) {
+    let input = ui.ai_input;
+    let mouse = ui.mouse;
     let bar_w = 560i32;
     let bar = Rect { x: w as i32 / 2 - bar_w / 2, y: h as i32 - metric::BOTTOM_DOCK - 52 - 16, w: bar_w, h: 52 };
     let hovered = bar.contains(mouse.0, mouse.1);
     shadow(buf, w, h, bar, radius::MD, elevation::ELEV_2);
     rounded_rect(buf, w, h, bar, 26.0, color::INSET, if hovered { 0.82 } else { 0.75 });
-    rounded_outline(buf, w, h, bar, 26.0, color::HAIRLINE, if hovered { 0.22 } else { 0.14 });
+    if ui.ai_focused {
+        // 焦点态：青紫渐变环（AI 元素的极光配额）；思考中叠一层呼吸脉动
+        let breath = if ui.ai_thinking { 0.55 + 0.45 * (t * 3.0).sin() } else { 1.0 };
+        gradient_outline(buf, w, h, bar, 26.0, color::ACCENT, color::ACCENT_VIOLET, 0.75 * breath);
+    } else {
+        rounded_outline(buf, w, h, bar, 26.0, color::HAIRLINE, if hovered { 0.22 } else { 0.14 });
+    }
 
     let Some(tr) = tr else { return };
 
@@ -771,7 +913,15 @@ impl Renderer {
 
     // 输入光标
     let caret_x = text_x + tr.measure(if input.is_empty() { "" } else { input_tail_visible(tr, input, text_x, bar.x as f32 + bar.w as f32 - 96.0) }, font::BODY) + 4.0;
-    if ((t_now() * 2.0) as i32) % 2 == 0 {
+    if ui.ai_thinking {
+        // 思考中：三点呼吸，明确"在等我"而不是"在等你打字"
+        for i in 0..3 {
+            let phase = (t * 3.0 - i as f32 * 0.5).sin() * 0.5 + 0.5;
+            let a = 0.25 + 0.6 * phase;
+            let cx = caret_x as i32 + i * 8;
+            rounded_rect(buf, w, h, Rect { x: cx, y: bar.y + 23, w: 5, h: 5 }, 2.5, color::ACCENT, a);
+        }
+    } else if ((t_now() * 2.0) as i32) % 2 == 0 {
         fill_rect(buf, w, h, Rect { x: caret_x as i32, y: bar.y + 16, w: 2, h: 20 }, color::ACCENT, 0.9);
     }
 
@@ -802,30 +952,54 @@ fn t_now() -> f32 {
         .unwrap_or(0.0)
 }
 
-/// AI 的回复气泡：出现在指令条上方。
-fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, age: f32, tr: Option<&TextRenderer>) {
+/// 回复气泡：出现在指令条上方。三类样式一眼可分——
+/// 用户指令（中性底、偏右）/ AI 回复（青紫环）/ 工具调用（左侧状态条）。
+fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, kind: BubbleKind, age: f32, tr: Option<&TextRenderer>) {
     let Some(tr) = tr else { return };
     let alpha = ((6.0 - age) / 0.4).clamp(0.0, 1.0);
     if alpha <= 0.0 {
         return;
     }
     let max_w = 720.0f32;
+    let pad = if kind == BubbleKind::Tool { 30.0 } else { 18.0 };
     let tw = tr.measure(text, font::BODY).min(max_w);
-    let r = Rect {
-        x: w as i32 / 2 - (tw + 36.0) as i32 / 2,
-        y: h as i32 - metric::BOTTOM_DOCK - 52 - 16 - 56,
-        w: (tw + 36.0) as i32,
-        h: 36,
+    let bar_w = (tw + 2.0 * pad) as i32;
+    let y = h as i32 - metric::BOTTOM_DOCK - 52 - 16 - 56;
+    // 用户指令靠右、AI 与工具结果靠左：来源方向即身份
+    let x = match kind {
+        BubbleKind::User => w as i32 / 2 + 60 - bar_w,
+        _ => w as i32 / 2 - 60,
     };
+    let r = Rect { x, y, w: bar_w, h: 36 };
     shadow(buf, w, h, r, radius::MD, alpha * elevation::ELEV_2);
-    rounded_rect(buf, w, h, r, 18.0, color::SURFACE_2, alpha * 0.92);
-    rounded_outline(buf, w, h, r, 18.0, color::ACCENT, alpha * 0.4);
+    let bg = match kind {
+        BubbleKind::User => color::SURFACE_3,
+        _ => color::SURFACE_2,
+    };
+    rounded_rect(buf, w, h, r, 18.0, bg, alpha * 0.94);
+    match kind {
+        // AI 回复：青紫渐变环（AI 元素）
+        BubbleKind::Ai => gradient_outline(buf, w, h, r, 18.0, color::ACCENT, color::ACCENT_VIOLET, alpha * 0.55),
+        BubbleKind::User => rounded_outline(buf, w, h, r, 18.0, color::HAIRLINE, alpha * 0.16),
+        // 工具调用：左侧状态条（成功绿/失败红），由文案前缀决定
+        BubbleKind::Tool => {
+            rounded_outline(buf, w, h, r, 18.0, color::HAIRLINE, alpha * 0.12);
+            let ok = !text.starts_with('✗');
+            let bar_rgb = if ok { color::SUCCESS } else { color::DANGER };
+            rounded_rect(buf, w, h, Rect { x: r.x + 10, y: r.y + 9, w: 4, h: r.h - 18 }, 2.0, bar_rgb, alpha * 0.95);
+        }
+    }
     // 左截断显示
     let mut shown: String = text.to_string();
     while tr.measure(&shown, font::BODY) > max_w && shown.chars().count() > 1 {
         shown.remove(0);
     }
-    draw_text(tr, buf, w, h, (r.x + 18) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), &shown, font::BODY, color::TEXT, alpha);
+    let tx = match kind {
+        BubbleKind::User => tr.measure(&shown, font::BODY) + pad,
+        BubbleKind::Tool => tr.measure(&shown, font::BODY) + pad + 6.0,
+        BubbleKind::Ai => pad,
+    };
+    draw_text(tr, buf, w, h, r.x as f32 + tx, tr.vcenter(r.y as f32, r.h as f32, font::BODY), &shown, font::BODY, color::TEXT, alpha);
 }
 
 // ---------------------------------------------------------------------------
@@ -1066,6 +1240,171 @@ impl Renderer {
         let ly = tr.vcenter(button.y as f32, button.h as f32, font::BODY);
         tr.draw_bold(buf, w, h, (button.x + button.w / 2) as f32 - lw / 2.0, ly, label, font::BODY, label_rgb, label_a);
         self.installer_button = button;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// L2+ 权限确认弹窗（模态；安装向导的"开始安装"也走这里）
+// ---------------------------------------------------------------------------
+
+/// 工具 ID → 用户可读的操作名（确认卡片标题）。
+fn tool_label(tool: &str) -> &str {
+    match tool {
+        "install_disk" => "整盘安装到磁盘",
+        "desktop" => "桌面操作",
+        "read_file" => "读取文件",
+        "sys_probe" => "运行系统探针",
+        "sys_info" => "查询系统状态",
+        other => other,
+    }
+}
+
+impl Renderer {
+    fn draw_confirm(
+        &mut self,
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        c: &ConfirmUi,
+        mouse: (f32, f32),
+        mouse_down: bool,
+        t: f32,
+        tr: Option<&TextRenderer>,
+    ) {
+        self.confirm_buttons.clear();
+        self.confirm_echo = Rect { x: 0, y: 0, w: 0, h: 0 };
+
+        // 高度按内容自适应：标题区 + 参数行 + 后果说明 + 可选回显区 + 按钮区
+        let args: Vec<(String, String)> = c
+            .arguments
+            .iter()
+            .map(|(k, v)| {
+                let shown = if v.chars().count() > 34 {
+                    let head: String = v.chars().take(24).collect();
+                    format!("{head}...")
+                } else {
+                    v.clone()
+                };
+                (k.clone(), shown)
+            })
+            .collect();
+        let echo_block = if c.echo_required.is_some() { 96 } else { 0 };
+        let win_w = 560i32;
+        let win_h = 104 + args.len() as i32 * 22 + 54 + echo_block + 68;
+        let win = Rect {
+            x: w as i32 / 2 - win_w / 2,
+            y: ((h as i32 - win_h) / 2 - 10).max(48),
+            w: win_w,
+            h: win_h,
+        };
+
+        // 模态遮罩：压暗背景，明确"必须先回答这个"
+        fill_rect(buf, w, h, Rect { x: 0, y: 0, w: w as i32, h: h as i32 }, [0, 0, 0], 0.35);
+        shadow(buf, w, h, win, radius::LG, elevation::ELEV_3);
+        rounded_rect(buf, w, h, win, radius::LG, color::SURFACE_2, 0.99);
+        rounded_outline(buf, w, h, win, radius::LG, color::HAIRLINE, 0.18);
+        let Some(tr) = tr else { return };
+
+        // 标题行：等级徽章（L2 黄 / L3 红）+ 操作名
+        let badge_rgb = c.badge_color();
+        let badge_text = format!("L{} {}", c.level, if c.level >= 3 { "危险" } else { "敏感写" });
+        let bw = tr.measure_bold(&badge_text, font::LABEL) + 18.0;
+        let badge = Rect { x: win.x + 20, y: win.y + 20, w: bw as i32, h: 22 };
+        rounded_rect(buf, w, h, badge, radius::SM - 2.0, badge_rgb, 0.22);
+        rounded_outline(buf, w, h, badge, radius::SM - 2.0, badge_rgb, 0.7);
+        draw_text(tr, buf, w, h, (badge.x + 9) as f32, tr.vcenter(badge.y as f32, badge.h as f32, font::LABEL), &badge_text, font::LABEL, badge_rgb, 1.0);
+        tr.draw_bold(
+            buf, w, h,
+            (badge.x + badge.w + 12) as f32,
+            tr.vcenter(win.y as f32 + 18.0, 26.0, 17.0),
+            tool_label(c.tool), 17.0, color::TEXT, 0.96,
+        );
+        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + 58, w: win.w - 2, h: 1 }, color::HAIRLINE, 0.08);
+
+        // 参数明文（逐项原样展示：确认的前提是看清对象）
+        let mut y = win.y + 74;
+        draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), "工具", font::CAPTION, color::TEXT_FAINT, 0.9);
+        draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), c.tool, font::BODY, color::TEXT_DIM, 0.95);
+        y += 22;
+        for (k, v) in &args {
+            draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), k, font::CAPTION, color::TEXT_FAINT, 0.9);
+            tr.draw_bold(buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), v, font::BODY, color::TEXT, 0.96);
+            y += 22;
+        }
+
+        // 后果说明（风险色）+ 警示三角（几何绘制，不依赖字体字形）
+        y += 10;
+        let cx = win.x + 27;
+        let cy = y + 10;
+        for row in 0..9i32 {
+            let half = row / 2;
+            fill_rect(buf, w, h, Rect { x: cx - half, y: cy - 8 + row, w: half * 2 + 1, h: 1 }, badge_rgb, 0.95);
+        }
+        let mut shown: String = c.consequence.to_string();
+        while tr.measure(&shown, font::CAPTION) > (win.w - 64) as f32 && shown.chars().count() > 6 {
+            shown.pop();
+        }
+        draw_text(tr, buf, w, h, (win.x + 42) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), &shown, font::CAPTION, badge_rgb, 0.95);
+        y += 34;
+
+        // L3 回显确认：必须原样输入目标，防"手滑点确认"
+        if let Some(target) = c.echo_required {
+            let tip = format!("L3 危险操作：请原样输入 {target} 以确认");
+            draw_text(tr, buf, w, h, (win.x + 20) as f32, y as f32, &tip, font::CAPTION, color::TEXT_DIM, 0.9);
+            y += 22;
+            let field = Rect { x: win.x + 20, y, w: win.w - 40, h: 38 };
+            let ok = c.echo_ok();
+            rounded_rect(buf, w, h, field, radius::SM, color::INSET, 0.9);
+            rounded_outline(buf, w, h, field, radius::SM, if ok { color::SUCCESS } else { color::HAIRLINE }, if ok { 0.75 } else { 0.18 });
+            let fty = tr.vcenter(field.y as f32, field.h as f32, font::BODY);
+            if c.echo_input.is_empty() {
+                let hint = format!("输入 {target}");
+                draw_text(tr, buf, w, h, (field.x + 12) as f32, fty, &hint, font::BODY, color::TEXT_FAINT, 0.8);
+            } else {
+                draw_text(tr, buf, w, h, (field.x + 12) as f32, fty, c.echo_input, font::BODY, color::TEXT, 0.96);
+            }
+            let tw = tr.measure(c.echo_input, font::BODY);
+            if ((t * 2.0) as i32) % 2 == 0 {
+                fill_rect(buf, w, h, Rect { x: (field.x + 12) as i32 + tw as i32, y: field.y + 10, w: 2, h: 18 }, color::ACCENT, 0.9);
+            }
+            self.confirm_echo = field;
+            y += 50;
+        }
+
+        // 按钮：拒绝（danger 描边）/ 允许一次（accent 实心，回显未匹配时禁用）。
+        // 不做"永久允许"：安全决策，计划明确不引入。
+        let bw2 = 150i32;
+        let bh = 42i32;
+        let by = y.max(win.y + win_h - 62);
+        let deny = Rect { x: win.x + win.w - 20 - bw2 * 2 - 12, y: by, w: bw2, h: bh };
+        let allow = Rect { x: win.x + win.w - 20 - bw2, y: by, w: bw2, h: bh };
+
+        let deny_hover = deny.contains(mouse.0, mouse.1);
+        let deny_fill = if deny_hover && mouse_down { 0.22 } else if deny_hover { 0.14 } else { 0.06 };
+        rounded_rect(buf, w, h, deny, radius::SM, color::DANGER, deny_fill);
+        rounded_outline(buf, w, h, deny, radius::SM, color::DANGER, if deny_hover { 0.85 } else { 0.6 });
+        let dw = tr.measure_bold("拒绝", font::BODY);
+        tr.draw_bold(buf, w, h, (deny.x + deny.w / 2) as f32 - dw / 2.0, tr.vcenter(deny.y as f32, deny.h as f32, font::BODY), "拒绝", font::BODY, color::DANGER, 0.98);
+
+        let ready = c.echo_ok();
+        let allow_hover = ready && allow.contains(mouse.0, mouse.1);
+        if ready {
+            rounded_rect(buf, w, h, allow, radius::SM, color::ACCENT, 0.95);
+            if allow_hover {
+                rounded_rect(buf, w, h, allow, radius::SM, color::HAIRLINE, state::HOVER);
+                if mouse_down {
+                    rounded_rect(buf, w, h, allow, radius::SM, [0, 0, 0], state::PRESSED);
+                }
+            }
+        } else {
+            rounded_rect(buf, w, h, allow, radius::SM, color::SURFACE_3, 0.9);
+        }
+        let (lrgb, la) = if ready { (color::TEXT, 0.98) } else { (color::TEXT_FAINT, state::DISABLED) };
+        let lw = tr.measure_bold("允许一次", font::BODY);
+        tr.draw_bold(buf, w, h, (allow.x + allow.w / 2) as f32 - lw / 2.0, tr.vcenter(allow.y as f32, allow.h as f32, font::BODY), "允许一次", font::BODY, lrgb, la);
+
+        self.confirm_buttons.push((allow, ConfirmButton::Allow));
+        self.confirm_buttons.push((deny, ConfirmButton::Deny));
     }
 }
 

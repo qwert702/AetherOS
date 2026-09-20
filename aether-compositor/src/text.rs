@@ -246,7 +246,6 @@ pub mod strings {
     pub const WIN_SETTINGS: &str = "设置";
     /// Dock 第 6 图标（仅 Live ISO 会话显示）：打开安装向导
     pub const INSTALLER: &str = "安装";
-    pub const LOCAL_AI: &str = "本地模型在线";
 }
 
 /// 从 UTC 时间戳推算北京时间字符串 HH:MM（预览期简化处理，系统化后走本地化时钟服务）

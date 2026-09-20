@@ -163,7 +163,7 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
                             level: level as u8,
                             arguments,
                             consequence: consequence.to_string(),
-                            echo_required: echo_required.map(String::from),
+                            echo_required,
                         }),
                     });
                 }

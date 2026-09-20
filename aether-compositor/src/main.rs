@@ -44,7 +44,7 @@ fn tty_log(msg: &str) {
 
 /// 启动安装线程（按钮/键盘共用）；返回是否真正启动。
 #[cfg(target_os = "linux")]
-fn begin_install(installer: &mut Installer, tx: &mpsc::Sender<InstallEvent>) -> bool {
+fn begin_install(installer: &mut Installer, tx: &mpsc::Sender<AiEvent>) -> bool {
     if installer.running || installer.disks.is_empty() {
         return false;
     }
@@ -87,7 +87,6 @@ fn run_fbdev() -> anyhow::Result<()> {
     // Live ISO（有光驱）才显示"安装"Dock 图标
     let live_installer = std::path::Path::new("/dev/sr0").exists();
     let mut installer = Installer::new();
-    let (inst_tx, inst_rx) = mpsc::channel::<InstallEvent>();
 
     let start = Instant::now();
     let mut frames: u64 = 0;
@@ -101,8 +100,13 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut snap_zone = layout::Snap::None;
     let mut toast: Option<(String, Instant)> = None;
     let mut ai_input = String::new();
-    let mut ai_reply: Option<(String, Instant)> = None;
+    let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let mut open_menu: Option<usize> = None;
+    // L2+ 权限确认：待确认请求 + 用户已输入的回显文本
+    let mut confirm: Option<(ConfirmRequest, String)> = None;
+    let mut ai_status = draw::AiStatus::Local;
+    // 是否在等 AI 回复（指令条显示呼吸动效）
+    let mut thinking = false;
 
     loop {
         let t = start.elapsed().as_secs_f32();
@@ -136,17 +140,33 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Char(c) => {
-                    // 向导打开时键盘让位给向导（Enter=安装、Esc=关闭），字符不进指令条
-                    if !installer.open {
+                    if let Some((req, echo)) = confirm.as_mut() {
+                        // 确认弹窗独占键盘：L3 的回显输入写进弹窗而不是指令条
+                        if req.echo_required.is_some() {
+                            echo.push(c);
+                        }
+                    } else if !installer.open {
+                        // 向导打开时键盘让位给向导，字符不进指令条
                         ai_input.push(c);
                     }
                 }
                 input::UiEvent::Backspace => {
-                    ai_input.pop();
+                    match confirm.as_mut() {
+                        Some((_, echo)) => {
+                            echo.pop();
+                        }
+                        None => {
+                            ai_input.pop();
+                        }
+                    }
                 }
                 input::UiEvent::Escape => {
                     open_menu = None;
-                    if installer.open && !installer.running {
+                    if let Some((req, _)) = confirm.take() {
+                        // 拒绝路径：关闭弹窗、审计由服务端记录（未授权即未执行）
+                        tty_log(&format!("权限确认被拒绝: {}", req.tool));
+                        toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
+                    } else if installer.open && !installer.running {
                         installer.open = false;
                     }
                 }
@@ -156,14 +176,25 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Enter => {
-                    if installer.open {
-                        if begin_install(&mut installer, &inst_tx) {
+                    if let Some((req, echo)) = confirm.as_ref() {
+                        // 回车 = 允许一次；L3 必须回显匹配才放行
+                        if req.echo_ok_input(echo) {
+                            let req = confirm.take().map(|(r, _)| r).unwrap();
+                            tty_log(&format!("权限确认通过: {}", req.tool));
+                            dispatch_approved(req, &ai_tx);
+                        } else {
+                            toast = Some(("回显不匹配：请原样输入目标名".into(), Instant::now()));
+                        }
+                    } else if installer.open {
+                        if begin_install(&mut installer, &ai_tx) {
                             tty_log("安装向导 → 开始安装（键盘确认）");
                         }
                     } else if !ai_input.trim().is_empty() {
                         let text = ai_input.trim().to_string();
                         ai_input.clear();
-                        ai_reply = Some(("…思考中".into(), Instant::now()));
+                        // 先把自己的话显示成"用户"气泡，再进入思考态
+                        ai_reply = Some((text.clone(), draw::BubbleKind::User, Instant::now()));
+                        thinking = true;
                         let tx = ai_tx.clone();
                         std::thread::spawn(move || query_aether(text, 15, tx));
                     }
@@ -174,31 +205,79 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
-                AiEvent::Reply(text) => ai_reply = Some((text, Instant::now())),
-                AiEvent::Error(text) => ai_reply = Some((format!("⚠ {text}"), Instant::now())),
+                AiEvent::Reply(text) => {
+                    ai_status = draw::AiStatus::Local;
+                    thinking = false;
+                    ai_reply = Some((text, draw::BubbleKind::Ai, Instant::now()));
+                }
+                AiEvent::Error(text) => {
+                    // aetherd 不可达/通道故障 → 顶栏转"AI 离线"（灰）
+                    ai_status = draw::AiStatus::Offline;
+                    thinking = false;
+                    ai_reply = Some((format!("⚠ {text}"), draw::BubbleKind::Ai, Instant::now()));
+                }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args) {
                         toast = Some((format!("Aether 执行 · {msg}"), Instant::now()));
                     }
                 }
-            }
-        }
-        // 安装器结果轮询
-        while let Ok(ev) = inst_rx.try_recv() {
-            installer.running = false;
-            match ev {
-                InstallEvent::Done(output) => {
-                    let last = output.lines().last().unwrap_or("安装完成").to_string();
-                    installer.message = Some((last, false));
+                AiEvent::Confirm(req) => {
+                    tty_log(&format!("权限确认请求: {} L{}", req.tool, req.level));
+                    thinking = false;
+                    confirm = Some((*req, String::new()));
                 }
-                InstallEvent::Failed(e) => installer.message = Some((e, true)),
+                AiEvent::ToolDone { ok, output, origin } => {
+                    thinking = false;
+                    let last = output.lines().last().unwrap_or("").to_string();
+                    match origin {
+                        ConfirmOrigin::Installer => {
+                            installer.running = false;
+                            installer.message = Some((if last.is_empty() { "安装完成".into() } else { last.clone() }, !ok));
+                        }
+                        ConfirmOrigin::Ai => {
+                            // 工具调用结果单独一类气泡：让"AI 干了什么"可见
+                            let mark = if ok { "✓" } else { "✗" };
+                            ai_reply = Some((format!("{mark} {last}"), draw::BubbleKind::Tool, Instant::now()));
+                        }
+                    }
+                    if ok {
+                        toast = Some((format!("已执行 · {}", last.chars().take(24).collect::<String>()), Instant::now()));
+                    }
+                }
             }
         }
 
         // ---- 3. 鼠标交互 ----
         let press = mouse_down || click_pending;
-        // 3.0 安装向导打开时独占命中（选盘 / 开始按钮）
-        if installer.open {
+        // 3.0 权限确认弹窗是模态，独占命中（允许一次 / 拒绝）
+        if confirm.is_some() {
+            if press {
+                let hit = renderer
+                    .confirm_buttons
+                    .iter()
+                    .find(|(r, _)| r.contains(mouse.0, mouse.1))
+                    .map(|(_, b)| *b);
+                let echo_ok = confirm.as_ref().map(|(r, e)| r.echo_ok_input(e)).unwrap_or(false);
+                match hit {
+                    Some(draw::ConfirmButton::Allow) if echo_ok => {
+                        if let Some((req, _)) = confirm.take() {
+                            tty_log(&format!("权限确认通过: {}", req.tool));
+                            dispatch_approved(req, &ai_tx);
+                        }
+                    }
+                    Some(draw::ConfirmButton::Allow) => {
+                        toast = Some(("回显不匹配：请原样输入目标名".into(), Instant::now()));
+                    }
+                    Some(draw::ConfirmButton::Deny) => {
+                        if let Some((req, _)) = confirm.take() {
+                            tty_log(&format!("权限确认被拒绝: {}", req.tool));
+                            toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
+                        }
+                    }
+                    None => {}
+                }
+            }
+        } else if installer.open {
             if press && !installer.running {
                 if let Some(i) = renderer
                     .installer_rows
@@ -207,7 +286,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 {
                     installer.selected = i;
                 } else if renderer.installer_button.contains(mouse.0, mouse.1)
-                    && begin_install(&mut installer, &inst_tx)
+                    && begin_install(&mut installer, &ai_tx)
                 {
                     tty_log("安装向导 → 开始安装（按钮确认）");
                 }
@@ -251,7 +330,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         toast = Some((m, Instant::now()));
                     }
                     if let Some(r) = r {
-                        ai_reply = Some((r, Instant::now()));
+                        ai_reply = Some((r, draw::BubbleKind::Ai, Instant::now()));
                     }
                 }
                 open_menu = None;
@@ -319,21 +398,34 @@ fn run_fbdev() -> anyhow::Result<()> {
             _ => None,
         };
         let reply_now = match ai_reply.take() {
-            Some((msg, t0)) if t0.elapsed().as_secs_f32() < 6.0 => {
-                Some((msg, t0.elapsed().as_secs_f32()))
+            Some((msg, kind, t0)) if t0.elapsed().as_secs_f32() < 6.0 => {
+                Some((msg, kind, t0.elapsed().as_secs_f32()))
             }
             _ => None,
         };
+        let confirm_ui = confirm.as_ref().map(|(req, echo)| draw::ConfirmUi {
+            tool: &req.tool,
+            level: req.level,
+            arguments: &req.arguments,
+            consequence: &req.consequence,
+            echo_required: req.echo_required.as_deref(),
+            echo_input: echo,
+        });
         let ui = draw::UiState {
             snap: snap_preview,
             toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             ai_input: &ai_input,
-            ai_reply: reply_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
+            // 确认弹窗打开时指令条同时失焦：键盘已经归弹窗
+            ai_focused: confirm.is_none(),
+            ai_thinking: thinking,
+            ai_status,
+            ai_reply: reply_now.as_ref().map(|(m, k, a)| (m.as_str(), *k, *a)),
             mouse,
             mouse_down,
             open_menu,
             show_installer: live_installer,
             installer: installer.snapshot(),
+            confirm: confirm_ui,
         };
 
         // ---- 5. 渲染 + 软件光标 + 上屏 ----
@@ -386,11 +478,85 @@ fn demo_desktop() -> Desktop {
     Desktop { wins, active, layout: Layout::TwoCol }
 }
 
+/// L2+ 操作待用户确认（aetherd 签发的一次性令牌）。
+/// 部分字段只在 fbdev 路径（Linux）被读取，Windows 预览构建下允许未使用。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct ConfirmRequest {
+    tool: String,
+    level: u8,
+    /// 参数（已转成展示用的键值对）
+    arguments: Vec<(String, String)>,
+    /// 原始参数：重发时必须逐字不变（令牌绑定参数）
+    raw_arguments: serde_json::Value,
+    consequence: String,
+    /// L3 需原样输入的目标；None = 只需点确认
+    echo_required: Option<String>,
+    /// 一次性确认令牌
+    token: String,
+    /// 发起方：决定执行结果回填给谁
+    origin: ConfirmOrigin,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum ConfirmOrigin {
+    /// AI 对话触发（结果进气泡）
+    Ai,
+    /// 安装向导触发（结果回填向导）
+    Installer,
+}
+
+impl ConfirmRequest {
+    /// 从 IPC 响应构造（参数值统一转成字符串展示）
+    fn from_ipc(tool: String, level: u8, arguments: serde_json::Value, consequence: String, echo_required: Option<String>, token: String, origin: ConfirmOrigin) -> Self {
+        let pairs = match &arguments {
+            serde_json::Value::Object(map) => map
+                .iter()
+                .map(|(k, v)| {
+                    let s = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    (k.clone(), s)
+                })
+                .collect(),
+            other => vec![("value".to_string(), other.to_string())],
+        };
+        Self { tool, level, arguments: pairs, raw_arguments: arguments, consequence, echo_required, token, origin }
+    }
+
+    /// L3 回显是否匹配（L2 恒为 true）。
+    fn echo_ok_input(&self, echo: &str) -> bool {
+        match &self.echo_required {
+            Some(target) => echo.trim() == target,
+            None => true,
+        }
+    }
+}
+
+/// 用户点"允许一次"：带一次性令牌重发工具调用。
+/// 令牌由服务端签发并绑定 (tool, 参数)，服务端校验通过才真正执行——UI 这一步
+/// 只是把"用户看过并同意"转达给闸门，而不是绕过闸门。
+fn dispatch_approved(req: ConfirmRequest, tx: &mpsc::Sender<AiEvent>) {
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let origin = req.origin;
+        if let Err(e) = send_tool_call(req.tool.clone(), req.raw_arguments.clone(), Some(req.token.clone()), origin, &tx) {
+            let _ = tx.send(AiEvent::ToolDone { ok: false, output: e.to_string(), origin });
+        }
+    });
+}
+
 /// AI 事件（后台线程 → 渲染主循环）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum AiEvent {
     Reply(String),
     Action(String, serde_json::Value),
     Error(String),
+    /// 工具调用需要用户确认（L2+）
+    Confirm(Box<ConfirmRequest>),
+    /// 确认后执行的结果（或安装结果）
+    ToolDone { ok: bool, output: String, origin: ConfirmOrigin },
 }
 
 /// 安装向导状态（仅 Live ISO 会话；run_fbdev 持有）。
@@ -472,47 +638,63 @@ fn scan_disks() -> Vec<(String, u64)> {
     out
 }
 
-/// 安装事件（后台线程 → 渲染主循环）。
+/// 经 aetherd ToolCall 执行整盘安装。安装向导与 AI 走同一条通路：
+/// 首次请求不带 approval（闸门必拦，L3 需确认），拿到确认令牌后由主循环
+/// 在用户完成回显输入后重发——这样"用户在向导里点了按钮"不再等于"已授权"。
 #[cfg(target_os = "linux")]
-enum InstallEvent {
-    Done(String),
-    Failed(String),
+fn run_install(disk: String, tx: mpsc::Sender<AiEvent>) {
+    let result = send_tool_call(
+        "install_disk".to_string(),
+        serde_json::json!({ "disk": disk.clone(), "confirm": disk }),
+        None,
+        ConfirmOrigin::Installer,
+        &tx,
+    );
+    if let Err(e) = result {
+        println!("aether-compositor: 安装器 → 失败: {e}");
+        let _ = tx.send(AiEvent::ToolDone {
+            ok: false,
+            output: e.to_string(),
+            origin: ConfirmOrigin::Installer,
+        });
+    }
 }
 
-/// 经 aetherd ToolCall 执行整盘安装（与 AI 指令条同一通路，审计留痕）。
-#[cfg(target_os = "linux")]
-fn run_install(disk: String, tx: mpsc::Sender<InstallEvent>) {
-    let run = || -> anyhow::Result<String> {
-        println!("aether-compositor: 安装器 → 请求安装到 {disk}");
-        let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
-        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
-        stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
-        let req = Request::ToolCall {
-            session_id: "installer".into(),
-            tool: "install_disk".into(),
-            // confirm 与 disk 相同：L3 双重确认的回显（用户已在向导里选盘并点确认）
-            arguments: serde_json::json!({ "disk": disk, "confirm": disk }),
-        };
-        stream.write_all(aether_ipc::encode(&req).as_bytes())?;
-        let mut line = String::new();
-        BufReader::new(stream).read_line(&mut line)?;
-        match aether_ipc::decode::<Response>(&line)? {
-            Response::ToolResult { ok, output, .. } if ok => Ok(output),
-            Response::ToolResult { output, .. } => Err(anyhow::anyhow!("{output}")),
-            Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
-            _ => Err(anyhow::anyhow!("aetherd 返回了意外响应")),
+/// 经 aetherd 执行一次工具调用。`approval` 为 None 时 L2+ 会被闸门拦下，
+/// 此时服务端回 `NeedsConfirmation`——本函数把它转成 `AiEvent::Confirm`
+/// 交给主循环弹窗；用户允许后带令牌重发即可真正执行。
+fn send_tool_call(
+    tool: String,
+    arguments: serde_json::Value,
+    approval: Option<String>,
+    origin: ConfirmOrigin,
+    tx: &mpsc::Sender<AiEvent>,
+) -> anyhow::Result<()> {
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+    stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
+    let req = Request::ToolCall { session_id: "shell-preview".into(), tool, arguments, approval };
+    stream.write_all(aether_ipc::encode(&req).as_bytes())?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    match aether_ipc::decode::<Response>(&line)? {
+        Response::ToolResult { ok, output, .. } => {
+            let _ = tx.send(AiEvent::ToolDone { ok, output, origin });
         }
-    };
-    let _ = tx.send(match run() {
-        Ok(output) => {
-            println!("aether-compositor: 安装器 → 完成: {}", output.lines().last().unwrap_or(""));
-            InstallEvent::Done(output)
+        Response::NeedsConfirmation { tool, level, arguments, consequence, echo_required, token } => {
+            println!("aether-compositor: 工具 {tool} 需 L{level} 确认，弹确认卡片");
+            let _ = tx.send(AiEvent::Confirm(Box::new(ConfirmRequest::from_ipc(
+                tool, level, arguments, consequence, echo_required, token, origin,
+            ))));
         }
-        Err(e) => {
-            println!("aether-compositor: 安装器 → 失败: {e}");
-            InstallEvent::Failed(e.to_string())
+        Response::Error { message, .. } => {
+            let _ = tx.send(AiEvent::ToolDone { ok: false, output: message, origin });
         }
-    });
+        _ => {
+            let _ = tx.send(AiEvent::ToolDone { ok: false, output: "aetherd 返回了意外响应".into(), origin });
+        }
+    }
+    Ok(())
 }
 
 /// 在后台线程里连接 aetherd、发送 Chat、收集响应直到 done。
@@ -533,6 +715,7 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
         let mut line = String::new();
         let mut reply = String::new();
         let mut action: Option<(String, serde_json::Value)> = None;
+        let mut confirm: Option<ConfirmRequest> = None;
         loop {
             line.clear();
             if reader.read_line(&mut line)? == 0 {
@@ -549,12 +732,23 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
                     println!("aether-compositor: 收到 Action {name} {arguments}");
                     action = Some((name, arguments));
                 }
+                // L2+ 操作：AI 想动手但需要用户点头，先弹确认卡片
+                Ok(Response::NeedsConfirmation { tool, level, arguments, consequence, echo_required, token }) => {
+                    println!("aether-compositor: AI 请求确认 {tool}（L{level}）");
+                    confirm = Some(ConfirmRequest::from_ipc(
+                        tool, level, arguments, consequence, echo_required, token, ConfirmOrigin::Ai,
+                    ));
+                }
                 Ok(Response::Error { message, .. }) => {
                     reply = format!("⚠ {message}");
                     break;
                 }
                 _ => {}
             }
+        }
+        if let Some(c) = confirm {
+            let _ = tx.send(AiEvent::Confirm(Box::new(c)));
+            return Ok(());
         }
         println!("aether-compositor: AI 查询完成，回复 {} 字", reply.chars().count());
         let preview: String = reply.chars().take(96).collect();
@@ -706,16 +900,35 @@ fn main() -> anyhow::Result<()> {
             phase: draw::InstallerPhase::Idle,
             message: None,
         });
+        // `--confirm [2|3]`：渲染 L2+ 权限确认弹窗；加 `--echo` 预填回显（走查匹配态）
+        let confirm_level = args
+            .iter()
+            .position(|a| a == "--confirm")
+            .map(|i| args.get(i + 1).and_then(|s| s.parse::<u8>().ok()).unwrap_or(3));
+        let demo_args: Vec<(String, String)> = vec![("disk".to_string(), "/dev/vda".to_string())];
+        let echo_seed: &str = if args.iter().any(|a| a == "--echo") { "/dev/vda" } else { "" };
+        let confirm = confirm_level.map(|level| draw::ConfirmUi {
+            tool: "install_disk",
+            level,
+            arguments: &demo_args,
+            consequence: "整盘覆盖写入：目标磁盘上的分区表与所有数据将被永久删除，不可恢复。",
+            echo_required: if level >= 3 { Some("/dev/vda") } else { None },
+            echo_input: echo_seed,
+        });
         let ui = draw::UiState {
             snap: None,
             toast: None,
             ai_input: sample_input,
-            ai_reply: Some((sample_reply, 0.5)),
+            ai_focused: true,
+            ai_thinking: args.iter().any(|a| a == "--thinking"),
+            ai_status: draw::AiStatus::Local,
+            ai_reply: Some((sample_reply, draw::BubbleKind::Ai, 0.5)),
             mouse,
             mouse_down: false,
             open_menu: if args.contains(&"--menu".to_string()) { Some(2) } else { None },
             show_installer: args.iter().any(|a| a == "--installer"),
             installer,
+            confirm,
         };
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         draw::write_bmp("preview.bmp", &buf, WIDTH, HEIGHT)?;
@@ -791,9 +1004,12 @@ fn preview_main() -> anyhow::Result<()> {
     let mut snap_zone = layout::Snap::None;
     let mut toast: Option<(String, Instant)> = None;
     let mut ai_input = String::new();
-    let mut ai_reply: Option<(String, Instant)> = None;
+    let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let (tx, rx) = mpsc::channel::<AiEvent>();
     let mut open_menu: Option<usize> = None;
+    let mut confirm: Option<(ConfirmRequest, String)> = None;
+    let mut ai_status = draw::AiStatus::Local;
+    let mut thinking = false;
 
     while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
         let t = start.elapsed().as_secs_f32();
@@ -821,7 +1037,9 @@ fn preview_main() -> anyhow::Result<()> {
                     if !ai_input.trim().is_empty() {
                         let text = ai_input.trim().to_string();
                         ai_input.clear();
-                        ai_reply = Some(("…思考中".into(), Instant::now()));
+                        // 先把自己的话显示成"用户"气泡，再进入思考态
+                        ai_reply = Some((text.clone(), draw::BubbleKind::User, Instant::now()));
+                        thinking = true;
                         let tx = tx.clone();
                         std::thread::spawn(move || query_aether(text, 130, tx));
                     }
@@ -853,18 +1071,60 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                AiEvent::Reply(text) => ai_reply = Some((text, Instant::now())),
-                AiEvent::Error(text) => ai_reply = Some((format!("⚠ {text}"), Instant::now())),
+                AiEvent::Reply(text) => {
+                    ai_status = draw::AiStatus::Local;
+                    thinking = false;
+                    ai_reply = Some((text, draw::BubbleKind::Ai, Instant::now()));
+                }
+                AiEvent::Error(text) => {
+                    ai_status = draw::AiStatus::Offline;
+                    thinking = false;
+                    ai_reply = Some((format!("⚠ {text}"), draw::BubbleKind::Ai, Instant::now()));
+                }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args) {
                         toast = Some((format!("Aether 执行 · {msg}"), Instant::now()));
                     }
                 }
+                AiEvent::Confirm(req) => {
+                    thinking = false;
+                    confirm = Some((*req, String::new()));
+                }
+                AiEvent::ToolDone { ok, output, .. } => {
+                    thinking = false;
+                    let last = output.lines().last().unwrap_or("").to_string();
+                    let mark = if ok { "✓" } else { "✗" };
+                    ai_reply = Some((format!("{mark} {last}"), draw::BubbleKind::Tool, Instant::now()));
+                }
             }
         }
 
-        // ---- 鼠标：拖拽优先，其次 UI 命中测试 ----
-        if down {
+        // ---- 鼠标：确认弹窗模态优先，其次拖拽优先，再次 UI 命中测试 ----
+        if down && confirm.is_some() {
+            // 权限确认弹窗独占命中：允许一次（L3 需回显匹配）/ 拒绝
+            let hit = renderer
+                .confirm_buttons
+                .iter()
+                .find(|(r, _)| r.contains(mx, my))
+                .map(|(_, b)| *b);
+            let echo_ok = confirm.as_ref().map(|(r, e)| r.echo_ok_input(e)).unwrap_or(false);
+            match hit {
+                Some(draw::ConfirmButton::Allow) if echo_ok => {
+                    if let Some((req, _)) = confirm.take() {
+                        dispatch_approved(req, &tx);
+                    }
+                }
+                Some(draw::ConfirmButton::Allow) => {
+                    toast = Some(("回显不匹配：请原样输入目标名".into(), Instant::now()));
+                }
+                Some(draw::ConfirmButton::Deny) => {
+                    if let Some((req, _)) = confirm.take() {
+                        toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
+                    }
+                }
+                None => {}
+            }
+        } else if down {
             if let Some((i, lx, ly)) = drag {
                 // 拖拽进行中：移动窗口 + 更新吸附区
                 let w = &mut desktop.wins[i].rect;
@@ -900,7 +1160,7 @@ fn preview_main() -> anyhow::Result<()> {
                         toast = Some((m, Instant::now()));
                     }
                     if let Some(r) = r {
-                        ai_reply = Some((r, Instant::now()));
+                        ai_reply = Some((r, draw::BubbleKind::Ai, Instant::now()));
                     }
                 }
                 open_menu = None;
@@ -976,22 +1236,34 @@ fn preview_main() -> anyhow::Result<()> {
             _ => None,
         };
         let reply_now = match ai_reply.take() {
-            Some((msg, t0)) if t0.elapsed().as_secs_f32() < 6.0 => {
-                Some((msg, t0.elapsed().as_secs_f32()))
+            Some((msg, kind, t0)) if t0.elapsed().as_secs_f32() < 6.0 => {
+                Some((msg, kind, t0.elapsed().as_secs_f32()))
             }
             _ => None,
         };
 
+        let confirm_ui = confirm.as_ref().map(|(req, echo)| draw::ConfirmUi {
+            tool: &req.tool,
+            level: req.level,
+            arguments: &req.arguments,
+            consequence: &req.consequence,
+            echo_required: req.echo_required.as_deref(),
+            echo_input: echo,
+        });
         let ui = UiState {
             snap: snap_preview,
             toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             ai_input: &ai_input,
-            ai_reply: reply_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
+            ai_focused: confirm.is_none(),
+            ai_thinking: thinking,
+            ai_status,
+            ai_reply: reply_now.as_ref().map(|(m, k, a)| (m.as_str(), *k, *a)),
             mouse: (mx, my),
             mouse_down: down,
             open_menu,
             show_installer: false,
             installer: None,
+            confirm: confirm_ui,
         };
 
         // 空闲降帧：没有任何动画/交互时不必跑满 60fps

@@ -113,7 +113,7 @@ fn handle_request(line: &str, cfg: &Config, gate: &Gate, approvals: &Approvals) 
                         level: level as u8,
                         arguments,
                         consequence: consequence.to_string(),
-                        echo_required: echo_required.map(String::from),
+                        echo_required,
                         token,
                     }]
                 }
