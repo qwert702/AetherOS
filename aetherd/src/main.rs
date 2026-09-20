@@ -62,9 +62,26 @@ fn tools_json() -> serde_json::Value {
     serde_json::Value::Array(fns)
 }
 
+/// 因需用户确认而暂停的工具调用（L2+）。
+pub(crate) struct PendingConfirm {
+    pub tool: String,
+    pub level: u8,
+    pub arguments: serde_json::Value,
+    pub consequence: String,
+    pub echo_required: Option<String>,
+}
+
+/// 一次 agent 运行的结果。
+pub(crate) struct AgentOutcome {
+    pub answer: String,
+    pub actions: Vec<crate::intent::DesktopAction>,
+    /// 有值表示本次因 L2+ 操作暂停，UI 确认后由 `ToolCall + approval` 重发执行
+    pub pending: Option<PendingConfirm>,
+}
+
 /// Agent 主循环：最多 MAX_ROUNDS 轮工具调用。
 /// 返回最终回答 + LLM 产生的桌面行为队列（经 IPC Action 下发合成器）。
-pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<(String, Vec<crate::intent::DesktopAction>)> {
+pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<AgentOutcome> {
     const MAX_ROUNDS: usize = 4;
     let local_ok = llm::local_available(&cfg.local.base_url);
     let mut ctx = tools::ToolCtx::default();
@@ -99,14 +116,22 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<(S
 
         // 无工具调用 → 最终回答
         let Some(raw_calls) = resp.tool_calls.clone() else {
-            return Ok((resp.content, std::mem::take(&mut ctx.desktop_actions)));
+            return Ok(AgentOutcome {
+                answer: resp.content,
+                actions: std::mem::take(&mut ctx.desktop_actions),
+                pending: None,
+            });
         };
         let calls = raw_calls.as_array().cloned().unwrap_or_default();
 
         // 空 tool_calls 数组：模型本轮没调用工具，content 即回答（与"轮次耗尽"区分开）
         if calls.is_empty() {
             let answer = if resp.content.trim().is_empty() { "（模型未返回有效回答）".into() } else { resp.content };
-            return Ok((answer, std::mem::take(&mut ctx.desktop_actions)));
+            return Ok(AgentOutcome {
+                answer,
+                actions: std::mem::take(&mut ctx.desktop_actions),
+                pending: None,
+            });
         }
 
         // 有工具调用：逐个执行，并为每个 tool_call 补一条结果消息。
@@ -124,15 +149,26 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<(S
             let args: serde_json::Value = serde_json::from_str(raw_args).unwrap_or(serde_json::json!({}));
 
             eprintln!("[aetherd] 工具调用: {name} {args}");
-            // 敏感工具（L2+）需用户确认：当前无 UI 通道，返回确认语义错误让模型向用户解释
-            let result = tools::execute(gate, &mut ctx, &name, &args, false).unwrap_or_else(|e| {
-                let msg = e.to_string();
-                if msg.contains("NEEDS_CONFIRMATION") {
-                    format!("[需用户确认后重试] {msg}")
-                } else {
-                    format!("[工具错误] {msg}")
+            // L2+ 工具需用户确认：中断本轮 agent，把结构化确认请求上抛给 UI。
+            // 继续把"需确认"当普通工具结果喂回模型，只会让它编造一个"已执行"的回答。
+            let result = match tools::execute(gate, &mut ctx, &name, &args, false) {
+                Ok(tools::ExecOutcome::Done(out)) => out,
+                Ok(tools::ExecOutcome::NeedsConfirmation { tool, level, arguments, consequence, echo_required }) => {
+                    eprintln!("[aetherd] 工具 {tool} 需 L{} 确认，暂停并请求 UI 确认", level as u8);
+                    return Ok(AgentOutcome {
+                        answer: format!("「{tool}」需要你确认后才能执行。"),
+                        actions: std::mem::take(&mut ctx.desktop_actions),
+                        pending: Some(PendingConfirm {
+                            tool,
+                            level: level as u8,
+                            arguments,
+                            consequence: consequence.to_string(),
+                            echo_required: echo_required.map(String::from),
+                        }),
+                    });
                 }
-            });
+                Err(e) => format!("[工具错误] {e}"),
+            };
             messages.push(llm::Message {
                 role: "tool".into(),
                 content: result,
@@ -142,7 +178,11 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<(S
             });
         }
     }
-    Ok(("（已达本轮工具调用上限，请拆分任务）".into(), std::mem::take(&mut ctx.desktop_actions)))
+    Ok(AgentOutcome {
+        answer: "（已达本轮工具调用上限，请拆分任务）".into(),
+        actions: std::mem::take(&mut ctx.desktop_actions),
+        pending: None,
+    })
 }
 
 fn main() -> Result<()> {
@@ -156,8 +196,16 @@ fn main() -> Result<()> {
             }
             let cfg = config_from_env();
             let gate = Gate::new(PathBuf::from("/var/log/aether/aether-audit.log"));
-            let (answer, _actions) = agent_run(&cfg, &gate, &text).context("agent 运行失败")?;
-            println!("{answer}");
+            let out = agent_run(&cfg, &gate, &text).context("agent 运行失败")?;
+            if let Some(p) = out.pending {
+                // CLI 无 UI 通道：说明需确认及原因，退出码 3 供脚本区分
+                eprintln!(
+                    "需要用户确认：{} 需 L{} 级确认（{}）",
+                    p.tool, p.level, p.consequence
+                );
+                std::process::exit(3);
+            }
+            println!("{}", out.answer);
         }
         Some("serve") => {
             server::serve(config_from_env())?;

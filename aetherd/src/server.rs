@@ -3,7 +3,7 @@
 //! 每连接一线程；Chat 请求先走离线快速意图，未命中再进 LLM agent；
 //! 一个 Chat 请求可产生多条响应（ChatChunk + Action）。
 
-use crate::{intent, perm::Gate, tools, Config};
+use crate::{intent, perm::{Approvals, Gate}, tools, Config};
 use aether_ipc::{encode, Request, Response, SysReport};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -30,6 +30,8 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
     );
     let cfg = Arc::new(cfg);
     let gate = Arc::new(Gate::new(PathBuf::from("/var/log/aether/aether-audit.log")));
+    // 一次性确认令牌表：跨连接共享（确认请求与重发可能来自不同连接）
+    let approvals = Arc::new(Approvals::new());
     let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
@@ -39,11 +41,12 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
         }
         let cfg = cfg.clone();
         let gate = gate.clone();
+        let approvals = approvals.clone();
         let active = active.clone();
         active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::thread::spawn(move || {
             let _guard = ActiveGuard(&active);
-            if let Err(e) = handle_conn(stream, &cfg, &gate) {
+            if let Err(e) = handle_conn(stream, &cfg, &gate, &approvals) {
                 eprintln!("[aetherd] 连接处理结束: {e}");
             }
         });
@@ -59,7 +62,7 @@ impl Drop for ActiveGuard<'_> {
     }
 }
 
-fn handle_conn(stream: TcpStream, cfg: &Config, gate: &Gate) -> anyhow::Result<()> {
+fn handle_conn(stream: TcpStream, cfg: &Config, gate: &Gate, approvals: &Approvals) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
     // take() 限制单次 read_line 的读取量：超长行不会撑爆内存
     let mut reader = BufReader::new(stream.try_clone()?).take(MAX_LINE_BYTES);
@@ -70,31 +73,54 @@ fn handle_conn(stream: TcpStream, cfg: &Config, gate: &Gate) -> anyhow::Result<(
         if reader.read_line(&mut line)? == 0 {
             return Ok(()); // 对端关闭
         }
-        for resp in handle_request(&line, cfg, gate) {
+        for resp in handle_request(&line, cfg, gate, approvals) {
             writer.write_all(encode(&resp).as_bytes())?;
             writer.flush()?;
         }
     }
 }
 
-fn handle_request(line: &str, cfg: &Config, gate: &Gate) -> Vec<Response> {
+fn handle_request(line: &str, cfg: &Config, gate: &Gate, approvals: &Approvals) -> Vec<Response> {
     let Ok(req) = aether_ipc::decode::<Request>(line) else {
         return vec![Response::Error { code: 1, message: "无法解析的请求".into() }];
     };
     match req {
         Request::Ping => vec![Response::Pong],
-        Request::Chat { session_id, text } => handle_chat(&session_id, &text, cfg, gate),
-        Request::ToolCall { tool, arguments, .. } => {
-            // ToolCall 是本地 UI（安装向导等）在用户已确认后发起的直接调用，
-            // 协议语义即"已授权的工具调用"，故视为 approved；AI agent 路径
-            // （agent_run）则恒以 approved=false 过闸，L2+ 需用户确认。
-            let mut ctx = tools::ToolCtx::default();
-            let (ok, output) = match tools::execute(gate, &mut ctx, &tool, &arguments, true) {
-                Ok(output) => (true, output),
-                Err(e) => (false, format!("[工具错误] {e}")),
+        Request::Chat { session_id, text } => handle_chat(&session_id, &text, cfg, gate, approvals),
+        Request::ToolCall { tool, arguments, approval, .. } => {
+            // 是否"已授权"只能由服务端签发的令牌证明：不带令牌 = 未经确认，
+            // L2+ 会被闸门拦下并重新下发确认请求。AI 拿不到令牌，故无法自我授权。
+            let approved = match &approval {
+                Some(token) => match approvals.redeem(token, &tool, &arguments) {
+                    Ok(()) => true,
+                    Err(reason) => {
+                        return vec![Response::Error {
+                            code: 403,
+                            message: format!("确认令牌校验失败：{reason}"),
+                        }]
+                    }
+                },
+                None => false,
             };
-            let mut out = vec![Response::ToolResult { tool, ok, output }];
-            if ok {
+            let mut ctx = tools::ToolCtx::default();
+            let out = match tools::execute(gate, &mut ctx, &tool, &arguments, approved) {
+                Ok(tools::ExecOutcome::Done(output)) => vec![Response::ToolResult { tool, ok: true, output }],
+                Ok(tools::ExecOutcome::NeedsConfirmation { tool, level, arguments, consequence, echo_required }) => {
+                    let token = approvals.issue(&tool, &arguments);
+                    eprintln!("[aetherd] 工具 {tool} 需 L{level} 确认，已下发确认请求");
+                    vec![Response::NeedsConfirmation {
+                        tool,
+                        level: level as u8,
+                        arguments,
+                        consequence: consequence.to_string(),
+                        echo_required: echo_required.map(String::from),
+                        token,
+                    }]
+                }
+                Err(e) => vec![Response::ToolResult { tool, ok: false, output: format!("[工具错误] {e}") }],
+            };
+            let mut out = out;
+            if out.iter().any(|r| matches!(r, Response::ToolResult { ok: true, .. })) {
                 for a in ctx.desktop_actions {
                     out.push(Response::Action { name: a.name, arguments: a.arguments });
                 }
@@ -111,8 +137,9 @@ fn handle_request(line: &str, cfg: &Config, gate: &Gate) -> Vec<Response> {
 }
 
 /// Chat 请求：快速意图 → 命中则回复+桌面行为；未命中 → LLM agent。
-/// 注意：Action 必须在 done 前发送——客户端（compositor）收到 done 即停止读取。
-fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate) -> Vec<Response> {
+/// 注意：Action / NeedsConfirmation 必须在 done 前发送——客户端（compositor）
+/// 收到 done 即停止读取。
+fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate, approvals: &Approvals) -> Vec<Response> {
     if let Some((reply, action)) = intent::try_handle(text) {
         let mut out = Vec::new();
         if let Some(a) = action {
@@ -128,14 +155,27 @@ fn handle_chat(session_id: &str, text: &str, cfg: &Config, gate: &Gate) -> Vec<R
 
     // 未命中快速意图：交给 LLM agent（可能较慢，连接线程阻塞在此处即可）
     match crate::agent_run(cfg, gate, text) {
-        Ok((answer, actions)) => {
+        Ok(outcome) => {
             let mut out = Vec::new();
-            for a in actions {
+            for a in outcome.actions {
                 out.push(Response::Action { name: a.name, arguments: a.arguments });
+            }
+            // L2+ 操作暂停在确认上：签发一次性令牌交给 UI，模型看不到它
+            if let Some(p) = outcome.pending {
+                let token = approvals.issue(&p.tool, &p.arguments);
+                eprintln!("[aetherd] 工具 {} 需 L{} 确认，已下发确认请求", p.tool, p.level);
+                out.push(Response::NeedsConfirmation {
+                    tool: p.tool,
+                    level: p.level,
+                    arguments: p.arguments,
+                    consequence: p.consequence,
+                    echo_required: p.echo_required,
+                    token,
+                });
             }
             out.push(Response::ChatChunk {
                 session_id: session_id.into(),
-                delta: answer,
+                delta: outcome.answer,
                 done: true,
             });
             out

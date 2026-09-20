@@ -25,6 +25,10 @@ pub struct Tool {
     pub parameters: Value,
     /// 执行体
     pub run: fn(&Value, &mut ToolCtx) -> Result<String>,
+    /// 一句话后果说明（L2+ 确认卡片展示给用户；L0/L1 留空）
+    pub consequence: &'static str,
+    /// L3 回显确认的目标参数名（如 "disk"）：用户须原样输入该参数值
+    pub echo_field: Option<&'static str>,
 }
 
 pub fn registry() -> Vec<Tool> {
@@ -41,6 +45,8 @@ pub fn registry() -> Vec<Tool> {
                 "required": []
             }),
             run: tool_sys_info,
+            consequence: "",
+            echo_field: None,
         },
         Tool {
             name: "read_file",
@@ -52,6 +58,8 @@ pub fn registry() -> Vec<Tool> {
                 "required": ["path"]
             }),
             run: tool_read_file,
+            consequence: "",
+            echo_field: None,
         },
         Tool {
             name: "sys_probe",
@@ -65,6 +73,8 @@ pub fn registry() -> Vec<Tool> {
                 "required": []
             }),
             run: tool_sys_probe,
+            consequence: "",
+            echo_field: None,
         },
         Tool {
             name: "desktop",
@@ -92,6 +102,8 @@ pub fn registry() -> Vec<Tool> {
                 "required": ["action"]
             }),
             run: tool_desktop,
+            consequence: "",
+            echo_field: None,
         },
         Tool {
             name: "install_disk",
@@ -106,13 +118,30 @@ pub fn registry() -> Vec<Tool> {
                 "required": ["disk", "confirm"]
             }),
             run: tool_install_disk,
+            consequence: "整盘覆盖写入：目标磁盘上的分区表与所有数据将被永久删除，不可恢复。",
+            echo_field: Some("disk"),
         },
     ]
 }
 
-/// 执行工具：闸门裁决 → 审计 → 运行。需确认的操作未批准时返回
-/// NEEDS_CONFIRMATION 语义错误，由上层翻译成 UI 确认卡片。
-pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approved: bool) -> Result<String> {
+/// 工具执行结果。
+#[derive(Debug)]
+pub enum ExecOutcome {
+    /// 已执行，附带输出文本（审计告警会前置在文本里）
+    Done(String),
+    /// L2+ 未获用户确认：由上层翻译成确认卡片（IPC `NeedsConfirmation`）。
+    /// 不携带令牌——令牌由服务层签发，AI 路径拿不到，因此无法自我授权。
+    NeedsConfirmation {
+        tool: String,
+        level: Level,
+        arguments: Value,
+        consequence: &'static str,
+        echo_required: Option<&'static str>,
+    },
+}
+
+/// 执行工具：闸门裁决 → 审计 → 运行。
+pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approved: bool) -> Result<ExecOutcome> {
     let Some(tool) = registry().into_iter().find(|t| t.name == name) else {
         bail!("未知工具: {name}");
     };
@@ -131,18 +160,18 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
     match verdict {
         Verdict::Allowed => {
             let out = (tool.run)(args, ctx)?;
-            Ok(match audit_warn {
+            Ok(ExecOutcome::Done(match audit_warn {
                 Some(w) => format!("{w}{out}"),
                 None => out,
-            })
+            }))
         }
-        Verdict::NeedsConfirmation => {
-            bail!(
-                "{}NEEDS_CONFIRMATION: 工具 {name} 需要 L{} 级用户确认",
-                audit_warn.unwrap_or_default(),
-                tool.level as u8
-            )
-        }
+        Verdict::NeedsConfirmation => Ok(ExecOutcome::NeedsConfirmation {
+            tool: name.to_string(),
+            level: tool.level,
+            arguments: args.clone(),
+            consequence: tool.consequence,
+            echo_required: tool.echo_field,
+        }),
         Verdict::Denied(reason) => bail!("DENIED: {reason}"),
     }
 }
@@ -292,7 +321,7 @@ mod tests {
     fn l0_runs_without_approval() {
         let mut ctx = ToolCtx::default();
         let r = execute(&gate(), &mut ctx, "sys_info", &serde_json::json!({"scope":"services"}), false);
-        assert!(r.is_ok());
+        assert!(matches!(r, Ok(ExecOutcome::Done(_))));
     }
 
     #[test]
@@ -377,7 +406,8 @@ mod tests {
 
     #[test]
     fn install_disk_needs_confirmation_without_approval() {
-        // L3 危险操作：无用户批准时不得进入工具体（连路径校验都不该执行）
+        // L3 危险操作：无用户批准时不得进入工具体（连路径校验都不该执行），
+        // 而是上抛结构化确认请求，供 UI 弹确认卡片
         let mut ctx = ToolCtx::default();
         let r = execute(
             &gate(),
@@ -386,7 +416,15 @@ mod tests {
             &serde_json::json!({"disk":"/dev/vda", "confirm":"/dev/vda"}),
             false,
         );
-        let err = r.unwrap_err().to_string();
-        assert!(err.contains("NEEDS_CONFIRMATION"), "L3 未批准应要求确认: {err}");
+        match r {
+            Ok(ExecOutcome::NeedsConfirmation { tool, level, echo_required, consequence, .. }) => {
+                assert_eq!(tool, "install_disk");
+                assert_eq!(level as u8, 3);
+                // L3 必须要求回显目标盘名，且给出后果说明
+                assert_eq!(echo_required, Some("disk"));
+                assert!(!consequence.is_empty(), "确认卡片需要后果说明");
+            }
+            other => panic!("L3 未批准应返回确认请求，实得: {other:?}"),
+        }
     }
 }

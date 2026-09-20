@@ -22,6 +22,12 @@ pub enum Request {
         session_id: String,
         tool: String,
         arguments: serde_json::Value,
+        /// 用户确认令牌：由 aetherd 在 `Response::NeedsConfirmation` 里签发，
+        /// UI 在用户点"允许一次"后原样带回。缺省（默认）表示未经确认——
+        /// L2+ 工具会被权限闸门拦下。令牌只发给 IPC 客户端，不进 LLM 上下文，
+        /// 因此 AI 无法自我授权。
+        #[serde(default)]
+        approval: Option<String>,
     },
     /// 查询系统状态（CPU/内存/磁盘/服务列表等）。
     SysInfo {
@@ -61,6 +67,21 @@ pub enum Response {
     Action {
         name: String,
         arguments: serde_json::Value,
+    },
+    /// L2+ 操作待用户确认：UI 应弹确认卡片，展示参数与后果；
+    /// 用户允许后带 `approval` 令牌重发 `Request::ToolCall`。
+    NeedsConfirmation {
+        tool: String,
+        /// 权限等级：2 = L2 敏感写，3 = L3 危险
+        level: u8,
+        /// 参数明文（原样展示给用户，不做美化）
+        arguments: serde_json::Value,
+        /// 一句话后果说明
+        consequence: String,
+        /// L3 需回显确认的目标文本（如 "/dev/vda"）；None = 只需点确认
+        echo_required: Option<String>,
+        /// 一次性确认令牌（5 分钟内有效，用后即废）
+        token: String,
     },
     Error {
         code: u32,
