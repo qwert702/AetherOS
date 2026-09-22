@@ -968,7 +968,7 @@ fn main() -> anyhow::Result<()> {
         let (fw, fh) = (920usize, 560usize);
         let mut buf = vec![0u32; fw * fh];
         for p in buf.iter_mut() {
-            *p = (28 << 16) | (29 << 8) | 36;
+            *p = (38 << 16) | (40 << 8) | 50;
         }
         let sentence = "中文清晰度：把窗口排成两列，打开终端与文件管理器。";
         let latin = "Aether 0.1.0 — install_disk /dev/vda [OK]";

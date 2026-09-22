@@ -20,27 +20,29 @@ pub mod theme {
     /// 色板 §3.1：中性层级 + 克制使用的强调色
     /// （极光只留给壁纸、AI 元素、品牌标识）
     pub mod color {
-        // —— 中性层级（深空基调，明度阶梯拉开）——
-        /// 壁纸渐变顶
-        pub const BG_TOP: [u8; 3] = [16, 18, 26];
+        // —— 中性层级（深空基调，明度阶梯拉开：相邻级差 15-18，杜绝"灰泥"）——
+        /// 壁纸渐变顶（深空底色：提亮一档并保持蓝调，Step1 诊断 1）
+        pub const BG_TOP: [u8; 3] = [22, 24, 34];
         /// 壁纸渐变底
-        pub const BG_BOTTOM: [u8; 3] = [32, 36, 50];
+        pub const BG_BOTTOM: [u8; 3] = [46, 52, 68];
         /// 凹陷区/深底座：菜单栏、Dock 托盘、侧栏、终端底、AI 指令条
-        pub const INSET: [u8; 3] = [28, 29, 36];
+        pub const INSET: [u8; 3] = [38, 40, 50];
         /// 窗口/面板主面
-        pub const SURFACE_1: [u8; 3] = [38, 40, 48];
+        pub const SURFACE_1: [u8; 3] = [54, 57, 68];
         /// 卡片、浮层、侧栏选中
-        pub const SURFACE_2: [u8; 3] = [46, 48, 57];
+        pub const SURFACE_2: [u8; 3] = [66, 70, 82];
         /// 悬停态、输入框
-        pub const SURFACE_3: [u8; 3] = [56, 58, 68];
+        pub const SURFACE_3: [u8; 3] = [80, 84, 97];
+        /// 强悬停/强调层级（文件卡片 hover 等，Step1 新档）
+        pub const SURFACE_4: [u8; 3] = [94, 98, 112];
         /// 发丝描边（玻璃感关键；alpha 在调用点按 6%–16% 使用）
         pub const HAIRLINE: [u8; 3] = [255, 255, 255];
         /// 主文字
         pub const TEXT: [u8; 3] = [240, 241, 246];
-        /// 次要文字
-        pub const TEXT_DIM: [u8; 3] = [158, 160, 172];
-        /// 占位/禁用文字
-        pub const TEXT_FAINT: [u8; 3] = [108, 110, 122];
+        /// 次要文字（提亮：与 TEXT 拉开但不失层级，Step1 诊断 4）
+        pub const TEXT_DIM: [u8; 3] = [180, 182, 192];
+        /// 占位/禁用文字（提亮到可读下限，Step1 诊断 4）
+        pub const TEXT_FAINT: [u8; 3] = [136, 139, 150];
 
         // —— 强调色（克制使用）——
         /// 主青：选中、焦点、主按钮
@@ -578,32 +580,33 @@ fn wash(x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32) -> f32 {
 fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
     // 漂移放缓（§3.4 动效克制）：4 秒级的变化降到分钟级呼吸
     let drift = t * 0.02;
-    // 三道极低饱和的柔光：青（左上）、灰紫（右下）、暖灰（右上）。
-    // 半径加大、强度降低 → 色带过渡更柔和，只衬托不抢戏
+    // 三道极光柔光：青（左上）、紫（右下）、暖（右上）。
+    // Step1 诊断 1：强度/饱和度提升到"肉眼明确可辨但克制"——
+    // 中心权重 0.44/0.40 使可见条带出现真实青/紫色相，暗角 0.14 不再闷死。
     let washes: [(f32, f32, f32, f32, [u8; 3], f32); 3] = [
         (
             w as f32 * (0.20 + 0.02 * drift.sin()),
             h as f32 * 0.15,
             w as f32 * 0.58,
             h as f32 * 0.64,
-            [38, 104, 112],
-            0.28,
+            [66, 178, 186],
+            0.44,
         ),
         (
             w as f32 * (0.80 - 0.02 * drift.cos()),
-            h as f32 * 0.90,
+            h as f32 * 0.82,
             w as f32 * 0.64,
             h as f32 * 0.58,
-            [82, 72, 128],
-            0.26,
+            [148, 128, 214],
+            0.45,
         ),
         (
             w as f32 * 0.88,
             h as f32 * 0.12,
             w as f32 * 0.42,
             h as f32 * 0.46,
-            [110, 78, 84],
-            0.10,
+            [168, 118, 110],
+            0.15,
         ),
     ];
 
@@ -620,10 +623,10 @@ fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
                     acc[c] += (rgb[c] as f32 - acc[c]) * g;
                 }
             }
-            // 轻微暗角
+            // 轻微暗角（从 0.30 降到 0.14：留深空氛围，不再闷死极光）
             let nx = x as f32 / w as f32 - 0.5;
             let ny = y as f32 / h as f32 - 0.5;
-            let vig = 1.0 - (nx * nx + ny * ny) * 0.30;
+            let vig = 1.0 - (nx * nx + ny * ny) * 0.14;
             buf[y * w + x] = ((acc[0] * vig) as u32) << 16
                 | ((acc[1] * vig) as u32) << 8
                 | (acc[2] * vig) as u32;
@@ -859,8 +862,8 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, mouse: (f32,
                 continue;
             }
             let hovered = card.contains(mouse.0, mouse.1);
-            rounded_rect(buf, w, h, card, radius::MD, if hovered { color::SURFACE_3 } else { color::SURFACE_2 }, if hovered { 0.85 } else { 0.55 });
-            rounded_outline(buf, w, h, card, radius::MD, color::HAIRLINE, if hovered { 0.14 } else { 0.07 });
+            rounded_rect(buf, w, h, card, radius::MD, if hovered { color::SURFACE_4 } else { color::SURFACE_2 }, if hovered { 0.9 } else { 0.62 });
+            rounded_outline(buf, w, h, card, radius::MD, color::HAIRLINE, if hovered { 0.16 } else { 0.08 });
             // 缩略图占位：低饱和蓝灰，示意"文档"而不抢戏（§1 克制用色）
             gradient_tile(buf, w, h, Rect { x: card.x + 21, y: card.y + 14, w: 44, h: 34 }, 7.0, [72, 100, 138], [56, 80, 114], 0.85);
         }
