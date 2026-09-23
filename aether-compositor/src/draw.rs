@@ -864,8 +864,11 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, mouse: (f32,
             let hovered = card.contains(mouse.0, mouse.1);
             rounded_rect(buf, w, h, card, radius::MD, if hovered { color::SURFACE_4 } else { color::SURFACE_2 }, if hovered { 0.9 } else { 0.62 });
             rounded_outline(buf, w, h, card, radius::MD, color::HAIRLINE, if hovered { 0.16 } else { 0.08 });
-            // 缩略图占位：低饱和蓝灰，示意"文档"而不抢戏（§1 克制用色）
-            gradient_tile(buf, w, h, Rect { x: card.x + 21, y: card.y + 14, w: 44, h: 34 }, 7.0, [72, 100, 138], [56, 80, 114], 0.85);
+            // 缩略图占位：与 Dock 图标同语言的低饱和渐变底 + 白色文件夹符号
+            //（Step2：不再用实心蓝灰块，消灭占位廉价感）
+            gradient_tile(buf, w, h, Rect { x: card.x + 21, y: card.y + 14, w: 44, h: 34 }, 7.0, [52, 104, 118], [72, 158, 168], 0.9);
+            rounded_rect(buf, w, h, Rect { x: card.x + 29, y: card.y + 17, w: 9, h: 4 }, 2.0, color::TEXT, 0.95);
+            rounded_rect(buf, w, h, Rect { x: card.x + 30, y: card.y + 21, w: 26, h: 17 }, 3.0, color::TEXT, 0.95);
         }
     }
 }
@@ -1014,7 +1017,7 @@ impl Renderer {
     ///
     /// 图标底座走中性灰阶（§1：极光只留给壁纸、AI 元素、品牌标识），
     /// 区分度由造型与状态（hover 提亮、运行中青色微光）承担，不再用彩色拟物色块。
-    fn draw_dock(&mut self, buf: &mut [u32], w: usize, h: usize, open_titles: &[&str], ui: &UiState, tr: Option<&TextRenderer>) {
+    fn draw_dock(&mut self, buf: &mut [u32], w: usize, h: usize, open_titles: &[&str], ui: &UiState, _tr: Option<&TextRenderer>) {
         let mut apps: Vec<&str> = vec![
             strings::WIN_FILES,
             strings::WIN_TERM,
@@ -1045,61 +1048,81 @@ impl Renderer {
             let running = open_titles.contains(name);
 
             if *name == strings::INSTALLER {
-                // 安装是 Live ISO 里唯一需要被一眼找到的动作，保留强调色
-                gradient_tile(buf, w, h, tile, radius::MD, color::ACCENT, color::ACCENT_VIOLET, if hovered { 1.0 } else { 0.9 });
+                // 安装是 Live ISO 里唯一需要被一眼找到的动作：琥珀警示色 + 强调描边
+                gradient_tile(buf, w, h, tile, radius::MD, [160, 108, 46], [214, 156, 74], if hovered { 1.0 } else { 0.92 });
             } else {
-                // 中性玻璃片：常态一档渐变，hover 时叠一层发丝提亮
-                gradient_tile(buf, w, h, tile, radius::MD, color::SURFACE_3, color::SURFACE_1, 0.95);
+                // Step2 图标体系：每应用专属「低饱和双色渐变底座」（深→浅对角/纵向），
+                // 消灭灰剪影廉价感；色相克制（青/蓝/紫系），不与强调色抢戏
+                let base = match i {
+                    0 => ([52, 104, 118], [72, 158, 168]),   // 文件：青
+                    1 => ([58, 96, 132], [86, 118, 178]),    // 终端：靛
+                    2 => ([50, 88, 140], [76, 122, 184]),    // 浏览器：蓝
+                    3 => ([94, 76, 138], [134, 108, 180]),   // 音乐：紫
+                    _ => ([62, 66, 88], [90, 96, 124]),      // 设置：蓝灰
+                };
+                gradient_tile(buf, w, h, tile, radius::MD, base.0, base.1, 0.96);
                 if hovered {
-                    rounded_rect(buf, w, h, tile, radius::MD, color::HAIRLINE, 0.10);
+                    rounded_rect(buf, w, h, tile, radius::MD, color::HAIRLINE, 0.12);
                 }
                 if running {
                     // 运行中：青色微光（状态反馈，不是装饰）
                     rounded_rect(buf, w, h, tile, radius::MD, color::ACCENT, 0.10);
                 }
             }
-            rounded_outline(buf, w, h, tile, radius::MD, color::HAIRLINE, if hovered { 0.26 } else { 0.15 });
+            rounded_outline(buf, w, h, tile, radius::MD, color::HAIRLINE, if hovered { 0.28 } else { 0.16 });
 
-            // 图标 glyph
+            // 白色几何符号（全部纯 rect 绘制，不依赖字体字形覆盖）
+            let sym = color::TEXT;
+            let a = 0.95;
             match i {
+                // 文件：页签 + 文件夹体
                 0 => {
-                    fill_rect(buf, w, h, Rect { x: ix + 10, y: iy + 14, w: 14, h: 6 }, color::TEXT, 0.95);
-                    rounded_rect(buf, w, h, Rect { x: ix + 10, y: iy + 18, w: 26, h: 16 }, 3.0, color::TEXT, 0.95);
+                    rounded_rect(buf, w, h, Rect { x: ix + 9, y: iy + 12, w: 12, h: 5 }, 2.0, sym, a);
+                    rounded_rect(buf, w, h, Rect { x: ix + 10, y: iy + 17, w: 26, h: 17 }, 3.0, sym, a);
                 }
+                // 终端：">_"（45° 双斜臂 + 下划线）
                 1 => {
-                    if let Some(tr) = tr {
-                        let tw = tr.measure_bold(">_", font::GLYPH);
-                        tr.draw_bold(buf, w, h, ix as f32 + (metric::DOCK_ICON as f32 - tw) / 2.0, tr.vcenter(tile.y as f32, tile.h as f32, font::GLYPH), ">_", font::GLYPH, color::TEXT, 0.95);
+                    for k in 0..6 {
+                        fill_rect(buf, w, h, Rect { x: ix + 13 + k, y: iy + 13 + k, w: 2, h: 2 }, sym, a);
+                        fill_rect(buf, w, h, Rect { x: ix + 13 + k, y: iy + 25 - k, w: 2, h: 2 }, sym, a);
                     }
+                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 30, w: 20, h: 2 }, sym, a);
                 }
+                // 浏览器：球体 = 圆环 + 经纬
                 2 => {
-                    rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: 30 }, 15.0, color::TEXT, 0.95);
-                    fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 20, w: 6, h: 6 }, color::TEXT, 0.95);
+                    rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: 30 }, 15.0, sym, a);
+                    fill_rect(buf, w, h, Rect { x: ix + 21, y: iy + 12, w: 3, h: 22 }, sym, a);
+                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 21, w: 22, h: 3 }, sym, a);
                 }
+                // 音乐：双音符（两条符干 + 符头 + 横梁）
                 3 => {
-                    fill_rect(buf, w, h, Rect { x: ix + 26, y: iy + 12, w: 3, h: 20 }, color::TEXT, 0.95);
-                    rounded_rect(buf, w, h, Rect { x: ix + 16, y: iy + 26, w: 13, h: 10 }, 5.0, color::TEXT, 0.95);
+                    fill_rect(buf, w, h, Rect { x: ix + 17, y: iy + 13, w: 3, h: 19 }, sym, a);
+                    fill_rect(buf, w, h, Rect { x: ix + 26, y: iy + 13, w: 3, h: 19 }, sym, a);
+                    fill_rect(buf, w, h, Rect { x: ix + 17, y: iy + 13, w: 12, h: 4 }, sym, a);
+                    rounded_rect(buf, w, h, Rect { x: ix + 9, y: iy + 27, w: 13, h: 9 }, 4.0, sym, a);
+                    rounded_rect(buf, w, h, Rect { x: ix + 18, y: iy + 27, w: 13, h: 9 }, 4.0, sym, a);
                 }
                 _ if *name == strings::INSTALLER => {
-                    // 安装：向下箭头 + 底座（"写入磁盘"造型）
-                    fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 10, w: 6, h: 12 }, color::TEXT, 0.95);
+                    // 安装：向下箭头写入磁盘底座
+                    fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 10, w: 6, h: 12 }, sym, a);
                     for r in 0..6i32 {
-                        fill_rect(buf, w, h, Rect { x: ix + 14 + r, y: iy + 22 + r, w: 18 - 2 * r, h: 2 }, color::TEXT, 0.95);
+                        fill_rect(buf, w, h, Rect { x: ix + 14 + r, y: iy + 22 + r, w: 18 - 2 * r, h: 2 }, sym, a);
                     }
-                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 33, w: 22, h: 3 }, color::TEXT, 0.95);
+                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 33, w: 22, h: 3 }, sym, a);
                 }
+                // 设置：齿轮 = 外环 + 内环 + 四齿
                 _ => {
-                    rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, color::TEXT, 0.95);
-                    fill_rect(buf, w, h, Rect { x: ix + 21, y: iy + 21, w: 4, h: 4 }, color::TEXT, 0.95);
-                    for (dx, dy) in [(0, -14), (0, 12), (-14, 0), (12, 0)] {
-                        fill_rect(buf, w, h, Rect { x: ix + 22 + dx, y: iy + 21 + dy, w: 3, h: 3 }, color::TEXT, 0.8);
+                    rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, sym, a);
+                    rounded_outline(buf, w, h, Rect { x: ix + 16, y: iy + 16, w: 14, h: 14 }, 7.0, sym, a);
+                    for (tx, ty) in [(21, 8), (21, 33), (8, 21), (33, 21)] {
+                        fill_rect(buf, w, h, Rect { x: ix + tx, y: iy + ty, w: 5, h: 5 }, sym, a);
                     }
                 }
             }
 
             // 运行指示点：真实反映打开的窗口（强调色，品牌点缀）
             if running {
-                rounded_rect(buf, w, h, Rect { x: ix + metric::DOCK_ICON / 2 - 2, y: iy + metric::DOCK_ICON + 5, w: 4, h: 4 }, 2.0, color::ACCENT, 0.9);
+                rounded_rect(buf, w, h, Rect { x: ix + metric::DOCK_ICON / 2 - 1, y: iy + metric::DOCK_ICON + 5, w: 3, h: 3 }, 1.5, color::ACCENT, 0.9);
             }
         }
     }
