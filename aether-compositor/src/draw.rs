@@ -132,9 +132,9 @@ pub mod theme {
         pub const GAP: i32 = 14;
         /// 底部 Dock 保留区高度（托盘 + AI 指令条以下留白）
         pub const BOTTOM_DOCK: i32 = 104;
-        /// 窗控圆点直径与间距（§3.1：12px / 8px）
-        pub const LIGHT_D: i32 = 12;
-        pub const LIGHT_GAP: i32 = 8;
+        /// 窗控圆点直径与间距（§3.1：10px / 7px，Step4 从 12/8 收细——12px 在 36px 标题栏里偏大）
+        pub const LIGHT_D: i32 = 10;
+        pub const LIGHT_GAP: i32 = 7;
     }
 }
 
@@ -751,13 +751,13 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
     shadow(buf, w, h, r, radius::LG, if active { elevation::ELEV_1 } else { elevation::ELEV_1_DIM });
     rounded_rect(buf, w, h, r, radius::LG, color::SURFACE_1, 0.92);
     // 顶部内高光（玻璃厚度感）
-    fill_rect(buf, w, h, Rect { x: r.x + 8, y: r.y + 1, w: r.w - 16, h: 1 }, color::HAIRLINE, 0.07);
-    rounded_outline(buf, w, h, r, radius::LG, color::HAIRLINE, if active { 0.16 } else { 0.09 });
+    fill_rect(buf, w, h, Rect { x: r.x + 8, y: r.y + 1, w: r.w - 16, h: 1 }, color::HAIRLINE, 0.09);
+    rounded_outline(buf, w, h, r, radius::LG, color::HAIRLINE, if active { 0.18 } else { 0.10 });
 
     // 标题栏分隔发丝线
-    fill_rect(buf, w, h, Rect { x: r.x + 1, y: r.y + metric::TITLE_H, w: r.w - 2, h: 1 }, color::HAIRLINE, 0.07);
+    fill_rect(buf, w, h, Rect { x: r.x + 1, y: r.y + metric::TITLE_H, w: r.w - 2, h: 1 }, color::HAIRLINE, 0.09);
 
-    // 红绿灯（左）：直径 12px、间距 8px（§3.1），悬停时整组显示符号
+    // 红绿灯（左）：直径 10px、间距 7px（Step4 收细），悬停时整组显示符号
     let lights = [color::CLOSE, color::MIN, color::ZOOM];
     let ly = r.y + (metric::TITLE_H - metric::LIGHT_D) / 2;
     let group = Rect {
@@ -770,7 +770,7 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
     for (i, c) in lights.iter().enumerate() {
         let lx = r.x + 14 + (i as i32) * (metric::LIGHT_D + metric::LIGHT_GAP);
         let dot = Rect { x: lx, y: ly, w: metric::LIGHT_D, h: metric::LIGHT_D };
-        rounded_rect(buf, w, h, dot, metric::LIGHT_D as f32 / 2.0, *c, if active { 0.95 } else { 0.45 });
+        rounded_rect(buf, w, h, dot, metric::LIGHT_D as f32 / 2.0, *c, if active { 0.95 } else { 0.6 });
         if hovered {
             light_symbol(buf, w, h, lx + metric::LIGHT_D / 2, ly + metric::LIGHT_D / 2, i);
         }
@@ -799,7 +799,7 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
 
 /// 窗控符号（悬停时显示）：纯几何绘制，不依赖字体字形覆盖。
 fn light_symbol(buf: &mut [u32], w: usize, h: usize, cx: i32, cy: i32, kind: usize) {
-    const S: i32 = 3; // 半臂长 → 符号跨度 7px（12px 圆内）
+    const S: i32 = 2; // 半臂长 → 符号跨度 5px（10px 圆内，Step4 收细）
     // 亮色圆点上用近黑符号：对比足，又不抢红绿灯本身的颜色语义
     let rgb = [26, 27, 32];
     let alpha = 0.75;
@@ -853,7 +853,7 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, mouse: (f32,
             if selected {
                 rounded_rect(buf, w, h, row, radius::SM, color::ACCENT, 0.18);
             } else if row.contains(mouse.0, mouse.1) {
-                rounded_rect(buf, w, h, row, radius::SM, color::SURFACE_1, 0.7);
+                rounded_rect(buf, w, h, row, radius::SM, color::SURFACE_1, 0.65);
             }
             draw_text(tr, buf, w, h, (r.x + 20) as f32, tr.vcenter((y - 5) as f32, 28.0, font::BODY), item, font::BODY, if selected { color::TEXT } else { color::TEXT_DIM }, if selected { 0.95 } else { 0.9 });
         }
