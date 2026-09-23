@@ -679,7 +679,7 @@ impl Renderer {
                 let a = if opened { state::HOVER_STRONG } else { state::HOVER };
                 rounded_rect(buf, w, h, Rect { x: hit.x + 2, y: 4, w: hit.w - 4, h: metric::MENUBAR_H - 8 }, radius::SM, color::HAIRLINE, a);
             }
-            draw_text(tr, buf, w, h, mx, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), menu, font::BODY, color::TEXT, if opened { 1.0 } else { 0.88 });
+            draw_text(tr, buf, w, h, mx, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), menu, font::BODY, color::TEXT, if opened { 1.0 } else { 0.92 });
             self.menubar_menus.push(hit);
             mx += mw + 16.0;
         }
@@ -776,12 +776,17 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
         }
     }
 
-    // 居中标题（粗体、层级分明；按字号在标题栏内垂直居中）
+    // 居中标题（粗体、层级分明；Step3：激活=纯白 1.0，非激活=明确灰阶 TEXT_DIM，
+        // 不再用"半透明灰 0.4"——那在深底上几乎不可见）
     if let Some(tr) = tr {
         let tw = tr.measure_bold(title, font::BODY);
         let tx = r.x as f32 + r.w as f32 / 2.0 - tw / 2.0;
         let ty = tr.vcenter(r.y as f32, metric::TITLE_H as f32, font::BODY);
-        tr.draw_bold(buf, w, h, tx, ty, title, font::BODY, color::TEXT, if active { 0.9 } else { 0.4 });
+        if active {
+            tr.draw_bold(buf, w, h, tx, ty, title, font::BODY, color::TEXT, 1.0);
+        } else {
+            tr.draw_bold(buf, w, h, tx, ty, title, font::BODY, color::TEXT_DIM, 0.75);
+        }
     }
 
     let content = Rect { x: r.x + 1, y: r.y + metric::TITLE_H + 1, w: r.w - 2, h: r.h - metric::TITLE_H - 2 };
@@ -822,7 +827,7 @@ fn draw_term_content(buf: &mut [u32], w: usize, h: usize, r: Rect, t: f32, tr: O
     let lines = [
         ("aether@localhost ~ $", color::ACCENT, 0.95),
         ("uname -a", color::TEXT, 0.9),
-        ("AetherOS 0.1.0 aether-kernel x86_64", color::TEXT_DIM, 0.85),
+        ("AetherOS 0.1.0 aether-kernel x86_64", color::TEXT_DIM, 0.9),
         ("aether@localhost ~ $", color::ACCENT, 0.95),
     ];
     let mut y = r.y + 12;
@@ -850,7 +855,7 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, mouse: (f32,
             } else if row.contains(mouse.0, mouse.1) {
                 rounded_rect(buf, w, h, row, radius::SM, color::SURFACE_1, 0.7);
             }
-            draw_text(tr, buf, w, h, (r.x + 20) as f32, tr.vcenter((y - 5) as f32, 28.0, font::BODY), item, font::BODY, if selected { color::TEXT } else { color::TEXT_DIM }, if selected { 0.95 } else { 0.75 });
+            draw_text(tr, buf, w, h, (r.x + 20) as f32, tr.vcenter((y - 5) as f32, 28.0, font::BODY), item, font::BODY, if selected { color::TEXT } else { color::TEXT_DIM }, if selected { 0.95 } else { 0.9 });
         }
     }
     // 文件卡片网格（悬停提亮一档：SURFACE_2 → SURFACE_3）
@@ -1181,7 +1186,7 @@ impl Renderer {
 
         // 提示行
         draw_text(tr, buf, w, h, (win.x + 18) as f32, (win.y + 52) as f32,
-                  "选择目标磁盘并确认。整盘覆盖，目标盘上的数据将丢失。", font::CAPTION, color::TEXT_DIM, 0.85);
+                  "选择目标磁盘并确认。整盘覆盖，目标盘上的数据将丢失。", font::CAPTION, color::TEXT_DIM, 0.9);
 
         // 磁盘行
         self.installer_rows.clear();
@@ -1225,7 +1230,7 @@ impl Renderer {
                 draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, font::CAPTION, color::DANGER, 0.95);
             }
             _ => {
-                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "就绪。也可以选中磁盘后按 Enter 开始。", font::CAPTION, color::TEXT_DIM, 0.75);
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "就绪。也可以选中磁盘后按 Enter 开始。", font::CAPTION, color::TEXT_DIM, 0.85);
             }
         }
 
