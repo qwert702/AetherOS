@@ -291,3 +291,28 @@ python scripts/e2e-permission-confirm.py   # 13 项断言
 - §4.5 `docs/screenshot-*.png` 实机重拍（需 QEMU/VBox/VMware）
 - §4.3 真实点击端到端（交互桌面）；P3 全部项（fbdev stride/modeset、init 救援、Unix socket 权限、ISO 引导链）
 - §P1 之外的已知限制：中文输入、接入真实 LLM 验证、`AiStatus::Cloud` 的真实云端触发（结构已通，等 API Key）
+
+---
+
+## 9. 视觉重构推进记录（2026-09-24，诊断驱动四步走）
+
+按用户诊断（5 项）→ 修复顺序（4 步）执行，全部集中在 `aether-compositor/src/draw.rs`（+main.rs 一处底色），
+**布局几何/协议/行为/字体管线零改动**。每步单独提交 + 像素断言 + 65 项测试回归。
+
+| 提交 | 对应诊断 | 内容与验证 |
+|---|---|---|
+| `c4e53c2` Step1 | 1 死黑 / 2 灰泥 | 色板 7 档重排（级差 8-11→15-18，新增 SURFACE_4）、壁纸极光强化（青/紫 wash 强度 0.10-0.28→0.15-0.45 + 暗角 0.30→0.14）；像素断言 6 项：青 29→1956、紫 28→1861、壁纸/菜单栏/窗口亮度 18/29/47→35/42/64 |
+| `cdf9796` Step2 | 3 图标廉价 | 每应用专属低饱和双色渐变底座 + 白色几何符号（纯 rect，脱离字体字形）；安装器琥珀警示色；卡片缩略图同语言重绘；运行点 4→3px；断言 10 项全过 |
+| `192b2dd` Step3 | 4 文字层级 | 激活标题纯白 1.0 / 非激活 TEXT_DIM（弃 0.4 灰）、侧栏 0.75→0.9、终端/菜单/向导文字提亮；断言 4 项全过 |
+| `0fc1dd6` Step4 | 5 细节糙 | 红绿灯 12→10px、间距 8→7、符号收细、非激活窗控 0.45→0.6、发丝描边统一提亮、侧栏 hover 0.7→0.65；断言 6 项全过 |
+
+**部署**：构建机重建 ISO（musl 五二进制 + 内核 initramfs 重嵌 + isohybrid）→ 替换 VMware 引导盘 →
+全新开机验证：init→aether-init→持久化挂载→网络 DHCP→compositor fbdev 1280×800 渲染 1000+ 帧，
+五服务全 ✓（`D:\aether-vm\AetherOS-VMware\serial.txt`）。
+
+**回归基线**：`cargo test --workspace` 65 项全绿；`cargo check --workspace --all-targets` 零警告；
+`git diff --check` 干净。主机走查图集：`%TEMP%\aether-ui-verify\final\*.png`（11 张）；
+VM 实拍：`C:\Users\cbn\Pictures\aether-vm-final.png`。
+
+**未覆盖**：真实鼠标点击的端到端（需交互桌面）；`docs/screenshot-*.png` 实机重拍（主机 --shot 图
+已可用，实机图待 VM 会话内操作后补）；中文输入、真实 LLM Key 验证仍旧。
