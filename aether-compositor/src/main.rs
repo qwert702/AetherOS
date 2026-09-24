@@ -869,6 +869,16 @@ fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<Str
 }
 
 fn main() -> anyhow::Result<()> {
+    // 主题：明亮为默认（产品主视觉），`--theme dark` 切回深空备选。
+    // 必须在任何绘制之前定好——色板在绘制期只读。
+    let argv: Vec<String> = std::env::args().collect();
+    let theme = argv.iter().position(|a| a == "--theme").and_then(|i| argv.get(i + 1));
+    draw::theme::color::set_mode(if theme.map(|s| s.as_str()) == Some("dark") {
+        draw::theme::color::Mode::Dark
+    } else {
+        draw::theme::color::Mode::Light
+    });
+
     // AetherOS 系统内：直接绘制到 Linux framebuffer（无输入，演示桌面）
     #[cfg(target_os = "linux")]
     if std::path::Path::new("/dev/fb0").exists() && !std::env::args().any(|a| a == "--preview") {
@@ -976,13 +986,13 @@ fn main() -> anyhow::Result<()> {
         for px in [11.0f32, 12.0, 13.0, 14.0, 15.0] {
             for (bold, label) in [(false, "常规"), (true, "粗体")] {
                 let tag = format!("{px:.0}px {label}");
-                tr.draw(&mut buf, fw, fh, 16.0, y, &tag, 11.0, draw::theme::color::TEXT_DIM, 0.9);
+                tr.draw(&mut buf, fw, fh, 16.0, y, &tag, 11.0, draw::theme::color::text_dim(), 0.9);
                 let x = 96.0;
-                let x = tr.draw(&mut buf, fw, fh, x, y, sentence, px, draw::theme::color::TEXT, 0.98);
+                let x = tr.draw(&mut buf, fw, fh, x, y, sentence, px, draw::theme::color::text(), 0.98);
                 if bold {
-                    tr.draw_bold(&mut buf, fw, fh, x + 12.0, y, latin, px, draw::theme::color::TEXT, 0.98);
+                    tr.draw_bold(&mut buf, fw, fh, x + 12.0, y, latin, px, draw::theme::color::text(), 0.98);
                 } else {
-                    tr.draw(&mut buf, fw, fh, x + 12.0, y, latin, px, draw::theme::color::TEXT_DIM, 0.9);
+                    tr.draw(&mut buf, fw, fh, x + 12.0, y, latin, px, draw::theme::color::text_dim(), 0.9);
                 }
                 y += px * 1.9 + 6.0;
             }

@@ -14,54 +14,199 @@ use self::theme::{color, elevation, font, metric, radius, state};
 /// "Essence" 设计令牌 —— 全系统视觉的单一事实来源（对应
 /// docs/ui-design-plan.md §3：色板 / 字阶 / 圆角与阴影 / 交互态）。
 ///
-/// 层级模型（从底到顶）：壁纸 → INSET（深底座：菜单栏/Dock/侧栏/终端）
-/// → SURFACE_1（窗口）→ SURFACE_2（卡片、浮层）→ SURFACE_3（hover、输入框）。
+/// 双模：**明亮（默认，产品主视觉）** 与 深空（备选，`--theme dark`）。
+/// 颜色一律走函数取值，调用点形如 `color::surface_1()`；模式在进程启动时定一次。
+///
+/// 层级模型（从底到顶）：壁纸 → INSET（底座：菜单栏/Dock/侧栏/终端）
+/// → SURFACE_1（窗口）→ SURFACE_2（内容"纸面"）→ SURFACE_3（输入框/浮层）。
+///
+/// 两种模式的**明度方向一致**：内容面比窗口体更亮（"抬起来"），
+/// 底座比窗口体更暗（"沉下去"）。深色模式里"更亮"是加白，明亮模式里是加黑，
+/// 方向不变、语义不变——这样所有调用点不必区分模式。
 pub mod theme {
     /// 色板 §3.1：中性层级 + 克制使用的强调色
-    /// （极光只留给壁纸、AI 元素、品牌标识）
     pub mod color {
-        // —— 中性层级（深空基调，明度阶梯拉开：相邻级差 12-16，杜绝"灰泥"）——
-        /// 壁纸渐变顶（深空底色）
-        pub const BG_TOP: [u8; 3] = [22, 24, 34];
+        use std::sync::atomic::{AtomicU8, Ordering};
+
+        /// 主题模式。启动时设定一次，绘制期间只读。
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Mode {
+            /// 明亮通透（默认）
+            Light = 0,
+            /// 深空
+            Dark = 1,
+        }
+
+        static MODE: AtomicU8 = AtomicU8::new(Mode::Light as u8);
+
+        pub fn set_mode(m: Mode) {
+            MODE.store(m as u8, Ordering::Relaxed);
+        }
+
+        #[inline]
+        pub fn is_light() -> bool {
+            MODE.load(Ordering::Relaxed) == Mode::Light as u8
+        }
+
+        #[inline]
+        fn pick(light: [u8; 3], dark: [u8; 3]) -> [u8; 3] {
+            if is_light() {
+                light
+            } else {
+                dark
+            }
+        }
+
+        // —— 中性层级 ——
+        /// 壁纸渐变顶
+        pub fn bg_top() -> [u8; 3] {
+            pick([244, 247, 253], [22, 24, 34])
+        }
         /// 壁纸渐变底
-        pub const BG_BOTTOM: [u8; 3] = [46, 52, 68];
-        /// 凹陷区/深底座：菜单栏、Dock 托盘、侧栏、终端底、AI 指令条
-        pub const INSET: [u8; 3] = [30, 32, 41];
+        pub fn bg_bottom() -> [u8; 3] {
+            pick([218, 228, 246], [46, 52, 68])
+        }
+        /// 底座（菜单栏、侧栏、终端底、状态条、音乐面板）。
+        /// 浅色下**必须比窗口体暗**，否则底座与窗口同色，所有区域糊成一片。
+        pub fn inset() -> [u8; 3] {
+            pick([226, 229, 236], [30, 32, 41])
+        }
         /// 窗口/面板主面
-        pub const SURFACE_1: [u8; 3] = [46, 49, 60];
-        /// 卡片、浮层、侧栏选中、内容"纸面"
-        pub const SURFACE_2: [u8; 3] = [64, 68, 80];
-        /// 悬停态、输入框
-        pub const SURFACE_3: [u8; 3] = [80, 84, 97];
-        /// 发丝描边（玻璃感关键；alpha 在调用点按 6%–16% 使用）
-        pub const HAIRLINE: [u8; 3] = [255, 255, 255];
+        pub fn surface_1() -> [u8; 3] {
+            pick([242, 244, 248], [46, 49, 60])
+        }
+        /// 内容"纸面"、卡片、浮层、侧栏选中
+        pub fn surface_2() -> [u8; 3] {
+            pick([255, 255, 255], [64, 68, 80])
+        }
+        /// 输入框、悬停中的控件
+        pub fn surface_3() -> [u8; 3] {
+            pick([232, 235, 241], [80, 84, 97])
+        }
+        /// 对比线：描边、分隔线、悬停叠层。
+        /// 深色模式是白线，明亮模式是黑线——**所有调用点的 alpha 无需改动**。
+        pub fn hairline() -> [u8; 3] {
+            pick([16, 18, 24], [255, 255, 255])
+        }
         /// 主文字
-        pub const TEXT: [u8; 3] = [240, 241, 246];
-        /// 次要文字（提亮：与 TEXT 拉开但不失层级，Step1 诊断 4）
-        pub const TEXT_DIM: [u8; 3] = [180, 182, 192];
-        /// 占位/禁用文字（提亮到可读下限，Step1 诊断 4）
-        pub const TEXT_FAINT: [u8; 3] = [136, 139, 150];
+        pub fn text() -> [u8; 3] {
+            pick([26, 28, 34], [240, 241, 246])
+        }
+        /// 次要文字
+        pub fn text_dim() -> [u8; 3] {
+            pick([94, 98, 108], [180, 182, 192])
+        }
+        /// 占位/禁用文字
+        pub fn text_faint() -> [u8; 3] {
+            pick([146, 150, 160], [136, 139, 150])
+        }
 
-        // —— 强调色（克制使用）——
+        /// 顶部内高光：两种模式都是白（明亮模式下表现为"玻璃上缘"）。
+        pub const HIGHLIGHT: [u8; 3] = [255, 255, 255];
+        /// 模态遮罩（压暗背景；明亮模式用较轻的黑）
+        pub fn scrim() -> [u8; 3] {
+            pick([28, 32, 42], [0, 0, 0])
+        }
+        /// 模态遮罩不透明度
+        pub fn scrim_alpha() -> f32 {
+            if is_light() {
+                0.24
+            } else {
+                0.35
+            }
+        }
+
+        /// 悬浮玻璃层底色（AI 指令条、Dock 托盘、Toast 这类"浮在桌面上"的控件）。
+        ///
+        /// 明亮模式**必须是白**：用底座色（浅灰）会读成一块灰板，
+        /// 整个界面立刻廉价。深色模式则是比窗口更暗的底座。
+        pub fn glass() -> [u8; 3] {
+            pick([255, 255, 255], [30, 32, 41])
+        }
+
+        /// 悬浮玻璃层不透明度（明亮模式要提高，否则粉彩壁纸透上来发脏）
+        pub fn glass_alpha(hovered: bool) -> f32 {
+            if is_light() {
+                if hovered {
+                    0.98
+                } else {
+                    0.95
+                }
+            } else if hovered {
+                0.82
+            } else {
+                0.75
+            }
+        }
+
+        // —— 强调色（明亮模式需在白底上达到可读对比度，故整体加深）——
         /// 主青：选中、焦点、主按钮
-        pub const ACCENT: [u8; 3] = [64, 190, 205];
+        pub fn accent() -> [u8; 3] {
+            pick([11, 132, 150], [64, 190, 205])
+        }
         /// 辅紫：AI 相关元素
-        pub const ACCENT_VIOLET: [u8; 3] = [150, 130, 220];
+        pub fn accent_violet() -> [u8; 3] {
+            pick([110, 90, 205], [150, 130, 220])
+        }
         /// 完成、在线
-        pub const SUCCESS: [u8; 3] = [52, 199, 123];
-        /// 预警、L2 确认（L2+ 权限确认弹窗，Step 4 消费）
-        #[allow(dead_code)]
-        pub const WARNING: [u8; 3] = [255, 179, 64];
+        pub fn success() -> [u8; 3] {
+            pick([22, 142, 90], [52, 199, 123])
+        }
+        /// 预警、L2 确认
+        pub fn warning() -> [u8; 3] {
+            pick([186, 120, 16], [255, 179, 64])
+        }
         /// 危险操作、L3、错误
-        pub const DANGER: [u8; 3] = [255, 92, 88];
-        /// 信息提示（工具调用卡片等，Step 4 消费）
+        pub fn danger() -> [u8; 3] {
+            pick([208, 56, 52], [255, 92, 88])
+        }
+        /// 信息提示（工具调用卡片等）
         #[allow(dead_code)]
-        pub const INFO: [u8; 3] = [90, 160, 250];
+        pub fn info() -> [u8; 3] {
+            pick([28, 106, 214], [90, 160, 250])
+        }
 
-        // —— 窗控三色（精致化红绿灯：直径 12px、间距 8px、悬停显示符号）——
-        pub const CLOSE: [u8; 3] = [255, 95, 86];
-        pub const MIN: [u8; 3] = [254, 188, 46];
-        pub const ZOOM: [u8; 3] = [39, 201, 63];
+        // —— 窗控三色（红绿灯两种模式一致，这是"系统级"识别色）——
+        pub fn close() -> [u8; 3] {
+            [255, 95, 86]
+        }
+        pub fn min() -> [u8; 3] {
+            [254, 188, 46]
+        }
+        pub fn zoom() -> [u8; 3] {
+            [39, 201, 63]
+        }
+
+        // —— 极光带（壁纸）：明亮模式是低饱和粉彩，深空模式是发光带 ——
+        pub fn aurora_cyan() -> [u8; 3] {
+            pick([120, 206, 234], [72, 200, 218])
+        }
+        pub fn aurora_violet() -> [u8; 3] {
+            pick([166, 152, 238], [152, 130, 224])
+        }
+        pub fn aurora_blue() -> [u8; 3] {
+            pick([150, 174, 240], [136, 126, 226])
+        }
+        /// 极光带强度系数（明亮模式下带需要更"淡"才不脏）
+        pub fn aurora_gain() -> f32 {
+            if is_light() {
+                0.95
+            } else {
+                1.0
+            }
+        }
+        /// 粉彩点缀（仅明亮壁纸使用）
+        pub fn aurora_pink() -> [u8; 3] {
+            pick([246, 198, 226], [216, 106, 176])
+        }
+        /// 暗角系数（明亮模式只留极轻的一圈，避免发灰）
+        pub fn vignette() -> f32 {
+            if is_light() {
+                0.03
+            } else {
+                0.20
+            }
+        }
     }
 
     /// 字阶 §3.2：5 档（+ 图标字形档）。11px 是可读下限，不得更小。
@@ -90,26 +235,65 @@ pub mod theme {
         pub const LG: f32 = 16.0;
     }
 
-    /// 阴影档位 §3.3（值即影子总强度；shadow() 按档解释）
+    /// 阴影档位 §3.3（值即影子强度；`shadow()` 按档解释）。
+    ///
+    /// 明亮模式的影子必须**更轻**：`shadow()` 是 5 层叠加，边缘处合成后接近
+    /// 强度的 2 倍，白底上给 0.25 会压出一圈脏黑边。
     pub mod elevation {
+        use super::color::is_light;
+
+        #[inline]
+        fn pick(light: f32, dark: f32) -> f32 {
+            if is_light() {
+                light
+            } else {
+                dark
+            }
+        }
+
         /// 窗口浮起
-        pub const ELEV_1: f32 = 0.25;
+        pub fn elev_1() -> f32 {
+            pick(0.17, 0.25)
+        }
         /// 非活动窗口
-        pub const ELEV_1_DIM: f32 = 0.14;
+        pub fn elev_1_dim() -> f32 {
+            pick(0.11, 0.14)
+        }
         /// 弹窗、浮层（下拉、AI 指令条、Toast、Dock）
-        pub const ELEV_2: f32 = 0.4;
+        pub fn elev_2() -> f32 {
+            pick(0.21, 0.4)
+        }
         /// 模态（安装向导、权限确认）
-        pub const ELEV_3: f32 = 0.55;
+        pub fn elev_3() -> f32 {
+            pick(0.27, 0.55)
+        }
     }
 
     /// 交互态 alpha（悬停/按下/禁用统一在此取值）
     pub mod state {
-        /// 悬停高亮叠层
-        pub const HOVER: f32 = 0.07;
+        use super::color::is_light;
+
+        #[inline]
+        fn pick(light: f32, dark: f32) -> f32 {
+            if is_light() {
+                light
+            } else {
+                dark
+            }
+        }
+
+        /// 悬停高亮叠层（颜色随模式：深色加白、明亮加黑）
+        pub fn hover() -> f32 {
+            pick(0.055, 0.07)
+        }
         /// 悬停高亮叠层（选中项/强调）
-        pub const HOVER_STRONG: f32 = 0.14;
+        pub fn hover_strong() -> f32 {
+            pick(0.10, 0.14)
+        }
         /// 按下压暗
-        pub const PRESSED: f32 = 0.12;
+        pub fn pressed() -> f32 {
+            pick(0.08, 0.12)
+        }
         /// 禁用态整体不透明度
         pub const DISABLED: f32 = 0.4;
     }
@@ -442,9 +626,9 @@ impl AiStatus {
     /// 状态色：青 / 紫 / 灰
     pub fn color(self) -> [u8; 3] {
         match self {
-            AiStatus::Local => color::ACCENT,
-            AiStatus::Cloud => color::ACCENT_VIOLET,
-            AiStatus::Offline => color::TEXT_FAINT,
+            AiStatus::Local => color::accent(),
+            AiStatus::Cloud => color::accent_violet(),
+            AiStatus::Offline => color::text_faint(),
         }
     }
 }
@@ -475,7 +659,7 @@ impl ConfirmUi<'_> {
 
     /// 风险等级徽章配色：L2 黄 / L3 红
     pub fn badge_color(&self) -> [u8; 3] {
-        if self.level >= 3 { color::DANGER } else { color::WARNING }
+        if self.level >= 3 { color::danger() } else { color::warning() }
     }
 }
 
@@ -599,8 +783,8 @@ impl Renderer {
         buf.copy_from_slice(&self.bg);
 
         if let Some(z) = ui.snap {
-            rounded_rect(buf, w, h, z, radius::LG, color::ACCENT, 0.08);
-            rounded_outline(buf, w, h, z, radius::LG, color::ACCENT, 0.5);
+            rounded_rect(buf, w, h, z, radius::LG, color::accent(), 0.08);
+            rounded_outline(buf, w, h, z, radius::LG, color::accent(), 0.5);
         }
 
         for (i, win) in desktop.wins.iter().enumerate() {
@@ -681,12 +865,77 @@ struct AuroraBand {
     ew: f32,
 }
 
-/// 壁纸：深空底 + 结构化极光带 + 颗粒。
+/// 柔光团衰减（1 - 归一化距离）²：明亮壁纸用。
+#[inline]
+fn wash(x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32) -> f32 {
+    let dx = (x - cx) / rx;
+    let dy = (y - cy) / ry;
+    (1.0 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0).powi(2)
+}
+
+/// 明亮壁纸：近白底 + 四角粉彩柔光团。
+///
+/// 为什么不用极光带：光带结构在深色底上才读得出来；浅色底上宽光带只会糊成
+/// 一片"奶雾"，窄光带又会变成脏色块。浅色的高级感来自**近白底 + 角落极淡的
+/// 多色柔光**（Apple 的浅色壁纸正是这套语言）。
+fn draw_light_wallpaper(buf: &mut [u32], w: usize, h: usize, t: f32) {
+    let (wf, hf) = (w as f32, h as f32);
+    let drift = t * 0.02;
+    // (色, 中心 x/y 比例, 半径 x/y 比例, 强度)
+    let blobs: [([u8; 3], f32, f32, f32, f32, f32); 4] = [
+        (color::aurora_cyan(), 0.16, 0.86, 0.60, 0.60, 0.60),
+        (color::aurora_violet(), 0.86, 0.84, 0.55, 0.55, 0.55),
+        (color::aurora_blue(), 0.06, 0.10, 0.45, 0.45, 0.40),
+        (color::aurora_pink(), 0.70, 0.99, 0.45, 0.40, 0.30),
+    ];
+    let (top, bottom) = (color::bg_top(), color::bg_bottom());
+    let vig_k = color::vignette();
+
+    for y in 0..h {
+        let vgrad = y as f32 / hf;
+        let base = [
+            lerp(top[0] as f32, bottom[0] as f32, vgrad),
+            lerp(top[1] as f32, bottom[1] as f32, vgrad),
+            lerp(top[2] as f32, bottom[2] as f32, vgrad),
+        ];
+        for x in 0..w {
+            let mut acc = base;
+            for (rgb, cx, cy, rx, ry, s) in &blobs {
+                // 极缓漂移：分钟级呼吸，肉眼几乎察觉不到
+                let cx = wf * (cx + 0.008 * (drift + cy * 6.0).sin());
+                let cy = hf * (cy + 0.006 * (drift * 0.8 + rx * 9.0).cos());
+                let g = wash(x as f32, y as f32, cx, cy, wf * rx, hf * ry) * s;
+                if g > 0.002 {
+                    for c in 0..3 {
+                        acc[c] += (rgb[c] as f32 - acc[c]) * g;
+                    }
+                }
+            }
+            let nx = x as f32 / wf - 0.5;
+            let ny = y as f32 / hf - 0.5;
+            let vig = 1.0 - (nx * nx + ny * ny) * vig_k;
+            let n = grain(x, y);
+            let px = [
+                (acc[0] * vig + n).clamp(0.0, 255.0) as u32,
+                (acc[1] * vig + n).clamp(0.0, 255.0) as u32,
+                (acc[2] * vig + n).clamp(0.0, 255.0) as u32,
+            ];
+            buf[y * w + x] = (px[0] << 16) | (px[1] << 8) | px[2];
+        }
+    }
+}
+
+/// 壁纸：深空底 + 结构化极光带 + 颗粒（深色模式），
+/// 明亮模式走 [`draw_light_wallpaper`]。
 ///
 /// 与"几个大半径柔光平摊"的区别：柔光平摊出来是一块发灰的脏渐变，
 /// 而极光必须是**有走向的光带**——中心线随 x 缓慢翘曲、横截面很窄、
 /// 沿 x 有强弱包络。三条带共用同一套漂移时钟，整体像缓慢流动。
 fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
+    if color::is_light() {
+        draw_light_wallpaper(buf, w, h, t);
+        return;
+    }
     let (wf, hf) = (w as f32, h as f32);
     // 漂移放缓（§3.4 动效克制）：分钟级呼吸
     let drift = t * 0.03;
@@ -694,10 +943,12 @@ fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
     // 青（上，多数被窗口遮住，只在边缘透出）/ 紫（中）/ 蓝紫（下，窗口下沿之外
     // 的主要可见区——壁纸的构图重心必须放在"真正露出来的地方"）。
     // 不在边缘放窄带：屏幕上只露出一窄条时，窄带会读成"色块"而不是极光。
+    // 色相与强度随模式（明亮模式是低饱和粉彩，深空模式是发光带）。
+    let gain = color::aurora_gain();
     let bands = [
-        AuroraBand { rgb: [72, 200, 218], my: 0.20, amp: 0.075, wave: 1.30, phase: 0.4, sigma: 0.046, inten: 0.70, ex: 0.42, ew: 0.44 },
-        AuroraBand { rgb: [152, 130, 224], my: 0.42, amp: 0.100, wave: 0.92, phase: 2.3, sigma: 0.064, inten: 0.55, ex: 0.60, ew: 0.56 },
-        AuroraBand { rgb: [136, 126, 226], my: 0.78, amp: 0.050, wave: 1.15, phase: 4.1, sigma: 0.062, inten: 0.44, ex: 0.52, ew: 0.70 },
+        AuroraBand { rgb: color::aurora_cyan(), my: 0.20, amp: 0.075, wave: 1.30, phase: 0.4, sigma: 0.046, inten: 0.70 * gain, ex: 0.42, ew: 0.44 },
+        AuroraBand { rgb: color::aurora_violet(), my: 0.42, amp: 0.100, wave: 0.92, phase: 2.3, sigma: 0.064, inten: 0.55 * gain, ex: 0.60, ew: 0.56 },
+        AuroraBand { rgb: color::aurora_blue(), my: 0.78, amp: 0.050, wave: 1.15, phase: 4.1, sigma: 0.062, inten: 0.44 * gain, ex: 0.52, ew: 0.70 },
     ];
     let nb = bands.len();
 
@@ -720,9 +971,9 @@ fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
         let vgrad = y as f32 / hf;
         let ny = vgrad - 0.5;
         let base = [
-            lerp(color::BG_TOP[0] as f32, color::BG_BOTTOM[0] as f32, vgrad),
-            lerp(color::BG_TOP[1] as f32, color::BG_BOTTOM[1] as f32, vgrad),
-            lerp(color::BG_TOP[2] as f32, color::BG_BOTTOM[2] as f32, vgrad),
+            lerp(color::bg_top()[0] as f32, color::bg_bottom()[0] as f32, vgrad),
+            lerp(color::bg_top()[1] as f32, color::bg_bottom()[1] as f32, vgrad),
+            lerp(color::bg_top()[2] as f32, color::bg_bottom()[2] as f32, vgrad),
         ];
         for x in 0..w {
             let mut acc = base;
@@ -736,9 +987,9 @@ fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
                     }
                 }
             }
-            // 暗角：留住深空氛围（比 Step1 略深，让中央极光更亮）
+            // 暗角：留住氛围（明亮模式只留极轻的一圈，重了立刻发灰）
             let nx = x as f32 / wf - 0.5;
-            let vig = 1.0 - (nx * nx + ny * ny) * 0.20;
+            let vig = 1.0 - (nx * nx + ny * ny) * color::vignette();
             let n = grain(x, y);
             let px = [
                 (acc[0] * vig + n).clamp(0.0, 255.0) as u32,
@@ -757,8 +1008,8 @@ fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
 impl Renderer {
     fn draw_menubar(&mut self, buf: &mut [u32], w: usize, h: usize, ui: &UiState, tr: Option<&TextRenderer>) {
         let bar = Rect { x: 0, y: 0, w: w as i32, h: metric::MENUBAR_H };
-        fill_rect(buf, w, h, bar, color::INSET, 0.62);
-        fill_rect(buf, w, h, Rect { x: 0, y: metric::MENUBAR_H - 1, w: w as i32, h: 1 }, color::HAIRLINE, 0.10);
+        fill_rect(buf, w, h, bar, color::inset(), 0.62);
+        fill_rect(buf, w, h, Rect { x: 0, y: metric::MENUBAR_H - 1, w: w as i32, h: 1 }, color::hairline(), 0.10);
 
         let Some(tr) = tr else { return };
 
@@ -768,9 +1019,9 @@ impl Renderer {
             let half = row / 2;
             let t = row as f32 / 15.0;
             let rgb = [
-                lerp(color::ACCENT[0] as f32, color::ACCENT_VIOLET[0] as f32, t) as u8,
-                lerp(color::ACCENT[1] as f32, color::ACCENT_VIOLET[1] as f32, t) as u8,
-                lerp(color::ACCENT[2] as f32, color::ACCENT_VIOLET[2] as f32, t) as u8,
+                lerp(color::accent()[0] as f32, color::accent_violet()[0] as f32, t) as u8,
+                lerp(color::accent()[1] as f32, color::accent_violet()[1] as f32, t) as u8,
+                lerp(color::accent()[2] as f32, color::accent_violet()[2] as f32, t) as u8,
             ];
             for col in 0..(half + 1) {
                 let px = bx + half - col;
@@ -781,7 +1032,7 @@ impl Renderer {
             }
         }
         let brand_x = 32.0;
-        tr.draw_bold(buf, w, h, brand_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), strings::BRAND, font::BODY, color::TEXT, 0.98);
+        tr.draw_bold(buf, w, h, brand_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), strings::BRAND, font::BODY, color::text(), 0.98);
         let mut mx = brand_x + tr.measure_bold(strings::BRAND, font::BODY) + 18.0;
 
         // 菜单标签（登记命中区；悬停/打开用交互态令牌）
@@ -792,10 +1043,10 @@ impl Renderer {
             let hovered = hit.contains(ui.mouse.0, ui.mouse.1);
             let opened = ui.open_menu == Some(i);
             if opened || hovered {
-                let a = if opened { state::HOVER_STRONG } else { state::HOVER };
-                rounded_rect(buf, w, h, Rect { x: hit.x + 2, y: 4, w: hit.w - 4, h: metric::MENUBAR_H - 8 }, radius::SM, color::HAIRLINE, a);
+                let a = if opened { state::hover_strong() } else { state::hover() };
+                rounded_rect(buf, w, h, Rect { x: hit.x + 2, y: 4, w: hit.w - 4, h: metric::MENUBAR_H - 8 }, radius::SM, color::hairline(), a);
             }
-            draw_text(tr, buf, w, h, mx, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), menu, font::BODY, color::TEXT, if opened { 1.0 } else { 0.92 });
+            draw_text(tr, buf, w, h, mx, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), menu, font::BODY, color::text(), if opened { 1.0 } else { 0.92 });
             self.menubar_menus.push(hit);
             mx += mw + 16.0;
         }
@@ -804,16 +1055,16 @@ impl Renderer {
         let clock = crate::text::clock_str();
         let clock_w = tr.measure_bold(&clock, font::BODY);
         let clock_x = w as f32 - 16.0 - clock_w;
-        tr.draw_bold(buf, w, h, clock_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), &clock, font::BODY, color::TEXT, 0.95);
+        tr.draw_bold(buf, w, h, clock_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), &clock, font::BODY, color::text(), 0.95);
 
         let pill = Rect { x: clock_x as i32 - 208, y: 5, w: 192, h: 22 };
         let pill_hover = pill.contains(ui.mouse.0, ui.mouse.1);
-        rounded_rect(buf, w, h, pill, 11.0, color::HAIRLINE, if pill_hover { state::HOVER_STRONG } else { 0.08 });
-        rounded_outline(buf, w, h, pill, 11.0, color::HAIRLINE, if pill_hover { 0.22 } else { 0.14 });
-        draw_text(tr, buf, w, h, (pill.x + 12) as f32, tr.vcenter(pill.y as f32, pill.h as f32, font::CAPTION), "搜索", font::CAPTION, color::TEXT_DIM, if pill_hover { 0.95 } else { 0.8 });
+        rounded_rect(buf, w, h, pill, 11.0, color::hairline(), if pill_hover { state::hover_strong() } else { 0.08 });
+        rounded_outline(buf, w, h, pill, 11.0, color::hairline(), if pill_hover { 0.22 } else { 0.14 });
+        draw_text(tr, buf, w, h, (pill.x + 12) as f32, tr.vcenter(pill.y as f32, pill.h as f32, font::CAPTION), "搜索", font::CAPTION, color::text_dim(), if pill_hover { 0.95 } else { 0.8 });
         let key = Rect { x: pill.x + pill.w - 22, y: 8, w: 16, h: 16 };
-        rounded_rect(buf, w, h, key, 4.0, color::HAIRLINE, 0.12);
-        draw_text(tr, buf, w, h, (key.x + 4) as f32, tr.vcenter(key.y as f32, key.h as f32, font::LABEL), "K", font::LABEL, color::TEXT_DIM, 0.85);
+        rounded_rect(buf, w, h, key, 4.0, color::hairline(), 0.12);
+        draw_text(tr, buf, w, h, (key.x + 4) as f32, tr.vcenter(key.y as f32, key.h as f32, font::LABEL), "K", font::LABEL, color::text_dim(), 0.85);
         self.search_pill = pill;
 
         // AI 状态指示（§4 三态：本地青 / 云端紫 / 离线灰）
@@ -821,13 +1072,13 @@ impl Renderer {
         let ai_w = tr.measure(ai_label, font::CAPTION);
         let ai_x = pill.x as f32 - 16.0 - ai_w;
         rounded_rect(buf, w, h, Rect { x: ai_x as i32 - 12, y: 13, w: 6, h: 6 }, 3.0, ui.ai_status.color(), 0.95);
-        draw_text(tr, buf, w, h, ai_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::CAPTION), ai_label, font::CAPTION, color::TEXT_DIM, 0.85);
+        draw_text(tr, buf, w, h, ai_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::CAPTION), ai_label, font::CAPTION, color::text_dim(), 0.85);
 
         // 电池：状态用中性色（在线/电量语义留给文字，避免与强调色抢注意力）
         let batt = Rect { x: ai_x as i32 - 56, y: 10, w: 26, h: 12 };
-        rounded_outline(buf, w, h, batt, 3.5, color::TEXT_DIM, 0.5);
-        fill_rect(buf, w, h, Rect { x: batt.x + batt.w, y: 13, w: 2, h: 6 }, color::TEXT_DIM, 0.5);
-        fill_rect(buf, w, h, Rect { x: batt.x + 2, y: batt.y + 2, w: 16, h: 8 }, color::TEXT, 0.5);
+        rounded_outline(buf, w, h, batt, 3.5, color::text_dim(), 0.5);
+        fill_rect(buf, w, h, Rect { x: batt.x + batt.w, y: 13, w: 2, h: 6 }, color::text_dim(), 0.5);
+        fill_rect(buf, w, h, Rect { x: batt.x + 2, y: batt.y + 2, w: 16, h: 8 }, color::text(), 0.5);
     }
 
     /// 展开中的下拉菜单（登记各项命中区，悬停高亮）。
@@ -842,17 +1093,17 @@ impl Renderer {
             .fold(120.0f32, f32::max)
             + 44.0;
         let panel = Rect { x: label.x, y: metric::MENUBAR_H + 4, w: panel_w as i32, h: items.len() as i32 * 30 + 8 };
-        shadow(buf, w, h, panel, radius::MD, elevation::ELEV_2);
-        rounded_rect(buf, w, h, panel, radius::MD, color::SURFACE_2, 0.98);
-        rounded_outline(buf, w, h, panel, radius::MD, color::HAIRLINE, 0.12);
+        shadow(buf, w, h, panel, radius::MD, elevation::elev_2());
+        rounded_rect(buf, w, h, panel, radius::MD, color::surface_2(), 0.98);
+        rounded_outline(buf, w, h, panel, radius::MD, color::hairline(), 0.12);
 
         let mut rects = Vec::new();
         for (i, item) in items.iter().enumerate() {
             let ir = Rect { x: panel.x + 4, y: panel.y + 4 + i as i32 * 30, w: panel.w - 8, h: 30 };
             if ir.contains(ui.mouse.0, ui.mouse.1) {
-                rounded_rect(buf, w, h, Rect { x: ir.x + 4, y: ir.y + 3, w: ir.w - 8, h: ir.h - 6 }, radius::SM, color::SURFACE_3, 0.9);
+                rounded_rect(buf, w, h, Rect { x: ir.x + 4, y: ir.y + 3, w: ir.w - 8, h: ir.h - 6 }, radius::SM, color::surface_3(), 0.9);
             }
-            draw_text(tr, buf, w, h, (ir.x + 16) as f32, tr.vcenter(ir.y as f32, ir.h as f32, font::BODY), item, font::BODY, color::TEXT, 0.92);
+            draw_text(tr, buf, w, h, (ir.x + 16) as f32, tr.vcenter(ir.y as f32, ir.h as f32, font::BODY), item, font::BODY, color::text(), 0.92);
             rects.push(ir);
         }
         self.dropdown = Some((rects, items.to_vec()));
@@ -864,31 +1115,31 @@ impl Renderer {
 // ---------------------------------------------------------------------------
 
 fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>) {
-    let body = color::SURFACE_1;
+    let body = color::surface_1();
     // 不透明度定得高：合成器没有模糊（backdrop-filter），窗口一旦半透明，
     // 后面窗口的文字就会"透"上来变成鬼影——那比没有玻璃感难看得多。
     let body_alpha = if active { 0.955 } else { 0.90 };
     // 标题栏比主体亮一档——窗口必须有"头"，否则整窗是一块没有层次的灰
-    let title_rgb = mix(body, color::HAIRLINE, if active { 0.075 } else { 0.035 });
+    let title_rgb = mix(body, color::hairline(), if active { 0.075 } else { 0.035 });
     let t_stop = metric::TITLE_H as f32 / r.h.max(1) as f32;
     let stops = [
-        (0.0, mix(title_rgb, color::HAIRLINE, 0.035)),
+        (0.0, mix(title_rgb, color::hairline(), 0.035)),
         ((t_stop - 0.002).max(0.0), title_rgb),
         (t_stop, body),
         (1.0, mix(body, [0, 0, 0], 0.14)),
     ];
 
-    shadow(buf, w, h, r, radius::LG, if active { elevation::ELEV_1 } else { elevation::ELEV_1_DIM });
+    shadow(buf, w, h, r, radius::LG, if active { elevation::elev_1() } else { elevation::elev_1_dim() });
     gradient_stops(buf, w, r, radius::LG, &stops, body_alpha);
 
     // 顶部内高光（玻璃厚度）
-    fill_rect(buf, w, h, Rect { x: r.x + 10, y: r.y + 1, w: r.w - 20, h: 1 }, color::HAIRLINE, 0.10);
+    fill_rect(buf, w, h, Rect { x: r.x + 10, y: r.y + 1, w: r.w - 20, h: 1 }, color::HIGHLIGHT, 0.10);
     // 标题栏底部发丝线
-    fill_rect(buf, w, h, Rect { x: r.x + 1, y: r.y + metric::TITLE_H, w: r.w - 2, h: 1 }, color::HAIRLINE, 0.10);
-    rounded_outline(buf, w, h, r, radius::LG, color::HAIRLINE, if active { 0.22 } else { 0.12 });
+    fill_rect(buf, w, h, Rect { x: r.x + 1, y: r.y + metric::TITLE_H, w: r.w - 2, h: 1 }, color::hairline(), 0.10);
+    rounded_outline(buf, w, h, r, radius::LG, color::hairline(), if active { 0.22 } else { 0.12 });
 
     // 红绿灯（左）：直径 10px、间距 7px，悬停时整组显示符号
-    let lights = [color::CLOSE, color::MIN, color::ZOOM];
+    let lights = [color::close(), color::min(), color::zoom()];
     let ly = r.y + (metric::TITLE_H - metric::LIGHT_D) / 2;
     let group = Rect {
         x: r.x + 8,
@@ -912,9 +1163,9 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
         let tx = r.x as f32 + r.w as f32 / 2.0 - tw / 2.0;
         let ty = tr.vcenter(r.y as f32, metric::TITLE_H as f32, font::BODY);
         if active {
-            tr.draw_bold(buf, w, h, tx, ty, title, font::BODY, color::TEXT, 1.0);
+            tr.draw_bold(buf, w, h, tx, ty, title, font::BODY, color::text(), 1.0);
         } else {
-            tr.draw_bold(buf, w, h, tx, ty, title, font::BODY, color::TEXT_DIM, 0.75);
+            tr.draw_bold(buf, w, h, tx, ty, title, font::BODY, color::text_dim(), 0.75);
         }
     }
 
@@ -942,7 +1193,7 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
     let list_w = if panel_on { r.w - PANEL_W - 20 } else { r.w };
 
     let list = Rect { x: r.x, y: r.y, w: list_w, h: r.h };
-    fill_clipped(buf, w, h, list, win, radius::LG, color::SURFACE_2, 0.5);
+    fill_clipped(buf, w, h, list, win, radius::LG, color::surface_2(), 0.5);
 
     let Some(tr) = tr else { return };
     // 封面底色（循环取用；低饱和，只做区分不做装饰）
@@ -964,10 +1215,10 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         let hovered = row.contains(mouse.0, mouse.1);
         let playing = i == 0;
         if hovered || playing {
-            fill_clipped(buf, w, h, row, win, radius::LG, color::HAIRLINE, if playing { 0.06 } else { state::HOVER });
+            fill_clipped(buf, w, h, row, win, radius::LG, color::hairline(), if playing { 0.06 } else { state::hover() });
         }
         if playing {
-            rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + 9, w: 2, h: row.h - 18 }, 1.0, color::ACCENT, 0.95);
+            rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + 9, w: 2, h: row.h - 18 }, 1.0, color::accent(), 0.95);
         }
         let (at, ab) = arts[i % arts.len()];
         gradient_tile(buf, w, Rect { x: row.x + 12, y: row.y + 5, w: ART, h: ART }, 6.0, at, ab, 0.95);
@@ -981,18 +1232,18 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         tr.draw_bold(
             buf, w, h, tx, tr.vcenter(row.y as f32 + 2.0, 20.0, font::BODY),
             &title_s, font::BODY,
-            if playing { color::ACCENT } else { color::TEXT },
+            if playing { color::accent() } else { color::text() },
             0.96,
         );
         draw_text(
             tr, buf, w, h, tx, tr.vcenter(row.y as f32 + 22.0, 16.0, font::LABEL),
-            &artist_s, font::LABEL, color::TEXT_DIM, 0.85,
+            &artist_s, font::LABEL, color::text_dim(), 0.92,
         );
         let dw = tr.measure(dur, font::LABEL);
         draw_text(
             tr, buf, w, h, (row.x + row.w - 12) as f32 - dw,
             tr.vcenter(row.y as f32 + 2.0, ROW_H as f32 - 4.0, font::LABEL),
-            dur, font::LABEL, color::TEXT_FAINT, 0.85,
+            dur, font::LABEL, color::text_faint(), 0.85,
         );
         y += ROW_H;
         i += 1;
@@ -1004,8 +1255,8 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
 
     // 右侧"正在播放"面板：大封面 + 曲目信息 + 进度 + 传输控件
     let panel = Rect { x: r.x + r.w - PANEL_W + 2, y: r.y, w: PANEL_W - 2, h: r.h };
-    fill_clipped(buf, w, h, panel, win, radius::LG, color::INSET, 0.62);
-    fill_rect(buf, w, h, Rect { x: panel.x, y: r.y + 1, w: 1, h: r.h - 2 }, color::HAIRLINE, 0.08);
+    fill_clipped(buf, w, h, panel, win, radius::LG, color::inset(), 0.62);
+    fill_rect(buf, w, h, Rect { x: panel.x, y: r.y + 1, w: 1, h: r.h - 2 }, color::hairline(), 0.08);
 
     let cover_s = (PANEL_W - 76).min(r.h / 2);
     // 面板小标题
@@ -1014,7 +1265,7 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         tr, buf, w, h,
         panel.x as f32 + (panel.w as f32 - lab_w) / 2.0,
         tr.vcenter(panel.y as f32 + 6.0, 18.0, font::LABEL),
-        strings::NOW_PLAYING, font::LABEL, color::TEXT_FAINT, 0.9,
+        strings::NOW_PLAYING, font::LABEL, color::text_faint(), 0.9,
     );
     let cover = Rect {
         x: panel.x + (panel.w - cover_s) / 2,
@@ -1022,7 +1273,7 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         w: cover_s,
         h: cover_s,
     };
-    shadow(buf, w, h, cover, radius::MD, elevation::ELEV_1);
+    shadow(buf, w, h, cover, radius::MD, elevation::elev_1());
     gradient_tile(buf, w, cover, radius::MD, [104, 178, 226], [56, 104, 176], 0.98);
     // 封面上的装饰：两道弧形光带（纯几何，呼应品牌极光）
     for k in 0..2 {
@@ -1031,41 +1282,41 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
             let t = row as f32 / cover_s as f32;
             let bend = ((t * 3.0 + k as f32 * 0.7).sin() * 0.5 + 0.5) * (cover_s as f32 * 0.22);
             let x = cover.x + (cover_s / 6) + bend as i32 + off;
-            fill_rect(buf, w, h, Rect { x, y: cover.y + row, w: cover_s / 3, h: 1 }, color::HAIRLINE, 0.10);
+            fill_rect(buf, w, h, Rect { x, y: cover.y + row, w: cover_s / 3, h: 1 }, color::HIGHLIGHT, 0.10);
         }
     }
-    fill_rect(buf, w, h, Rect { x: cover.x + 6, y: cover.y + 1, w: cover_s - 12, h: 1 }, color::HAIRLINE, 0.22);
+    fill_rect(buf, w, h, Rect { x: cover.x + 6, y: cover.y + 1, w: cover_s - 12, h: 1 }, color::HIGHLIGHT, 0.22);
 
     let cx = panel.x as f32 + panel.w as f32 / 2.0;
     let mut ty = (cover.y + cover_s + 22) as f32;
     let t0 = strings::TRACKS[0].0;
     let tw = tr.measure_bold(t0, font::BODY);
-    tr.draw_bold(buf, w, h, cx - tw / 2.0, ty, t0, font::BODY, color::TEXT, 0.98);
+    tr.draw_bold(buf, w, h, cx - tw / 2.0, ty, t0, font::BODY, color::text(), 0.98);
     ty += 22.0;
     let a0 = strings::TRACKS[0].1;
     let aw = tr.measure(a0, font::LABEL);
-    draw_text(tr, buf, w, h, cx - aw / 2.0, ty, a0, font::LABEL, color::TEXT_DIM, 0.88);
+    draw_text(tr, buf, w, h, cx - aw / 2.0, ty, a0, font::LABEL, color::text_dim(), 0.88);
 
     // 进度条 + 时间（面板底部）
     let bar_w = panel.w - 48;
     let bx = panel.x + 24;
     let by = panel.y + panel.h - 58;
-    rounded_rect(buf, w, h, Rect { x: bx, y: by, w: bar_w, h: 4 }, 2.0, color::HAIRLINE, 0.14);
-    rounded_rect(buf, w, h, Rect { x: bx, y: by, w: (bar_w as f32 * 0.35) as i32, h: 4 }, 2.0, color::ACCENT, 0.92);
-    draw_text(tr, buf, w, h, bx as f32, (by + 12) as f32, "1:28", font::LABEL, color::TEXT_FAINT, 0.9);
+    rounded_rect(buf, w, h, Rect { x: bx, y: by, w: bar_w, h: 4 }, 2.0, color::hairline(), 0.14);
+    rounded_rect(buf, w, h, Rect { x: bx, y: by, w: (bar_w as f32 * 0.35) as i32, h: 4 }, 2.0, color::accent(), 0.92);
+    draw_text(tr, buf, w, h, bx as f32, (by + 12) as f32, "1:28", font::LABEL, color::text_faint(), 0.9);
     let t1 = strings::TRACKS[0].2;
     let t1w = tr.measure(t1, font::LABEL);
-    draw_text(tr, buf, w, h, (bx + bar_w) as f32 - t1w, (by + 12) as f32, t1, font::LABEL, color::TEXT_FAINT, 0.9);
+    draw_text(tr, buf, w, h, (bx + bar_w) as f32 - t1w, (by + 12) as f32, t1, font::LABEL, color::text_faint(), 0.9);
 
     // 传输控件：上一个 / 播放 / 下一个（纯几何）
     let cy = panel.y + panel.h - 26;
     let mid = panel.x + panel.w / 2;
-    rounded_rect(buf, w, h, Rect { x: mid - 14, y: cy - 14, w: 28, h: 28 }, 14.0, color::ACCENT, 0.92);
+    rounded_rect(buf, w, h, Rect { x: mid - 14, y: cy - 14, w: 28, h: 28 }, 14.0, color::accent(), 0.92);
     // 暂停符号（两条竖杠）
-    fill_rect(buf, w, h, Rect { x: mid - 5, y: cy - 6, w: 3, h: 12 }, color::TEXT, 0.95);
-    fill_rect(buf, w, h, Rect { x: mid + 2, y: cy - 6, w: 3, h: 12 }, color::TEXT, 0.95);
-    arrow_glyph(buf, w, h, mid - 42, cy, 5, -1, color::TEXT_DIM, 0.9);
-    arrow_glyph(buf, w, h, mid + 40, cy, 5, 1, color::TEXT_DIM, 0.9);
+    fill_rect(buf, w, h, Rect { x: mid - 5, y: cy - 6, w: 3, h: 12 }, color::text(), 0.95);
+    fill_rect(buf, w, h, Rect { x: mid + 2, y: cy - 6, w: 3, h: 12 }, color::text(), 0.95);
+    arrow_glyph(buf, w, h, mid - 42, cy, 5, -1, color::text_dim(), 0.9);
+    arrow_glyph(buf, w, h, mid + 40, cy, 5, 1, color::text_dim(), 0.9);
 }
 
 /// 三角箭头（上一个/下一个）：按列扫描填充，纯几何不依赖字体字形。
@@ -1105,22 +1356,22 @@ fn light_symbol(buf: &mut [u32], w: usize, h: usize, cx: i32, cy: i32, kind: usi
 /// 终端内容：提示符分色 + 命令与输出 + 末尾光标。
 /// 密度做足——空荡的终端窗口看起来像没做完。
 fn draw_term_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, t: f32, tr: Option<&TextRenderer>) {
-    fill_clipped(buf, w, h, r, win, radius::LG, color::INSET, 0.95);
+    fill_clipped(buf, w, h, r, win, radius::LG, color::inset(), 0.95);
     let Some(tr) = tr else { return };
 
     // 每行是若干 (文本, 颜色, 不透明度) 段；提示符分色是"真终端"的视觉签名。
     // 行数给足并**按可用高度裁切**——窗口矮时不会画出窗口外，窗口高时不留死灰。
-    let host = ("aether@localhost", color::ACCENT, 0.95);
-    let sep = (" ~ $ ", color::TEXT_DIM, 0.85);
+    let host = ("aether@localhost", color::accent(), 0.95);
+    let sep = (" ~ $ ", color::text_dim(), 0.85);
     let lines: [&[(&str, [u8; 3], f32)]; 9] = [
-        &[host, sep, ("uname -a", color::TEXT, 0.95)],
-        &[("AetherOS 0.1.0 aether-kernel x86_64 GNU/Linux", color::TEXT_DIM, 0.9)],
-        &[host, sep, ("aether-status", color::TEXT, 0.95)],
-        &[("服务 5/5 运行中 · AI 中枢在线 · 已开机 00:07:12", color::SUCCESS, 0.85)],
-        &[host, sep, ("cat /etc/aether/services/aetherd.json", color::TEXT, 0.95)],
-        &[("name=aetherd  after=network  restart=true  essential=true", color::TEXT_DIM, 0.9)],
-        &[host, sep, ("aether-ipc --probe 7311", color::TEXT, 0.95)],
-        &[("7311 在线 · NDJSON 协议 · 本地模型 llama3.2:3b", color::TEXT_DIM, 0.9)],
+        &[host, sep, ("uname -a", color::text(), 0.95)],
+        &[("AetherOS 0.1.0 aether-kernel x86_64 GNU/Linux", color::text_dim(), 0.9)],
+        &[host, sep, ("aether-status", color::text(), 0.95)],
+        &[("服务 5/5 运行中 · AI 中枢在线 · 已开机 00:07:12", color::success(), 0.85)],
+        &[host, sep, ("cat /etc/aether/services/aetherd.json", color::text(), 0.95)],
+        &[("name=aetherd  after=network  restart=true  essential=true", color::text_dim(), 0.9)],
+        &[host, sep, ("aether-ipc --probe 7311", color::text(), 0.95)],
+        &[("7311 在线 · NDJSON 协议 · 本地模型 llama3.2:3b", color::text_dim(), 0.9)],
         &[host, sep],
     ];
     let mut y = r.y + 14;
@@ -1151,7 +1402,7 @@ fn draw_term_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, t:
         y += 22;
     }
     if (t * 2.0) as i32 % 2 == 0 && y - 18 + 15 <= bottom && caret_x + 8 <= right {
-        fill_rect(buf, w, h, Rect { x: caret_x, y: y - 18, w: 8, h: 15 }, color::TEXT, 0.72);
+        fill_rect(buf, w, h, Rect { x: caret_x, y: y - 18, w: 8, h: 15 }, color::text(), 0.72);
     }
 }
 
@@ -1162,13 +1413,13 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
 
     // 侧栏：比窗口体暗一档
     let sidebar = Rect { x: r.x, y: r.y, w: SIDEBAR_W.min(r.w / 2), h: r.h };
-    fill_clipped(buf, w, h, sidebar, win, radius::LG, color::INSET, 0.66);
+    fill_clipped(buf, w, h, sidebar, win, radius::LG, color::inset(), 0.66);
 
     // 内容面：比窗口体亮半档的"纸面"——三层明度差是纵深感的全部来源
     let area_x = sidebar.x + sidebar.w;
     let surface = Rect { x: area_x, y: r.y, w: r.x + r.w - area_x, h: r.h - STATUS_H };
-    fill_clipped(buf, w, h, surface, win, radius::LG, color::SURFACE_2, 0.42);
-    fill_rect(buf, w, h, Rect { x: area_x, y: r.y + 1, w: 1, h: r.h - 2 }, color::HAIRLINE, 0.08);
+    fill_clipped(buf, w, h, surface, win, radius::LG, color::surface_2(), 0.42);
+    fill_rect(buf, w, h, Rect { x: area_x, y: r.y + 1, w: 1, h: r.h - 2 }, color::hairline(), 0.08);
 
     if let Some(tr) = tr {
         for (i, item) in strings::SIDEBAR_ITEMS.iter().enumerate() {
@@ -1176,18 +1427,18 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
             let selected = i == 0;
             let row = Rect { x: r.x + 8, y, w: sidebar.w - 16, h: 26 };
             if selected {
-                rounded_rect(buf, w, h, row, radius::SM - 2.0, color::ACCENT, 0.20);
+                rounded_rect(buf, w, h, row, radius::SM - 2.0, color::accent(), 0.20);
                 // 选中项左侧标记条：比整块底色更克制
-                rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + 6, w: 2, h: 14 }, 1.0, color::ACCENT, 0.95);
+                rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + 6, w: 2, h: 14 }, 1.0, color::accent(), 0.95);
             } else if row.contains(mouse.0, mouse.1) {
-                rounded_rect(buf, w, h, row, radius::SM - 2.0, color::HAIRLINE, state::HOVER);
+                rounded_rect(buf, w, h, row, radius::SM - 2.0, color::hairline(), state::hover());
             }
             draw_text(
                 tr, buf, w, h,
                 (row.x + 14) as f32,
                 tr.vcenter(row.y as f32, row.h as f32, font::BODY),
                 item, font::BODY,
-                if selected { color::TEXT } else { color::TEXT_DIM },
+                if selected { color::text() } else { color::text_dim() },
                 if selected { 0.96 } else { 0.88 },
             );
         }
@@ -1197,15 +1448,15 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
 
     // 状态条：贴窗口底角
     let status = Rect { x: r.x, y: r.y + r.h - STATUS_H, w: r.w, h: STATUS_H };
-    fill_clipped(buf, w, h, status, win, radius::LG, color::INSET, 0.62);
-    fill_rect(buf, w, h, Rect { x: r.x + 1, y: status.y, w: r.w - 2, h: 1 }, color::HAIRLINE, 0.08);
+    fill_clipped(buf, w, h, status, win, radius::LG, color::inset(), 0.62);
+    fill_rect(buf, w, h, Rect { x: r.x + 1, y: status.y, w: r.w - 2, h: 1 }, color::hairline(), 0.08);
     if let Some(tr) = tr {
         // 数量取"实际画出来的"，不写死——写死立刻和画面矛盾
         let left = format!("{shown} 个项目");
-        draw_text(tr, buf, w, h, (status.x + 12) as f32, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &left, font::LABEL, color::TEXT_FAINT, 0.9);
+        draw_text(tr, buf, w, h, (status.x + 12) as f32, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &left, font::LABEL, color::text_faint(), 0.9);
         let right = strings::DISK_FREE;
         let rw = tr.measure(right, font::LABEL);
-        draw_text(tr, buf, w, h, (status.x + status.w - 12) as f32 - rw, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), right, font::LABEL, color::TEXT_FAINT, 0.9);
+        draw_text(tr, buf, w, h, (status.x + status.w - 12) as f32 - rw, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), right, font::LABEL, color::text_faint(), 0.9);
     }
 }
 
@@ -1244,7 +1495,7 @@ fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mo
         };
         let hovered = cell.contains(mouse.0, mouse.1);
         if hovered {
-            fill_clipped(buf, w, h, cell, win, radius::LG, color::HAIRLINE, state::HOVER);
+            fill_clipped(buf, w, h, cell, win, radius::LG, color::hairline(), state::hover());
         }
         let icon_x = cell.x + (CELL_W - ICON) / 2;
         let icon_y = cell.y + 8;
@@ -1258,8 +1509,8 @@ fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mo
             cell.x as f32 + (CELL_W as f32 - lw) / 2.0,
             tr.vcenter(label_y as f32, 14.0, font::LABEL),
             &shown, font::LABEL,
-            if hovered { color::TEXT } else { color::TEXT_DIM },
-            if hovered { 0.96 } else { 0.88 },
+            if hovered { color::text() } else { color::text_dim() },
+            if hovered { 0.98 } else { 0.94 },
         );
     }
     n
@@ -1275,7 +1526,7 @@ fn draw_folder_icon(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, size: i
     // 页签先画，主体盖住它的下缘（避免半透明叠加出接缝）
     rounded_rect(buf, w, h, Rect { x, y, w: tab_w, h: tab_h + 8 }, 3.0, mix(top, bottom, 0.40), 0.95);
     gradient_tile(buf, w, Rect { x, y: y + tab_h, w: size, h: size - tab_h }, 4.0, top, bottom, 0.97);
-    fill_rect(buf, w, h, Rect { x: x + 3, y: y + tab_h + 1, w: size - 6, h: 1 }, color::HAIRLINE, 0.20);
+    fill_rect(buf, w, h, Rect { x: x + 3, y: y + tab_h + 1, w: size - 6, h: 1 }, color::HIGHLIGHT, 0.20);
     fill_rect(buf, w, h, Rect { x: x + 3, y: y + size - 2, w: size - 6, h: 1 }, [0, 0, 0], 0.12);
 }
 
@@ -1290,28 +1541,28 @@ impl Renderer {
     let bar_w = 560i32;
     let bar = Rect { x: w as i32 / 2 - bar_w / 2, y: h as i32 - metric::BOTTOM_DOCK - 52 - 16, w: bar_w, h: 52 };
     let hovered = bar.contains(mouse.0, mouse.1);
-    shadow(buf, w, h, bar, radius::MD, elevation::ELEV_2);
-    rounded_rect(buf, w, h, bar, 26.0, color::INSET, if hovered { 0.82 } else { 0.75 });
+    shadow(buf, w, h, bar, radius::MD, elevation::elev_2());
+    rounded_rect(buf, w, h, bar, 26.0, color::glass(), color::glass_alpha(hovered));
     if ui.ai_focused {
         // 焦点态：青紫渐变环（AI 元素的极光配额）；思考中叠一层呼吸脉动
         let breath = if ui.ai_thinking { 0.55 + 0.45 * (t * 3.0).sin() } else { 1.0 };
-        gradient_outline(buf, w, h, bar, 26.0, color::ACCENT, color::ACCENT_VIOLET, 0.75 * breath);
+        gradient_outline(buf, w, h, bar, 26.0, color::accent(), color::accent_violet(), 0.75 * breath);
     } else {
-        rounded_outline(buf, w, h, bar, 26.0, color::HAIRLINE, if hovered { 0.22 } else { 0.14 });
+        rounded_outline(buf, w, h, bar, 26.0, color::hairline(), if hovered { 0.22 } else { 0.14 });
     }
 
     let Some(tr) = tr else { return };
 
     // 渐变圆形徽标（AI 元素：极光的容许出口之一）
     let av = Rect { x: bar.x + 12, y: bar.y + 10, w: 32, h: 32 };
-    gradient_tile(buf, w, av, 16.0, color::ACCENT, color::ACCENT_VIOLET, 0.95);
+    gradient_tile(buf, w, av, 16.0, color::accent(), color::accent_violet(), 0.95);
     let aw = tr.measure_bold("A", font::GLYPH);
-    tr.draw_bold(buf, w, h, av.x as f32 + (av.w as f32 - aw) / 2.0, tr.vcenter(av.y as f32, av.h as f32, font::GLYPH), "A", font::GLYPH, color::TEXT, 0.98);
+    tr.draw_bold(buf, w, h, av.x as f32 + (av.w as f32 - aw) / 2.0, tr.vcenter(av.y as f32, av.h as f32, font::GLYPH), "A", font::GLYPH, color::text(), 0.98);
 
     let text_x = (bar.x + 58) as f32;
     let text_y = tr.vcenter(bar.y as f32, bar.h as f32, font::BODY);
     if input.is_empty() {
-        draw_text(tr, buf, w, h, text_x, text_y, strings::AI_BAR_HINT, font::BODY, color::TEXT_DIM, 0.85);
+        draw_text(tr, buf, w, h, text_x, text_y, strings::AI_BAR_HINT, font::BODY, color::text_dim(), 0.85);
     } else {
         // 从左截断，保证光标所在的内容始终可见
         let max_w = bar.x as f32 + bar.w as f32 - 96.0 - text_x;
@@ -1319,7 +1570,7 @@ impl Renderer {
         while tr.measure(&shown, font::BODY) > max_w && shown.chars().count() > 1 {
             shown.remove(0);
         }
-        draw_text(tr, buf, w, h, text_x, text_y, &shown, font::BODY, color::TEXT, 0.95);
+        draw_text(tr, buf, w, h, text_x, text_y, &shown, font::BODY, color::text(), 0.95);
     }
 
     // 输入光标
@@ -1330,18 +1581,18 @@ impl Renderer {
             let phase = (t * 3.0 - i as f32 * 0.5).sin() * 0.5 + 0.5;
             let a = 0.25 + 0.6 * phase;
             let cx = caret_x as i32 + i * 8;
-            rounded_rect(buf, w, h, Rect { x: cx, y: bar.y + 23, w: 5, h: 5 }, 2.5, color::ACCENT, a);
+            rounded_rect(buf, w, h, Rect { x: cx, y: bar.y + 23, w: 5, h: 5 }, 2.5, color::accent(), a);
         }
     } else if ((t_now() * 2.0) as i32) % 2 == 0 {
-        fill_rect(buf, w, h, Rect { x: caret_x as i32, y: bar.y + 16, w: 2, h: 20 }, color::ACCENT, 0.9);
+        fill_rect(buf, w, h, Rect { x: caret_x as i32, y: bar.y + 16, w: 2, h: 20 }, color::accent(), 0.9);
     }
 
     // 右侧快捷键胶囊
     let hint = "Enter";
     let hw = tr.measure(hint, font::LABEL) + 12.0;
     let key = Rect { x: bar.x + bar.w - hw as i32 - 12, y: bar.y + 15, w: hw as i32, h: 22 };
-    rounded_rect(buf, w, h, key, 6.0, color::HAIRLINE, 0.10);
-    draw_text(tr, buf, w, h, (key.x + 6) as f32, tr.vcenter(key.y as f32, key.h as f32, font::LABEL), hint, font::LABEL, color::TEXT_DIM, 0.8);
+    rounded_rect(buf, w, h, key, 6.0, color::hairline(), 0.10);
+    draw_text(tr, buf, w, h, (key.x + 6) as f32, tr.vcenter(key.y as f32, key.h as f32, font::LABEL), hint, font::LABEL, color::text_dim(), 0.8);
     }
 }
 
@@ -1382,21 +1633,21 @@ fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, kind: BubbleKind,
         _ => w as i32 / 2 - 60,
     };
     let r = Rect { x, y, w: bar_w, h: 36 };
-    shadow(buf, w, h, r, radius::MD, alpha * elevation::ELEV_2);
+    shadow(buf, w, h, r, radius::MD, alpha * elevation::elev_2());
     let bg = match kind {
-        BubbleKind::User => color::SURFACE_3,
-        _ => color::SURFACE_2,
+        BubbleKind::User => color::surface_3(),
+        _ => color::surface_2(),
     };
     rounded_rect(buf, w, h, r, 18.0, bg, alpha * 0.94);
     match kind {
         // AI 回复：青紫渐变环（AI 元素）
-        BubbleKind::Ai => gradient_outline(buf, w, h, r, 18.0, color::ACCENT, color::ACCENT_VIOLET, alpha * 0.55),
-        BubbleKind::User => rounded_outline(buf, w, h, r, 18.0, color::HAIRLINE, alpha * 0.16),
+        BubbleKind::Ai => gradient_outline(buf, w, h, r, 18.0, color::accent(), color::accent_violet(), alpha * 0.55),
+        BubbleKind::User => rounded_outline(buf, w, h, r, 18.0, color::hairline(), alpha * 0.16),
         // 工具调用：左侧状态条（成功绿/失败红），由文案前缀决定
         BubbleKind::Tool => {
-            rounded_outline(buf, w, h, r, 18.0, color::HAIRLINE, alpha * 0.12);
+            rounded_outline(buf, w, h, r, 18.0, color::hairline(), alpha * 0.12);
             let ok = !text.starts_with('✗');
-            let bar_rgb = if ok { color::SUCCESS } else { color::DANGER };
+            let bar_rgb = if ok { color::success() } else { color::danger() };
             rounded_rect(buf, w, h, Rect { x: r.x + 10, y: r.y + 9, w: 4, h: r.h - 18 }, 2.0, bar_rgb, alpha * 0.95);
         }
     }
@@ -1410,7 +1661,7 @@ fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, kind: BubbleKind,
         BubbleKind::Tool => tr.measure(&shown, font::BODY) + pad + 6.0,
         BubbleKind::Ai => pad,
     };
-    draw_text(tr, buf, w, h, r.x as f32 + tx, tr.vcenter(r.y as f32, r.h as f32, font::BODY), &shown, font::BODY, color::TEXT, alpha);
+    draw_text(tr, buf, w, h, r.x as f32 + tx, tr.vcenter(r.y as f32, r.h as f32, font::BODY), &shown, font::BODY, color::text(), alpha);
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,11 +1689,11 @@ impl Renderer {
         let tray_w = n * metric::DOCK_ICON + (n + 1) * metric::DOCK_PAD;
         let tray_h = metric::DOCK_ICON + 2 * metric::DOCK_PAD;
         let tray = Rect { x: w as i32 / 2 - tray_w / 2, y: h as i32 - metric::BOTTOM_DOCK, w: tray_w, h: tray_h };
-        shadow(buf, w, h, tray, radius::MD, elevation::ELEV_2);
-        rounded_rect(buf, w, h, tray, 20.0, color::INSET, 0.66);
-        rounded_outline(buf, w, h, tray, 20.0, color::HAIRLINE, 0.14);
+        shadow(buf, w, h, tray, radius::MD, elevation::elev_2());
+        rounded_rect(buf, w, h, tray, 20.0, color::glass(), 0.68);
+        rounded_outline(buf, w, h, tray, 20.0, color::hairline(), 0.14);
         // 托盘顶部内高光（玻璃厚度）
-        fill_rect(buf, w, h, Rect { x: tray.x + 16, y: tray.y + 1, w: tray.w - 32, h: 1 }, color::HAIRLINE, 0.10);
+        fill_rect(buf, w, h, Rect { x: tray.x + 16, y: tray.y + 1, w: tray.w - 32, h: 1 }, color::HIGHLIGHT, 0.10);
 
         self.dock_icons.clear();
         for (i, name) in apps.iter().enumerate() {
@@ -1468,19 +1719,19 @@ impl Renderer {
                 };
                 gradient_tile(buf, w, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, base.0, base.1, 0.97);
                 // 顶部内高光（与窗口同一手法）
-                fill_rect(buf, w, h, Rect { x: ix + 4, y: iy + 1, w: metric::DOCK_ICON - 8, h: 1 }, color::HAIRLINE, 0.24);
+                fill_rect(buf, w, h, Rect { x: ix + 4, y: iy + 1, w: metric::DOCK_ICON - 8, h: 1 }, color::HIGHLIGHT, 0.24);
                 if hovered {
-                    rounded_rect(buf, w, h, tile, radius::MD, color::HAIRLINE, 0.14);
+                    rounded_rect(buf, w, h, tile, radius::MD, color::hairline(), 0.14);
                 }
                 if running {
                     // 运行中：青色微光（状态反馈，不是装饰）
-                    rounded_rect(buf, w, h, tile, radius::MD, color::ACCENT, 0.10);
+                    rounded_rect(buf, w, h, tile, radius::MD, color::accent(), 0.10);
                 }
             }
-            rounded_outline(buf, w, h, tile, radius::MD, color::HAIRLINE, if hovered { 0.30 } else { 0.18 });
+            rounded_outline(buf, w, h, tile, radius::MD, color::hairline(), if hovered { 0.30 } else { 0.18 });
 
             // 白色几何符号（全部纯 rect 绘制，不依赖字体字形覆盖）
-            let sym = color::TEXT;
+            let sym = color::HIGHLIGHT;
             let a = 0.95;
             match i {
                 // 文件：页签 + 文件夹体
@@ -1530,7 +1781,7 @@ impl Renderer {
 
             // 运行指示点：真实反映打开的窗口（强调色，品牌点缀）
             if running {
-                rounded_rect(buf, w, h, Rect { x: ix + metric::DOCK_ICON / 2 - 1, y: iy + metric::DOCK_ICON + 5, w: 3, h: 3 }, 1.5, color::ACCENT, 0.9);
+                rounded_rect(buf, w, h, Rect { x: ix + metric::DOCK_ICON / 2 - 1, y: iy + metric::DOCK_ICON + 5, w: 3, h: 3 }, 1.5, color::accent(), 0.9);
             }
         }
     }
@@ -1578,18 +1829,18 @@ impl Renderer {
             w: win_w,
             h: win_h,
         };
-        shadow(buf, w, h, win, radius::LG, elevation::ELEV_3);
-        rounded_rect(buf, w, h, win, radius::LG, color::SURFACE_2, 0.98);
-        rounded_outline(buf, w, h, win, radius::LG, color::HAIRLINE, 0.16);
+        shadow(buf, w, h, win, radius::LG, elevation::elev_3());
+        rounded_rect(buf, w, h, win, radius::LG, color::surface_2(), 0.98);
+        rounded_outline(buf, w, h, win, radius::LG, color::hairline(), 0.16);
         let Some(tr) = tr else { return };
 
         // 标题栏（TITLE 20px 在 36px 栏内垂直居中）
-        tr.draw_bold(buf, w, h, (win.x + 18) as f32, tr.vcenter(win.y as f32, metric::TITLE_H as f32, font::TITLE), "安装 AetherOS", font::TITLE, color::TEXT, 0.95);
-        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + metric::TITLE_H, w: win.w - 2, h: 1 }, color::HAIRLINE, 0.08);
+        tr.draw_bold(buf, w, h, (win.x + 18) as f32, tr.vcenter(win.y as f32, metric::TITLE_H as f32, font::TITLE), "安装 AetherOS", font::TITLE, color::text(), 0.95);
+        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + metric::TITLE_H, w: win.w - 2, h: 1 }, color::hairline(), 0.08);
 
         // 提示行
         draw_text(tr, buf, w, h, (win.x + 18) as f32, (win.y + 52) as f32,
-                  "选择目标磁盘并确认。整盘覆盖，目标盘上的数据将丢失。", font::CAPTION, color::TEXT_DIM, 0.9);
+                  "选择目标磁盘并确认。整盘覆盖，目标盘上的数据将丢失。", font::CAPTION, color::text_dim(), 0.9);
 
         // 磁盘行
         self.installer_rows.clear();
@@ -1597,18 +1848,18 @@ impl Renderer {
         for (i, (dev, mb)) in inst.disks.iter().enumerate() {
             let r = Rect { x: win.x + 16, y: row_y0 + i as i32 * 50, w: win.w - 32, h: 44 };
             if inst.selected == i {
-                rounded_rect(buf, w, h, r, radius::MD, color::ACCENT, 0.16);
-                rounded_outline(buf, w, h, r, radius::MD, color::ACCENT, 0.45);
-                rounded_rect(buf, w, h, Rect { x: r.x + 12, y: r.y + 16, w: 12, h: 12 }, 6.0, color::ACCENT, 0.95);
+                rounded_rect(buf, w, h, r, radius::MD, color::accent(), 0.16);
+                rounded_outline(buf, w, h, r, radius::MD, color::accent(), 0.45);
+                rounded_rect(buf, w, h, Rect { x: r.x + 12, y: r.y + 16, w: 12, h: 12 }, 6.0, color::accent(), 0.95);
             } else {
-                rounded_rect(buf, w, h, r, radius::MD, color::HAIRLINE, 0.05);
-                rounded_outline(buf, w, h, r, radius::MD, color::HAIRLINE, 0.10);
-                rounded_outline(buf, w, h, Rect { x: r.x + 11, y: r.y + 15, w: 14, h: 14 }, 7.0, color::TEXT_DIM, 0.7);
+                rounded_rect(buf, w, h, r, radius::MD, color::hairline(), 0.05);
+                rounded_outline(buf, w, h, r, radius::MD, color::hairline(), 0.10);
+                rounded_outline(buf, w, h, Rect { x: r.x + 11, y: r.y + 15, w: 14, h: 14 }, 7.0, color::text_dim(), 0.7);
             }
-            tr.draw_bold(buf, w, h, (r.x + 36) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), dev, font::BODY, color::TEXT, 0.92);
+            tr.draw_bold(buf, w, h, (r.x + 36) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), dev, font::BODY, color::text(), 0.92);
             let sz = format!("{mb} MB 可用");
             let sw = tr.measure(&sz, font::CAPTION);
-            draw_text(tr, buf, w, h, (r.x + r.w - 16) as f32 - sw, tr.vcenter(r.y as f32, r.h as f32, font::CAPTION), &sz, font::CAPTION, color::TEXT_DIM, 0.8);
+            draw_text(tr, buf, w, h, (r.x + r.w - 16) as f32 - sw, tr.vcenter(r.y as f32, r.h as f32, font::CAPTION), &sz, font::CAPTION, color::text_dim(), 0.8);
             self.installer_rows.push((r, dev.clone(), *mb));
         }
 
@@ -1616,24 +1867,24 @@ impl Renderer {
         let msg_y = (win.y + win_h - 104) as f32;
         match (inst.phase, inst.message) {
             (InstallerPhase::Running, _) => {
-                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "正在写入磁盘，请勿关机…", font::BODY, color::ACCENT, 0.95);
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "正在写入磁盘，请勿关机…", font::BODY, color::accent(), 0.95);
             }
             (InstallerPhase::Done, Some(m)) => {
                 let mut shown: String = m.to_string();
                 while tr.measure(&shown, font::CAPTION) > (win.w - 36) as f32 && shown.chars().count() > 4 {
                     shown.remove(0);
                 }
-                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, font::CAPTION, color::SUCCESS, 0.95);
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, font::CAPTION, color::success(), 0.95);
             }
             (InstallerPhase::Failed, Some(m)) => {
                 let mut shown: String = m.to_string();
                 while tr.measure(&shown, font::CAPTION) > (win.w - 36) as f32 && shown.chars().count() > 4 {
                     shown.remove(0);
                 }
-                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, font::CAPTION, color::DANGER, 0.95);
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, font::CAPTION, color::danger(), 0.95);
             }
             _ => {
-                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "就绪。也可以选中磁盘后按 Enter 开始。", font::CAPTION, color::TEXT_DIM, 0.85);
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "就绪。也可以选中磁盘后按 Enter 开始。", font::CAPTION, color::text_dim(), 0.85);
             }
         }
 
@@ -1649,25 +1900,25 @@ impl Renderer {
         let hovered = enabled && button.contains(mouse.0, mouse.1);
         let pressed = hovered && mouse_down;
         if enabled {
-            rounded_rect(buf, w, h, button, radius::SM, color::ACCENT, 0.95);
+            rounded_rect(buf, w, h, button, radius::SM, color::accent(), 0.95);
             if hovered {
-                rounded_rect(buf, w, h, button, radius::SM, color::HAIRLINE, state::HOVER);
+                rounded_rect(buf, w, h, button, radius::SM, color::hairline(), state::hover());
             }
             if pressed {
                 // 按下是压暗（叠黑），不是降低底色——后者会透出背景显得像变淡
-                rounded_rect(buf, w, h, button, radius::SM, [0, 0, 0], state::PRESSED);
+                rounded_rect(buf, w, h, button, radius::SM, [0, 0, 0], state::pressed());
             }
         } else if matches!(inst.phase, InstallerPhase::Done) {
-            rounded_rect(buf, w, h, button, radius::SM, color::SUCCESS, 0.85);
+            rounded_rect(buf, w, h, button, radius::SM, color::success(), 0.85);
         } else {
-            rounded_rect(buf, w, h, button, radius::SM, color::SURFACE_3, 0.9);
+            rounded_rect(buf, w, h, button, radius::SM, color::surface_3(), 0.9);
         }
         let (label_rgb, label_a) = if enabled {
-            (color::TEXT, 0.98)
+            (color::text(), 0.98)
         } else if matches!(inst.phase, InstallerPhase::Done) {
-            (color::TEXT, 0.95)
+            (color::text(), 0.95)
         } else {
-            (color::TEXT_FAINT, state::DISABLED)
+            (color::text_faint(), state::DISABLED)
         };
         let lw = tr.measure_bold(label, font::BODY);
         let ly = tr.vcenter(button.y as f32, button.h as f32, font::BODY);
@@ -1732,10 +1983,10 @@ impl Renderer {
         };
 
         // 模态遮罩：压暗背景，明确"必须先回答这个"
-        fill_rect(buf, w, h, Rect { x: 0, y: 0, w: w as i32, h: h as i32 }, [0, 0, 0], 0.35);
-        shadow(buf, w, h, win, radius::LG, elevation::ELEV_3);
-        rounded_rect(buf, w, h, win, radius::LG, color::SURFACE_2, 0.99);
-        rounded_outline(buf, w, h, win, radius::LG, color::HAIRLINE, 0.18);
+        fill_rect(buf, w, h, Rect { x: 0, y: 0, w: w as i32, h: h as i32 }, color::scrim(), color::scrim_alpha());
+        shadow(buf, w, h, win, radius::LG, elevation::elev_3());
+        rounded_rect(buf, w, h, win, radius::LG, color::surface_2(), 0.99);
+        rounded_outline(buf, w, h, win, radius::LG, color::hairline(), 0.18);
         let Some(tr) = tr else { return };
 
         // 标题行：等级徽章（L2 黄 / L3 红）+ 操作名
@@ -1750,18 +2001,18 @@ impl Renderer {
             buf, w, h,
             (badge.x + badge.w + 12) as f32,
             tr.vcenter(win.y as f32 + 18.0, 26.0, 17.0),
-            tool_label(c.tool), 17.0, color::TEXT, 0.96,
+            tool_label(c.tool), 17.0, color::text(), 0.96,
         );
-        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + 58, w: win.w - 2, h: 1 }, color::HAIRLINE, 0.08);
+        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + 58, w: win.w - 2, h: 1 }, color::hairline(), 0.08);
 
         // 参数明文（逐项原样展示：确认的前提是看清对象）
         let mut y = win.y + 74;
-        draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), "工具", font::CAPTION, color::TEXT_FAINT, 0.9);
-        draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), c.tool, font::BODY, color::TEXT_DIM, 0.95);
+        draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), "工具", font::CAPTION, color::text_faint(), 0.9);
+        draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), c.tool, font::BODY, color::text_dim(), 0.95);
         y += 22;
         for (k, v) in &args {
-            draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), k, font::CAPTION, color::TEXT_FAINT, 0.9);
-            tr.draw_bold(buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), v, font::BODY, color::TEXT, 0.96);
+            draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), k, font::CAPTION, color::text_faint(), 0.9);
+            tr.draw_bold(buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), v, font::BODY, color::text(), 0.96);
             y += 22;
         }
 
@@ -1783,22 +2034,22 @@ impl Renderer {
         // L3 回显确认：必须原样输入目标，防"手滑点确认"
         if let Some(target) = c.echo_required {
             let tip = format!("L3 危险操作：请原样输入 {target} 以确认");
-            draw_text(tr, buf, w, h, (win.x + 20) as f32, y as f32, &tip, font::CAPTION, color::TEXT_DIM, 0.9);
+            draw_text(tr, buf, w, h, (win.x + 20) as f32, y as f32, &tip, font::CAPTION, color::text_dim(), 0.9);
             y += 22;
             let field = Rect { x: win.x + 20, y, w: win.w - 40, h: 38 };
             let ok = c.echo_ok();
-            rounded_rect(buf, w, h, field, radius::SM, color::INSET, 0.9);
-            rounded_outline(buf, w, h, field, radius::SM, if ok { color::SUCCESS } else { color::HAIRLINE }, if ok { 0.75 } else { 0.18 });
+            rounded_rect(buf, w, h, field, radius::SM, color::inset(), 0.9);
+            rounded_outline(buf, w, h, field, radius::SM, if ok { color::success() } else { color::hairline() }, if ok { 0.75 } else { 0.18 });
             let fty = tr.vcenter(field.y as f32, field.h as f32, font::BODY);
             if c.echo_input.is_empty() {
                 let hint = format!("输入 {target}");
-                draw_text(tr, buf, w, h, (field.x + 12) as f32, fty, &hint, font::BODY, color::TEXT_FAINT, 0.8);
+                draw_text(tr, buf, w, h, (field.x + 12) as f32, fty, &hint, font::BODY, color::text_faint(), 0.8);
             } else {
-                draw_text(tr, buf, w, h, (field.x + 12) as f32, fty, c.echo_input, font::BODY, color::TEXT, 0.96);
+                draw_text(tr, buf, w, h, (field.x + 12) as f32, fty, c.echo_input, font::BODY, color::text(), 0.96);
             }
             let tw = tr.measure(c.echo_input, font::BODY);
             if ((t * 2.0) as i32) % 2 == 0 {
-                fill_rect(buf, w, h, Rect { x: (field.x + 12) as i32 + tw as i32, y: field.y + 10, w: 2, h: 18 }, color::ACCENT, 0.9);
+                fill_rect(buf, w, h, Rect { x: (field.x + 12) as i32 + tw as i32, y: field.y + 10, w: 2, h: 18 }, color::accent(), 0.9);
             }
             self.confirm_echo = field;
             y += 50;
@@ -1814,25 +2065,25 @@ impl Renderer {
 
         let deny_hover = deny.contains(mouse.0, mouse.1);
         let deny_fill = if deny_hover && mouse_down { 0.22 } else if deny_hover { 0.14 } else { 0.06 };
-        rounded_rect(buf, w, h, deny, radius::SM, color::DANGER, deny_fill);
-        rounded_outline(buf, w, h, deny, radius::SM, color::DANGER, if deny_hover { 0.85 } else { 0.6 });
+        rounded_rect(buf, w, h, deny, radius::SM, color::danger(), deny_fill);
+        rounded_outline(buf, w, h, deny, radius::SM, color::danger(), if deny_hover { 0.85 } else { 0.6 });
         let dw = tr.measure_bold("拒绝", font::BODY);
-        tr.draw_bold(buf, w, h, (deny.x + deny.w / 2) as f32 - dw / 2.0, tr.vcenter(deny.y as f32, deny.h as f32, font::BODY), "拒绝", font::BODY, color::DANGER, 0.98);
+        tr.draw_bold(buf, w, h, (deny.x + deny.w / 2) as f32 - dw / 2.0, tr.vcenter(deny.y as f32, deny.h as f32, font::BODY), "拒绝", font::BODY, color::danger(), 0.98);
 
         let ready = c.echo_ok();
         let allow_hover = ready && allow.contains(mouse.0, mouse.1);
         if ready {
-            rounded_rect(buf, w, h, allow, radius::SM, color::ACCENT, 0.95);
+            rounded_rect(buf, w, h, allow, radius::SM, color::accent(), 0.95);
             if allow_hover {
-                rounded_rect(buf, w, h, allow, radius::SM, color::HAIRLINE, state::HOVER);
+                rounded_rect(buf, w, h, allow, radius::SM, color::hairline(), state::hover());
                 if mouse_down {
-                    rounded_rect(buf, w, h, allow, radius::SM, [0, 0, 0], state::PRESSED);
+                    rounded_rect(buf, w, h, allow, radius::SM, [0, 0, 0], state::pressed());
                 }
             }
         } else {
-            rounded_rect(buf, w, h, allow, radius::SM, color::SURFACE_3, 0.9);
+            rounded_rect(buf, w, h, allow, radius::SM, color::surface_3(), 0.9);
         }
-        let (lrgb, la) = if ready { (color::TEXT, 0.98) } else { (color::TEXT_FAINT, state::DISABLED) };
+        let (lrgb, la) = if ready { (color::text(), 0.98) } else { (color::text_faint(), state::DISABLED) };
         let lw = tr.measure_bold("允许一次", font::BODY);
         tr.draw_bold(buf, w, h, (allow.x + allow.w / 2) as f32 - lw / 2.0, tr.vcenter(allow.y as f32, allow.h as f32, font::BODY), "允许一次", font::BODY, lrgb, la);
 
@@ -1858,11 +2109,11 @@ fn draw_toast(buf: &mut [u32], w: usize, h: usize, msg: &str, age: f32, tr: Opti
         w: tw as i32,
         h: 40,
     };
-    shadow(buf, w, h, r, radius::SM, alpha * elevation::ELEV_2);
-    rounded_rect(buf, w, h, r, 20.0, color::SURFACE_2, alpha * 0.92);
-    rounded_outline(buf, w, h, r, 20.0, color::HAIRLINE, alpha * 0.15);
-    fill_rect(buf, w, h, Rect { x: r.x + 18, y: r.y + 17, w: 6, h: 6 }, color::ACCENT, alpha);
-    draw_text(tr, buf, w, h, (r.x + 34) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), msg, font::BODY, color::TEXT, alpha);
+    shadow(buf, w, h, r, radius::SM, alpha * elevation::elev_2());
+    rounded_rect(buf, w, h, r, 20.0, color::surface_2(), alpha * 0.92);
+    rounded_outline(buf, w, h, r, 20.0, color::hairline(), alpha * 0.15);
+    fill_rect(buf, w, h, Rect { x: r.x + 18, y: r.y + 17, w: 6, h: 6 }, color::accent(), alpha);
+    draw_text(tr, buf, w, h, (r.x + 34) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), msg, font::BODY, color::text(), alpha);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 # AetherOS 路线图
 
 > 状态：M0–M6 **全部完成**（2026-09-21 复核，依据 git 历史 + 代码实测 + docs/HANDOVER.md）。
-> UI 设计系统 Step 1–4 + 视觉质量冲刺（§10）完成，Step 5 仅剩实机重拍，见 docs/ui-design-handover.md。
+> UI 设计系统 Step 1–4 + 视觉质量冲刺（§10）+ 双模主题（§12）完成，Step 5 仅剩实机重拍，见 docs/ui-design-handover.md。
 
 ## M0 — 开发环境与架构设计 ✅
 - [x] 仓库骨架、Cargo workspace
@@ -87,4 +87,7 @@
 - [x] 视觉质量冲刺（handover §10）：结构化极光壁纸 + 颗粒、明度阶梯纵深、窗口标题栏分层、
       内容形态（文件网格/终端分色/音乐列表面板）、图标光照方向统一（9 轮 `--shot` 目视迭代）
 - [x] 界面走查：`cargo check` 零警告、`cargo test` 65 项全绿、主机走查图归档至 `docs/host-ui-*.png`
+- [x] 双模主题（handover §12）：色板常量改模式函数（172 调用点）、明亮为默认（苹果风：近白底 + 四角粉彩、
+      底座/窗口/纸面三级明度阶梯、悬浮层白玻璃、阴影轻度明确）、`--theme light|dark`
+      —— 深色模式像素级零回归，明亮全状态走查通过
 - [ ] Step 5 剩余：VM 实机复看并重拍 `docs/screenshot-*.png`（P2，见 handover §4.5）
