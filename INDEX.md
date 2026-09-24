@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-20（复核自 git 历史 + 代码实测）· 源码约 7,500 行（35 个文本文件，7 个 crate，25 个 .rs 源文件，不含 `target/`）
+生成时间：2026-09-24（复核自 git 历史 + 代码实测）· 源码约 8,350 行（7 个 crate，25 个 .rs 源文件，不含 `target/`）
 
 ## 目录总览
 
@@ -44,7 +44,7 @@ Aether/
 | 文件 | 内容 |
 |---|---|
 | `src/main.rs` (1,347) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互 |
-| `src/draw.rs` (1,472) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、SDF 抗锯齿圆角/描边、多层柔和投影、柔光漂移壁纸、菜单栏/Dock/Toast/三类回复气泡/确认卡片、BMP 导出 |
+| `src/draw.rs` (1,905) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、结构化极光壁纸（光带 + 颗粒）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐三种窗口内容、BMP 导出 |
 | `src/layout.rs` (171) | 布局引擎：`Layout::{Float,TwoCol,ThreeCol,Monocle}`、平铺目标矩形计算、拖拽边缘吸附 `Snap::{Left,Right,Top}` |
 | `src/text.rs` (277) | fontdue 文本渲染（微软雅黑，CJK 可读）+ `vcenter` 垂直居中；`strings` 模块收口 UI 文案 |
 | `src/input.rs` (228, Linux) | evdev 输入后端：键盘/鼠标原始事件 → UI 事件 |
@@ -112,12 +112,14 @@ Aether/
 | `scripts/qmp-verify.py` / `qemu-verify.sh` | QEMU QMP 键鼠注入 + 截图端到端验证 |
 | `scripts/e2e-permission-confirm.py` | L2+ 权限链路端到端（13 项断言，需先起 aetherd serve） |
 | `scripts/shot-diff.py` | 截图像素回归（仅适用于"纯重构不应有视觉变化"的改动） |
+| `scripts/bmp2png.py` | `--shot` 产物 BMP→PNG（仅标准库，供目视走查；勿包成 .sh 调用，见 ui-design-handover §11） |
 | `docs/ipc-protocol.md` | aether-ipc 协议草案 |
 | `docs/ai-permissions.md` | AI 权限模型：L0-L3、审计、确认令牌 |
 | `docs/roadmap.md` | 路线图（已复核至 M0–M6 完成态） |
 | `docs/HANDOVER.md` | 交接报告 v4（M4/M5/M6 实测记录 + 构建/验证手册） |
-| `docs/ui-design-handover.md` | UI 设计系统交接（Step 1–4 完成，Step 5 未开始 + 未完成清单） |
+| `docs/ui-design-handover.md` | UI 设计系统交接 + §10 视觉质量冲刺（结构化极光/纵深/内容形态，9 轮迭代）+ §11 本机环境陷阱 |
 | `docs/CODE-REVIEW-2026-09-19.md` | 代码审查 P0–P3 修复记录（37 项） |
+| `docs/host-ui-*.png` | 主机 `--shot` 走查图（桌面/三列/确认弹窗/菜单；与实机 `screenshot-*.png` 区分） |
 
 ## 关键链路
 

@@ -10,3 +10,7 @@ __pycache__/
 preview.png
 .mimosa/
 .zcode/
+
+# 工作区数据（AI 助手记忆/会话缓存），不纳入版本控制
+.workbuddy/
+.workbuddy-ai/

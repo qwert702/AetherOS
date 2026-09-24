@@ -20,21 +20,19 @@ pub mod theme {
     /// 色板 §3.1：中性层级 + 克制使用的强调色
     /// （极光只留给壁纸、AI 元素、品牌标识）
     pub mod color {
-        // —— 中性层级（深空基调，明度阶梯拉开：相邻级差 15-18，杜绝"灰泥"）——
-        /// 壁纸渐变顶（深空底色：提亮一档并保持蓝调，Step1 诊断 1）
+        // —— 中性层级（深空基调，明度阶梯拉开：相邻级差 12-16，杜绝"灰泥"）——
+        /// 壁纸渐变顶（深空底色）
         pub const BG_TOP: [u8; 3] = [22, 24, 34];
         /// 壁纸渐变底
         pub const BG_BOTTOM: [u8; 3] = [46, 52, 68];
         /// 凹陷区/深底座：菜单栏、Dock 托盘、侧栏、终端底、AI 指令条
-        pub const INSET: [u8; 3] = [38, 40, 50];
+        pub const INSET: [u8; 3] = [30, 32, 41];
         /// 窗口/面板主面
-        pub const SURFACE_1: [u8; 3] = [54, 57, 68];
-        /// 卡片、浮层、侧栏选中
-        pub const SURFACE_2: [u8; 3] = [66, 70, 82];
+        pub const SURFACE_1: [u8; 3] = [46, 49, 60];
+        /// 卡片、浮层、侧栏选中、内容"纸面"
+        pub const SURFACE_2: [u8; 3] = [64, 68, 80];
         /// 悬停态、输入框
         pub const SURFACE_3: [u8; 3] = [80, 84, 97];
-        /// 强悬停/强调层级（文件卡片 hover 等，Step1 新档）
-        pub const SURFACE_4: [u8; 3] = [94, 98, 112];
         /// 发丝描边（玻璃感关键；alpha 在调用点按 6%–16% 使用）
         pub const HAIRLINE: [u8; 3] = [255, 255, 255];
         /// 主文字
@@ -143,6 +141,35 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// 两色混合（混色、提亮、压暗都走它，避免各处手写通道运算）。
+#[inline]
+pub fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    [
+        lerp(a[0] as f32, b[0] as f32, t) as u8,
+        lerp(a[1] as f32, b[1] as f32, t) as u8,
+        lerp(a[2] as f32, b[2] as f32, t) as u8,
+    ]
+}
+
+/// 按像素宽度截断并加省略号（卡片标签、状态栏等单行文本用）。
+pub fn ellipsize(tr: &TextRenderer, text: &str, px: f32, max_w: f32) -> String {
+    if tr.measure(text, px) <= max_w {
+        return text.to_string();
+    }
+    let mut s = String::new();
+    for ch in text.chars() {
+        let mut probe = s.clone();
+        probe.push(ch);
+        probe.push('…');
+        if tr.measure(&probe, px) > max_w {
+            break;
+        }
+        s.push(ch);
+    }
+    s.push('…');
+    s
+}
+
 #[inline]
 pub fn blend_pixel(buf: &mut [u32], idx: usize, rgb: [u8; 3], alpha: f32) {
     if alpha <= 0.0 || idx >= buf.len() {
@@ -191,23 +218,30 @@ pub fn fill_rect(buf: &mut [u32], w: usize, h: usize, rect: Rect, rgb: [u8; 3], 
     }
 }
 
-/// 抗锯齿圆角矩形（符号距离场覆盖率）。
-pub fn rounded_rect(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, rgb: [u8; 3], alpha: f32) {
+/// 圆角矩形的有符号距离（负 = 内部）。所有圆角绘制与裁切共用它，
+/// 保证"描边 / 填充 / 裁切"三者的形状严格一致。
+#[inline]
+fn sdf_round_rect(r: Rect, radius: f32, x: f32, y: f32) -> f32 {
     let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
-    let x0 = (r.x as f32 - 1.0).max(0.0) as usize;
-    let y0 = (r.y as f32 - 1.0).max(0.0) as usize;
-    let x1 = ((r.x + r.w) as f32 + 1.0).min(w as f32) as usize;
-    let y1 = ((r.y + r.h) as f32 + 1.0).min(h as f32) as usize;
     let cx = r.x as f32 + r.w as f32 / 2.0;
     let cy = r.y as f32 + r.h as f32 / 2.0;
     let qx_half = r.w as f32 / 2.0 - radius;
     let qy_half = r.h as f32 / 2.0 - radius;
+    let dx = (x - cx).abs() - qx_half;
+    let dy = (y - cy).abs() - qy_half;
+    let outside = dx.max(0.0).hypot(dy.max(0.0)) + (dx.max(dy)).min(0.0);
+    outside - radius
+}
+
+/// 抗锯齿圆角矩形（符号距离场覆盖率）。
+pub fn rounded_rect(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, rgb: [u8; 3], alpha: f32) {
+    let x0 = (r.x as f32 - 1.0).max(0.0) as usize;
+    let y0 = (r.y as f32 - 1.0).max(0.0) as usize;
+    let x1 = ((r.x + r.w) as f32 + 1.0).min(w as f32) as usize;
+    let y1 = ((r.y + r.h) as f32 + 1.0).min(h as f32) as usize;
     for y in y0..y1 {
         for x in x0..x1 {
-            let dx = (x as f32 + 0.5 - cx).abs() - qx_half;
-            let dy = (y as f32 + 0.5 - cy).abs() - qy_half;
-            let outside = dx.max(0.0).hypot(dy.max(0.0)) + (dx.max(dy)).min(0.0);
-            let d = outside - radius;
+            let d = sdf_round_rect(r, radius, x as f32 + 0.5, y as f32 + 0.5);
             let cov = (0.5 - d).clamp(0.0, 1.0);
             if cov > 0.0 {
                 blend_pixel(buf, y * w + x, rgb, alpha * cov);
@@ -215,6 +249,30 @@ pub fn rounded_rect(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, r
         }
     }
 }
+
+/// 在 `shape` 的圆角形状内填充 `area`。
+///
+/// 用途：窗口内容区（侧栏、内容面、状态条）必须贴合窗口自身的圆角，
+/// 否则方角会把窗口底角"切"成直角，圆角窗口立刻露馅。
+fn fill_clipped(buf: &mut [u32], w: usize, h: usize, area: Rect, shape: Rect, shape_radius: f32, rgb: [u8; 3], alpha: f32) {
+    if area.w <= 0 || area.h <= 0 {
+        return;
+    }
+    let x0 = area.x.max(0) as usize;
+    let y0 = area.y.max(0) as usize;
+    let x1 = ((area.x + area.w) as usize).min(w);
+    let y1 = ((area.y + area.h) as usize).min(h);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let d = sdf_round_rect(shape, shape_radius, x as f32 + 0.5, y as f32 + 0.5);
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_pixel(buf, y * w + x, rgb, alpha * cov);
+            }
+        }
+    }
+}
+
 
 /// 抗锯齿圆角轮廓线（约 2px 描边带）。
 pub fn rounded_outline(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, rgb: [u8; 3], alpha: f32) {
@@ -287,28 +345,19 @@ pub fn shadow(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, strengt
     }
 }
 
-/// 垂直渐变的圆角方块（Dock 图标底座）：逐像素 SDF + 行渐变色。
-fn gradient_tile(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, top: [u8; 3], bottom: [u8; 3], alpha: f32) {
-    let _ = h; // 深度用不到屏幕高，仅保留签名一致
-    let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
-    let cx = r.x as f32 + r.w as f32 / 2.0;
-    let cy = r.y as f32 + r.h as f32 / 2.0;
-    let qx_half = r.w as f32 / 2.0 - radius;
-    let qy_half = r.h as f32 / 2.0 - radius;
+/// 多段垂直渐变的圆角矩形：逐像素 SDF + 逐个色标插值。
+///
+/// 窗口正是靠它一次成型——标题栏一条"硬变"色标 + 主体平色 + 底部微暗，
+/// 全程同一遍 SDF，不存在二次叠加导致的接缝。
+fn gradient_stops(buf: &mut [u32], w: usize, r: Rect, radius: f32, stops: &[(f32, [u8; 3])], alpha: f32) {
+    if r.w <= 0 || r.h <= 0 || stops.is_empty() {
+        return;
+    }
     for y in 0..r.h {
-        let t = y as f32 / r.h.max(1) as f32;
-        let rgb = [
-            lerp(top[0] as f32, bottom[0] as f32, t) as u8,
-            lerp(top[1] as f32, bottom[1] as f32, t) as u8,
-            lerp(top[2] as f32, bottom[2] as f32, t) as u8,
-        ];
+        let t = (y as f32 + 0.5) / r.h as f32;
+        let rgb = sample_stops(stops, t);
         for x in 0..r.w {
-            let dx = (r.x + x) as f32 + 0.5 - cx;
-            let dy = (r.y + y) as f32 + 0.5 - cy;
-            let qx = dx.abs() - qx_half;
-            let qy = dy.abs() - qy_half;
-            let outside = qx.max(0.0).hypot(qy.max(0.0)) + (qx.max(qy)).min(0.0);
-            let d = outside - radius;
+            let d = sdf_round_rect(r, radius, (r.x + x) as f32 + 0.5, (r.y + y) as f32 + 0.5);
             let cov = (0.5 - d).clamp(0.0, 1.0);
             if cov > 0.0 {
                 blend_pixel(buf, (r.y + y) as usize * w + (r.x + x) as usize, rgb, alpha * cov);
@@ -316,6 +365,29 @@ fn gradient_tile(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, top:
         }
     }
 }
+
+/// 按垂直位置 t（0..1）在多段色标上取色；同一 t 上放两个不同色即为硬变。
+fn sample_stops(stops: &[(f32, [u8; 3])], t: f32) -> [u8; 3] {
+    if t <= stops[0].0 {
+        return stops[0].1;
+    }
+    for w in stops.windows(2) {
+        let (t0, c0) = w[0];
+        let (t1, c1) = w[1];
+        if t <= t1 {
+            let span = t1 - t0;
+            let k = if span.abs() < 1e-6 { 1.0 } else { ((t - t0) / span).clamp(0.0, 1.0) };
+            return mix(c0, c1, k);
+        }
+    }
+    stops[stops.len() - 1].1
+}
+
+/// 双色垂直渐变圆角块（Dock 图标底座、AI 徽标等）。
+fn gradient_tile(buf: &mut [u32], w: usize, r: Rect, radius: f32, top: [u8; 3], bottom: [u8; 3], alpha: f32) {
+    gradient_stops(buf, w, r, radius, &[(0.0, top), (1.0, bottom)], alpha);
+}
+
 
 // ---------------------------------------------------------------------------
 // 桌面状态
@@ -571,65 +643,109 @@ impl Renderer {
 // 壁纸：低对比柔光渐变
 // ---------------------------------------------------------------------------
 
-fn wash(x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32) -> f32 {
-    let dx = (x - cx) / rx;
-    let dy = (y - cy) / ry;
-    (1.0 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0).powi(2)
+/// 极光带的横截面：Lorentzian 平方（廉价除法，形态与高斯接近，
+/// 但尾部更宽——正是极光边缘自然消散的样子）。
+#[inline]
+fn band_profile(d: f32) -> f32 {
+    let q = 1.0 / (1.0 + d * d);
+    q * q
 }
 
+/// 确定性颗粒噪点（±2/255 量级）。
+/// 作用不是"做旧"，而是消除软件光栅渐变必然出现的色带断层——
+/// 没有它，极光在深色底上会出现一圈圈等高线，质感立刻崩。
+#[inline]
+fn grain(x: usize, y: usize) -> f32 {
+    let mut n = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
+    n ^= n >> 15;
+    n = n.wrapping_mul(0x2545_F491);
+    n ^= n >> 13;
+    ((n & 0x3ff) as f32 / 1023.0 - 0.5) * 4.2
+}
+
+/// 一条极光带：翘曲中心线 + 窄横截面 + 沿 x 的柔和包络。
+struct AuroraBand {
+    rgb: [u8; 3],
+    /// 基准中心（屏高比例）
+    my: f32,
+    /// 翘曲振幅（屏高比例）
+    amp: f32,
+    /// 沿 x 的波长（单位：屏宽）
+    wave: f32,
+    phase: f32,
+    /// 横截面半宽（屏高比例）——越小带越锐
+    sigma: f32,
+    inten: f32,
+    /// 包络重心与宽度（屏宽比例）
+    ex: f32,
+    ew: f32,
+}
+
+/// 壁纸：深空底 + 结构化极光带 + 颗粒。
+///
+/// 与"几个大半径柔光平摊"的区别：柔光平摊出来是一块发灰的脏渐变，
+/// 而极光必须是**有走向的光带**——中心线随 x 缓慢翘曲、横截面很窄、
+/// 沿 x 有强弱包络。三条带共用同一套漂移时钟，整体像缓慢流动。
 fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
-    // 漂移放缓（§3.4 动效克制）：4 秒级的变化降到分钟级呼吸
-    let drift = t * 0.02;
-    // 三道极光柔光：青（左上）、紫（右下）、暖（右上）。
-    // Step1 诊断 1：强度/饱和度提升到"肉眼明确可辨但克制"——
-    // 中心权重 0.44/0.40 使可见条带出现真实青/紫色相，暗角 0.14 不再闷死。
-    let washes: [(f32, f32, f32, f32, [u8; 3], f32); 3] = [
-        (
-            w as f32 * (0.20 + 0.02 * drift.sin()),
-            h as f32 * 0.15,
-            w as f32 * 0.58,
-            h as f32 * 0.64,
-            [66, 178, 186],
-            0.44,
-        ),
-        (
-            w as f32 * (0.80 - 0.02 * drift.cos()),
-            h as f32 * 0.82,
-            w as f32 * 0.64,
-            h as f32 * 0.58,
-            [148, 128, 214],
-            0.45,
-        ),
-        (
-            w as f32 * 0.88,
-            h as f32 * 0.12,
-            w as f32 * 0.42,
-            h as f32 * 0.46,
-            [168, 118, 110],
-            0.15,
-        ),
+    let (wf, hf) = (w as f32, h as f32);
+    // 漂移放缓（§3.4 动效克制）：分钟级呼吸
+    let drift = t * 0.03;
+
+    // 青（上，多数被窗口遮住，只在边缘透出）/ 紫（中）/ 蓝紫（下，窗口下沿之外
+    // 的主要可见区——壁纸的构图重心必须放在"真正露出来的地方"）。
+    // 不在边缘放窄带：屏幕上只露出一窄条时，窄带会读成"色块"而不是极光。
+    let bands = [
+        AuroraBand { rgb: [72, 200, 218], my: 0.20, amp: 0.075, wave: 1.30, phase: 0.4, sigma: 0.046, inten: 0.70, ex: 0.42, ew: 0.44 },
+        AuroraBand { rgb: [152, 130, 224], my: 0.42, amp: 0.100, wave: 0.92, phase: 2.3, sigma: 0.064, inten: 0.55, ex: 0.60, ew: 0.56 },
+        AuroraBand { rgb: [136, 126, 226], my: 0.78, amp: 0.050, wave: 1.15, phase: 4.1, sigma: 0.062, inten: 0.44, ex: 0.52, ew: 0.70 },
     ];
+    let nb = bands.len();
+
+    // 逐 x 预计算中心线与包络（每像素只剩一次除法的横截面求值）
+    let mut centers = vec![0f32; w * nb];
+    let mut envelopes = vec![0f32; w * nb];
+    for x in 0..w {
+        let xn = x as f32 / wf;
+        for (k, b) in bands.iter().enumerate() {
+            // 双谐波翘曲：主波 + 约 1/3 振幅的次谐波，避免"标准正弦"的机械感
+            let ang = (xn * b.wave + b.phase + drift * (1.0 + k as f32 * 0.35)) * std::f32::consts::TAU;
+            let warp = ang.sin() + 0.34 * (ang * 2.13 + 1.7).sin();
+            centers[k * w + x] = (b.my + b.amp * warp) * hf;
+            let u = (xn - b.ex) / b.ew;
+            envelopes[k * w + x] = (-u * u).clamp(-9.0, 0.0).exp();
+        }
+    }
 
     for y in 0..h {
-        let vgrad = y as f32 / h as f32;
+        let vgrad = y as f32 / hf;
+        let ny = vgrad - 0.5;
+        let base = [
+            lerp(color::BG_TOP[0] as f32, color::BG_BOTTOM[0] as f32, vgrad),
+            lerp(color::BG_TOP[1] as f32, color::BG_BOTTOM[1] as f32, vgrad),
+            lerp(color::BG_TOP[2] as f32, color::BG_BOTTOM[2] as f32, vgrad),
+        ];
         for x in 0..w {
-            let mut acc = [0f32; 3];
-            for c in 0..3 {
-                acc[c] = lerp(color::BG_TOP[c] as f32, color::BG_BOTTOM[c] as f32, vgrad);
-            }
-            for (cx, cy, rx, ry, rgb, s) in &washes {
-                let g = wash(x as f32, y as f32, *cx, *cy, *rx, *ry) * s;
-                for c in 0..3 {
-                    acc[c] += (rgb[c] as f32 - acc[c]) * g;
+            let mut acc = base;
+            for k in 0..nb {
+                let b = &bands[k];
+                let d = (y as f32 - centers[k * w + x]) / (b.sigma * hf);
+                let g = band_profile(d) * envelopes[k * w + x] * b.inten;
+                if g > 0.002 {
+                    for c in 0..3 {
+                        acc[c] += (b.rgb[c] as f32 - acc[c]) * g;
+                    }
                 }
             }
-            // 轻微暗角（从 0.30 降到 0.14：留深空氛围，不再闷死极光）
-            let nx = x as f32 / w as f32 - 0.5;
-            let ny = y as f32 / h as f32 - 0.5;
-            let vig = 1.0 - (nx * nx + ny * ny) * 0.14;
-            buf[y * w + x] = ((acc[0] * vig) as u32) << 16
-                | ((acc[1] * vig) as u32) << 8
-                | (acc[2] * vig) as u32;
+            // 暗角：留住深空氛围（比 Step1 略深，让中央极光更亮）
+            let nx = x as f32 / wf - 0.5;
+            let vig = 1.0 - (nx * nx + ny * ny) * 0.20;
+            let n = grain(x, y);
+            let px = [
+                (acc[0] * vig + n).clamp(0.0, 255.0) as u32,
+                (acc[1] * vig + n).clamp(0.0, 255.0) as u32,
+                (acc[2] * vig + n).clamp(0.0, 255.0) as u32,
+            ];
+            buf[y * w + x] = (px[0] << 16) | (px[1] << 8) | px[2];
         }
     }
 }
@@ -748,16 +864,30 @@ impl Renderer {
 // ---------------------------------------------------------------------------
 
 fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>) {
+    let body = color::SURFACE_1;
+    // 不透明度定得高：合成器没有模糊（backdrop-filter），窗口一旦半透明，
+    // 后面窗口的文字就会"透"上来变成鬼影——那比没有玻璃感难看得多。
+    let body_alpha = if active { 0.955 } else { 0.90 };
+    // 标题栏比主体亮一档——窗口必须有"头"，否则整窗是一块没有层次的灰
+    let title_rgb = mix(body, color::HAIRLINE, if active { 0.075 } else { 0.035 });
+    let t_stop = metric::TITLE_H as f32 / r.h.max(1) as f32;
+    let stops = [
+        (0.0, mix(title_rgb, color::HAIRLINE, 0.035)),
+        ((t_stop - 0.002).max(0.0), title_rgb),
+        (t_stop, body),
+        (1.0, mix(body, [0, 0, 0], 0.14)),
+    ];
+
     shadow(buf, w, h, r, radius::LG, if active { elevation::ELEV_1 } else { elevation::ELEV_1_DIM });
-    rounded_rect(buf, w, h, r, radius::LG, color::SURFACE_1, 0.92);
-    // 顶部内高光（玻璃厚度感）
-    fill_rect(buf, w, h, Rect { x: r.x + 8, y: r.y + 1, w: r.w - 16, h: 1 }, color::HAIRLINE, 0.09);
-    rounded_outline(buf, w, h, r, radius::LG, color::HAIRLINE, if active { 0.18 } else { 0.10 });
+    gradient_stops(buf, w, r, radius::LG, &stops, body_alpha);
 
-    // 标题栏分隔发丝线
-    fill_rect(buf, w, h, Rect { x: r.x + 1, y: r.y + metric::TITLE_H, w: r.w - 2, h: 1 }, color::HAIRLINE, 0.09);
+    // 顶部内高光（玻璃厚度）
+    fill_rect(buf, w, h, Rect { x: r.x + 10, y: r.y + 1, w: r.w - 20, h: 1 }, color::HAIRLINE, 0.10);
+    // 标题栏底部发丝线
+    fill_rect(buf, w, h, Rect { x: r.x + 1, y: r.y + metric::TITLE_H, w: r.w - 2, h: 1 }, color::HAIRLINE, 0.10);
+    rounded_outline(buf, w, h, r, radius::LG, color::HAIRLINE, if active { 0.22 } else { 0.12 });
 
-    // 红绿灯（左）：直径 10px、间距 7px（Step4 收细），悬停时整组显示符号
+    // 红绿灯（左）：直径 10px、间距 7px，悬停时整组显示符号
     let lights = [color::CLOSE, color::MIN, color::ZOOM];
     let ly = r.y + (metric::TITLE_H - metric::LIGHT_D) / 2;
     let group = Rect {
@@ -776,8 +906,7 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
         }
     }
 
-    // 居中标题（粗体、层级分明；Step3：激活=纯白 1.0，非激活=明确灰阶 TEXT_DIM，
-        // 不再用"半透明灰 0.4"——那在深底上几乎不可见）
+    // 居中标题：激活=纯白，非激活=明确灰阶
     if let Some(tr) = tr {
         let tw = tr.measure_bold(title, font::BODY);
         let tx = r.x as f32 + r.w as f32 / 2.0 - tw / 2.0;
@@ -791,9 +920,161 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
 
     let content = Rect { x: r.x + 1, y: r.y + metric::TITLE_H + 1, w: r.w - 2, h: r.h - metric::TITLE_H - 2 };
     if title == strings::WIN_TERM {
-        draw_term_content(buf, w, h, content, t, tr);
+        draw_term_content(buf, w, h, content, r, t, tr);
+    } else if title == strings::WIN_MUSIC {
+        draw_music_content(buf, w, h, content, r, mouse, tr);
     } else {
-        draw_files_content(buf, w, h, content, mouse, tr);
+        draw_files_content(buf, w, h, content, r, mouse, tr);
+    }
+}
+
+/// 音乐窗口内容：左侧曲目列表 + 右侧"正在播放"面板。
+///
+/// 存在的意义是"内容形态跟着窗口语义走"——满窗一模一样的文件夹图标，
+/// 是"演示占位"最刺眼的信号。窗口够宽时右挂播放面板，窄时退化为纯列表。
+fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>) {
+    const ROW_H: i32 = 46;
+    const ART: i32 = 30;
+    const PANEL_W: i32 = 250;
+    const PANEL_MIN_W: i32 = 540;
+
+    let panel_on = r.w >= PANEL_MIN_W;
+    let list_w = if panel_on { r.w - PANEL_W - 20 } else { r.w };
+
+    let list = Rect { x: r.x, y: r.y, w: list_w, h: r.h };
+    fill_clipped(buf, w, h, list, win, radius::LG, color::SURFACE_2, 0.5);
+
+    let Some(tr) = tr else { return };
+    // 封面底色（循环取用；低饱和，只做区分不做装饰）
+    let arts: [([u8; 3], [u8; 3]); 3] = [
+        ([96, 150, 196], [48, 88, 138]),
+        ([132, 116, 190], [78, 66, 138]),
+        ([92, 164, 176], [46, 104, 122]),
+    ];
+
+    let mut y = list.y + 8;
+    let mut i = 0usize;
+    loop {
+        // 按可用高度铺满：曲目用完后循环取用（演示内容，不是真实曲库）
+        if y + ROW_H > list.y + list.h - 6 {
+            break;
+        }
+        let (title, artist, dur) = strings::TRACKS[i % strings::TRACKS.len()];
+        let row = Rect { x: list.x + 8, y, w: list.w - 16, h: ROW_H - 4 };
+        let hovered = row.contains(mouse.0, mouse.1);
+        let playing = i == 0;
+        if hovered || playing {
+            fill_clipped(buf, w, h, row, win, radius::LG, color::HAIRLINE, if playing { 0.06 } else { state::HOVER });
+        }
+        if playing {
+            rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + 9, w: 2, h: row.h - 18 }, 1.0, color::ACCENT, 0.95);
+        }
+        let (at, ab) = arts[i % arts.len()];
+        gradient_tile(buf, w, Rect { x: row.x + 12, y: row.y + 5, w: ART, h: ART }, 6.0, at, ab, 0.95);
+
+        let tx = (row.x + 12 + ART + 12) as f32;
+        // 给时长让出位置，标题/艺人按剩余宽度截断（窄窗口下不会压到时长上）
+        let dur_w = tr.measure(dur, font::LABEL) + 20.0;
+        let text_w = (row.x + row.w) as f32 - tx - dur_w;
+        let title_s = ellipsize(tr, title, font::BODY, text_w);
+        let artist_s = ellipsize(tr, artist, font::LABEL, text_w);
+        tr.draw_bold(
+            buf, w, h, tx, tr.vcenter(row.y as f32 + 2.0, 20.0, font::BODY),
+            &title_s, font::BODY,
+            if playing { color::ACCENT } else { color::TEXT },
+            0.96,
+        );
+        draw_text(
+            tr, buf, w, h, tx, tr.vcenter(row.y as f32 + 22.0, 16.0, font::LABEL),
+            &artist_s, font::LABEL, color::TEXT_DIM, 0.85,
+        );
+        let dw = tr.measure(dur, font::LABEL);
+        draw_text(
+            tr, buf, w, h, (row.x + row.w - 12) as f32 - dw,
+            tr.vcenter(row.y as f32 + 2.0, ROW_H as f32 - 4.0, font::LABEL),
+            dur, font::LABEL, color::TEXT_FAINT, 0.85,
+        );
+        y += ROW_H;
+        i += 1;
+    }
+
+    if !panel_on {
+        return;
+    }
+
+    // 右侧"正在播放"面板：大封面 + 曲目信息 + 进度 + 传输控件
+    let panel = Rect { x: r.x + r.w - PANEL_W + 2, y: r.y, w: PANEL_W - 2, h: r.h };
+    fill_clipped(buf, w, h, panel, win, radius::LG, color::INSET, 0.62);
+    fill_rect(buf, w, h, Rect { x: panel.x, y: r.y + 1, w: 1, h: r.h - 2 }, color::HAIRLINE, 0.08);
+
+    let cover_s = (PANEL_W - 76).min(r.h / 2);
+    // 面板小标题
+    let lab_w = tr.measure(strings::NOW_PLAYING, font::LABEL);
+    draw_text(
+        tr, buf, w, h,
+        panel.x as f32 + (panel.w as f32 - lab_w) / 2.0,
+        tr.vcenter(panel.y as f32 + 6.0, 18.0, font::LABEL),
+        strings::NOW_PLAYING, font::LABEL, color::TEXT_FAINT, 0.9,
+    );
+    let cover = Rect {
+        x: panel.x + (panel.w - cover_s) / 2,
+        y: panel.y + 30,
+        w: cover_s,
+        h: cover_s,
+    };
+    shadow(buf, w, h, cover, radius::MD, elevation::ELEV_1);
+    gradient_tile(buf, w, cover, radius::MD, [104, 178, 226], [56, 104, 176], 0.98);
+    // 封面上的装饰：两道弧形光带（纯几何，呼应品牌极光）
+    for k in 0..2 {
+        let off = k as i32 * 18;
+        for row in 0..cover_s {
+            let t = row as f32 / cover_s as f32;
+            let bend = ((t * 3.0 + k as f32 * 0.7).sin() * 0.5 + 0.5) * (cover_s as f32 * 0.22);
+            let x = cover.x + (cover_s / 6) + bend as i32 + off;
+            fill_rect(buf, w, h, Rect { x, y: cover.y + row, w: cover_s / 3, h: 1 }, color::HAIRLINE, 0.10);
+        }
+    }
+    fill_rect(buf, w, h, Rect { x: cover.x + 6, y: cover.y + 1, w: cover_s - 12, h: 1 }, color::HAIRLINE, 0.22);
+
+    let cx = panel.x as f32 + panel.w as f32 / 2.0;
+    let mut ty = (cover.y + cover_s + 22) as f32;
+    let t0 = strings::TRACKS[0].0;
+    let tw = tr.measure_bold(t0, font::BODY);
+    tr.draw_bold(buf, w, h, cx - tw / 2.0, ty, t0, font::BODY, color::TEXT, 0.98);
+    ty += 22.0;
+    let a0 = strings::TRACKS[0].1;
+    let aw = tr.measure(a0, font::LABEL);
+    draw_text(tr, buf, w, h, cx - aw / 2.0, ty, a0, font::LABEL, color::TEXT_DIM, 0.88);
+
+    // 进度条 + 时间（面板底部）
+    let bar_w = panel.w - 48;
+    let bx = panel.x + 24;
+    let by = panel.y + panel.h - 58;
+    rounded_rect(buf, w, h, Rect { x: bx, y: by, w: bar_w, h: 4 }, 2.0, color::HAIRLINE, 0.14);
+    rounded_rect(buf, w, h, Rect { x: bx, y: by, w: (bar_w as f32 * 0.35) as i32, h: 4 }, 2.0, color::ACCENT, 0.92);
+    draw_text(tr, buf, w, h, bx as f32, (by + 12) as f32, "1:28", font::LABEL, color::TEXT_FAINT, 0.9);
+    let t1 = strings::TRACKS[0].2;
+    let t1w = tr.measure(t1, font::LABEL);
+    draw_text(tr, buf, w, h, (bx + bar_w) as f32 - t1w, (by + 12) as f32, t1, font::LABEL, color::TEXT_FAINT, 0.9);
+
+    // 传输控件：上一个 / 播放 / 下一个（纯几何）
+    let cy = panel.y + panel.h - 26;
+    let mid = panel.x + panel.w / 2;
+    rounded_rect(buf, w, h, Rect { x: mid - 14, y: cy - 14, w: 28, h: 28 }, 14.0, color::ACCENT, 0.92);
+    // 暂停符号（两条竖杠）
+    fill_rect(buf, w, h, Rect { x: mid - 5, y: cy - 6, w: 3, h: 12 }, color::TEXT, 0.95);
+    fill_rect(buf, w, h, Rect { x: mid + 2, y: cy - 6, w: 3, h: 12 }, color::TEXT, 0.95);
+    arrow_glyph(buf, w, h, mid - 42, cy, 5, -1, color::TEXT_DIM, 0.9);
+    arrow_glyph(buf, w, h, mid + 40, cy, 5, 1, color::TEXT_DIM, 0.9);
+}
+
+/// 三角箭头（上一个/下一个）：按列扫描填充，纯几何不依赖字体字形。
+/// `dir` = -1 左指 / +1 右指；`cx` 为三角尖端所在列。
+fn arrow_glyph(buf: &mut [u32], w: usize, h: usize, cx: i32, cy: i32, size: i32, dir: i32, rgb: [u8; 3], alpha: f32) {
+    for k in 0..size {
+        let hh = size - k;
+        let x = if dir > 0 { cx - k } else { cx + k };
+        fill_rect(buf, w, h, Rect { x, y: cy - hh, w: 1, h: hh * 2 + 1 }, rgb, alpha);
     }
 }
 
@@ -821,61 +1102,181 @@ fn light_symbol(buf: &mut [u32], w: usize, h: usize, cx: i32, cy: i32, kind: usi
     }
 }
 
-fn draw_term_content(buf: &mut [u32], w: usize, h: usize, r: Rect, t: f32, tr: Option<&TextRenderer>) {
-    fill_rect(buf, w, h, r, color::INSET, 0.92);
+/// 终端内容：提示符分色 + 命令与输出 + 末尾光标。
+/// 密度做足——空荡的终端窗口看起来像没做完。
+fn draw_term_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, t: f32, tr: Option<&TextRenderer>) {
+    fill_clipped(buf, w, h, r, win, radius::LG, color::INSET, 0.95);
     let Some(tr) = tr else { return };
-    let lines = [
-        ("aether@localhost ~ $", color::ACCENT, 0.95),
-        ("uname -a", color::TEXT, 0.9),
-        ("AetherOS 0.1.0 aether-kernel x86_64", color::TEXT_DIM, 0.9),
-        ("aether@localhost ~ $", color::ACCENT, 0.95),
+
+    // 每行是若干 (文本, 颜色, 不透明度) 段；提示符分色是"真终端"的视觉签名。
+    // 行数给足并**按可用高度裁切**——窗口矮时不会画出窗口外，窗口高时不留死灰。
+    let host = ("aether@localhost", color::ACCENT, 0.95);
+    let sep = (" ~ $ ", color::TEXT_DIM, 0.85);
+    let lines: [&[(&str, [u8; 3], f32)]; 9] = [
+        &[host, sep, ("uname -a", color::TEXT, 0.95)],
+        &[("AetherOS 0.1.0 aether-kernel x86_64 GNU/Linux", color::TEXT_DIM, 0.9)],
+        &[host, sep, ("aether-status", color::TEXT, 0.95)],
+        &[("服务 5/5 运行中 · AI 中枢在线 · 已开机 00:07:12", color::SUCCESS, 0.85)],
+        &[host, sep, ("cat /etc/aether/services/aetherd.json", color::TEXT, 0.95)],
+        &[("name=aetherd  after=network  restart=true  essential=true", color::TEXT_DIM, 0.9)],
+        &[host, sep, ("aether-ipc --probe 7311", color::TEXT, 0.95)],
+        &[("7311 在线 · NDJSON 协议 · 本地模型 llama3.2:3b", color::TEXT_DIM, 0.9)],
+        &[host, sep],
     ];
-    let mut y = r.y + 12;
-    for (line, rgb, a) in lines {
-        draw_text(tr, buf, w, h, (r.x + 14) as f32, y as f32, line, font::MONO, rgb, a);
+    let mut y = r.y + 14;
+    let mut caret_x = r.x + 16;
+    let bottom = r.y + r.h - 10;
+    let right = r.x + r.w - 14;
+    for (i, segs) in lines.iter().enumerate() {
+        if y + 20 > bottom {
+            break;
+        }
+        let mut x = (r.x + 16) as f32;
+        for (text, rgb, a) in segs.iter() {
+            // 逐段裁切：文本绘制没有横向裁剪，不截断就会画到窗口外面去
+            let room = right as f32 - x;
+            if room < 8.0 {
+                break;
+            }
+            if tr.measure(text, font::MONO) > room {
+                let cut = ellipsize(tr, text, font::MONO, room);
+                x = draw_text(tr, buf, w, h, x, y as f32, &cut, font::MONO, *rgb, *a);
+                break;
+            }
+            x = draw_text(tr, buf, w, h, x, y as f32, text, font::MONO, *rgb, *a);
+        }
+        if i + 1 == lines.len() {
+            caret_x = x as i32;
+        }
         y += 22;
     }
-    if (t * 2.0) as i32 % 2 == 0 {
-        fill_rect(buf, w, h, Rect { x: r.x + 14, y: y + 2, w: 8, h: 14 }, color::TEXT, 0.7);
+    if (t * 2.0) as i32 % 2 == 0 && y - 18 + 15 <= bottom && caret_x + 8 <= right {
+        fill_rect(buf, w, h, Rect { x: caret_x, y: y - 18, w: 8, h: 15 }, color::TEXT, 0.72);
     }
 }
 
-fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>) {
-    // 侧栏
-    let sidebar = Rect { x: r.x, y: r.y, w: 138, h: r.h };
-    fill_rect(buf, w, h, sidebar, color::INSET, 0.45);
-    fill_rect(buf, w, h, Rect { x: sidebar.x + sidebar.w, y: r.y, w: 1, h: r.h }, color::HAIRLINE, 0.06);
+/// 文件窗口内容：侧栏（深底座）→ 内容面（纸面）→ 状态条（深底座）三层。
+fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>) {
+    const SIDEBAR_W: i32 = 150;
+    const STATUS_H: i32 = 26;
+
+    // 侧栏：比窗口体暗一档
+    let sidebar = Rect { x: r.x, y: r.y, w: SIDEBAR_W.min(r.w / 2), h: r.h };
+    fill_clipped(buf, w, h, sidebar, win, radius::LG, color::INSET, 0.66);
+
+    // 内容面：比窗口体亮半档的"纸面"——三层明度差是纵深感的全部来源
+    let area_x = sidebar.x + sidebar.w;
+    let surface = Rect { x: area_x, y: r.y, w: r.x + r.w - area_x, h: r.h - STATUS_H };
+    fill_clipped(buf, w, h, surface, win, radius::LG, color::SURFACE_2, 0.42);
+    fill_rect(buf, w, h, Rect { x: area_x, y: r.y + 1, w: 1, h: r.h - 2 }, color::HAIRLINE, 0.08);
+
     if let Some(tr) = tr {
-        for (i, item) in ["文档", "图片", "音乐", "项目"].iter().enumerate() {
-            let y = r.y + 14 + i as i32 * 34;
+        for (i, item) in strings::SIDEBAR_ITEMS.iter().enumerate() {
+            let y = r.y + 12 + i as i32 * 30;
             let selected = i == 0;
-            let row = Rect { x: r.x + 8, y: y - 5, w: 122, h: 28 };
+            let row = Rect { x: r.x + 8, y, w: sidebar.w - 16, h: 26 };
             if selected {
-                rounded_rect(buf, w, h, row, radius::SM, color::ACCENT, 0.18);
+                rounded_rect(buf, w, h, row, radius::SM - 2.0, color::ACCENT, 0.20);
+                // 选中项左侧标记条：比整块底色更克制
+                rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + 6, w: 2, h: 14 }, 1.0, color::ACCENT, 0.95);
             } else if row.contains(mouse.0, mouse.1) {
-                rounded_rect(buf, w, h, row, radius::SM, color::SURFACE_1, 0.65);
+                rounded_rect(buf, w, h, row, radius::SM - 2.0, color::HAIRLINE, state::HOVER);
             }
-            draw_text(tr, buf, w, h, (r.x + 20) as f32, tr.vcenter((y - 5) as f32, 28.0, font::BODY), item, font::BODY, if selected { color::TEXT } else { color::TEXT_DIM }, if selected { 0.95 } else { 0.9 });
+            draw_text(
+                tr, buf, w, h,
+                (row.x + 14) as f32,
+                tr.vcenter(row.y as f32, row.h as f32, font::BODY),
+                item, font::BODY,
+                if selected { color::TEXT } else { color::TEXT_DIM },
+                if selected { 0.96 } else { 0.88 },
+            );
         }
     }
-    // 文件卡片网格（悬停提亮一档：SURFACE_2 → SURFACE_3）
-    let grid_x = r.x + 152;
-    for row in 0..2 {
-        for col in 0..4 {
-            let card = Rect { x: grid_x + col * 98, y: r.y + 14 + row * 98, w: 86, h: 86 };
-            if card.w <= 0 || card.x + card.w > r.x + r.w {
-                continue;
-            }
-            let hovered = card.contains(mouse.0, mouse.1);
-            rounded_rect(buf, w, h, card, radius::MD, if hovered { color::SURFACE_4 } else { color::SURFACE_2 }, if hovered { 0.9 } else { 0.62 });
-            rounded_outline(buf, w, h, card, radius::MD, color::HAIRLINE, if hovered { 0.16 } else { 0.08 });
-            // 缩略图占位：与 Dock 图标同语言的低饱和渐变底 + 白色文件夹符号
-            //（Step2：不再用实心蓝灰块，消灭占位廉价感）
-            gradient_tile(buf, w, h, Rect { x: card.x + 21, y: card.y + 14, w: 44, h: 34 }, 7.0, [52, 104, 118], [72, 158, 168], 0.9);
-            rounded_rect(buf, w, h, Rect { x: card.x + 29, y: card.y + 17, w: 9, h: 4 }, 2.0, color::TEXT, 0.95);
-            rounded_rect(buf, w, h, Rect { x: card.x + 30, y: card.y + 21, w: 26, h: 17 }, 3.0, color::TEXT, 0.95);
-        }
+
+    let shown = draw_icon_grid(buf, w, h, surface, win, mouse, tr);
+
+    // 状态条：贴窗口底角
+    let status = Rect { x: r.x, y: r.y + r.h - STATUS_H, w: r.w, h: STATUS_H };
+    fill_clipped(buf, w, h, status, win, radius::LG, color::INSET, 0.62);
+    fill_rect(buf, w, h, Rect { x: r.x + 1, y: status.y, w: r.w - 2, h: 1 }, color::HAIRLINE, 0.08);
+    if let Some(tr) = tr {
+        // 数量取"实际画出来的"，不写死——写死立刻和画面矛盾
+        let left = format!("{shown} 个项目");
+        draw_text(tr, buf, w, h, (status.x + 12) as f32, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &left, font::LABEL, color::TEXT_FAINT, 0.9);
+        let right = strings::DISK_FREE;
+        let rw = tr.measure(right, font::LABEL);
+        draw_text(tr, buf, w, h, (status.x + status.w - 12) as f32 - rw, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), right, font::LABEL, color::TEXT_FAINT, 0.9);
     }
+}
+
+/// 图标网格：图标 + 标签（无卡片外框——"框里再放块"是廉价感的来源之一）。
+/// 行列数按可用空间自适应，把窗口填满，不留下大片死灰。返回实际画出的项数。
+fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>) -> usize {
+    let Some(tr) = tr else { return 0 };
+    const ICON: i32 = 46;
+    const CELL_W: i32 = 96;
+    const CELL_H: i32 = 84;
+    const GAP_X: i32 = 10;
+    const GAP_Y: i32 = 12;
+    const PAD: i32 = 14;
+
+    let avail_w = area.w - PAD * 2;
+    let avail_h = area.h - PAD * 2;
+    if avail_w < CELL_W || avail_h < CELL_H {
+        return 0;
+    }
+    let cols = (avail_w / (CELL_W + GAP_X)).clamp(1, 5);
+    let rows = (avail_h / (CELL_H + GAP_Y)).clamp(1, 5);
+    let n = ((cols * rows) as usize).min(strings::FILE_NAMES.len());
+    let grid_w = cols * CELL_W + (cols - 1) * GAP_X;
+    let grid_h = rows * CELL_H + (rows - 1) * GAP_Y;
+    let ox = area.x + (area.w - grid_w) / 2;
+    let oy = area.y + (area.h - grid_h) / 2;
+
+    for i in 0..n {
+        let col = i as i32 % cols;
+        let row = i as i32 / cols;
+        let cell = Rect {
+            x: ox + col * (CELL_W + GAP_X),
+            y: oy + row * (CELL_H + GAP_Y),
+            w: CELL_W,
+            h: CELL_H,
+        };
+        let hovered = cell.contains(mouse.0, mouse.1);
+        if hovered {
+            fill_clipped(buf, w, h, cell, win, radius::LG, color::HAIRLINE, state::HOVER);
+        }
+        let icon_x = cell.x + (CELL_W - ICON) / 2;
+        let icon_y = cell.y + 8;
+        draw_folder_icon(buf, w, h, icon_x, icon_y, ICON);
+
+        let label_y = icon_y + ICON + 4;
+        let shown = ellipsize(tr, strings::FILE_NAMES[i], font::LABEL, (CELL_W - 10) as f32);
+        let lw = tr.measure(&shown, font::LABEL);
+        draw_text(
+            tr, buf, w, h,
+            cell.x as f32 + (CELL_W as f32 - lw) / 2.0,
+            tr.vcenter(label_y as f32, 14.0, font::LABEL),
+            &shown, font::LABEL,
+            if hovered { color::TEXT } else { color::TEXT_DIM },
+            if hovered { 0.96 } else { 0.88 },
+        );
+    }
+    n
+}
+
+/// 文件夹图标：图形本身即图标（不套底色块），渐变填充 + 页签 + 顶部高光。
+/// 饱和度刻意压低——一屏几十个图标，每个都艳就是灾难。
+fn draw_folder_icon(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, size: i32) {
+    let top = [104, 162, 202];
+    let bottom = [50, 96, 144];
+    let tab_h = (size as f32 * 0.20) as i32;
+    let tab_w = (size as f32 * 0.42) as i32;
+    // 页签先画，主体盖住它的下缘（避免半透明叠加出接缝）
+    rounded_rect(buf, w, h, Rect { x, y, w: tab_w, h: tab_h + 8 }, 3.0, mix(top, bottom, 0.40), 0.95);
+    gradient_tile(buf, w, Rect { x, y: y + tab_h, w: size, h: size - tab_h }, 4.0, top, bottom, 0.97);
+    fill_rect(buf, w, h, Rect { x: x + 3, y: y + tab_h + 1, w: size - 6, h: 1 }, color::HAIRLINE, 0.20);
+    fill_rect(buf, w, h, Rect { x: x + 3, y: y + size - 2, w: size - 6, h: 1 }, [0, 0, 0], 0.12);
 }
 
 // ---------------------------------------------------------------------------
@@ -903,7 +1304,7 @@ impl Renderer {
 
     // 渐变圆形徽标（AI 元素：极光的容许出口之一）
     let av = Rect { x: bar.x + 12, y: bar.y + 10, w: 32, h: 32 };
-    gradient_tile(buf, w, h, av, 16.0, color::ACCENT, color::ACCENT_VIOLET, 0.95);
+    gradient_tile(buf, w, av, 16.0, color::ACCENT, color::ACCENT_VIOLET, 0.95);
     let aw = tr.measure_bold("A", font::GLYPH);
     tr.draw_bold(buf, w, h, av.x as f32 + (av.w as f32 - aw) / 2.0, tr.vcenter(av.y as f32, av.h as f32, font::GLYPH), "A", font::GLYPH, color::TEXT, 0.98);
 
@@ -1038,10 +1439,10 @@ impl Renderer {
         let tray_h = metric::DOCK_ICON + 2 * metric::DOCK_PAD;
         let tray = Rect { x: w as i32 / 2 - tray_w / 2, y: h as i32 - metric::BOTTOM_DOCK, w: tray_w, h: tray_h };
         shadow(buf, w, h, tray, radius::MD, elevation::ELEV_2);
-        rounded_rect(buf, w, h, tray, 20.0, color::INSET, 0.55);
-        rounded_outline(buf, w, h, tray, 20.0, color::HAIRLINE, 0.12);
+        rounded_rect(buf, w, h, tray, 20.0, color::INSET, 0.66);
+        rounded_outline(buf, w, h, tray, 20.0, color::HAIRLINE, 0.14);
         // 托盘顶部内高光（玻璃厚度）
-        fill_rect(buf, w, h, Rect { x: tray.x + 16, y: tray.y + 1, w: tray.w - 32, h: 1 }, color::HAIRLINE, 0.08);
+        fill_rect(buf, w, h, Rect { x: tray.x + 16, y: tray.y + 1, w: tray.w - 32, h: 1 }, color::HAIRLINE, 0.10);
 
         self.dock_icons.clear();
         for (i, name) in apps.iter().enumerate() {
@@ -1053,28 +1454,30 @@ impl Renderer {
             let running = open_titles.contains(name);
 
             if *name == strings::INSTALLER {
-                // 安装是 Live ISO 里唯一需要被一眼找到的动作：琥珀警示色 + 强调描边
-                gradient_tile(buf, w, h, tile, radius::MD, [160, 108, 46], [214, 156, 74], if hovered { 1.0 } else { 0.92 });
+                // 安装是 Live ISO 里唯一需要被一眼找到的动作：琥珀警示色
+                gradient_tile(buf, w, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, [236, 180, 90], [156, 104, 44], if hovered { 1.0 } else { 0.92 });
             } else {
-                // Step2 图标体系：每应用专属「低饱和双色渐变底座」（深→浅对角/纵向），
-                // 消灭灰剪影廉价感；色相克制（青/蓝/紫系），不与强调色抢戏
+                // 图标底座：上亮下暗（"自上方受光"），与文件夹图标同一光照语言。
+                // 上暗下亮会读成"压扁的按钮"，上亮下暗才读成"立体的图标"。
                 let base = match i {
-                    0 => ([52, 104, 118], [72, 158, 168]),   // 文件：青
-                    1 => ([58, 96, 132], [86, 118, 178]),    // 终端：靛
-                    2 => ([50, 88, 140], [76, 122, 184]),    // 浏览器：蓝
-                    3 => ([94, 76, 138], [134, 108, 180]),   // 音乐：紫
-                    _ => ([62, 66, 88], [90, 96, 124]),      // 设置：蓝灰
+                    0 => ([126, 200, 232], [52, 116, 172]), // 文件：青蓝
+                    1 => ([96, 142, 196], [42, 66, 110]),   // 终端：钢青
+                    2 => ([100, 172, 244], [44, 98, 192]),  // 浏览器：蓝
+                    3 => ([180, 136, 234], [108, 70, 178]), // 音乐：紫
+                    _ => ([150, 160, 182], [82, 90, 112]),  // 设置：蓝灰
                 };
-                gradient_tile(buf, w, h, tile, radius::MD, base.0, base.1, 0.96);
+                gradient_tile(buf, w, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, base.0, base.1, 0.97);
+                // 顶部内高光（与窗口同一手法）
+                fill_rect(buf, w, h, Rect { x: ix + 4, y: iy + 1, w: metric::DOCK_ICON - 8, h: 1 }, color::HAIRLINE, 0.24);
                 if hovered {
-                    rounded_rect(buf, w, h, tile, radius::MD, color::HAIRLINE, 0.12);
+                    rounded_rect(buf, w, h, tile, radius::MD, color::HAIRLINE, 0.14);
                 }
                 if running {
                     // 运行中：青色微光（状态反馈，不是装饰）
                     rounded_rect(buf, w, h, tile, radius::MD, color::ACCENT, 0.10);
                 }
             }
-            rounded_outline(buf, w, h, tile, radius::MD, color::HAIRLINE, if hovered { 0.28 } else { 0.16 });
+            rounded_outline(buf, w, h, tile, radius::MD, color::HAIRLINE, if hovered { 0.30 } else { 0.18 });
 
             // 白色几何符号（全部纯 rect 绘制，不依赖字体字形覆盖）
             let sym = color::TEXT;

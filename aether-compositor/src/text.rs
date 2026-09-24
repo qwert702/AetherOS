@@ -246,6 +246,34 @@ pub mod strings {
     pub const WIN_SETTINGS: &str = "设置";
     /// Dock 第 6 图标（仅 Live ISO 会话显示）：打开安装向导
     pub const INSTALLER: &str = "安装";
+    /// 文件窗口侧栏项
+    pub const SIDEBAR_ITEMS: &[&str] = &["文档", "图片", "音乐", "项目"];
+    /// 文件窗口网格标签（演示内容；网格按可用空间取前 N 项，
+    /// 数量要够填满最高布局，否则窗口下半部会留下大片死灰）
+    pub const FILE_NAMES: &[&str] = &[
+        "工作", "设计稿", "截图", "报告", "预算表", "会议记录", "素材库", "归档", "下载", "备份",
+        "笔记", "模板", "字体", "图标包", "草稿", "清单", "照片", "视频", "安装包", "旧项目",
+    ];
+    /// 音乐窗口曲目（演示内容）：(曲名, 艺人, 时长)。
+    /// 数量要够把这扇窗填满，否则列表下方会留一大片空灰。
+    pub const TRACKS: &[(&str, &str, &str)] = &[
+        ("以太漂移", "Aether Ensemble", "4:12"),
+        ("深空回声", "Nova Field", "3:48"),
+        ("极光边界", "Aurora Line", "5:06"),
+        ("静默轨道", "Orbit Minor", "3:21"),
+        ("信号衰减", "Nova Field", "4:55"),
+        ("夜航", "Aether Ensemble", "6:03"),
+        ("低轨道", "Orbit Minor", "3:37"),
+        ("冷启动", "Nova Field", "4:28"),
+        ("视界线", "Aurora Line", "5:41"),
+        ("微光层", "Aether Ensemble", "2:58"),
+        ("长夜频道", "Nova Field", "4:09"),
+        ("归航信号", "Aurora Line", "3:52"),
+    ];
+    /// 播放条文案
+    pub const NOW_PLAYING: &str = "正在播放";
+    /// 文件窗口状态栏右值
+    pub const DISK_FREE: &str = "剩余 42.6 GB";
 }
 
 /// 从 UTC 时间戳推算北京时间字符串 HH:MM（预览期简化处理，系统化后走本地化时钟服务）
