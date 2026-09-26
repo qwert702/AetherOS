@@ -2245,7 +2245,9 @@ impl Renderer {
         let hovered = enabled && button.contains(mouse.0, mouse.1);
         let pressed = hovered && mouse_down;
         if enabled {
-            rounded_rect(buf, w, h, button, radius::SM, color::accent(), 0.95);
+            // 与确认弹窗一致：accent() 直接做底 + text() 做字实测只有深色 2.07:1，
+            // 读不清"我要开始擦盘了"这个按钮。改用加深的 accent_strong + 纯白字。
+            rounded_rect(buf, w, h, button, radius::SM, color::accent_strong(), 0.95);
             if hovered {
                 rounded_rect(buf, w, h, button, radius::SM, color::hairline(), state::hover());
             }
@@ -2259,9 +2261,10 @@ impl Renderer {
             rounded_rect(buf, w, h, button, radius::SM, color::surface_3(), 0.9);
         }
         let (label_rgb, label_a) = if enabled {
-            (color::text(), 0.98)
+            (color::HIGHLIGHT, 0.98)
         } else if matches!(inst.phase, InstallerPhase::Done) {
-            (color::text(), 0.95)
+            // success 底在明亮模式下是深绿，配白字约 4.3:1，比原来的 text() 好得多
+            (color::HIGHLIGHT, 0.95)
         } else {
             (color::text_faint(), state::DISABLED)
         };

@@ -42,3 +42,29 @@ cargo run -p aether-compositor
 ## 路线图
 
 见 [docs/roadmap.md](docs/roadmap.md)。
+
+## 许可证
+
+**GPL-3.0-only** —— 全文见 [LICENSE](LICENSE)。
+
+你可以自由使用、修改、分发 AetherOS。但如果**分发**了衍生作品（发二进制、或通过网络提供服务），
+**必须同样以 GPL-3.0 开源完整对应源码**，且不得附加额外限制。
+不允许把改动闭源之后拿去卖。
+
+### 第三方组件
+
+AetherOS 的 ISO 是**聚合体**（aggregate）—— 一批许可证各异的独立程序打包在一起：
+
+| 组件 | 许可证 |
+|---|---|
+| Linux 内核 | GPL-2.0-only |
+| BusyBox | GPL-2.0 |
+| 自研用户态（`aether-*` 六个 crate） | **GPL-3.0-only** |
+| Rust 依赖（anyhow / log / serde / libc / fontdue / minifb 等） | MIT 或 MIT + Apache-2.0 双许可 |
+
+用户态程序通过系统调用使用内核服务，按内核 `COPYING` 的明确豁免（*"This copyright does not cover
+user programs that use kernel services by normal system calls"*），**不构成衍生作品**，
+因此自研部分可以独立选择 GPL-3.0。
+
+> 注意：GPL-2.0 与 GPL-3.0 互不兼容。当前架构不受影响（用户态独立于内核），
+> 但**将来若新增内核模块，该部分必须为 GPL-2.0 兼容**。
