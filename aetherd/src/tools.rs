@@ -30,6 +30,11 @@ pub struct Tool {
     /// L3 回显确认：需原样输入的参数名（如 "disk"）。上抛确认请求时会被
     /// 解析成该参数的**实际值**（如 "/dev/vda"）——用户要回显的是目标本身。
     pub echo_field: Option<&'static str>,
+    /// 输出是否含"用户数据"（文件内容）。
+    ///
+    /// 为 true 时，其结果一旦进入对话上下文，本轮推理**强制走本地通道**，
+    /// 不再上云 —— 这是 P0-4b 的落地点：读到的文件内容不该离开本机。
+    pub sensitive_output: bool,
 }
 
 pub fn registry() -> Vec<Tool> {
@@ -48,10 +53,11 @@ pub fn registry() -> Vec<Tool> {
             run: tool_sys_info,
             consequence: "",
             echo_field: None,
+            sensitive_output: false,
         },
         Tool {
             name: "read_file",
-            description: "读取一个文本文件的内容（只读）",
+            description: "读取一个文本文件的内容（只读）。仅可读用户数据区（家目录、/tmp）与 aether 自身配置/日志；系统区（/etc 除 aether 外、/proc、/sys、/dev、/boot）一律拒绝。",
             level: Level::L0,
             parameters: serde_json::json!({
                 "type": "object",
@@ -61,6 +67,8 @@ pub fn registry() -> Vec<Tool> {
             run: tool_read_file,
             consequence: "",
             echo_field: None,
+            // 文件内容属于用户数据：读到即强制本地通道，不上云
+            sensitive_output: true,
         },
         Tool {
             name: "sys_probe",
@@ -76,6 +84,7 @@ pub fn registry() -> Vec<Tool> {
             run: tool_sys_probe,
             consequence: "",
             echo_field: None,
+            sensitive_output: false,
         },
         Tool {
             name: "desktop",
@@ -105,6 +114,7 @@ pub fn registry() -> Vec<Tool> {
             run: tool_desktop,
             consequence: "",
             echo_field: None,
+            sensitive_output: false,
         },
         Tool {
             name: "install_disk",
@@ -121,8 +131,17 @@ pub fn registry() -> Vec<Tool> {
             run: tool_install_disk,
             consequence: "整盘覆盖写入：目标磁盘上的分区表与所有数据将被永久删除，不可恢复。",
             echo_field: Some("disk"),
+            sensitive_output: false,
         },
     ]
+}
+
+/// 该工具的输出是否含用户数据（文件内容）。
+///
+/// agent 循环据此置位"敏感上下文"：其结果一旦进入 messages，
+/// 后续轮次强制走本地通道（P0-4b）。
+pub fn is_sensitive_output(name: &str) -> bool {
+    registry().iter().any(|t| t.name == name && t.sensitive_output)
 }
 
 /// 工具执行结果。
@@ -148,7 +167,7 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
         bail!("未知工具: {name}");
     };
     let args_str = args.to_string();
-    let verdict = gate.judge(tool.level, approved);
+    let verdict = gate.judge(name, tool.level, args, approved);
     let verdict_str = match &verdict {
         Verdict::Allowed => "allowed",
         Verdict::NeedsConfirmation => "needs_confirmation",
@@ -160,13 +179,20 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
         format!("⚠ 审计日志写入失败（{e}），本次操作未留痕\n")
     });
     match verdict {
-        Verdict::Allowed => {
-            let out = (tool.run)(args, ctx)?;
-            Ok(ExecOutcome::Done(match audit_warn {
+        Verdict::Allowed => match (tool.run)(args, ctx) {
+            Ok(out) => Ok(ExecOutcome::Done(match audit_warn {
                 Some(w) => format!("{w}{out}"),
                 None => out,
-            }))
-        }
+            })),
+            Err(e) => {
+                // 执行失败也留痕：否则"闸门放行"与"真的读到了"在审计里无法区分
+                // （例如 read_file 通过闸门但被路径白名单拒绝，只记 allowed 会误导）
+                if let Err(ae) = gate.audit(name, tool.level, &args_str, "failed") {
+                    eprintln!("[aetherd] 审计日志写入失败: {ae}");
+                }
+                Err(e)
+            }
+        },
         Verdict::NeedsConfirmation => Ok(ExecOutcome::NeedsConfirmation {
             tool: name.to_string(),
             level: tool.level,
@@ -203,11 +229,85 @@ fn tool_sys_info(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     }
 }
 
+/// `read_file` 允许读取的根（P0-4a）。
+///
+/// 用**白名单**而不是黑名单：黑名单永远漏（符号链接、大小写、`..` 回绕、
+/// `/proc/self/cwd` 之类的间接路径），而白名单配合 `canonicalize` 能保证
+/// "拒绝的就是拒绝的"。代价是 AI 不再"无所不知"——它只能读用户数据区与
+/// aether 自身的配置/日志，系统区（/etc 非 aether 部分、/proc、/sys、/dev、
+/// /boot、/root）一律不可读。
+#[cfg(target_os = "linux")]
+const READ_ALLOWED_ROOTS: &[&str] = &[
+    "/home",           // 用户数据
+    "/etc/aether",     // aether 自身配置
+    "/var/log/aether", // 审计日志
+    "/run/aether",     // 运行时状态
+    "/tmp",            // 临时文件
+];
+
+/// 开发机（Windows）上的对应白名单：用户数据区与临时目录。
+#[cfg(not(target_os = "linux"))]
+const READ_ALLOWED_ROOTS: &[&str] = &["C:/Users", "C:/Temp"];
+
+/// 即使在白名单根之内，也拒绝的凭证类子路径（家目录下的私钥/令牌）。
+const READ_DENY_SUBPATHS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    ".netrc",
+    ".git-credentials",
+];
+
+/// 去掉 Windows canonicalize 产生的 `\\?\` 扩展长度前缀，
+/// 否则白名单前缀永远匹配不上。
+fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(rest);
+        }
+    }
+    p
+}
+
+/// 校验并规范化待读路径；不可读则返回带原因的 Err。
+fn resolve_readable(path: &str) -> Result<std::path::PathBuf> {
+    // canonicalize 同时解析 `..` 与符号链接——这两条绕行路径因此被堵死
+    let canon = std::fs::canonicalize(path)
+        .map_err(|e| anyhow::anyhow!("无法访问 {path}: {e}"))?;
+    let canon = strip_verbatim_prefix(canon);
+
+    // 1. 必须落在白名单根之内（Path::starts_with 按组件匹配，/homeevil ≠ /home）
+    if !READ_ALLOWED_ROOTS.iter().any(|root| canon.starts_with(root)) {
+        bail!(
+            "路径不在允许读取的范围内（{path}）：read_file 仅可读用户数据区（家目录、/tmp）\
+             与 aether 自身配置/日志；系统区与其它用户目录不可读"
+        );
+    }
+    // 2. 白名单根之内的凭证类子路径仍然拒绝
+    if is_credential_path(&canon) {
+        bail!("拒绝读取凭证类路径（{path}）");
+    }
+    Ok(canon)
+}
+
+/// 规范化路径是否命中凭证类子路径（私钥、云凭证、令牌文件）。
+fn is_credential_path(canon: &std::path::Path) -> bool {
+    let lower = canon.to_string_lossy().replace('\\', "/").to_lowercase();
+    READ_DENY_SUBPATHS.iter().any(|d| lower.contains(d))
+}
+
 fn tool_read_file(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
         bail!("缺少 path 参数");
     };
-    let content = std::fs::read_to_string(path)?;
+    let canon = resolve_readable(path)?;
+    let content = std::fs::read_to_string(&canon)?;
     let truncated: String = content.chars().take(4000).collect();
     Ok(truncated)
 }
@@ -432,6 +532,93 @@ mod tests {
                 assert!(!consequence.is_empty(), "确认卡片需要后果说明");
             }
             other => panic!("L3 未批准应返回确认请求，实得: {other:?}"),
+        }
+    }
+
+    /// P0-4a：白名单外的路径必须被**策略**拒绝，而不是"碰巧不存在"。
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn read_file_rejects_paths_outside_whitelist_on_host() {
+        let mut ctx = ToolCtx::default();
+        // 这些文件在开发机上真实存在，属于系统区，必须拒绝
+        for p in ["C:/Windows/win.ini", "C:/Windows/System32/drivers/etc/hosts"] {
+            let r = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false);
+            let err = r.expect_err(&format!("{p} 应被拒绝")).to_string();
+            assert!(err.contains("不在允许读取的范围内"), "{p} 实得: {err}");
+        }
+    }
+
+    /// 目标平台（Linux）上 aetherd 以 root 运行，这些路径此前全部可读。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_file_rejects_system_paths_on_target() {
+        let mut ctx = ToolCtx::default();
+        for p in [
+            "/etc/shadow",
+            "/etc/passwd",
+            "/proc/self/environ",
+            "/sys/kernel/osrelease",
+            "/boot/vmlinuz",
+            "/root/.bashrc",
+        ] {
+            let r = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false);
+            let err = r.expect_err(&format!("{p} 应被拒绝")).to_string();
+            assert!(
+                err.contains("不在允许读取的范围内") || err.contains("凭证类"),
+                "{p} 实得: {err}"
+            );
+        }
+    }
+
+    /// 白名单内的路径应被**放行到文件系统层**（报"无法访问"而非"不在允许范围"）。
+    #[test]
+    fn read_file_allows_whitelisted_root() {
+        let mut ctx = ToolCtx::default();
+        #[cfg(not(target_os = "linux"))]
+        let p = "C:/Users/__aether_probe_absent__/nope.txt";
+        #[cfg(target_os = "linux")]
+        let p = "/home/__aether_probe_absent__/nope.txt";
+        let err = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false)
+            .expect_err("不存在的文件应报错")
+            .to_string();
+        assert!(
+            !err.contains("不在允许读取的范围内"),
+            "{p} 位于白名单内，不应被策略拒绝，实得: {err}"
+        );
+    }
+
+    /// 凭证类子路径即使在白名单根之内也必须拒绝（纯策略函数单测，不依赖文件存在）。
+    #[test]
+    fn credential_subpaths_are_recognized() {
+        for p in [
+            "C:/Users/x/.ssh/id_rsa",
+            "/home/x/.ssh/id_ed25519",
+            "/home/x/.aws/credentials",
+            "/home/x/.netrc",
+            "C:/Users/x/.git-credentials",
+        ] {
+            assert!(
+                is_credential_path(std::path::Path::new(p)),
+                "{p} 应被识别为凭证路径"
+            );
+        }
+        for p in ["/home/x/notes.txt", "C:/Users/x/Documents/report.md"] {
+            assert!(
+                !is_credential_path(std::path::Path::new(p)),
+                "{p} 不应被识别为凭证路径"
+            );
+        }
+    }
+
+    /// P0-4b 的配套事实：read_file 被标记为敏感输出（其内容不得离开本机）。
+    #[test]
+    fn read_file_is_marked_sensitive_output() {
+        let reg = registry();
+        let rf = reg.iter().find(|t| t.name == "read_file").expect("read_file 应注册");
+        assert!(rf.sensitive_output, "read_file 的输出必须标记为敏感（强制本地通道）");
+        // 其余工具不应误标（否则云端通道会被无谓地禁用）
+        for t in reg.iter().filter(|t| t.name != "read_file") {
+            assert!(!t.sensitive_output, "{} 不应标记为敏感输出", t.name);
         }
     }
 }

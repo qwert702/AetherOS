@@ -160,7 +160,30 @@ pub mod theme {
         pub fn danger() -> [u8; 3] {
             pick([208, 56, 52], [255, 92, 88])
         }
-        /// 信息提示（工具调用卡片等）
+        /// 主操作按钮（"允许一次"）底色：强调色加深。
+        ///
+        /// 直接用 `accent()` 做底 + `text()` 做字，实测对比度**深色 2.07:1、
+        /// 明亮 4.11:1**，都低于 WCAG AA 正文 4.5:1 —— 用户在最需要看清的
+        /// "放行"按钮上读不清字。本 token 配白字把它提到 5.3:1 / 6.4:1。
+        pub fn accent_strong() -> [u8; 3] {
+            pick([9, 105, 120], [34, 118, 132])
+        }
+        /// 危险色**作为文字**时的取值：深色下比 `danger()` 更亮、明亮下更深，
+        /// 才能在窗口底上达到 AA 4.5:1（"拒绝"按钮用；`danger()` 本身
+        /// 在深色底上只有 3.2:1，做正文色不达标）。
+        pub fn danger_text() -> [u8; 3] {
+            pick([176, 32, 30], [255, 163, 159])
+        }
+        /// 预警色**作为文字**时的取值（L2 徽章、预警文案用）。
+        /// 理由同 `danger_text()`：`warning()` 在明亮底上只有 3.7:1。
+        pub fn warning_text() -> [u8; 3] {
+            pick([146, 92, 8], [255, 205, 130])
+        }
+        /// 信息提示（工具调用卡片等）。
+        ///
+        /// 当前无调用点：工具结果气泡改用左侧状态条（SUCCESS/DANGER）表达成败，
+        /// 信息色没有落地位置。作为色板语义完整性保留，显式标注以免掩盖
+        /// 将来真正的死代码。
         #[allow(dead_code)]
         pub fn info() -> [u8; 3] {
             pick([28, 106, 214], [90, 160, 250])
@@ -369,6 +392,23 @@ pub fn blend_pixel(buf: &mut [u32], idx: usize, rgb: [u8; 3], alpha: f32) {
     buf[idx] = (r << 16) | (g << 8) | b;
 }
 
+/// 纯黑叠加的快速路径：`dst * (1 - alpha)`。
+///
+/// 投影只是"把下面的像素压暗"，不需要通用混色的三次 lerp 与 clamp。
+/// `shadow()` 每帧要跑 5 层 × 全窗口面积，这条路径是它的主要成本之一。
+#[inline]
+fn darken_pixel(buf: &mut [u32], idx: usize, alpha: f32) {
+    if alpha <= 0.0 || idx >= buf.len() {
+        return;
+    }
+    let k = 1.0 - alpha;
+    let d = buf[idx];
+    let r = (((d >> 16) & 0xff) as f32 * k) as u32;
+    let g = (((d >> 8) & 0xff) as f32 * k) as u32;
+    let b = ((d & 0xff) as f32 * k) as u32;
+    buf[idx] = (r << 16) | (g << 8) | b;
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {
     pub x: i32,
@@ -393,8 +433,10 @@ pub fn fill_rect(buf: &mut [u32], w: usize, h: usize, rect: Rect, rgb: [u8; 3], 
     }
     let x0 = rect.x.max(0) as usize;
     let y0 = rect.y.max(0) as usize;
-    let x1 = ((rect.x + rect.w) as usize).min(w);
-    let y1 = ((rect.y + rect.h) as usize).min(h);
+    // `.max(0)` 不可省：`rect.x + rect.w` 是 i32 运算，若为负则 `as usize` 回卷成
+    // 巨值，`.min(w)` 会把它钳成 w —— 结果是**误填整行**（P3-28）。
+    let x1 = ((rect.x + rect.w).max(0) as usize).min(w);
+    let y1 = ((rect.y + rect.h).max(0) as usize).min(h);
     for y in y0..y1 {
         for x in x0..x1 {
             blend_pixel(buf, y * w + x, rgb, alpha);
@@ -404,6 +446,11 @@ pub fn fill_rect(buf: &mut [u32], w: usize, h: usize, rect: Rect, rgb: [u8; 3], 
 
 /// 圆角矩形的有符号距离（负 = 内部）。所有圆角绘制与裁切共用它，
 /// 保证"描边 / 填充 / 裁切"三者的形状严格一致。
+///
+/// 性能要点：只有**角部**（dx>0 且 dy>0）才需要开方。边部与内部
+/// （至少一个分量为非正）直接用分量相加即可 —— 这是恒等变形，不是近似。
+/// 圆角矩形的角部面积占比极小，条件化后省掉绝大部分 sqrt（软件光栅化下
+/// sqrt 是最贵的一步，`draw_window` 的开销几乎全在这里）。
 #[inline]
 fn sdf_round_rect(r: Rect, radius: f32, x: f32, y: f32) -> f32 {
     let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
@@ -413,8 +460,51 @@ fn sdf_round_rect(r: Rect, radius: f32, x: f32, y: f32) -> f32 {
     let qy_half = r.h as f32 / 2.0 - radius;
     let dx = (x - cx).abs() - qx_half;
     let dy = (y - cy).abs() - qy_half;
-    let outside = dx.max(0.0).hypot(dy.max(0.0)) + (dx.max(dy)).min(0.0);
-    outside - radius
+    let ox = dx.max(0.0);
+    let oy = dy.max(0.0);
+    let outside = if ox > 0.0 && oy > 0.0 {
+        (ox * ox + oy * oy).sqrt()
+    } else {
+        ox + oy
+    };
+    outside + dx.max(dy).min(0.0) - radius
+}
+
+/// 圆角矩形某一行上"完全在形状内部"的 x 区间（不含圆角抗锯齿带）。
+///
+/// 圆角矩形里绝大多数像素离圆角很远，逐像素求 SDF 是浪费。先用解析式
+/// 把每行切成"两端圆角带 + 中间直填带"，中间部分可以直接混色。
+#[inline]
+fn row_inner_span(r: Rect, radius: f32, y: f32) -> (i32, i32) {
+    let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
+    let top = r.y as f32;
+    let bot = (r.y + r.h) as f32;
+    let dy = (y - top).min(bot - y);
+    if dy >= radius {
+        return (r.x, r.x + r.w);
+    }
+    if dy < 0.0 {
+        // 该行整行都在形状之外（扫描范围含 ±1 像素的抗锯齿余量）：
+        // 必须返回**空区间**。否则 `radius² - k²` 会被 max(0) 截断成 0，
+        // 算出一个"看似合法"的直填带，把形状外的像素整行刷上颜色 ——
+        // 表现为胶囊/圆角矩形边缘多出一整行（实测：AI 指令条底边 512 像素被误填）。
+        let mid = r.x + r.w / 2;
+        return (mid, mid);
+    }
+    let k = radius - dy;
+    // 直填带要求像素覆盖率**恰好为 1**，即 d ≤ -0.5，也就是
+    // sqrt(ox² + k²) ≤ radius - 0.5 —— 不是 d ≤ 0（那只是形状边界）。
+    // 早先按 d ≤ 0 推边界，圆角边缘会被当成满覆盖，实测覆盖率只有 0.90，
+    // 表现是圆角变实、与逐像素版本对不上。
+    let r_eff = (radius - 0.5).max(0.0);
+    let inner = if k >= r_eff {
+        0.0
+    } else {
+        (r_eff * r_eff - k * k).sqrt()
+    };
+    // +1 像素余量：ceil 后仍可能有浮点临界像素，宁可交给 SDF 逐像素判
+    let i = (radius - inner).ceil() as i32 + 1;
+    (r.x + i, r.x + r.w - i)
 }
 
 /// 抗锯齿圆角矩形（符号距离场覆盖率）。
@@ -423,12 +513,29 @@ pub fn rounded_rect(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, r
     let y0 = (r.y as f32 - 1.0).max(0.0) as usize;
     let x1 = ((r.x + r.w) as f32 + 1.0).min(w as f32) as usize;
     let y1 = ((r.y + r.h) as f32 + 1.0).min(h as f32) as usize;
+    let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
     for y in y0..y1 {
-        for x in x0..x1 {
-            let d = sdf_round_rect(r, radius, x as f32 + 0.5, y as f32 + 0.5);
+        let ay = y as f32 + 0.5;
+        let row = y * w;
+        // 每行切成"两端圆角带 + 中间直填带"：中间部分不需要 SDF
+        let (ix0, ix1) = row_inner_span(r, radius, ay);
+        let a = (ix0.max(x0 as i32)).max(0) as usize;
+        let b = (ix1.min(x1 as i32)).max(0) as usize;
+        for x in a..b {
+            blend_pixel(buf, row + x, rgb, alpha);
+        }
+        for x in x0..a {
+            let d = sdf_round_rect(r, radius, x as f32 + 0.5, ay);
             let cov = (0.5 - d).clamp(0.0, 1.0);
             if cov > 0.0 {
-                blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                blend_pixel(buf, row + x, rgb, alpha * cov);
+            }
+        }
+        for x in b..x1 {
+            let d = sdf_round_rect(r, radius, x as f32 + 0.5, ay);
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_pixel(buf, row + x, rgb, alpha * cov);
             }
         }
     }
@@ -446,12 +553,29 @@ fn fill_clipped(buf: &mut [u32], w: usize, h: usize, area: Rect, shape: Rect, sh
     let y0 = area.y.max(0) as usize;
     let x1 = ((area.x + area.w) as usize).min(w);
     let y1 = ((area.y + area.h) as usize).min(h);
+    let radius = shape_radius.min(shape.w as f32 / 2.0).min(shape.h as f32 / 2.0);
     for y in y0..y1 {
-        for x in x0..x1 {
-            let d = sdf_round_rect(shape, shape_radius, x as f32 + 0.5, y as f32 + 0.5);
+        let ay = y as f32 + 0.5;
+        let row = y * w;
+        // 同 rounded_rect：只有两端圆角带需要逐像素判裁切
+        let (ix0, ix1) = row_inner_span(shape, radius, ay);
+        let a = (ix0.max(x0 as i32)).max(0) as usize;
+        let b = (ix1.min(x1 as i32)).max(0) as usize;
+        for x in a..b {
+            blend_pixel(buf, row + x, rgb, alpha);
+        }
+        for x in x0..a {
+            let d = sdf_round_rect(shape, radius, x as f32 + 0.5, ay);
             let cov = (0.5 - d).clamp(0.0, 1.0);
             if cov > 0.0 {
-                blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                blend_pixel(buf, row + x, rgb, alpha * cov);
+            }
+        }
+        for x in b..x1 {
+            let d = sdf_round_rect(shape, radius, x as f32 + 0.5, ay);
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_pixel(buf, row + x, rgb, alpha * cov);
             }
         }
     }
@@ -459,25 +583,64 @@ fn fill_clipped(buf: &mut [u32], w: usize, h: usize, area: Rect, shape: Rect, sh
 
 
 /// 抗锯齿圆角轮廓线（约 2px 描边带）。
+///
+/// 只扫描**可能命中描边带**的像素：上下边带整行扫，中间行只扫两端的圆角区。
+/// 原实现在整个包围盒上逐像素求 SDF，而真正落进 [-1.5, 0.5) 的不足 1% ——
+/// 一个 620x500 的窗口描边要白跑 31 万次距离计算。
 pub fn rounded_outline(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, rgb: [u8; 3], alpha: f32) {
     let x0 = (r.x - 2).max(0) as usize;
     let y0 = (r.y - 2).max(0) as usize;
     let x1 = ((r.x + r.w) as usize + 2).min(w);
     let y1 = ((r.y + r.h) as usize + 2).min(h);
+    let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
     let cx = r.x as f32 + r.w as f32 / 2.0;
     let cy = r.y as f32 + r.h as f32 / 2.0;
     let qx_half = r.w as f32 / 2.0 - radius;
     let qy_half = r.h as f32 / 2.0 - radius;
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let dx = (x as f32 + 0.5 - cx).abs() - qx_half;
-            let dy = (y as f32 + 0.5 - cy).abs() - qy_half;
-            let outside = dx.max(0.0).hypot(dy.max(0.0)) + (dx.max(dy)).min(0.0);
-            let d = outside - radius;
+    let top = r.y as f32;
+    let bot = (r.y + r.h) as f32;
+
+    macro_rules! scan {
+        ($x:expr, $y:expr) => {{
+            let dx = ($x as f32 + 0.5 - cx).abs() - qx_half;
+            let dy = ($y as f32 + 0.5 - cy).abs() - qy_half;
+            let ox = dx.max(0.0);
+            let oy = dy.max(0.0);
+            let outside = if ox > 0.0 && oy > 0.0 {
+                (ox * ox + oy * oy).sqrt()
+            } else {
+                ox + oy
+            };
+            let d = outside + dx.max(dy).min(0.0) - radius;
             // 只保留边框带 [-1.5, 0.5)
             if d < 0.5 && d > -1.5 {
                 let cov = (0.5 - d).clamp(0.0, 1.0);
-                blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                blend_pixel(buf, $y as usize * w + $x as usize, rgb, alpha * cov);
+            }
+        }};
+    }
+
+    for y in y0..y1 {
+        let ay = y as f32 + 0.5;
+        if ay - top < 3.0 || bot - ay < 3.0 {
+            // 上下边带：整行都可能命中
+            for x in x0..x1 {
+                scan!(x, y);
+            }
+        } else {
+            // 中间行：只有两端圆角带
+            let (ix0, ix1) = row_inner_span(r, radius, ay);
+            // 扫描边界必须比内部区间**更宽**：直填带只保证 d ≤ -0.5，
+            // 而描边带要 d > -1.5 —— 紧贴直填带外沿的像素仍在描边带内。
+            // 早先写成 ix0-2 / ix1+2（向内收），把这一圈描边整段漏掉，
+            // 表现为圆角内侧缺一小段线（实测 140 像素）。
+            let mid0 = ((ix0 + 2).max(x0 as i32).max(0)) as usize;
+            let mid1 = ((ix1 - 2).min(x1 as i32).max(0)) as usize;
+            for x in x0..mid0.min(x1) {
+                scan!(x, y);
+            }
+            for x in mid1.max(x0)..x1 {
+                scan!(x, y);
             }
         }
     }
@@ -489,25 +652,59 @@ pub fn gradient_outline(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f3
     let y0 = (r.y - 2).max(0) as usize;
     let x1 = ((r.x + r.w) as usize + 2).min(w);
     let y1 = ((r.y + r.h) as usize + 2).min(h);
+    let radius = radius.min(r.w as f32 / 2.0).min(r.h as f32 / 2.0);
     let cx = r.x as f32 + r.w as f32 / 2.0;
     let cy = r.y as f32 + r.h as f32 / 2.0;
     let qx_half = r.w as f32 / 2.0 - radius;
     let qy_half = r.h as f32 / 2.0 - radius;
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let dx = (x as f32 + 0.5 - cx).abs() - qx_half;
-            let dy = (y as f32 + 0.5 - cy).abs() - qy_half;
-            let outside = dx.max(0.0).hypot(dy.max(0.0)) + (dx.max(dy)).min(0.0);
-            let d = outside - radius;
+    let top = r.y as f32;
+    let bot = (r.y + r.h) as f32;
+    let span = r.w.max(1) as f32;
+
+    macro_rules! scan {
+        ($x:expr, $y:expr) => {{
+            let dx = ($x as f32 + 0.5 - cx).abs() - qx_half;
+            let dy = ($y as f32 + 0.5 - cy).abs() - qy_half;
+            let ox = dx.max(0.0);
+            let oy = dy.max(0.0);
+            let outside = if ox > 0.0 && oy > 0.0 {
+                (ox * ox + oy * oy).sqrt()
+            } else {
+                ox + oy
+            };
+            let d = outside + dx.max(dy).min(0.0) - radius;
             if d < 0.5 && d > -1.5 {
                 let cov = (0.5 - d).clamp(0.0, 1.0);
-                let t = ((x as f32 - r.x as f32) / r.w.max(1) as f32).clamp(0.0, 1.0);
+                let t = (($x as f32 - r.x as f32) / span).clamp(0.0, 1.0);
                 let rgb = [
                     lerp(left[0] as f32, right[0] as f32, t) as u8,
                     lerp(left[1] as f32, right[1] as f32, t) as u8,
                     lerp(left[2] as f32, right[2] as f32, t) as u8,
                 ];
-                blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                blend_pixel(buf, $y as usize * w + $x as usize, rgb, alpha * cov);
+            }
+        }};
+    }
+
+    for y in y0..y1 {
+        let ay = y as f32 + 0.5;
+        if ay - top < 3.0 || bot - ay < 3.0 {
+            for x in x0..x1 {
+                scan!(x, y);
+            }
+        } else {
+            let (ix0, ix1) = row_inner_span(r, radius, ay);
+            // 扫描边界必须比内部区间**更宽**：直填带只保证 d ≤ -0.5，
+            // 而描边带要 d > -1.5 —— 紧贴直填带外沿的像素仍在描边带内。
+            // 早先写成 ix0-2 / ix1+2（向内收），把这一圈描边整段漏掉，
+            // 表现为圆角内侧缺一小段线（实测 140 像素）。
+            let mid0 = ((ix0 + 2).max(x0 as i32).max(0)) as usize;
+            let mid1 = ((ix1 - 2).min(x1 as i32).max(0)) as usize;
+            for x in x0..mid0.min(x1) {
+                scan!(x, y);
+            }
+            for x in mid1.max(x0)..x1 {
+                scan!(x, y);
             }
         }
     }
@@ -525,7 +722,21 @@ pub fn shadow(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, strengt
             w: r.w + grow as i32 * 2,
             h: r.h + grow as i32 * 2,
         };
-        rounded_rect(buf, w, h, s, radius + grow, [0, 0, 0], strength * (1.0 - i as f32 / 5.0) * 0.80);
+        let a0 = strength * (1.0 - i as f32 / 5.0) * 0.80;
+        let rad = radius + grow;
+        let x0 = (s.x as f32 - 1.0).max(0.0) as usize;
+        let y0 = (s.y as f32 - 1.0).max(0.0) as usize;
+        let x1 = ((s.x + s.w) as f32 + 1.0).min(w as f32) as usize;
+        let y1 = ((s.y + s.h) as f32 + 1.0).min(h as f32) as usize;
+        for y in y0..y1 {
+            let row = y * w;
+            for x in x0..x1 {
+                let d = sdf_round_rect(s, rad, x as f32 + 0.5, y as f32 + 0.5);
+                // 完全在内部（d < -1）就是满强度，跳过 clamp
+                let a = if d < -1.0 { a0 } else { a0 * (0.5 - d).clamp(0.0, 1.0) };
+                darken_pixel(buf, row + x, a);
+            }
+        }
     }
 }
 
@@ -537,14 +748,39 @@ fn gradient_stops(buf: &mut [u32], w: usize, r: Rect, radius: f32, stops: &[(f32
     if r.w <= 0 || r.h <= 0 || stops.is_empty() {
         return;
     }
+    let clip_x0 = r.x.max(0) as usize;
+    let clip_x1 = ((r.x + r.w).max(0) as usize).min(w);
+    if clip_x1 <= clip_x0 {
+        return;
+    }
+    let rows = buf.len() / w.max(1);
     for y in 0..r.h {
+        let ay = r.y + y;
+        if ay < 0 || ay as usize >= rows {
+            continue;
+        }
         let t = (y as f32 + 0.5) / r.h as f32;
         let rgb = sample_stops(stops, t);
-        for x in 0..r.w {
-            let d = sdf_round_rect(r, radius, (r.x + x) as f32 + 0.5, (r.y + y) as f32 + 0.5);
+        let row = ay as usize * w;
+        // 每行切成"两端圆角带 + 中间直填带"：中间部分不做 SDF
+        let (ix0, ix1) = row_inner_span(r, radius, ay as f32 + 0.5);
+        let a = (ix0.max(clip_x0 as i32)).max(0) as usize;
+        let b = (ix1.min(clip_x1 as i32)).max(0) as usize;
+        for x in a..b {
+            blend_pixel(buf, row + x, rgb, alpha);
+        }
+        for x in clip_x0..a {
+            let d = sdf_round_rect(r, radius, x as f32 + 0.5, ay as f32 + 0.5);
             let cov = (0.5 - d).clamp(0.0, 1.0);
             if cov > 0.0 {
-                blend_pixel(buf, (r.y + y) as usize * w + (r.x + x) as usize, rgb, alpha * cov);
+                blend_pixel(buf, row + x, rgb, alpha * cov);
+            }
+        }
+        for x in b..clip_x1 {
+            let d = sdf_round_rect(r, radius, x as f32 + 0.5, ay as f32 + 0.5);
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov > 0.0 {
+                blend_pixel(buf, row + x, rgb, alpha * cov);
             }
         }
     }
@@ -661,6 +897,15 @@ impl ConfirmUi<'_> {
     pub fn badge_color(&self) -> [u8; 3] {
         if self.level >= 3 { color::danger() } else { color::warning() }
     }
+
+    /// 徽章**文字**色。
+    ///
+    /// 淡色底上必须用更高对比的变体：直接用 `badge_color()` 当文字色时，
+    /// 深色模式 L3 只有 2.6:1（亮红字压在亮红淡底上）——徽章存在的意义就是
+    /// "一眼看出等级"，读不清就白做了。
+    pub fn badge_text_color(&self) -> [u8; 3] {
+        if self.level >= 3 { color::danger_text() } else { color::warning_text() }
+    }
 }
 
 /// 每帧的 UI 瞬态（由 main.rs 组装）。
@@ -721,6 +966,14 @@ pub struct Renderer {
     frames_since_bg: u32,
     bg_w: usize,
     bg_h: usize,
+    /// 壁纸 + 全部窗口投影的合成层。
+    ///
+    /// 投影只取决于窗口几何与激活态，鼠标移动时完全不变；而它每帧要跑
+    /// 5 层 × 全窗口面积的 SDF，是 `draw_window` 的主要成本。把它烘焙进
+    /// 这一层后，稳态每帧只剩一次内存拷贝。
+    shadow_layer: Vec<u32>,
+    /// 烘焙层对应的窗口几何指纹（变了才重算）
+    shadow_key: u64,
     /// 菜单栏各菜单标签的命中区（每帧更新）
     pub menubar_menus: Vec<Rect>,
     /// 搜索胶囊命中区
@@ -746,6 +999,8 @@ impl Renderer {
             frames_since_bg: u32::MAX,
             bg_w: w,
             bg_h: h,
+            shadow_layer: Vec::new(),
+            shadow_key: 0,
             menubar_menus: Vec::new(),
             search_pill: Rect { x: 0, y: 0, w: 0, h: 0 },
             dock_icons: Vec::new(),
@@ -755,6 +1010,12 @@ impl Renderer {
             confirm_buttons: Vec::new(),
             confirm_echo: Rect { x: 0, y: 0, w: 0, h: 0 },
         }
+    }
+
+    /// 性能计时开关（`AETHER_RENDER_TIMING=1` 启用；环境变量只读一次）。
+    fn timing_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("AETHER_RENDER_TIMING").is_ok())
     }
 
     /// 渲染一帧。背景每 BG_REFRESH_FRAMES 帧才重算一次（柔光漂移是
@@ -769,7 +1030,28 @@ impl Renderer {
         ui: &UiState,
         tr: Option<&TextRenderer>,
     ) {
-        const BG_REFRESH_FRAMES: u32 = 240;
+        let timing = Self::timing_enabled();
+        // 计时关闭时 tmark 只写不读（宏体不展开），显式放行
+        #[allow(unused_assignments)]
+        let mut tmark = std::time::Instant::now();
+        macro_rules! mark {
+            ($name:literal) => {
+                if timing {
+                    eprintln!(
+                        "[render] {:<10} {:>7.2} ms",
+                        $name,
+                        tmark.elapsed().as_secs_f64() * 1000.0
+                    );
+                    tmark = std::time::Instant::now();
+                }
+            };
+        }
+
+        // 壁纸漂移是**分钟级**的变化，但生成一次要 ~0.4s（逐像素极光带 + 颗粒），
+        // 放在帧内就是一次肉眼可见的掉帧。240 帧在 10fps 下是 24 秒、在 30fps 下
+        // 只剩 8 秒 —— 帧率提上来之后必须把间隔一起提上去，否则"优化帧率"
+        // 反而让周期性卡顿变密。1800 帧 @30fps ≈ 60 秒。
+        const BG_REFRESH_FRAMES: u32 = 1800;
         if self.frames_since_bg > BG_REFRESH_FRAMES || self.bg_w != w || self.bg_h != h {
             if self.bg.len() != w * h {
                 self.bg = vec![0; w * h];
@@ -778,20 +1060,48 @@ impl Renderer {
             self.frames_since_bg = 0;
             self.bg_w = w;
             self.bg_h = h;
+            self.shadow_key = 0; // 壁纸变了，烘焙层必须重算
         }
+        mark!("bg_gen");
         self.frames_since_bg += 1;
-        buf.copy_from_slice(&self.bg);
+
+        // 投影烘焙：只取决于窗口几何与激活态，鼠标移动时完全不变。
+        // 未变化时这一层直接复用，稳态每帧只剩一次内存拷贝。
+        let skey = desktop_key(desktop);
+        if self.shadow_layer.len() != w * h || self.shadow_key != skey {
+            if self.shadow_layer.len() != w * h {
+                self.shadow_layer = vec![0; w * h];
+            }
+            self.shadow_layer.copy_from_slice(&self.bg);
+            for (i, win) in desktop.wins.iter().enumerate() {
+                let active = i == desktop.active;
+                shadow(
+                    &mut self.shadow_layer,
+                    w,
+                    h,
+                    win.rect,
+                    radius::LG,
+                    if active { elevation::elev_1() } else { elevation::elev_1_dim() },
+                );
+            }
+            self.shadow_key = skey;
+        }
+        buf.copy_from_slice(&self.shadow_layer);
+        mark!("bg_copy");
 
         if let Some(z) = ui.snap {
             rounded_rect(buf, w, h, z, radius::LG, color::accent(), 0.08);
             rounded_outline(buf, w, h, z, radius::LG, color::accent(), 0.5);
         }
+        mark!("snap");
 
         for (i, win) in desktop.wins.iter().enumerate() {
             draw_window(buf, w, h, win.rect, win.title, i == desktop.active, ui.mouse, t, tr);
         }
+        mark!("windows");
 
         self.draw_menubar(buf, w, h, ui, tr);
+        mark!("menubar");
         if ui.open_menu.is_some() {
             self.draw_dropdown(buf, w, h, ui, tr);
         }
@@ -799,14 +1109,17 @@ impl Renderer {
             draw_reply(buf, w, h, reply, kind, age, tr);
         }
         self.draw_ai_bar(buf, w, h, ui, t, tr);
+        mark!("ai");
 
         let open_titles: Vec<&str> = desktop.wins.iter().map(|x| x.title).collect();
         self.draw_dock(buf, w, h, &open_titles, ui, tr);
+        mark!("dock");
 
         // 安装向导浮在最上层（Toast 之下）
         if let Some(inst) = &ui.installer {
             self.draw_installer(buf, w, h, inst, ui.mouse, ui.mouse_down, tr);
         }
+        mark!("installer");
 
         // 权限确认是模态：盖在安装向导之上（安装向导的"开始安装"也会走它）
         match &ui.confirm {
@@ -816,10 +1129,14 @@ impl Renderer {
                 self.confirm_echo = Rect { x: 0, y: 0, w: 0, h: 0 };
             }
         }
+        mark!("confirm");
 
         if let Some((msg, age)) = ui.toast {
             draw_toast(buf, w, h, msg, age, tr);
         }
+        mark!("toast");
+        // 计时关闭时最后一次赋值不会被读到，显式消费以免 dead-code 警告
+        let _ = tmark;
     }
 }
 
@@ -1114,6 +1431,25 @@ impl Renderer {
 // 窗口：磨砂深灰 + 发丝描边 + 红绿灯（左）+ 居中标题
 // ---------------------------------------------------------------------------
 
+/// 窗口几何与激活态的指纹（FNV-1a，无依赖）：变了才重算投影烘焙层。
+fn desktop_key(d: &Desktop) -> u64 {
+    const FNV: u64 = 0x0000_0100_0000_01b3;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let push = |h: &mut u64, v: u64| {
+        *h ^= v;
+        *h = h.wrapping_mul(FNV);
+    };
+    push(&mut h, d.active as u64);
+    push(&mut h, d.wins.len() as u64);
+    for w in &d.wins {
+        push(&mut h, w.rect.x as u64);
+        push(&mut h, w.rect.y as u64);
+        push(&mut h, w.rect.w as u64);
+        push(&mut h, w.rect.h as u64);
+    }
+    h
+}
+
 fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>) {
     let body = color::surface_1();
     // 不透明度定得高：合成器没有模糊（backdrop-filter），窗口一旦半透明，
@@ -1129,7 +1465,8 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
         (1.0, mix(body, [0, 0, 0], 0.14)),
     ];
 
-    shadow(buf, w, h, r, radius::LG, if active { elevation::elev_1() } else { elevation::elev_1_dim() });
+    // 投影不在这里画：render_frame 已把它烘焙进背景层（窗口几何不变时复用），
+    // 这里只负责窗口主体本身
     gradient_stops(buf, w, r, radius::LG, &stops, body_alpha);
 
     // 顶部内高光（玻璃厚度）
@@ -1651,11 +1988,9 @@ fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, kind: BubbleKind,
             rounded_rect(buf, w, h, Rect { x: r.x + 10, y: r.y + 9, w: 4, h: r.h - 18 }, 2.0, bar_rgb, alpha * 0.95);
         }
     }
-    // 左截断显示
-    let mut shown: String = text.to_string();
-    while tr.measure(&shown, font::BODY) > max_w && shown.chars().count() > 1 {
-        shown.remove(0);
-    }
+    // 保留开头 + 省略号：消息的关键信息在句首，从左删字符等于把内容读反了
+    // ——用户会看到结尾、看不到"要干什么"，而且没有任何"被截断"的提示（P3-23）
+    let shown = ellipsize(tr, text, font::BODY, max_w);
     let tx = match kind {
         BubbleKind::User => tr.measure(&shown, font::BODY) + pad,
         BubbleKind::Tool => tr.measure(&shown, font::BODY) + pad + 6.0,
@@ -1690,7 +2025,17 @@ impl Renderer {
         let tray_h = metric::DOCK_ICON + 2 * metric::DOCK_PAD;
         let tray = Rect { x: w as i32 / 2 - tray_w / 2, y: h as i32 - metric::BOTTOM_DOCK, w: tray_w, h: tray_h };
         shadow(buf, w, h, tray, radius::MD, elevation::elev_2());
-        rounded_rect(buf, w, h, tray, 20.0, color::glass(), 0.68);
+        // 走 glass_alpha()：明亮模式必须够白（0.68 会让粉彩壁纸透上来发脏，
+        // 与文档声称的"悬浮层 0.95"也不符），深色模式则是比窗口更暗的底座（P3-27）
+        rounded_rect(
+            buf,
+            w,
+            h,
+            tray,
+            20.0,
+            color::glass(),
+            color::glass_alpha(tray.contains(ui.mouse.0, ui.mouse.1)),
+        );
         rounded_outline(buf, w, h, tray, 20.0, color::hairline(), 0.14);
         // 托盘顶部内高光（玻璃厚度）
         fill_rect(buf, w, h, Rect { x: tray.x + 16, y: tray.y + 1, w: tray.w - 32, h: 1 }, color::HIGHLIGHT, 0.10);
@@ -1963,9 +2308,15 @@ impl Renderer {
             .arguments
             .iter()
             .map(|(k, v)| {
+                // 头尾都留：只留头部时，"良性前缀 + 第 25 字符起的恶意值"会完整
+                // 躲过用户的视线。截断处用省略号明确标出"这里被砍过"（P2-18）。
                 let shown = if v.chars().count() > 34 {
-                    let head: String = v.chars().take(24).collect();
-                    format!("{head}...")
+                    let head: String = v.chars().take(20).collect();
+                    let tail: String = {
+                        let rev: Vec<char> = v.chars().rev().take(10).collect();
+                        rev.into_iter().rev().collect()
+                    };
+                    format!("{head}…{tail}")
                 } else {
                     v.clone()
                 };
@@ -1991,12 +2342,14 @@ impl Renderer {
 
         // 标题行：等级徽章（L2 黄 / L3 红）+ 操作名
         let badge_rgb = c.badge_color();
+        let badge_text_rgb = c.badge_text_color();
         let badge_text = format!("L{} {}", c.level, if c.level >= 3 { "危险" } else { "敏感写" });
         let bw = tr.measure_bold(&badge_text, font::LABEL) + 18.0;
         let badge = Rect { x: win.x + 20, y: win.y + 20, w: bw as i32, h: 22 };
-        rounded_rect(buf, w, h, badge, radius::SM - 2.0, badge_rgb, 0.22);
+        // 底色压到 0.12：再浓就会把文字对比度拖到 AA 以下（P2-20 同类）
+        rounded_rect(buf, w, h, badge, radius::SM - 2.0, badge_rgb, 0.12);
         rounded_outline(buf, w, h, badge, radius::SM - 2.0, badge_rgb, 0.7);
-        draw_text(tr, buf, w, h, (badge.x + 9) as f32, tr.vcenter(badge.y as f32, badge.h as f32, font::LABEL), &badge_text, font::LABEL, badge_rgb, 1.0);
+        draw_text(tr, buf, w, h, (badge.x + 9) as f32, tr.vcenter(badge.y as f32, badge.h as f32, font::LABEL), &badge_text, font::LABEL, badge_text_rgb, 1.0);
         tr.draw_bold(
             buf, w, h,
             (badge.x + badge.w + 12) as f32,
@@ -2024,11 +2377,11 @@ impl Renderer {
             let half = row / 2;
             fill_rect(buf, w, h, Rect { x: cx - half, y: cy - 8 + row, w: half * 2 + 1, h: 1 }, badge_rgb, 0.95);
         }
-        let mut shown: String = c.consequence.to_string();
-        while tr.measure(&shown, font::CAPTION) > (win.w - 64) as f32 && shown.chars().count() > 6 {
-            shown.pop();
-        }
-        draw_text(tr, buf, w, h, (win.x + 42) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), &shown, font::CAPTION, badge_rgb, 0.95);
+        // 保留开头 + 省略号：后果说明的关键信息在句首（"整盘覆盖写入…不可恢复"），
+        // 从尾部静默截断会把最要紧的半句吃掉（P3-23）。
+        // 文字用主文字色：彩色文字在淡底上达不到 AA；警示语义由左侧三角与徽章承担。
+        let shown = ellipsize(tr, c.consequence, font::CAPTION, (win.w - 64) as f32);
+        draw_text(tr, buf, w, h, (win.x + 42) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), &shown, font::CAPTION, color::text(), 0.95);
         y += 34;
 
         // L3 回显确认：必须原样输入目标，防"手滑点确认"
@@ -2063,17 +2416,23 @@ impl Renderer {
         let deny = Rect { x: win.x + win.w - 20 - bw2 * 2 - 12, y: by, w: bw2, h: bh };
         let allow = Rect { x: win.x + win.w - 20 - bw2, y: by, w: bw2, h: bh };
 
+        // 拒绝按钮：透明底 + 高对比红字。悬停只加轻填充（0.14 的填充会把
+        // 文字对比度压到 4.1:1 以下），按下才给更明显的反馈。
         let deny_hover = deny.contains(mouse.0, mouse.1);
-        let deny_fill = if deny_hover && mouse_down { 0.22 } else if deny_hover { 0.14 } else { 0.06 };
-        rounded_rect(buf, w, h, deny, radius::SM, color::danger(), deny_fill);
+        let deny_fill = if deny_hover && mouse_down { 0.14 } else { 0.0 };
+        if deny_fill > 0.0 {
+            rounded_rect(buf, w, h, deny, radius::SM, color::danger(), deny_fill);
+        }
         rounded_outline(buf, w, h, deny, radius::SM, color::danger(), if deny_hover { 0.85 } else { 0.6 });
         let dw = tr.measure_bold("拒绝", font::BODY);
-        tr.draw_bold(buf, w, h, (deny.x + deny.w / 2) as f32 - dw / 2.0, tr.vcenter(deny.y as f32, deny.h as f32, font::BODY), "拒绝", font::BODY, color::danger(), 0.98);
+        tr.draw_bold(buf, w, h, (deny.x + deny.w / 2) as f32 - dw / 2.0, tr.vcenter(deny.y as f32, deny.h as f32, font::BODY), "拒绝", font::BODY, color::danger_text(), 0.98);
 
         let ready = c.echo_ok();
         let allow_hover = ready && allow.contains(mouse.0, mouse.1);
         if ready {
-            rounded_rect(buf, w, h, allow, radius::SM, color::accent(), 0.95);
+            // 底色用 accent_strong：直接拿 accent 做底、text 做字实测只有
+            // 深色 2.07:1 / 明亮 4.11:1，用户在最需要看清的"放行"按钮上读不清字
+            rounded_rect(buf, w, h, allow, radius::SM, color::accent_strong(), 0.95);
             if allow_hover {
                 rounded_rect(buf, w, h, allow, radius::SM, color::hairline(), state::hover());
                 if mouse_down {
@@ -2083,7 +2442,8 @@ impl Renderer {
         } else {
             rounded_rect(buf, w, h, allow, radius::SM, color::surface_3(), 0.9);
         }
-        let (lrgb, la) = if ready { (color::text(), 0.98) } else { (color::text_faint(), state::DISABLED) };
+        // 实心底上用纯白：这是"放行"按钮，必须一眼读清
+        let (lrgb, la) = if ready { (color::HIGHLIGHT, 0.98) } else { (color::text_faint(), state::DISABLED) };
         let lw = tr.measure_bold("允许一次", font::BODY);
         tr.draw_bold(buf, w, h, (allow.x + allow.w / 2) as f32 - lw / 2.0, tr.vcenter(allow.y as f32, allow.h as f32, font::BODY), "允许一次", font::BODY, lrgb, la);
 
@@ -2120,6 +2480,7 @@ fn draw_toast(buf: &mut [u32], w: usize, h: usize, msg: &str, age: f32, tr: Opti
 // BMP 导出（自检/截图模式）
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 pub fn write_bmp(path: &str, buf: &[u32], w: usize, h: usize) -> anyhow::Result<()> {
     use anyhow::Context;
     let row_pad = (4 - (w * 3) % 4) % 4;
@@ -2153,4 +2514,321 @@ pub fn write_bmp(path: &str, buf: &[u32], w: usize, h: usize) -> anyhow::Result<
     }
     std::fs::write(path, out).with_context(|| format!("write {path}"))?;
     Ok(())
+}
+
+/// 找出两帧之间不同的行范围 `[y0, y1)`；全等返回 `None`。
+///
+/// 上屏（`fbdev::blit_dirty`）用它把"整屏 4MB 写入"降成"只写变化的行"。
+/// 放在这里而不是 `fbdev.rs`：后者只在 Linux 编译，测试在开发机上跑不到，
+/// 而"哪些行变了"恰恰是最容易写错、又最该被覆盖的一步。
+///
+/// `w` 是帧缓冲的行宽，`fw`/`fh` 是实际有效区域（行距可能大于行宽）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn dirty_rows(prev: &[u32], cur: &[u32], w: usize, fw: usize, fh: usize) -> Option<(usize, usize)> {
+    let mut y0 = usize::MAX;
+    let mut y1 = 0usize;
+    for y in 0..fh {
+        if cur[y * w..y * w + fw] != prev[y * fw..(y + 1) * fw] {
+            if y0 == usize::MAX {
+                y0 = y;
+            }
+            y1 = y + 1;
+        }
+    }
+    if y0 >= y1 {
+        None
+    } else {
+        Some((y0, y1))
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    fn r() -> Rect {
+        Rect { x: 10, y: 20, w: 100, h: 40 }
+    }
+
+    /// 形状之外的行必须返回空区间 —— 否则调用方会把整行当成"直填带"刷上颜色。
+    /// 这是实际踩过的坑：AI 指令条（胶囊形）底边多出一整行 512 像素。
+    #[test]
+    fn row_span_is_empty_outside_shape() {
+        for y in [19.5f32, 19.0, 60.5, 61.0] {
+            let (a, b) = row_inner_span(r(), 12.0, y);
+            assert!(a >= b, "y={y} 在形状外，应返回空区间，实得 ({a},{b})");
+        }
+    }
+
+    #[test]
+    fn row_span_covers_full_width_in_middle() {
+        // 垂直居中处远离圆角，应覆盖整个宽度
+        assert_eq!(row_inner_span(r(), 12.0, 40.0), (10, 110));
+    }
+
+    #[test]
+    fn row_span_shrinks_near_rounded_corner() {
+        let (a0, b0) = row_inner_span(r(), 12.0, 20.5); // 顶端行
+        let (a1, b1) = row_inner_span(r(), 12.0, 40.0); // 中间行
+        assert!(a0 > a1 && b0 < b1, "顶端行的内部区间必须比中间行窄");
+    }
+
+    #[test]
+    fn row_span_handles_radius_larger_than_half_height() {
+        // 胶囊形（radius == h/2）：中间行仍应覆盖整个宽度
+        let rr = Rect { x: 0, y: 0, w: 200, h: 52 };
+        assert_eq!(row_inner_span(rr, 26.0, 26.0), (0, 200));
+        // 顶端行必须内缩
+        let (a, b) = row_inner_span(rr, 26.0, 0.5);
+        assert!(a > 0 && b < 200, "顶端行应内缩，实得 ({a},{b})");
+    }
+
+    /// 关键正确性约束：直填带内的每个像素，逐像素 SDF 算出的覆盖率必须真的是 1。
+    ///
+    /// 直填带用 `blend_pixel(alpha)` 而不再乘覆盖率 —— 一旦 `i` 取得不够保守，
+    /// 边缘像素会被当成"满覆盖"，表现就是圆角边缘变实、和逐像素版本对不上。
+    #[test]
+    fn inner_span_only_covers_fully_opaque_pixels() {
+        let shapes = [
+            (Rect { x: 10, y: 20, w: 100, h: 40 }, 12.0f32),
+            (Rect { x: 0, y: 0, w: 200, h: 52 }, 26.0),
+            (Rect { x: 5, y: 5, w: 46, h: 46 }, 12.0),
+            (Rect { x: 3, y: 7, w: 150, h: 42 }, 8.0),
+        ];
+        for (r, radius) in shapes {
+            for yi in 0..r.h {
+                let ay = (r.y + yi) as f32 + 0.5;
+                let (a, b) = row_inner_span(r, radius, ay);
+                for x in a..b {
+                    let d = sdf_round_rect(r, radius, x as f32 + 0.5, ay);
+                    let cov = (0.5 - d).clamp(0.0, 1.0);
+                    assert!(
+                        cov >= 0.999,
+                        "矩形 {r:?} r={radius} 行 {yi} 像素 {x} 落在直填带内，但覆盖率只有 {cov}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod render_equiv_tests {
+    use super::*;
+
+    /// 逐像素参考实现：优化前的朴素写法，用于等价性比对。
+    fn ref_rounded_rect(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, rgb: [u8; 3], alpha: f32) {
+        let x0 = (r.x as f32 - 1.0).max(0.0) as usize;
+        let y0 = (r.y as f32 - 1.0).max(0.0) as usize;
+        let x1 = ((r.x + r.w) as f32 + 1.0).min(w as f32) as usize;
+        let y1 = ((r.y + r.h) as f32 + 1.0).min(h as f32) as usize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = sdf_round_rect(r, radius, x as f32 + 0.5, y as f32 + 0.5);
+                let cov = (0.5 - d).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                }
+            }
+        }
+    }
+
+    /// 逐像素参考实现（描边）。
+    fn ref_rounded_outline(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, rgb: [u8; 3], alpha: f32) {
+        let x0 = (r.x - 2).max(0) as usize;
+        let y0 = (r.y - 2).max(0) as usize;
+        let x1 = ((r.x + r.w) as usize + 2).min(w);
+        let y1 = ((r.y + r.h) as usize + 2).min(h);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = sdf_round_rect(r, radius, x as f32 + 0.5, y as f32 + 0.5);
+                if d < 0.5 && d > -1.5 {
+                    let cov = (0.5 - d).clamp(0.0, 1.0);
+                    blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                }
+            }
+        }
+    }
+
+    fn shapes() -> Vec<(Rect, f32)> {
+        vec![
+            (Rect { x: 20, y: 15, w: 100, h: 60 }, 12.0),
+            (Rect { x: 0, y: 0, w: 200, h: 52 }, 26.0), // 胶囊
+            (Rect { x: 5, y: 5, w: 46, h: 46 }, 12.0),  // Dock 图标
+            (Rect { x: 3, y: 7, w: 150, h: 42 }, 8.0),  // 按钮
+            (Rect { x: 40, y: 30, w: 20, h: 20 }, 3.0), // 小圆点
+        ]
+    }
+
+    #[test]
+    fn rounded_rect_fast_path_matches_reference() {
+        let (w, h) = (240usize, 140);
+        for (r, radius) in shapes() {
+            let mut fast = vec![0u32; w * h];
+            let mut reference = vec![0u32; w * h];
+            rounded_rect(&mut fast, w, h, r, radius, [255, 255, 255], 0.7);
+            ref_rounded_rect(&mut reference, w, h, r, radius, [255, 255, 255], 0.7);
+            let diff = fast.iter().zip(&reference).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "rounded_rect {r:?} r={radius}：{diff} 个像素与逐像素参考不一致");
+        }
+    }
+
+    #[test]
+    fn rounded_outline_band_scan_matches_reference() {
+        let (w, h) = (240usize, 140);
+        for (r, radius) in shapes() {
+            let mut fast = vec![0u32; w * h];
+            let mut reference = vec![0u32; w * h];
+            rounded_outline(&mut fast, w, h, r, radius, [0, 0, 0], 0.6);
+            ref_rounded_outline(&mut reference, w, h, r, radius, [0, 0, 0], 0.6);
+            let diff = fast.iter().zip(&reference).filter(|(a, b)| a != b).count();
+            assert_eq!(diff, 0, "rounded_outline {r:?} r={radius}：{diff} 个像素与逐像素参考不一致");
+        }
+    }
+
+    /// 逐像素参考实现（裁切填充）。
+    fn ref_fill_clipped(
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        area: Rect,
+        shape: Rect,
+        shape_radius: f32,
+        rgb: [u8; 3],
+        alpha: f32,
+    ) {
+        let x0 = area.x.max(0) as usize;
+        let y0 = area.y.max(0) as usize;
+        let x1 = ((area.x + area.w) as usize).min(w);
+        let y1 = ((area.y + area.h) as usize).min(h);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = sdf_round_rect(shape, shape_radius, x as f32 + 0.5, y as f32 + 0.5);
+                let cov = (0.5 - d).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fill_clipped_fast_path_matches_reference() {
+        let (w, h) = (240usize, 140);
+        let cases = [
+            // (area, shape, radius)：内容区贴合窗口圆角
+            (Rect { x: 0, y: 0, w: 60, h: 60 }, Rect { x: 0, y: 0, w: 200, h: 120 }, 16.0),
+            (Rect { x: 10, y: 20, w: 180, h: 90 }, Rect { x: 10, y: 20, w: 180, h: 90 }, 16.0),
+            (Rect { x: 5, y: 5, w: 50, h: 50 }, Rect { x: 5, y: 5, w: 100, h: 100 }, 30.0),
+            (Rect { x: 30, y: 10, w: 100, h: 40 }, Rect { x: 0, y: 0, w: 240, h: 140 }, 26.0),
+        ];
+        for (area, shape, radius) in cases {
+            let mut fast = vec![0u32; w * h];
+            let mut reference = vec![0u32; w * h];
+            fill_clipped(&mut fast, w, h, area, shape, radius, [200, 100, 50], 0.8);
+            ref_fill_clipped(&mut reference, w, h, area, shape, radius, [200, 100, 50], 0.8);
+            let diff = fast.iter().zip(&reference).filter(|(a, b)| a != b).count();
+            assert_eq!(
+                diff, 0,
+                "fill_clipped area={area:?} shape={shape:?} r={radius}：{diff} 像素与参考不一致"
+            );
+        }
+    }
+
+    /// 逐像素参考实现（渐变描边）。
+    fn ref_gradient_outline(
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        r: Rect,
+        radius: f32,
+        left: [u8; 3],
+        right: [u8; 3],
+        alpha: f32,
+    ) {
+        let x0 = (r.x - 2).max(0) as usize;
+        let y0 = (r.y - 2).max(0) as usize;
+        let x1 = ((r.x + r.w) as usize + 2).min(w);
+        let y1 = ((r.y + r.h) as usize + 2).min(h);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = sdf_round_rect(r, radius, x as f32 + 0.5, y as f32 + 0.5);
+                if d < 0.5 && d > -1.5 {
+                    let cov = (0.5 - d).clamp(0.0, 1.0);
+                    let t = ((x as f32 - r.x as f32) / r.w.max(1) as f32).clamp(0.0, 1.0);
+                    let rgb = [
+                        lerp(left[0] as f32, right[0] as f32, t) as u8,
+                        lerp(left[1] as f32, right[1] as f32, t) as u8,
+                        lerp(left[2] as f32, right[2] as f32, t) as u8,
+                    ];
+                    blend_pixel(buf, y * w + x, rgb, alpha * cov);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gradient_outline_band_scan_matches_reference() {
+        let (w, h) = (240usize, 140);
+        for (r, radius) in shapes() {
+            let mut fast = vec![0u32; w * h];
+            let mut reference = vec![0u32; w * h];
+            gradient_outline(&mut fast, w, h, r, radius, [10, 200, 210], [140, 120, 230], 0.9);
+            ref_gradient_outline(&mut reference, w, h, r, radius, [10, 200, 210], [140, 120, 230], 0.9);
+            let diff = fast.iter().zip(&reference).filter(|(a, b)| a != b).count();
+            if diff > 0 {
+                let mut shown = 0;
+                for (i, (a, b)) in fast.iter().zip(&reference).enumerate() {
+                    if a != b && shown < 8 {
+                        eprintln!("    差异 ({},{}) fast={:08x} ref={:08x}", i % w, i / w, a, b);
+                        shown += 1;
+                    }
+                }
+            }
+            assert_eq!(diff, 0, "gradient_outline {r:?} r={radius}：{diff} 像素与参考不一致");
+        }
+    }
+}
+
+#[cfg(test)]
+mod blit_tests {
+    use super::dirty_rows;
+
+    #[test]
+    fn dirty_rows_detects_single_changed_row() {
+        let (w, fw, fh) = (4usize, 4usize, 3usize);
+        let prev = vec![0u32; w * fh];
+        let mut cur = prev.clone();
+        cur[w..2 * w].fill(7); // 只有第 1 行变化
+        assert_eq!(dirty_rows(&prev, &cur, w, fw, fh), Some((1, 2)));
+    }
+
+    #[test]
+    fn dirty_rows_returns_none_when_identical() {
+        let (w, fw, fh) = (4usize, 4usize, 3usize);
+        let prev = vec![1u32; w * fh];
+        assert_eq!(dirty_rows(&prev, &prev, w, fw, fh), None);
+    }
+
+    #[test]
+    fn dirty_rows_spans_first_to_last_change() {
+        let (w, fw, fh) = (4usize, 4usize, 4usize);
+        let prev = vec![0u32; w * fh];
+        let mut cur = prev.clone();
+        cur[0] = 9; // 第 0 行
+        cur[3 * w + 2] = 9; // 第 3 行
+        assert_eq!(dirty_rows(&prev, &cur, w, fw, fh), Some((0, 4)));
+    }
+
+    #[test]
+    fn dirty_rows_ignores_padding_beyond_valid_width() {
+        // fw < w（行距大于行宽）：padding 区不参与比较
+        let (w, fw, fh) = (6usize, 4usize, 2usize);
+        let prev = vec![0u32; w * fh];
+        let mut cur = prev.clone();
+        cur[4] = 5; // 第 0 行有效宽度之外
+        assert_eq!(dirty_rows(&prev, &cur, w, fw, fh), None);
+        cur[1] = 5; // 有效宽度之内
+        assert_eq!(dirty_rows(&prev, &cur, w, fw, fh), Some((0, 1)));
+    }
 }

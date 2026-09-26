@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-#[allow(dead_code)] // L1/L3/Denied 为完整权限模型的一部分，随 M4 二阶段工具接入
 pub enum Level {
     /// 只读：查状态、读文件
     L0 = 0,
@@ -40,18 +39,32 @@ pub struct Gate {
     audit_path: PathBuf,
     /// 测试/无人值守模式下，允许的最高自动通过等级
     pub auto_approve_below: Level,
+    /// 被用户**明确拒绝**过的操作指纹 → 拒绝时刻。
+    ///
+    /// 存在意义：让"用户拒绝了"成为服务端的一个持久事实。在此之前，
+    /// 合成器的"拒绝"只是本地 UI 状态（不发 IPC），服务端既不撤销令牌，
+    /// 也不知道发生过拒绝，`Verdict::Denied` 因此永远不可达。
+    denied: Mutex<HashMap<String, Instant>>,
 }
+
+/// 用户拒绝后，同一操作在此时长内不再重复询问（直接 Denied）。
+const DENY_TTL: Duration = Duration::from_secs(300);
 
 /// 闸门裁决结果。
 #[derive(Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Verdict {
     /// 直接执行
     Allowed,
     /// 需要用户确认（UI 弹卡片；确认后带 approval token 重试）
     NeedsConfirmation,
-    /// 拒绝执行
+    /// 拒绝执行（用户已明确拒绝过同一操作）
     Denied(String),
+}
+
+/// (tool, arguments) 的规范化指纹。`serde_json::Value::Object` 是 BTreeMap，
+/// 键序稳定，因此同样的参数总是得到同样的指纹。
+fn deny_key(tool: &str, args: &serde_json::Value) -> String {
+    format!("{tool}\u{1}{args}")
 }
 
 impl Gate {
@@ -60,17 +73,48 @@ impl Gate {
         if let Some(parent) = audit_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        Self { audit_path, auto_approve_below: Level::L2 }
+        Self {
+            audit_path,
+            auto_approve_below: Level::L2,
+            denied: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 测试专用：不落盘审计日志。
     #[cfg(test)]
     pub fn for_test() -> Self {
-        Self { audit_path: PathBuf::from(""), auto_approve_below: Level::L2 }
+        Self {
+            audit_path: PathBuf::from(""),
+            auto_approve_below: Level::L2,
+            denied: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 记下"用户拒绝了这个操作"，并清理过期项。
+    pub fn mark_denied(&self, tool: &str, args: &serde_json::Value) {
+        let mut map = self.denied.lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, t| t.elapsed() < DENY_TTL);
+        map.insert(deny_key(tool, args), Instant::now());
+    }
+
+    /// 该操作是否处于"已被用户拒绝"的冷却期内。
+    pub fn is_denied(&self, tool: &str, args: &serde_json::Value) -> bool {
+        let mut map = self.denied.lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, t| t.elapsed() < DENY_TTL);
+        map.contains_key(&deny_key(tool, args))
     }
 
     /// 裁决一次工具调用。
-    pub fn judge(&self, level: Level, approved: bool) -> Verdict {
+    ///
+    /// 顺序要紧：**先看"用户是否已经拒绝过"**，再走等级闸门。否则被拒绝的
+    /// 操作会立刻重新弹卡片，用户永远摆脱不掉同一个请求。
+    pub fn judge(&self, tool: &str, level: Level, args: &serde_json::Value, approved: bool) -> Verdict {
+        if !approved && self.is_denied(tool, args) {
+            return Verdict::Denied(format!(
+                "该操作已被用户拒绝（{tool}），{} 秒内不再重复询问",
+                DENY_TTL.as_secs()
+            ));
+        }
         if level >= self.auto_approve_below && !approved {
             return Verdict::NeedsConfirmation;
         }
@@ -144,10 +188,19 @@ impl Approvals {
         }
         Ok(())
     }
+
+    /// 撤销令牌（用户点了"拒绝"）。
+    ///
+    /// 返回被撤销的 (tool, arguments)：上层据此落一条 `denied_by_user` 审计，
+    /// 并把该操作记入 Gate 的拒绝冷却。令牌不存在时返回 None（重复拒绝/已过期）。
+    pub fn revoke(&self, token: &str) -> Option<(String, serde_json::Value)> {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(token).map(|p| (p.tool, p.args))
+    }
 }
 
 /// 128 位随机令牌（标准库随机哈希种子，无额外依赖）。
-fn random_token() -> String {
+pub(crate) fn random_token() -> String {
     use std::hash::{BuildHasher, Hasher};
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -166,27 +219,53 @@ mod tests {
     use super::*;
 
     fn gate() -> Gate {
-        Gate { audit_path: PathBuf::from(""), auto_approve_below: Level::L2 }
+        Gate::for_test()
+    }
+
+    fn args() -> serde_json::Value {
+        serde_json::json!({"disk": "/dev/vda"})
     }
 
     #[test]
     fn read_ops_pass_through() {
         let g = gate();
-        assert_eq!(g.judge(Level::L0, false), Verdict::Allowed);
-        assert_eq!(g.judge(Level::L1, false), Verdict::Allowed);
+        assert_eq!(g.judge("read_file", Level::L0, &args(), false), Verdict::Allowed);
+        assert_eq!(g.judge("desktop", Level::L1, &args(), false), Verdict::Allowed);
     }
 
     #[test]
     fn sensitive_ops_need_confirmation() {
         let g = gate();
-        assert_eq!(g.judge(Level::L2, false), Verdict::NeedsConfirmation);
-        assert_eq!(g.judge(Level::L3, false), Verdict::NeedsConfirmation);
-        assert_eq!(g.judge(Level::L2, true), Verdict::Allowed);
+        assert_eq!(g.judge("install_disk", Level::L2, &args(), false), Verdict::NeedsConfirmation);
+        assert_eq!(g.judge("install_disk", Level::L3, &args(), false), Verdict::NeedsConfirmation);
+        assert_eq!(g.judge("install_disk", Level::L2, &args(), true), Verdict::Allowed);
     }
 
     #[test]
     fn order_is_total() {
         assert!(Level::L0 < Level::L1 && Level::L1 < Level::L2 && Level::L2 < Level::L3);
+    }
+
+    /// P1-9：`Verdict::Denied` 必须可达 —— 用户拒绝过同一操作后，
+    /// 该操作在冷却期内直接 Denied，而不是再次弹卡片。
+    #[test]
+    fn user_denial_makes_denied_reachable() {
+        let g = gate();
+        let a = args();
+        // 拒绝前：L3 走确认流程
+        assert_eq!(g.judge("install_disk", Level::L3, &a, false), Verdict::NeedsConfirmation);
+        // 用户拒绝
+        g.mark_denied("install_disk", &a);
+        // 拒绝后：同工具同参数 → Denied（带原因）
+        match g.judge("install_disk", Level::L3, &a, false) {
+            Verdict::Denied(reason) => assert!(reason.contains("已被用户拒绝"), "实得 {reason}"),
+            other => panic!("应被拒绝，实得 {other:?}"),
+        }
+        // 换参数不受影响（只拒绝被拒过的那一个操作）
+        let other = serde_json::json!({"disk": "/dev/sdb"});
+        assert_eq!(g.judge("install_disk", Level::L3, &other, false), Verdict::NeedsConfirmation);
+        // 已获令牌的放行不受冷却影响（approved 优先）
+        assert_eq!(g.judge("install_disk", Level::L3, &a, true), Verdict::Allowed);
     }
 
     #[test]
@@ -221,5 +300,20 @@ mod tests {
         let a = Approvals::new();
         let args = serde_json::json!({});
         assert_ne!(a.issue("t", &args), a.issue("t", &args));
+    }
+
+    /// P1-9：撤销后令牌立即失效，且 revoke 回传被拒操作的完整身份（供审计）。
+    #[test]
+    fn revoke_invalidates_token_and_reports_identity() {
+        let a = Approvals::new();
+        let args = serde_json::json!({"disk": "/dev/vda"});
+        let tok = a.issue("install_disk", &args);
+        let (tool, got_args) = a.revoke(&tok).expect("撤销应返回被拒操作");
+        assert_eq!(tool, "install_disk");
+        assert_eq!(got_args, args);
+        // 撤销后不可兑现（不能"拒绝完又放行"）
+        assert!(a.redeem(&tok, "install_disk", &args).is_err());
+        // 重复撤销：返回 None，不 panic
+        assert!(a.revoke(&tok).is_none());
     }
 }

@@ -26,8 +26,32 @@ pub enum Request {
         /// UI 在用户点"允许一次"后原样带回。缺省（默认）表示未经确认——
         /// L2+ 工具会被权限闸门拦下。令牌只发给 IPC 客户端，不进 LLM 上下文，
         /// 因此 AI 无法自我授权。
+        ///
+        /// **只有已注册的 UI 通道**（见 `Request::RegisterUi`）才能兑现令牌；
+        /// 未注册连接带令牌一律 403。这是"令牌绑定确认方"的落地点：令牌本身
+        /// 不再等价于放行权，必须同时来自可信的确认通道。
         #[serde(default)]
         approval: Option<String>,
+    },
+    /// 注册为 UI（交互式确认）通道。
+    ///
+    /// 确认令牌的兑现权与"已注册"绑定：aetherd 在启动时确定一个 UI 密钥
+    /// （`AETHER_UI_KEY` 环境变量优先，否则生成随机值并写入
+    /// `<审计目录>/ui.key`，Unix 下 chmod 0600）。合成器读取同一来源并注册。
+    ///
+    /// 这挡不住"能读到密钥的本机进程"，但它把攻击面从"任何能连 7311 的进程"
+    /// 收窄到"能读到 0600 密钥文件的进程"，并且让"确认方"成为服务端可断言的事实。
+    RegisterUi {
+        /// UI 密钥。
+        key: String,
+    },
+    /// 用户在确认卡片上点了"拒绝"：撤销令牌并留痕。
+    ///
+    /// 没有这条消息时，"拒绝"只存在于合成器的本地状态里，服务端的令牌会
+    /// 继续存活到 TTL 到期，审计日志也无法区分"用户拒绝"与"从未回答"。
+    ConfirmCancel {
+        /// 被拒绝的确认令牌（原样回传）。
+        token: String,
     },
     /// 查询系统状态（CPU/内存/磁盘/服务列表等）。
     SysInfo {
@@ -86,6 +110,13 @@ pub enum Response {
         /// L3 需回显确认的**目标值**（如 "/dev/vda"）；None = 只需点确认
         echo_required: Option<String>,
         /// 一次性确认令牌（5 分钟内有效，用后即废）
+        token: String,
+    },
+    /// UI 通道注册成功：此后本连接可以兑现确认令牌。
+    UiRegistered,
+    /// 用户拒绝确认的回执（令牌已撤销，审计已落 `denied_by_user`）。
+    ConfirmCancelled {
+        /// 被撤销的令牌
         token: String,
     },
     Error {
@@ -210,6 +241,44 @@ mod tests {
         match r {
             Response::ChatChunk { channel, .. } => assert_eq!(channel, None),
             other => panic!("应为 ChatChunk，实得 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ui_registration_and_cancel_roundtrip() {
+        // 令牌绑定确认方（P1-8）与拒绝通路（P1-9）的协议面
+        let r = Request::RegisterUi { key: "deadbeef".into() };
+        match decode::<Request>(&encode(&r)).unwrap() {
+            Request::RegisterUi { key } => assert_eq!(key, "deadbeef"),
+            other => panic!("应为 RegisterUi，实得 {other:?}"),
+        }
+        let c = Request::ConfirmCancel { token: "abc".into() };
+        match decode::<Request>(&encode(&c)).unwrap() {
+            Request::ConfirmCancel { token } => assert_eq!(token, "abc"),
+            other => panic!("应为 ConfirmCancel，实得 {other:?}"),
+        }
+        let u = Response::UiRegistered;
+        assert!(matches!(decode::<Response>(&encode(&u)).unwrap(), Response::UiRegistered));
+        let cc = Response::ConfirmCancelled { token: "abc".into() };
+        match decode::<Response>(&encode(&cc)).unwrap() {
+            Response::ConfirmCancelled { token } => assert_eq!(token, "abc"),
+            other => panic!("应为 ConfirmCancelled，实得 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_without_approval_decodes_to_none() {
+        // 向后兼容：不带 approval 字段的 ToolCall 仍可解析（默认 None）
+        let r: Request = decode(
+            r#"{"type":"tool_call","payload":{"session_id":"s","tool":"read_file","arguments":{"path":"/tmp/a"}}}"#,
+        )
+        .unwrap();
+        match r {
+            Request::ToolCall { approval, tool, .. } => {
+                assert_eq!(approval, None);
+                assert_eq!(tool, "read_file");
+            }
+            other => panic!("应为 ToolCall，实得 {other:?}"),
         }
     }
 }

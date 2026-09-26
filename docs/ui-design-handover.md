@@ -438,3 +438,84 @@ VM 实拍：`C:\Users\cbn\Pictures\aether-vm-final.png`。
 `scripts/png-crop.py`：裁剪 + 整数倍放大走查图，用于 1:1 检查边框/字重/图标比例。
 （放大实现踩过一次坑：行字节乘了两次，行宽变 scale² 倍导致 PNG 损坏。）
 
+---
+
+## 13. 第三轮代码审查的 UI 修复（2026-09-26）
+
+来源：`docs/CODE-REVIEW-2026-09-26.md`。全部集中在 `draw.rs`，**布局几何/协议/行为零改动**。
+
+### 13.1 修复项
+
+| 项 | 位置 | 改动 | 实测（修复前 → 修复后） |
+|---|---|---|---|
+| P2-20 主按钮对比度 | `draw.rs` 确认弹窗按钮 | 新增 `accent_strong()` 做底 + 纯白字；新增 `danger_text()` 做拒绝按钮字色 | 「允许一次」深色 **2.07 → 5.31:1**、明亮 **4.11 → 5.59:1**；「拒绝」深色 **3.22 → 5.02:1**、明亮 → **6.56:1** |
+| P2-20 同类：L3 徽章 | 同上 | 底色 0.22 → 0.12；文字改用 `badge_text_color()`（新增 `warning_text()`） | 深色 **2.56 → 5.17:1**、明亮 → **6.71:1** |
+| P2-20 同类：后果说明 | 同上 | 文字改主文字色（彩色文字在淡底上达不到 AA），警示语义交给左侧三角 | 深色 → **8.4:1** |
+| P2-18 参数截断 | 确认弹窗参数行 | 只留头部 → **头 20 + 尾 10**，截断处用 `…` 明确标出 | "良性前缀 + 第 25 字符起的恶意值"不再能躲过视线 |
+| P3-23 气泡截断 | `draw_reply` | 从头部删字符 → `ellipsize`（保留开头 + 省略号） | 消息开头（"要干什么"）不再被吃掉 |
+| P3-23 同类：后果说明 | 确认弹窗 | `shown.pop()` 尾部静默截断 → `ellipsize` | 关键半句不再被砍 |
+| P3-27 Dock 托盘 | `draw_dock` | 硬编码 alpha 0.68 → `glass_alpha(hover)`（明亮 0.95 / 深色 0.75） | 与注释和 §12.2 陷阱 2 的声称一致；托盘不再透出壁纸色调 |
+| P3-28 `fill_rect` | `draw.rs:396` | `(rect.x + rect.w) as usize` 加 `.max(0)`（i32 负值 `as usize` 会回卷成巨值 → 误填整行） | 防御性修复，未构造出可达序列 |
+
+> 对比度用 WCAG 相对亮度公式实测（区域取按钮内部纯色区，避开抗锯齿边缘）。
+> 验证命令：`--shot 2 --confirm 3 --echo --theme {dark,light}` 出图后测区域最暗/最亮像素。
+
+### 13.2 归档图基线重建（重要）
+
+`docs/host-ui-desktop.png` 等**深色图长期停留在 §9 状态（2026-09-24 20:07）**，
+从未随 §10 的视觉质量冲刺更新——而 `2cccb6a` 的提交信息却用它作为"深色像素级零回归"的
+比对基线。实测该图与当时的实际渲染差 **1.727%**（15272 像素，最大差 15），差异集中在
+Dock 托盘与次要文字。
+
+**本轮重建了全部 8 张归档图**（深色 4 + 明亮 4），生成命令如下（`--shot N`：1 Float /
+2 TwoCol / 3 ThreeCol / 4 Monocle）：
+
+```bash
+B=./target/debug/aether-compositor.exe
+P=python   # scripts/bmp2png.py，仅标准库
+gen() { $B $1 && $P scripts/bmp2png.py preview.bmp "$2"; }
+
+gen "--shot 2 --theme dark"                  docs/host-ui-desktop.png
+gen "--shot 3 --theme dark"                  docs/host-ui-threecol.png
+gen "--shot 2 --confirm 3 --theme dark"      docs/host-ui-confirm.png
+gen "--shot 2 --menu --theme dark"           docs/host-ui-menu.png
+gen "--shot 2 --theme light"                 docs/host-ui-light-desktop.png
+gen "--shot 2 --confirm 3 --theme light"     docs/host-ui-light-confirm.png
+gen "--shot 2 --installer --theme light"     docs/host-ui-light-installer.png
+gen "--shot 2 --menu --theme light"          docs/host-ui-light-menu.png
+```
+
+**教训**：归档图必须与其生成提交绑定。做视觉回归前先确认归档图的 mtime / 生成提交
+是否等于当前 HEAD，否则"零回归"的结论会建立在错误的基线上（`target/uishot/` 下常有
+作者未归档的中间走查图，是更近的基线）。
+
+---
+
+## 14. 合成器性能优化（2026-09-26）
+
+背景：VM 里鼠标很卡。完整报告见 `docs/PERF-REPORT-2026-09-26.md`。
+
+**结论**：瓶颈不是 sleep，而是 `draw_window` 每帧要跑 5 层投影 SDF + 逐像素圆角渐变
+（**91ms/帧**），再叠加固定的 100ms sleep，有效帧率只有 ~5fps。
+
+三项改动（合计 **91.31 → 22.53 ms/帧，-75%**）：
+
+1. **`sdf_round_rect` 条件化 sqrt** —— 只有角部需要开方，边部/内部直接分量相加（恒等变形）
+2. **`gradient_stops` 行内快速路径** —— 用 `row_inner_span` 把每行切成"两端圆角带 + 中间直填带"
+3. **投影烘焙** —— 投影只取决于窗口几何/激活态，烘焙进 `shadow_layer` 用几何指纹判失效
+
+另加：**自适应帧率**（按 33ms 周期补足剩余时间，不再固定睡 100ms）、
+**`fbdev::blit_dirty`**（只写变化的行，鼠标移动时从 4MB 降到几十字节）、
+壁纸刷新间隔 240 → 1800 帧（提帧率后原间隔会让周期性卡顿变密）。
+
+**新增观测手段（长期保留）**：
+- `aether-compositor --bench [N]` —— 帧耗时基准
+- `AETHER_RENDER_TIMING=1` —— 逐阶段耗时（`bg_gen` / `windows` / `dock` …）
+
+**视觉回归**：与优化前基线逐像素比对仅差 154 像素（0.016%），全部落在顶栏时钟区。
+投影烘焙的副作用是"窗口之间不再互相投影"，平铺布局下无视觉差异。
+
+⚠️ **VM 实机未验证**：数据全部来自 Windows 开发机的 `--bench`。`blit_dirty` 的写入
+路径在 Windows 上跑不到（无 `/dev/fb0`），仅其脏行选择逻辑有单测覆盖。
+
+

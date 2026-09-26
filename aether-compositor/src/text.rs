@@ -4,12 +4,30 @@
 //! （中文屏显，覆盖中英文）；Windows 预览期回退到系统微软雅黑。
 
 use crate::draw::blend_pixel;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct TextRenderer {
     regular: fontdue::Font,
     bold: fontdue::Font,
     /// 40px 下的行高基准，用于按目标字号换算
     base_ascent: f32,
+    /// 字形缓存：(粗体, 字符, 取整字号) → 光栅化结果。
+    ///
+    /// 原实现每帧对每个字符都调 `Font::rasterize()`（字形查找 + 光栅化 +
+    /// 分配 bitmap）。终端 9 行、音乐列表 12 行、文件网格 16 个标签，一帧要
+    /// 重算上百个字形 —— 这是 `windows` 阶段最大的一笔浪费。
+    /// 光栅化结果只取决于 (字体, 字符, 字号)，缓存后每帧只剩查表 + 混合。
+    glyphs: RefCell<HashMap<GlyphKey, Arc<(fontdue::Metrics, Vec<u8>)>>>,
+}
+
+/// 字形缓存键。字号在入口已 `round()`，这里再乘 100 定点化，避免拿 f32 当 key。
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+struct GlyphKey {
+    bold: bool,
+    ch: char,
+    px100: u32,
 }
 
 const REGULAR_FONTS: &[&str] = &[
@@ -71,6 +89,7 @@ fn sharpen(cov: f32, px: f32) -> f32 {
 impl TextRenderer {
     /// 打印字号相关的真实度量（垂直居中与行高换算的依据）。
     /// 换字体或升级 fontdue 后用 `--fonttest` 复跑，确认偏移量仍然成立。
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅 --fonttest 走查使用
     pub fn dump_metrics(&self, sizes: &[f32]) {
         eprintln!("aether-compositor: base_ascent={}", self.base_ascent);
         for &px in sizes {
@@ -112,7 +131,19 @@ impl TextRenderer {
             .horizontal_line_metrics(40.0)
             .map(|m| m.ascent)
             .unwrap_or(32.0);
-        Some(Self { regular, bold, base_ascent })
+        Some(Self { regular, bold, base_ascent, glyphs: RefCell::new(HashMap::new()) })
+    }
+
+    /// 取（并缓存）字形位图。命中时只做一次哈希查找，不再走字形解析与光栅化。
+    fn glyph(&self, bold: bool, ch: char, px: f32) -> Arc<(fontdue::Metrics, Vec<u8>)> {
+        let key = GlyphKey { bold, ch, px100: (px * 100.0) as u32 };
+        if let Some(g) = self.glyphs.borrow().get(&key) {
+            return Arc::clone(g);
+        }
+        let font = if bold { &self.bold } else { &self.regular };
+        let g = Arc::new(font.rasterize(ch, px));
+        self.glyphs.borrow_mut().insert(key, Arc::clone(&g));
+        g
     }
 
     fn render(
@@ -139,8 +170,8 @@ impl TextRenderer {
                 cx += px * 0.28;
                 continue;
             }
-            let font = if bold { &self.bold } else { &self.regular };
-            let (m, bitmap) = font.rasterize(ch, px);
+            let g = self.glyph(bold, ch, px);
+            let (m, bitmap) = (&g.0, &g.1);
             if m.width == 0 || m.height == 0 {
                 cx += m.advance_width;
                 continue;
@@ -220,8 +251,7 @@ impl TextRenderer {
                 w += px * 0.28;
                 continue;
             }
-            let font = if bold { &self.bold } else { &self.regular };
-            w += font.rasterize(ch, px).0.advance_width;
+            w += self.glyph(bold, ch, px).0.advance_width;
         }
         w
     }
@@ -302,4 +332,46 @@ pub fn draw_text(
     alpha: f32,
 ) -> f32 {
     tr.draw(buf, w, h, x, y, text, px, rgb, alpha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 字形缓存必须与直接光栅化返回**逐字节相同**的位图。
+    ///
+    /// 缓存一旦返回错字形（键冲突、尺寸混淆），表现就是全屏文字抗锯齿边缘的
+    /// 细微差异 —— 实测会造成约 0.4% 的像素不一致，且分散在全屏，极难定位。
+    #[test]
+    fn glyph_cache_matches_direct_rasterize() {
+        let Some(tr) = TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        for (bold, px) in [(false, 14.0f32), (true, 14.0), (false, 11.0), (true, 20.0)] {
+            let font = if bold { &tr.bold } else { &tr.regular };
+            for ch in ['A', '中', '文', 'x', '1', '（'] {
+                let direct = font.rasterize(ch, px);
+                let c1 = tr.glyph(bold, ch, px);
+                let c2 = tr.glyph(bold, ch, px);
+                assert_eq!(
+                    direct.1, c1.1,
+                    "bold={bold} px={px} ch={ch:?}：首次缓存与直接光栅化的位图不一致"
+                );
+                assert_eq!(c1.1, c2.1, "bold={bold} px={px} ch={ch:?}：两次缓存结果不一致");
+                assert_eq!(direct.0.advance_width, c1.0.advance_width);
+            }
+        }
+    }
+
+    /// 同一字符在不同字号下必须各自缓存（键里带 px，不能只按字符索引）。
+    #[test]
+    fn glyph_cache_separates_sizes() {
+        let Some(tr) = TextRenderer::load() else {
+            return;
+        };
+        let a = tr.glyph(false, '中', 11.0);
+        let b = tr.glyph(false, '中', 20.0);
+        assert_ne!(a.1.len(), b.1.len(), "不同字号的位图尺寸应当不同");
+    }
 }

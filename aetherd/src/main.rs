@@ -89,6 +89,9 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
     let mut ctx = tools::ToolCtx::default();
     // 记录每轮实际路由的通道：最终回答的 channel 随 ChatChunk 回传客户端
     let mut last_channel: Option<router::Channel> = None;
+    // 上下文里是否已含敏感工具结果（如 read_file 读到的文件内容）。
+    // 一旦置位，后续轮次强制本地——这是 P0-4b：读到的文件内容不得离开本机。
+    let mut sensitive_context = false;
     let mut messages = vec![
         llm::Message { role: "system".into(), content: SYSTEM_PROMPT.into(), tool_calls: None, tool_call_id: None, name: None },
         llm::Message { role: "user".into(), content: user_text.into(), tool_calls: None, tool_call_id: None, name: None },
@@ -98,7 +101,7 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
         // 每轮重新路由：任务特征随对话演进
         let task = router::Task {
             text: user_text,
-            history_len: messages.len(),
+            sensitive_context,
             local_only: cfg.local_only,
             local_available: local_ok,
             cloud_available: cfg.cloud.is_some(),
@@ -177,6 +180,11 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
                 }
                 Err(e) => format!("[工具错误] {e}"),
             };
+            // 敏感工具（read_file）的输出即将进入 messages：从下一轮起强制本地，
+            // 不再把读到的文件内容发往云端端点。
+            if tools::is_sensitive_output(&name) {
+                sensitive_context = true;
+            }
             messages.push(llm::Message {
                 role: "tool".into(),
                 content: result,

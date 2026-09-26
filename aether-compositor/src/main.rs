@@ -29,7 +29,10 @@ use std::net::TcpStream;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+// 预览/走查分辨率：仅非 Linux 路径使用（系统内走 fbdev 真实分辨率）
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const WIDTH: usize = 1280;
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const HEIGHT: usize = 760;
 
 /// 把一行诊断写到 VGA 文本控制台（/dev/tty0）。
@@ -109,6 +112,7 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut thinking = false;
 
     loop {
+        let frame_start = Instant::now();
         let t = start.elapsed().as_secs_f32();
 
         // ---- 1. evdev 输入（drain 本帧积累的全部事件）----
@@ -163,8 +167,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                 input::UiEvent::Escape => {
                     open_menu = None;
                     if let Some((req, _)) = confirm.take() {
-                        // 拒绝路径：关闭弹窗、审计由服务端记录（未授权即未执行）
+                        // 拒绝路径：回传服务端撤销令牌并落审计（P1-9）。
+                        // 只改本地状态是不够的——令牌会在服务端继续存活到过期，
+                        // 且"用户拒绝过"不会留下任何痕迹。
                         tty_log(&format!("权限确认被拒绝: {}", req.tool));
+                        cancel_confirm(&req.token);
                         toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
                     } else if installer.open && !installer.running {
                         installer.open = false;
@@ -275,6 +282,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     Some(draw::ConfirmButton::Deny) => {
                         if let Some((req, _)) = confirm.take() {
                             tty_log(&format!("权限确认被拒绝: {}", req.tool));
+                            cancel_confirm(&req.token);
                             toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
                         }
                     }
@@ -435,7 +443,7 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 5. 渲染 + 软件光标 + 上屏 ----
         renderer.render_frame(&mut buf, w, h, t, &desktop, &ui, tr.as_ref());
         draw::draw_cursor(&mut buf, w, h, mouse.0, mouse.1);
-        fb.blit(&buf, w, h);
+        fb.blit_dirty(&buf, w, h);
         // 点击锁存只对本帧有效
         click_pending = false;
 
@@ -447,7 +455,15 @@ fn run_fbdev() -> anyhow::Result<()> {
         } else if frames % 100 == 0 {
             println!("aether-compositor: 已渲染 {frames} 帧");
         }
-        std::thread::sleep(Duration::from_millis(100)); // 10fps；QEMU TCG 下渲染本身还要数秒
+        // 帧率：按目标周期**补足**剩余时间，而不是固定睡 100ms。
+        // 固定 100ms 会把帧率压到 5-6fps（渲染本身还要几十 ms），而鼠标指针
+        // 只在渲染帧里更新 —— 这正是"鼠标很卡"的直接原因。
+        // 渲染超出预算时不睡：跑满 CPU，让交互尽快跟上。
+        const TARGET_FRAME_MS: u128 = 33; // ≈30fps
+        let spent = frame_start.elapsed().as_millis();
+        if spent < TARGET_FRAME_MS {
+            std::thread::sleep(Duration::from_millis((TARGET_FRAME_MS - spent) as u64));
+        }
     }
 }
 
@@ -467,6 +483,7 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     Desktop { wins, active, layout: Layout::TwoCol }
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn demo_desktop() -> Desktop {
     let mut wins = vec![
         Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES, floating: false },
@@ -644,6 +661,71 @@ fn scan_disks() -> Vec<(String, u64)> {
     out
 }
 
+/// UI 通道密钥（P1-8）：与 aetherd 同源 —— 环境变量优先，否则读审计目录下的 ui.key。
+fn ui_key() -> Option<String> {
+    if let Ok(k) = std::env::var("AETHER_UI_KEY") {
+        let k = k.trim().to_string();
+        if !k.is_empty() {
+            return Some(k);
+        }
+    }
+    std::fs::read_to_string("/var/log/aether/ui.key")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// 在已建立的连接上注册为 UI 通道。
+///
+/// 这是 P1-8 的客户端侧配套：服务端只把确认令牌下发给**已注册的 UI 通道**，
+/// 也只接受已注册通道的兑现请求。没有这一步，L2+ 操作会被服务端直接拒绝，
+/// 令牌也不再有"任何人都能兑现"的漏洞。
+fn register_ui(stream: &mut TcpStream, reader: &mut BufReader<TcpStream>) -> anyhow::Result<()> {
+    let key = ui_key().ok_or_else(|| {
+        anyhow::anyhow!(
+            "未找到 UI 通道密钥（设置 AETHER_UI_KEY，或确认 aetherd 已生成 /var/log/aether/ui.key）"
+        )
+    })?;
+    stream.write_all(aether_ipc::encode(&Request::RegisterUi { key }).as_bytes())?;
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    match aether_ipc::decode::<Response>(&line)? {
+        Response::UiRegistered => Ok(()),
+        Response::Error { message, .. } => anyhow::bail!("UI 通道注册失败：{message}"),
+        other => anyhow::bail!("UI 通道注册收到意外响应：{other:?}"),
+    }
+}
+
+/// 用户拒绝：把"拒绝"回传服务端（撤销令牌 + 落 `denied_by_user` 审计 + 记入拒绝冷却）。
+///
+/// 此前"拒绝"只存在于本地 UI 状态里：服务端的令牌会继续存活到过期，审计也无法
+/// 区分"用户拒绝过"与"从未回答"（P1-9）。回传失败不阻断界面——日志会说明
+/// 令牌将在 5 分钟后自然过期。
+fn cancel_confirm(token: &str) {
+    let token = token.to_string();
+    std::thread::spawn(move || {
+        let run = || -> anyhow::Result<()> {
+            let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
+            let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut reader = BufReader::new(stream.try_clone()?);
+            register_ui(&mut stream, &mut reader)?;
+            stream.write_all(aether_ipc::encode(&Request::ConfirmCancel { token }).as_bytes())?;
+            let mut line = String::new();
+            reader.read_line(&mut line)?;
+            match aether_ipc::decode::<Response>(&line)? {
+                Response::ConfirmCancelled { .. } => Ok(()),
+                Response::Error { message, .. } => anyhow::bail!("{message}"),
+                other => anyhow::bail!("意外响应：{other:?}"),
+            }
+        };
+        match run() {
+            Ok(()) => println!("aether-compositor: 拒绝已回传服务端（令牌已撤销）"),
+            Err(e) => println!("aether-compositor: 拒绝回传失败（{e}）；令牌将在 5 分钟后自然过期"),
+        }
+    });
+}
+
 /// 经 aetherd ToolCall 执行整盘安装。安装向导与 AI 走同一条通路：
 /// 首次请求不带 approval（闸门必拦，L3 需确认），拿到确认令牌后由主循环
 /// 在用户完成回显输入后重发——这样"用户在向导里点了按钮"不再等于"已授权"。
@@ -679,10 +761,13 @@ fn send_tool_call(
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
     stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
+    let mut reader = BufReader::new(stream.try_clone()?);
+    // 先注册为 UI 通道：确认令牌只下发给已注册通道，也只被已注册通道兑现（P1-8）
+    register_ui(&mut stream, &mut reader)?;
     let req = Request::ToolCall { session_id: "shell-preview".into(), tool, arguments, approval };
     stream.write_all(aether_ipc::encode(&req).as_bytes())?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    reader.read_line(&mut line)?;
     match aether_ipc::decode::<Response>(&line)? {
         Response::ToolResult { ok, output, .. } => {
             let _ = tx.send(AiEvent::ToolDone { ok, output, origin });
@@ -714,10 +799,12 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
             .map_err(|e| anyhow::anyhow!("aetherd 不可达（127.0.0.1:{}）：{e}", aether_ipc::DEFAULT_PORT))?;
         println!("aether-compositor: AI 查询已连接，发送请求（超时 {timeout_secs}s）");
         stream.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok();
+        let mut reader = BufReader::new(stream.try_clone()?);
+        // 先注册为 UI 通道：否则 AI 触发的 L2+ 操作拿不到确认令牌（P1-8）
+        register_ui(&mut stream, &mut reader)?;
         stream.write_all(
             aether_ipc::encode(&Request::Chat { session_id: "shell-preview".into(), text }).as_bytes(),
         )?;
-        let mut reader = BufReader::new(stream);
         let mut line = String::new();
         let mut reply = String::new();
         let mut action: Option<(String, serde_json::Value)> = None;
@@ -969,6 +1056,58 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // 帧耗时基准：`--bench [N]` 连续渲染 N 帧并输出平均耗时（性能回归用）。
+    // 只测 CPU 侧绘制成本（Windows 无 /dev/fb0，上屏路径另计）。
+    #[cfg(not(target_os = "linux"))]
+    if let Some(pos) = args.iter().position(|a| a == "--bench") {
+        let n: u32 = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(120);
+        let mut buf = vec![0u32; WIDTH * HEIGHT];
+        let mut desktop = demo_desktop();
+        desktop.layout = Layout::TwoCol;
+        snap_now(&mut desktop, Layout::TwoCol);
+        let tr = text::TextRenderer::load();
+        let ui = draw::UiState {
+            snap: None,
+            toast: None,
+            ai_input: "把窗口排成两列",
+            ai_focused: true,
+            ai_thinking: false,
+            ai_status: draw::AiStatus::Local,
+            ai_reply: Some(("好的，已把窗口排成两列。", draw::BubbleKind::Ai, 0.5)),
+            mouse: (640.0, 400.0),
+            mouse_down: false,
+            open_menu: None,
+            show_installer: false,
+            installer: None,
+            confirm: None,
+        };
+
+        // 首帧含壁纸生成（每 BG_REFRESH_FRAMES 帧才发生一次），单独计时
+        let mut fresh = draw::Renderer::new(WIDTH, HEIGHT);
+        let t_bg = std::time::Instant::now();
+        fresh.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
+        let bg_ms = t_bg.elapsed().as_secs_f64() * 1000.0;
+
+        let mut renderer = draw::Renderer::new(WIDTH, HEIGHT);
+        for _ in 0..3 {
+            renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
+        }
+        let t0 = std::time::Instant::now();
+        for i in 0..n {
+            renderer.render_frame(
+                &mut buf, WIDTH, HEIGHT, 1.2 + i as f32 * 0.016, &desktop, &ui, tr.as_ref(),
+            );
+            draw::draw_cursor(&mut buf, WIDTH, HEIGHT, 640.0, 400.0);
+        }
+        let el = t0.elapsed();
+        let per = el.as_secs_f64() * 1000.0 / n as f64;
+        println!("bench @ {WIDTH}x{HEIGHT}（两列 + 鼠标）");
+        println!("  首帧（含壁纸生成）: {bg_ms:.2} ms");
+        println!("  稳态 {n} 帧: 平均 {per:.2} ms/帧 → 上限 {:.0} fps", 1000.0 / per);
+        println!("  理论 30fps 预算 33.3ms/帧，当前占用 {:.0}%", per / 33.3 * 100.0);
+        return Ok(());
+    }
+
     // 字体标本模式：`--fonttest` 渲染 11–15px 中英文/粗细同屏单帧（文字渲染质量调参用）
     #[cfg(not(target_os = "linux"))]
     if args.iter().any(|a| a == "--fonttest") {
@@ -1013,6 +1152,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("aether-compositor: 无 /dev/fb0，且系统内尚无 Wayland 后端（M1 后期接入 smithay）");
         std::process::exit(1);
     }
+    #[allow(unreachable_code)] // Linux 分支已在上面 exit
     Ok(())
 }
 
@@ -1155,6 +1295,8 @@ fn preview_main() -> anyhow::Result<()> {
                 }
                 Some(draw::ConfirmButton::Deny) => {
                     if let Some((req, _)) = confirm.take() {
+                        // 拒绝要回传服务端（撤销令牌 + 留痕），不能只关本地弹窗
+                        cancel_confirm(&req.token);
                         toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
                     }
                 }
@@ -1372,6 +1514,7 @@ fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
 }
 
 /// 截图模式下立即就位（无缓动）。
+#[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn snap_now(desktop: &mut Desktop, lay: Layout) {
     let work = layout::work_area(WIDTH, HEIGHT);
     let tg = layout::tiled_targets(desktop.wins.len(), lay, work);

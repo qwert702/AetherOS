@@ -80,6 +80,8 @@ pub struct Fbdev {
     stride: usize,
     /// 复用的帧缓冲（避免每帧 ~4MB 分配，10fps 下 ≈ 39MB/s 的分配压力）
     frame: Vec<u8>,
+    /// 上一帧的像素（脏行检测用；鼠标移动时只有少数行需要重写）
+    prev: Vec<u32>,
     /// 诊断信息只打印一次
     reported: bool,
 }
@@ -137,6 +139,7 @@ impl Fbdev {
             bpp,
             stride,
             frame,
+            prev: Vec::new(),
             reported: false,
         })
     }
@@ -204,4 +207,79 @@ impl Fbdev {
             }
         }
     }
+
+    /// 只把**与上一帧不同的行**写到帧缓冲。
+    ///
+    /// 动机：鼠标移动时整屏 99% 的像素没变，但 `blit()` 每帧仍要组装并
+    /// write 整屏（1280x800x4 = 4MB）。在 VM 里这笔系统调用足以把帧率压下来。
+    /// 脏行检测本身只是一次内存比较（切片 `!=` 走 memcmp，约 1ms），
+    /// 换来的是"鼠标移动只写几行"。
+    ///
+    /// 尺寸变化或首帧退回全量；整屏无变化时一次写都不做。
+    pub fn blit_dirty(&mut self, buf: &[u32], w: usize, h: usize) {
+        let fw = w.min(self.width);
+        let fh = h.min(self.height);
+        let row_bytes = fw * ((self.bpp / 8).max(1) as usize);
+        let stride = self.stride.max(row_bytes);
+
+        if self.prev.len() != fw * fh {
+            self.prev = vec![0; fw * fh];
+            self.blit(buf, w, h);
+            for y in 0..fh {
+                self.prev[y * fw..(y + 1) * fw].copy_from_slice(&buf[y * w..y * w + fw]);
+            }
+            return;
+        }
+
+        // 1. 找脏行范围（一次扫描，无分配）
+        let Some((y0, y1)) = crate::draw::dirty_rows(&self.prev, buf, w, fw, fh) else {
+            return; // 整屏没变
+        };
+
+        // 2. 只组装脏行
+        for row in y0..y1 {
+            let mut dst = row * stride;
+            for &p in &buf[row * w..row * w + fw] {
+                let r = (p >> 16) & 0xff;
+                let g = (p >> 8) & 0xff;
+                let b = p & 0xff;
+                match self.bpp {
+                    16 => {
+                        let v = (((r >> 3) as u16) << 11)
+                            | (((g >> 2) as u16) << 5)
+                            | ((b >> 3) as u16);
+                        self.frame[dst..dst + 2].copy_from_slice(&v.to_le_bytes());
+                        dst += 2;
+                    }
+                    24 => {
+                        self.frame[dst] = b as u8;
+                        self.frame[dst + 1] = g as u8;
+                        self.frame[dst + 2] = r as u8;
+                        dst += 3;
+                    }
+                    _ => {
+                        self.frame[dst] = b as u8;
+                        self.frame[dst + 1] = g as u8;
+                        self.frame[dst + 2] = r as u8;
+                        self.frame[dst + 3] = 0xff;
+                        dst += 4;
+                    }
+                }
+            }
+        }
+
+        // 3. 只写脏行（一次 seek + 一次 write）
+        use std::io::{Seek, SeekFrom, Write};
+        let _ = self.file.seek(SeekFrom::Start((y0 * stride) as u64));
+        let end = (y1 * stride).min(self.frame.len());
+        let _ = self.file.write(&self.frame[y0 * stride..end]);
+
+        // 4. 更新基准
+        for y in y0..y1 {
+            self.prev[y * fw..(y + 1) * fw].copy_from_slice(&buf[y * w..y * w + fw]);
+        }
+    }
 }
+
+// `dirty_rows`（脏行检测）已移到 `draw.rs`：那个模块跨平台，其单元测试
+// 在开发机上就能跑；fbdev 只在 Linux 编译，测试跑不到。
