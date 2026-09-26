@@ -813,19 +813,225 @@ fn gradient_tile(buf: &mut [u32], w: usize, r: Rect, radius: f32, top: [u8; 3], 
 // 桌面状态
 // ---------------------------------------------------------------------------
 
+/// 文件系统条目 —— 文件管理器的数据源。
+#[derive(Clone, Debug)]
+pub struct FsEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+impl FsEntry {
+    /// 人类可读的大小（目录不显示大小）。
+    pub fn size_label(&self) -> String {
+        if self.is_dir {
+            return "—".into();
+        }
+        let n = self.size;
+        if n < 1024 {
+            format!("{n} B")
+        } else if n < 1024 * 1024 {
+            format!("{:.1} KB", n as f64 / 1024.0)
+        } else if n < 1024 * 1024 * 1024 {
+            format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{:.1} GB", n as f64 / (1024.0 * 1024.0 * 1024.0))
+        }
+    }
+}
+
+/// 默认起始目录：Linux 取家目录，Windows 预览取 USERPROFILE。
+pub fn default_cwd() -> String {
+    for key in ["HOME", "USERPROFILE"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.trim().is_empty() {
+                return v;
+            }
+        }
+    }
+    if cfg!(windows) { "C:/".into() } else { "/".into() }
+}
+
+/// 读取目录内容：目录在前，同类按名称（不区分大小写）排序。
+///
+/// 隐藏文件（以 `.` 开头）默认不列出 —— 与 Finder/资源管理器的默认行为一致，
+/// 也避免一进家目录就被 `.cargo`/`.config` 刷屏。
+///
+/// 读失败时返回空列表与原因字符串：**调用方必须把原因显示出来**，
+/// 否则用户看到的是"空目录"，与"没权限"无法区分。
+pub fn read_dir_entries(path: &str) -> (Vec<FsEntry>, Option<String>) {
+    let rd = match std::fs::read_dir(path) {
+        Ok(rd) => rd,
+        Err(e) => return (Vec::new(), Some(format!("{e}"))),
+    };
+    let mut out = Vec::new();
+    for ent in rd.flatten() {
+        let name = ent.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let meta = ent.metadata().ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        out.push(FsEntry { name, is_dir, size });
+    }
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    (out, None)
+}
+
+/// 路径拼接（处理结尾斜杠，Windows 下也兼容正斜杠）。
+pub fn join_path(base: &str, name: &str) -> String {
+    if base.ends_with('/') || base.ends_with('\\') {
+        format!("{base}{name}")
+    } else {
+        format!("{base}/{name}")
+    }
+}
+
+/// 路径是否已在根（无法再向上）。
+fn path_is_root(path: &str) -> bool {
+    let t = path.trim_end_matches(['/', '\\']);
+    t.is_empty() || t.ends_with(':')
+}
+
+/// 取路径的上级；已在根时返回原值。
+pub fn parent_of(path: &str) -> String {
+    let t = path.trim_end_matches(['/', '\\']);
+    if t.is_empty() || t.ends_with(':') {
+        return path.to_string();
+    }
+    match t.rfind(['/', '\\']) {
+        Some(0) => t[..1].to_string(),
+        Some(i) if t[..i].ends_with(':') => t[..=i].to_string(),
+        Some(i) => t[..i].to_string(),
+        None => path.to_string(),
+    }
+}
+
+/// 取路径末段作为窗口标题；根目录返回原路径。
+pub fn path_leaf(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    match trimmed.rsplit(['/', '\\']).next() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// 文本预览内容。
+#[derive(Clone, Debug)]
+pub struct PreviewData {
+    /// 被打开文件的完整路径（标题栏显示）
+    pub path: String,
+    /// 已按行切好的内容（限长）
+    pub lines: Vec<String>,
+    /// 读取失败的原因；有值时窗口内显示它而不是内容
+    pub error: Option<String>,
+    /// 是否因超长被截断
+    pub truncated: bool,
+}
+
+/// 预览单次读取的字节上限：再大就不是"看一眼"而是"打开大文件"了，
+/// 而合成器是单线程渲染，读大文件会直接卡住整个界面。
+const PREVIEW_MAX_BYTES: u64 = 64 * 1024;
+/// 预览最多渲染的行数（超出部分只显示提示）
+const PREVIEW_MAX_LINES: usize = 400;
+
+/// 读取一个文件用于预览。二进制文件与超大文件都要给出明确原因，
+/// 不能静默显示空白 —— 那和"文件是空的"无法区分。
+pub fn read_preview(path: &str) -> PreviewData {
+    let meta = std::fs::metadata(path);
+    if let Ok(m) = &meta {
+        if m.is_dir() {
+            return PreviewData { path: path.into(), lines: Vec::new(), error: Some("这是一个目录".into()), truncated: false };
+        }
+        if m.len() > PREVIEW_MAX_BYTES {
+            return PreviewData {
+                path: path.into(),
+                lines: Vec::new(),
+                error: Some(format!("文件过大（{}），暂不支持预览", FsEntry { name: String::new(), is_dir: false, size: m.len() }.size_label())),
+                truncated: false,
+            };
+        }
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            // 非 UTF-8 多半是二进制：不要用 lossy 糊一屏乱码，直接说明
+            let text = match String::from_utf8(bytes) {
+                Ok(t) => t,
+                Err(_) => {
+                    return PreviewData { path: path.into(), lines: Vec::new(), error: Some("二进制文件，无法以文本预览".into()), truncated: false };
+                }
+            };
+            let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+            let truncated = lines.len() > PREVIEW_MAX_LINES;
+            if truncated {
+                lines.truncate(PREVIEW_MAX_LINES);
+            }
+            PreviewData { path: path.into(), lines, error: None, truncated }
+        }
+        Err(e) => PreviewData { path: path.into(), lines: Vec::new(), error: Some(format!("{e}")), truncated: false },
+    }
+}
+
+/// 文件管理器的视图数据。
+///
+/// 从 `Desktop` 摘出来单独传，否则 `draw_window` 的参数会膨胀成
+/// `(entries, selected, dir_error, cwd)` 一串，且每个都只为文件窗口服务。
+pub struct FileView<'a> {
+    pub cwd: &'a str,
+    pub entries: &'a [FsEntry],
+    pub selected: Option<usize>,
+    /// 读目录失败的原因；有值时状态栏优先显示它
+    pub error: Option<&'a str>,
+}
+
 /// 桌面状态：窗口列表（含 z 序）与当前布局。
 pub struct Desktop {
     pub wins: Vec<Win>,
     pub active: usize,
     pub layout: crate::layout::Layout,
+    /// 文件管理器当前目录
+    pub cwd: String,
+    /// 当前目录的条目（`refresh_dir` 之后有效）
+    pub entries: Vec<FsEntry>,
+    /// 文件管理器中选中的条目索引
+    pub selected: Option<usize>,
+    /// 读取 cwd 时的错误；有值时状态栏显示它而不是条目数
+    pub dir_error: Option<String>,
+}
+
+/// 窗口内容类型。
+///
+/// 此前 `draw_window` 靠比较 `title` 字符串来区分"这是终端还是音乐"。
+/// 一旦标题要显示动态内容（文件管理器显示当前路径），这个做法立刻失效 ——
+/// 所以显式化成一个枚举。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WinKind {
+    /// 文件管理器
+    Files,
+    /// 音乐播放器
+    Music,
+    /// 终端
+    Terminal,
+    /// 文本文件预览
+    Preview,
 }
 
 pub struct Win {
     pub rect: Rect,
     /// 动画目标；每帧向它缓动，到达后清除
     pub target: Option<Rect>,
-    pub title: &'static str,
+    /// 标题栏文字。文件管理器会显示当前路径，故为 `String` 而非 `&'static str`。
+    pub title: String,
+    /// 内容类型（决定画什么、以及点击怎么处理）
+    pub kind: WinKind,
     pub floating: bool,
+    /// 预览窗口的内容（仅 `WinKind::Preview` 有值）
+    pub preview: Option<PreviewData>,
 }
 
 /// AI 回复气泡的类别（用户/AI/工具调用三类样式，语义一眼可分）。
@@ -984,6 +1190,10 @@ pub struct Renderer {
     pub dropdown: Option<(Vec<Rect>, Vec<&'static str>)>,
     /// 安装向导磁盘行的命中区 (矩形, 设备名, 容量MB)
     pub installer_rows: Vec<(Rect, String, u64)>,
+    /// 文件管理器图标网格的命中区 (矩形, 条目索引)，每帧重建
+    pub file_cells: Vec<(Rect, usize)>,
+    /// 文件管理器侧栏"上级目录"按钮的命中区；无上级时为空矩形
+    pub file_up: Rect,
     /// "开始安装"按钮命中区
     pub installer_button: Rect,
     /// 权限确认弹窗的按钮命中区
@@ -1006,6 +1216,8 @@ impl Renderer {
             dock_icons: Vec::new(),
             dropdown: None,
             installer_rows: Vec::new(),
+            file_cells: Vec::new(),
+            file_up: Rect { x: 0, y: 0, w: 0, h: 0 },
             installer_button: Rect { x: 0, y: 0, w: 0, h: 0 },
             confirm_buttons: Vec::new(),
             confirm_echo: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -1095,8 +1307,15 @@ impl Renderer {
         }
         mark!("snap");
 
+        let fv = FileView {
+            cwd: &desktop.cwd,
+            entries: &desktop.entries,
+            selected: desktop.selected,
+            error: desktop.dir_error.as_deref(),
+        };
+        self.file_cells.clear();
         for (i, win) in desktop.wins.iter().enumerate() {
-            draw_window(buf, w, h, win.rect, win.title, i == desktop.active, ui.mouse, t, tr);
+            draw_window(buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv, &mut self.file_cells, &mut self.file_up);
         }
         mark!("windows");
 
@@ -1111,7 +1330,7 @@ impl Renderer {
         self.draw_ai_bar(buf, w, h, ui, t, tr);
         mark!("ai");
 
-        let open_titles: Vec<&str> = desktop.wins.iter().map(|x| x.title).collect();
+        let open_titles: Vec<&str> = desktop.wins.iter().map(|x| x.title.as_str()).collect();
         self.draw_dock(buf, w, h, &open_titles, ui, tr);
         mark!("dock");
 
@@ -1450,7 +1669,10 @@ fn desktop_key(d: &Desktop) -> u64 {
     h
 }
 
-fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>) {
+fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>, fv: &FileView, cells: &mut Vec<(Rect, usize)>, up: &mut Rect) {
+    let r = win.rect;
+    let title = win.title.as_str();
+    let kind = win.kind;
     let body = color::surface_1();
     // 不透明度定得高：合成器没有模糊（backdrop-filter），窗口一旦半透明，
     // 后面窗口的文字就会"透"上来变成鬼影——那比没有玻璃感难看得多。
@@ -1507,12 +1729,12 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, r: Rect, title: &str, active
     }
 
     let content = Rect { x: r.x + 1, y: r.y + metric::TITLE_H + 1, w: r.w - 2, h: r.h - metric::TITLE_H - 2 };
-    if title == strings::WIN_TERM {
-        draw_term_content(buf, w, h, content, r, t, tr);
-    } else if title == strings::WIN_MUSIC {
-        draw_music_content(buf, w, h, content, r, mouse, tr);
-    } else {
-        draw_files_content(buf, w, h, content, r, mouse, tr);
+    match kind {
+        WinKind::Terminal => draw_term_content(buf, w, h, content, r, t, tr),
+        WinKind::Music => draw_music_content(buf, w, h, content, r, mouse, tr),
+        // Preview 暂时复用文件管理器的纸面底，真正的预览渲染在后续阶段接入
+        WinKind::Files => draw_files_content(buf, w, h, content, r, mouse, tr, fv, cells, up),
+        WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
     }
 }
 
@@ -1744,7 +1966,8 @@ fn draw_term_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, t:
 }
 
 /// 文件窗口内容：侧栏（深底座）→ 内容面（纸面）→ 状态条（深底座）三层。
-fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>) {
+fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>, fv: &FileView, cells: &mut Vec<(Rect, usize)>, up: &mut Rect) {
+    *up = Rect { x: 0, y: 0, w: 0, h: 0 };
     const SIDEBAR_W: i32 = 150;
     const STATUS_H: i32 = 26;
 
@@ -1759,9 +1982,29 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
     fill_rect(buf, w, h, Rect { x: area_x, y: r.y + 1, w: 1, h: r.h - 2 }, color::hairline(), 0.08);
 
     if let Some(tr) = tr {
+        // 顶部"← 上级目录"：没有它就只能进不能出，导航不成立
+        let mut base = r.y + 12;
+        if !path_is_root(fv.cwd) {
+            let row = Rect { x: r.x + 8, y: base, w: sidebar.w - 16, h: 26 };
+            let hovered = row.contains(mouse.0, mouse.1);
+            if hovered {
+                rounded_rect(buf, w, h, row, radius::SM - 2.0, color::hairline(), state::hover());
+            }
+            draw_text(
+                tr, buf, w, h,
+                (row.x + 14) as f32,
+                tr.vcenter(row.y as f32, row.h as f32, font::BODY),
+                "← 上级目录", font::BODY,
+                if hovered { color::text() } else { color::text_dim() },
+                if hovered { 0.98 } else { 0.88 },
+            );
+            *up = row;
+            base += 30;
+        }
         for (i, item) in strings::SIDEBAR_ITEMS.iter().enumerate() {
-            let y = r.y + 12 + i as i32 * 30;
-            let selected = i == 0;
+            let y = base + i as i32 * 30;
+            // 侧栏这些"位置"目前仍是静态列表，点击无响应 —— 所以不再假装第 0 项被选中
+            let selected = false;
             let row = Rect { x: r.x + 8, y, w: sidebar.w - 16, h: 26 };
             if selected {
                 rounded_rect(buf, w, h, row, radius::SM - 2.0, color::accent(), 0.20);
@@ -1781,25 +2024,34 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         }
     }
 
-    let shown = draw_icon_grid(buf, w, h, surface, win, mouse, tr);
+    let shown = draw_icon_grid(buf, w, h, surface, win, mouse, tr, fv.entries, fv.selected, cells);
 
     // 状态条：贴窗口底角
     let status = Rect { x: r.x, y: r.y + r.h - STATUS_H, w: r.w, h: STATUS_H };
     fill_clipped(buf, w, h, status, win, radius::LG, color::inset(), 0.62);
     fill_rect(buf, w, h, Rect { x: r.x + 1, y: status.y, w: r.w - 2, h: 1 }, color::hairline(), 0.08);
     if let Some(tr) = tr {
-        // 数量取"实际画出来的"，不写死——写死立刻和画面矛盾
-        let left = format!("{shown} 个项目");
-        draw_text(tr, buf, w, h, (status.x + 12) as f32, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &left, font::LABEL, color::text_faint(), 0.9);
-        let right = strings::DISK_FREE;
-        let rw = tr.measure(right, font::LABEL);
-        draw_text(tr, buf, w, h, (status.x + status.w - 12) as f32 - rw, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), right, font::LABEL, color::text_faint(), 0.9);
+        // 读目录失败时优先显示原因 —— 否则用户看到的是"空目录"，与"没权限"无法区分
+        let left = match fv.error {
+            Some(e) => format!("无法读取目录：{e}"),
+            None => {
+                // 条目数取真实值；窗口装不下时补一句"显示 N"，避免数字与画面矛盾
+                let extra = if fv.entries.len() > shown { format!("（显示 {shown}）") } else { String::new() };
+                format!("{} 个项目{extra}", fv.entries.len())
+            }
+        };
+        let left_rgb = if fv.error.is_some() { color::danger_text() } else { color::text_faint() };
+        draw_text(tr, buf, w, h, (status.x + 12) as f32, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &left, font::LABEL, left_rgb, 0.9);
+        // 右侧显示当前路径（原先写死的"磁盘可用空间"是假数据）
+        let right = ellipsize(tr, fv.cwd, font::LABEL, (status.w / 2) as f32);
+        let rw = tr.measure(&right, font::LABEL);
+        draw_text(tr, buf, w, h, (status.x + status.w - 12) as f32 - rw, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &right, font::LABEL, color::text_faint(), 0.9);
     }
 }
 
 /// 图标网格：图标 + 标签（无卡片外框——"框里再放块"是廉价感的来源之一）。
 /// 行列数按可用空间自适应，把窗口填满，不留下大片死灰。返回实际画出的项数。
-fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>) -> usize {
+fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>, entries: &[FsEntry], selected: Option<usize>, cells: &mut Vec<(Rect, usize)>) -> usize {
     let Some(tr) = tr else { return 0 };
     const ICON: i32 = 46;
     const CELL_W: i32 = 96;
@@ -1815,7 +2067,7 @@ fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mo
     }
     let cols = (avail_w / (CELL_W + GAP_X)).clamp(1, 5);
     let rows = (avail_h / (CELL_H + GAP_Y)).clamp(1, 5);
-    let n = ((cols * rows) as usize).min(strings::FILE_NAMES.len());
+    let n = ((cols * rows) as usize).min(entries.len());
     let grid_w = cols * CELL_W + (cols - 1) * GAP_X;
     let grid_h = rows * CELL_H + (rows - 1) * GAP_Y;
     let ox = area.x + (area.w - grid_w) / 2;
@@ -1830,27 +2082,89 @@ fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mo
             w: CELL_W,
             h: CELL_H,
         };
+        let is_sel = selected == Some(i);
         let hovered = cell.contains(mouse.0, mouse.1);
-        if hovered {
+        // 记下命中区：main.rs 的点击处理据此判断"点了哪个条目"
+        cells.push((cell, i));
+        // 选中比 hover 更"实"：底色 + 描边都用强调色，一眼区分"只是路过"和"已选中"
+        if is_sel {
+            fill_clipped(buf, w, h, cell, win, radius::LG, color::accent(), 0.20);
+            rounded_outline(buf, w, h, cell, radius::LG, color::accent(), 0.55);
+        } else if hovered {
             fill_clipped(buf, w, h, cell, win, radius::LG, color::hairline(), state::hover());
         }
         let icon_x = cell.x + (CELL_W - ICON) / 2;
         let icon_y = cell.y + 8;
-        draw_folder_icon(buf, w, h, icon_x, icon_y, ICON);
+        if entries[i].is_dir {
+            draw_folder_icon(buf, w, h, icon_x, icon_y, ICON);
+        } else {
+            draw_file_icon(buf, w, h, icon_x, icon_y, ICON);
+        }
 
         let label_y = icon_y + ICON + 4;
-        let shown = ellipsize(tr, strings::FILE_NAMES[i], font::LABEL, (CELL_W - 10) as f32);
+        let shown = ellipsize(tr, &entries[i].name, font::LABEL, (CELL_W - 10) as f32);
         let lw = tr.measure(&shown, font::LABEL);
         draw_text(
             tr, buf, w, h,
             cell.x as f32 + (CELL_W as f32 - lw) / 2.0,
             tr.vcenter(label_y as f32, 14.0, font::LABEL),
             &shown, font::LABEL,
-            if hovered { color::text() } else { color::text_dim() },
-            if hovered { 0.98 } else { 0.94 },
+            if is_sel || hovered { color::text() } else { color::text_dim() },
+            if is_sel { 1.0 } else if hovered { 0.98 } else { 0.94 },
         );
     }
     n
+}
+
+/// 文本预览窗口：行号栏 + 内容行。
+///
+/// 出错时**在窗口内显示原因**（而不是空白）—— "打不开"和"文件是空的"必须能区分，
+/// 否则用户只会看到一个空窗口，不知道该重试还是该换个文件。
+fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Option<&PreviewData>, tr: Option<&TextRenderer>) {
+    fill_clipped(buf, w, h, r, r, radius::LG, color::surface_2(), 0.42);
+    let Some(tr) = tr else { return };
+
+    let Some(d) = data else {
+        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, "（无内容）", font::BODY, color::text_faint(), 0.9);
+        return;
+    };
+
+    if let Some(err) = &d.error {
+        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, "无法预览", font::BODY, color::danger_text(), 0.95);
+        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 40) as f32, err, font::CAPTION, color::text_dim(), 0.9);
+        return;
+    }
+
+    const LINE_H: i32 = 18;
+    const GUTTER: i32 = 52;
+    let max_lines = ((r.h - 20) / LINE_H).max(1) as usize;
+    let n = d.lines.len().min(max_lines);
+
+    // 行号栏
+    fill_clipped(buf, w, h, Rect { x: r.x, y: r.y, w: GUTTER, h: r.h }, r, radius::LG, color::inset(), 0.5);
+    fill_rect(buf, w, h, Rect { x: r.x + GUTTER, y: r.y + 1, w: 1, h: r.h - 2 }, color::hairline(), 0.08);
+
+    for i in 0..n {
+        let ly = (r.y + 8 + i as i32 * LINE_H) as f32;
+        let num = format!("{}", i + 1);
+        let nw = tr.measure(&num, font::LABEL);
+        draw_text(tr, buf, w, h, (r.x + GUTTER - 10) as f32 - nw, ly, &num, font::LABEL, color::text_faint(), 0.7);
+        // 预览不换行：行号必须与源文件行号一一对应，换行会打乱这个对应关系
+        let shown = ellipsize(tr, &d.lines[i], font::LABEL, (r.w - GUTTER - 20) as f32);
+        draw_text(tr, buf, w, h, (r.x + GUTTER + 10) as f32, ly, &shown, font::LABEL, color::text(), 0.92);
+    }
+
+    if d.truncated || d.lines.len() > n {
+        let msg = format!("… 共 {} 行，当前窗口可显示 {n} 行", d.lines.len());
+        draw_text(tr, buf, w, h, (r.x + GUTTER + 10) as f32, (r.y + r.h - 24) as f32, &msg, font::LABEL, color::text_faint(), 0.85);
+    }
+
+    // 右下角显示完整路径：标题栏只放得下文件名，"这文件到底在哪"是打开后第一个疑问
+    let pw = tr.measure(&d.path, font::LABEL);
+    let px = (r.x + r.w - 12) as f32 - pw;
+    if px > (r.x + GUTTER + 10) as f32 {
+        draw_text(tr, buf, w, h, px, (r.y + r.h - 24) as f32, &d.path, font::LABEL, color::text_faint(), 0.8);
+    }
 }
 
 /// 文件夹图标：图形本身即图标（不套底色块），渐变填充 + 页签 + 顶部高光。
@@ -1867,10 +2181,31 @@ fn draw_folder_icon(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, size: i
     fill_rect(buf, w, h, Rect { x: x + 3, y: y + size - 2, w: size - 6, h: 1 }, [0, 0, 0], 0.12);
 }
 
+/// 普通文件图标：冷白纸面 + 右上折角 + 三条文字线。
+///
+/// 与文件夹刻意用不同色系（文件偏中性灰、文件夹偏蓝），
+/// 这样一屏几十个图标扫过去，类型是"看得出"的，不用读标签。
+fn draw_file_icon(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, size: i32) {
+    let top = [250, 251, 254];
+    let bottom = [216, 221, 232];
+    let fold = ((size as f32) * 0.30) as i32;
+    let body_y = y + 3;
+    let body_h = size - 3;
+    gradient_tile(buf, w, Rect { x, y: body_y, w: size, h: body_h }, 3.0, top, bottom, 0.97);
+    // 折角：右上角压暗一块，读起来像纸被折了过去
+    rounded_rect(buf, w, h, Rect { x: x + size - fold, y: body_y, w: fold, h: fold }, 2.0, [198, 205, 220], 0.95);
+    fill_rect(buf, w, h, Rect { x: x + 3, y: body_y + 1, w: size - 6, h: 1 }, color::HIGHLIGHT, 0.45);
+    // 三条横线暗示"里面有内容"
+    let line = [178, 186, 202];
+    for i in 0..3 {
+        let ly = body_y + body_h / 2 + i * 5 - 4;
+        fill_rect(buf, w, h, Rect { x: x + 8, y: ly, w: size - 16 - i * 4, h: 1 }, line, 0.5);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AI 指令条：悬浮胶囊（Spotlight 气质），可真实输入
 // ---------------------------------------------------------------------------
-
 impl Renderer {
     fn draw_ai_bar(&mut self, buf: &mut [u32], w: usize, h: usize, ui: &UiState, t: f32, tr: Option<&TextRenderer>) {
     let input = ui.ai_input;

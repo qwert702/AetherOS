@@ -353,6 +353,23 @@ fn run_fbdev() -> anyhow::Result<()> {
                 } else if let Some(msg) = open_app(&mut desktop, icon) {
                     toast = Some((msg, Instant::now()));
                 }
+            } else if renderer.file_up.contains(mouse.0, mouse.1) {
+                // 返回上级目录
+                open_menu = None;
+                if let Some(msg) = go_up(&mut desktop) {
+                    toast = Some((msg, Instant::now()));
+                }
+            } else if let Some((_, idx)) = renderer.file_cells.iter().find(|(r, _)| r.contains(mouse.0, mouse.1)).copied() {
+                // 文件管理器图标：点一次选中，再点一次打开。
+                // 用"二次点击"而不是双击，是为了不引入双击计时器（那会让单击延迟生效）。
+                open_menu = None;
+                if desktop.selected == Some(idx) {
+                    if let Some(msg) = open_entry(&mut desktop, idx) {
+                        toast = Some((msg, Instant::now()));
+                    }
+                } else {
+                    desktop.selected = Some(idx);
+                }
             } else {
                 open_menu = None;
                 for i in (0..desktop.wins.len()).rev() {
@@ -471,8 +488,8 @@ fn run_fbdev() -> anyhow::Result<()> {
 #[cfg(target_os = "linux")]
 fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES, floating: false },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM, floating: false },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, preview: None },
     ];
     let work = layout::work_area(w, h);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -480,15 +497,20 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
         win.rect = tg[i].unwrap();
     }
     let active = wins.len() - 1;
-    Desktop { wins, active, layout: Layout::TwoCol }
+    let cwd = draw::default_cwd();
+    let (entries, dir_error) = draw::read_dir_entries(&cwd);
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, dir_error };
+    // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
+    sync_files_title(&mut d);
+    d
 }
 
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn demo_desktop() -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES, floating: false },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM, floating: false },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: "音乐", floating: false },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, preview: None },
     ];
     let work = layout::work_area(WIDTH, HEIGHT);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -496,7 +518,12 @@ fn demo_desktop() -> Desktop {
         w.rect = tg[i].unwrap();
     }
     let active = wins.len() - 1;
-    Desktop { wins, active, layout: Layout::TwoCol }
+    let cwd = draw::default_cwd();
+    let (entries, dir_error) = draw::read_dir_entries(&cwd);
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, dir_error };
+    // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
+    sync_files_title(&mut d);
+    d
 }
 
 /// L2+ 操作待用户确认（aetherd 签发的一次性令牌）。
@@ -909,23 +936,103 @@ const APP_TITLES: [&str; 5] = [
     text::strings::WIN_SETTINGS,
 ];
 
-fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
-    if icon >= APP_TITLES.len() {
+fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {    if icon >= APP_TITLES.len() {
         return Some("未知应用".into());
     }
     if desktop.wins.len() >= 8 {
         return Some("窗口数量已达上限（8）".into());
     }
     let idx = desktop.wins.len();
+    // 浏览器/设置暂无专门内容，先按文件管理器的纸面渲染（视觉上仍是窗口）
+    let kind = match icon {
+        1 => draw::WinKind::Terminal,
+        3 => draw::WinKind::Music,
+        _ => draw::WinKind::Files,
+    };
     let win = Win {
         rect: Rect { x: 200 + (idx % 4) as i32 * 40, y: 90 + (idx % 3) as i32 * 30, w: 500, h: 380 },
         target: None,
-        title: APP_TITLES[icon],
+        title: APP_TITLES[icon].to_string(),
+        kind,
         floating: true,
+        preview: None,
     };
     desktop.wins.push(win);
     desktop.active = desktop.wins.len() - 1;
     None
+}
+
+/// 返回上级目录。已在根目录或读不到时返回提示。
+fn go_up(desktop: &mut Desktop) -> Option<String> {
+    let up = draw::parent_of(&desktop.cwd);
+    if up == desktop.cwd {
+        return Some("已在最上层目录".into());
+    }
+    let (entries, err) = draw::read_dir_entries(&up);
+    if let Some(e) = err {
+        desktop.dir_error = Some(format!("无法返回上级：{e}"));
+        return Some("无法返回上级".into());
+    }
+    desktop.cwd = up;
+    desktop.entries = entries;
+    desktop.selected = None;
+    desktop.dir_error = None;
+    sync_files_title(desktop);
+    None
+}
+
+/// 让文件窗口的标题跟随当前目录（只显示末段 —— 全路径会挤掉红绿灯）。
+fn sync_files_title(desktop: &mut Desktop) {
+    let leaf = draw::path_leaf(&desktop.cwd);
+    for w in desktop.wins.iter_mut() {
+        if w.kind == draw::WinKind::Files {
+            w.title = leaf.clone();
+        }
+    }
+}
+
+/// 打开文件管理器里选中的条目：目录则进入，文件则开预览窗口。
+///
+/// 返回 `Some(msg)` 表示需要提示用户（进不去 / 打不开），`None` 表示静默成功。
+fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
+    let ent = desktop.entries.get(idx).cloned()?;
+    if ent.is_dir {
+        let next = draw::join_path(&desktop.cwd, &ent.name);
+        let (entries, err) = draw::read_dir_entries(&next);
+        if let Some(e) = err {
+            // 进不去就留在原地并说明原因，而不是进一个空目录让人猜
+            desktop.dir_error = Some(format!("无法进入 {}：{e}", ent.name));
+            return Some(format!("无法进入「{}」", ent.name));
+        }
+        desktop.cwd = next;
+        desktop.entries = entries;
+        desktop.selected = None;
+        desktop.dir_error = None;
+        sync_files_title(desktop);
+        None
+    } else {
+        if desktop.wins.len() >= 8 {
+            return Some("窗口数量已达上限（8）".into());
+        }
+        let path = draw::join_path(&desktop.cwd, &ent.name);
+        let data = draw::read_preview(&path);
+        let failed = data.error.is_some();
+        let win = Win {
+            rect: Rect { x: 240, y: 110, w: 620, h: 420 },
+            target: None,
+            title: ent.name.clone(),
+            kind: draw::WinKind::Preview,
+            floating: true,
+            preview: Some(data),
+        };
+        desktop.wins.push(win);
+        desktop.active = desktop.wins.len() - 1;
+        if failed {
+            Some(format!("「{}」无法以文本预览", ent.name))
+        } else {
+            None
+        }
+    }
 }
 
 /// 执行菜单项；返回 (toast, reply-bubble) 反馈。
@@ -1347,6 +1454,24 @@ fn preview_main() -> anyhow::Result<()> {
             else if let Some(icon) = renderer.dock_icons.iter().position(|r| r.contains(mx, my)) {
                 if let Some(msg) = open_app(&mut desktop, icon) {
                     toast = Some((msg, Instant::now()));
+                }
+            }
+            // 3.4 侧栏"上级目录"
+            else if renderer.file_up.contains(mx, my) {
+                open_menu = None;
+                if let Some(msg) = go_up(&mut desktop) {
+                    toast = Some((msg, Instant::now()));
+                }
+            }
+            // 3.5 文件管理器图标 → 点一次选中，再点一次打开
+            else if let Some((_, idx)) = renderer.file_cells.iter().find(|(r, _)| r.contains(mx, my)).copied() {
+                open_menu = None;
+                if desktop.selected == Some(idx) {
+                    if let Some(msg) = open_entry(&mut desktop, idx) {
+                        toast = Some((msg, Instant::now()));
+                    }
+                } else {
+                    desktop.selected = Some(idx);
                 }
             }
             // 4. 窗口标题栏 → 置顶 + 开始拖拽
