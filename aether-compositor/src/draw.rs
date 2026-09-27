@@ -1172,6 +1172,12 @@ pub struct Renderer {
     frames_since_bg: u32,
     bg_w: usize,
     bg_h: usize,
+    /// 壁纸分帧生成进度：已生成的行数（= h 表示整屏就绪）。
+    ///
+    /// 壁纸整屏生成一次要 0.4–0.6 秒，压在一帧里就是开机后一次明显卡顿。
+    /// 改成每帧生成 `BG_ROWS_PER_FRAME` 行后，单帧只付 1/N 的成本，
+    /// 而绘制目标是独立的 `bg` 缓冲，未完成前屏幕上看不到横向接缝。
+    bg_row: usize,
     /// 壁纸 + 全部窗口投影的合成层。
     ///
     /// 投影只取决于窗口几何与激活态，鼠标移动时完全不变；而它每帧要跑
@@ -1209,6 +1215,7 @@ impl Renderer {
             frames_since_bg: u32::MAX,
             bg_w: w,
             bg_h: h,
+            bg_row: 0,
             shadow_layer: Vec::new(),
             shadow_key: 0,
             menubar_menus: Vec::new(),
@@ -1228,6 +1235,22 @@ impl Renderer {
     fn timing_enabled() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var("AETHER_RENDER_TIMING").is_ok())
+    }
+
+    /// 一次性把壁纸补全（单帧渲染与基准测试用）。
+    ///
+    /// 交互路径靠分帧逐步生成，而 `--shot` 只渲染一帧 —— 必须先补全，
+    /// 否则截出来的图只有顶上若干行是壁纸，其余是空白。
+    pub fn prepare_background(&mut self, w: usize, h: usize, t: f32) {
+        if self.bg.len() != w * h {
+            self.bg = vec![0; w * h];
+        }
+        draw_background(&mut self.bg, w, h, t);
+        self.bg_w = w;
+        self.bg_h = h;
+        self.bg_row = h;
+        self.frames_since_bg = 0;
+        self.shadow_key = 0;
     }
 
     /// 渲染一帧。背景每 BG_REFRESH_FRAMES 帧才重算一次（柔光漂移是
@@ -1259,44 +1282,63 @@ impl Renderer {
             };
         }
 
-        // 壁纸漂移是**分钟级**的变化，但生成一次要 ~0.4s（逐像素极光带 + 颗粒），
-        // 放在帧内就是一次肉眼可见的掉帧。240 帧在 10fps 下是 24 秒、在 30fps 下
-        // 只剩 8 秒 —— 帧率提上来之后必须把间隔一起提上去，否则"优化帧率"
-        // 反而让周期性卡顿变密。1800 帧 @30fps ≈ 60 秒。
+        // 壁纸分帧生成：每帧只生成一段行带，整屏 0.4–0.6s 的成本摊到 ~16 帧。
+        //
+        // 为什么必须分：这不是"优化"，是**卡顿**问题——压在单帧里实测首帧 561ms，
+        // 开机后第一眼就是半秒死机（VM 上更久）。分帧后单帧只多 ~35ms/16 ≈ 2ms 级，
+        // 且因为画进的是独立的 bg 缓冲，未完成时屏幕上是上一版完整壁纸，不会有接缝。
+        //
+        // 漂移是**分钟级**的变化，但生成一次要 ~0.4s：240 帧在 10fps 下是 24 秒、
+        // 在 30fps 下只剩 8 秒 —— 帧率提上来之后必须把间隔一起提上去，否则
+        // "优化帧率"反而让周期性卡顿变密。1800 帧 @30fps ≈ 60 秒。
         const BG_REFRESH_FRAMES: u32 = 1800;
-        if self.frames_since_bg > BG_REFRESH_FRAMES || self.bg_w != w || self.bg_h != h {
+        let size_changed = self.bg_w != w || self.bg_h != h || self.bg.len() != w * h;
+        if size_changed || self.frames_since_bg > BG_REFRESH_FRAMES {
             if self.bg.len() != w * h {
                 self.bg = vec![0; w * h];
             }
-            draw_background(&mut self.bg, w, h, t);
-            self.frames_since_bg = 0;
             self.bg_w = w;
             self.bg_h = h;
-            self.shadow_key = 0; // 壁纸变了，烘焙层必须重算
+            self.bg_row = 0;
+            self.frames_since_bg = 0;
+        }
+        if self.bg_row < h {
+            let y1 = (self.bg_row + BG_ROWS_PER_FRAME).min(h);
+            draw_background_rows(&mut self.bg, w, h, t, self.bg_row, y1);
+            self.bg_row = y1;
+            self.frames_since_bg = 0;
         }
         mark!("bg_gen");
-        self.frames_since_bg += 1;
+        self.frames_since_bg = self.frames_since_bg.saturating_add(1);
 
         // 投影烘焙：只取决于窗口几何与激活态，鼠标移动时完全不变。
         // 未变化时这一层直接复用，稳态每帧只剩一次内存拷贝。
+        //
+        // 壁纸**生成中**时每帧跟随一次（只拷不烘）——否则屏幕会停在第 1 帧那张
+        // "一条壁纸 + 一片黑"的画面上直到铺满，反而比原来更难看。
         let skey = desktop_key(desktop);
-        if self.shadow_layer.len() != w * h || self.shadow_key != skey {
+        let bg_incomplete = self.bg_row < h;
+        if self.shadow_layer.len() != w * h || self.shadow_key != skey || bg_incomplete {
             if self.shadow_layer.len() != w * h {
                 self.shadow_layer = vec![0; w * h];
             }
             self.shadow_layer.copy_from_slice(&self.bg);
-            for (i, win) in desktop.wins.iter().enumerate() {
-                let active = i == desktop.active;
-                shadow(
-                    &mut self.shadow_layer,
-                    w,
-                    h,
-                    win.rect,
-                    radius::LG,
-                    if active { elevation::elev_1() } else { elevation::elev_1_dim() },
-                );
+            if bg_incomplete {
+                self.shadow_key = 0; // 铺满后再烘一次（含投影）
+            } else {
+                for (i, win) in desktop.wins.iter().enumerate() {
+                    let active = i == desktop.active;
+                    shadow(
+                        &mut self.shadow_layer,
+                        w,
+                        h,
+                        win.rect,
+                        radius::LG,
+                        if active { elevation::elev_1() } else { elevation::elev_1_dim() },
+                    );
+                }
+                self.shadow_key = skey;
             }
-            self.shadow_key = skey;
         }
         buf.copy_from_slice(&self.shadow_layer);
         mark!("bg_copy");
@@ -1409,12 +1451,41 @@ fn wash(x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32) -> f32 {
     (1.0 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0).powi(2)
 }
 
+/// 壁纸分帧生成时每帧生成的行数。
+///
+/// 760 行 ÷ 32 ≈ 24 帧（30fps 下 0.8 秒铺完），单帧增量约 17ms —— 落在
+/// 30fps 预算（33.3ms）之内，所以生成期间画面是**平滑地逐层刷出**，
+/// 而不是"卡一下再整屏跳出"。取更小的值会让铺满时间变长，取更大则开始掉帧。
+pub const BG_ROWS_PER_FRAME: usize = 32;
+
+/// 生成壁纸的 `[y0, y1)` 行。
+///
+/// **分帧生成的基础**：整屏逐像素生成要 0.4–0.6 秒，压在一帧里就是开机后
+/// 一次肉眼可见的卡死（实测首帧 561ms）。切成行带后每帧只付 1/N 的成本，
+/// 而且因为绘制目标是与屏幕分离的 `bg` 缓冲，未完成前屏幕上不会出现横向接缝。
+pub fn draw_background_rows(buf: &mut [u32], w: usize, h: usize, t: f32, y0: usize, y1: usize) {
+    let y1 = y1.min(h);
+    if y0 >= y1 || buf.len() < w * h {
+        return;
+    }
+    if color::is_light() {
+        light_wallpaper_rows(buf, w, h, t, y0, y1);
+    } else {
+        aurora_rows(buf, w, h, t, y0, y1);
+    }
+}
+
+/// 整屏一次生成（单帧模式与等价性测试用）。
+pub fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
+    draw_background_rows(buf, w, h, t, 0, h);
+}
+
 /// 明亮壁纸：近白底 + 四角粉彩柔光团。
 ///
 /// 为什么不用极光带：光带结构在深色底上才读得出来；浅色底上宽光带只会糊成
 /// 一片"奶雾"，窄光带又会变成脏色块。浅色的高级感来自**近白底 + 角落极淡的
 /// 多色柔光**（Apple 的浅色壁纸正是这套语言）。
-fn draw_light_wallpaper(buf: &mut [u32], w: usize, h: usize, t: f32) {
+fn light_wallpaper_rows(buf: &mut [u32], w: usize, h: usize, t: f32, y0: usize, y1: usize) {
     let (wf, hf) = (w as f32, h as f32);
     let drift = t * 0.02;
     // (色, 中心 x/y 比例, 半径 x/y 比例, 强度)
@@ -1427,7 +1498,7 @@ fn draw_light_wallpaper(buf: &mut [u32], w: usize, h: usize, t: f32) {
     let (top, bottom) = (color::bg_top(), color::bg_bottom());
     let vig_k = color::vignette();
 
-    for y in 0..h {
+    for y in y0..y1 {
         let vgrad = y as f32 / hf;
         let base = [
             lerp(top[0] as f32, bottom[0] as f32, vgrad),
@@ -1461,17 +1532,12 @@ fn draw_light_wallpaper(buf: &mut [u32], w: usize, h: usize, t: f32) {
     }
 }
 
-/// 壁纸：深空底 + 结构化极光带 + 颗粒（深色模式），
-/// 明亮模式走 [`draw_light_wallpaper`]。
+/// 深空壁纸：深空底 + 结构化极光带 + 颗粒。
 ///
 /// 与"几个大半径柔光平摊"的区别：柔光平摊出来是一块发灰的脏渐变，
 /// 而极光必须是**有走向的光带**——中心线随 x 缓慢翘曲、横截面很窄、
 /// 沿 x 有强弱包络。三条带共用同一套漂移时钟，整体像缓慢流动。
-fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
-    if color::is_light() {
-        draw_light_wallpaper(buf, w, h, t);
-        return;
-    }
+fn aurora_rows(buf: &mut [u32], w: usize, h: usize, t: f32, y0: usize, y1: usize) {
     let (wf, hf) = (w as f32, h as f32);
     // 漂移放缓（§3.4 动效克制）：分钟级呼吸
     let drift = t * 0.03;
@@ -1503,7 +1569,7 @@ fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
         }
     }
 
-    for y in 0..h {
+    for y in y0..y1 {
         let vgrad = y as f32 / hf;
         let ny = vgrad - 0.5;
         let base = [
@@ -3130,7 +3196,8 @@ mod render_equiv_tests {
 
 #[cfg(test)]
 mod blit_tests {
-    use super::dirty_rows;
+    use super::{dirty_rows, draw_background, draw_background_rows};
+    use crate::draw::theme::color;
 
     #[test]
     fn dirty_rows_detects_single_changed_row() {
@@ -3168,5 +3235,39 @@ mod blit_tests {
         assert_eq!(dirty_rows(&prev, &cur, w, fw, fh), None);
         cur[1] = 5; // 有效宽度之内
         assert_eq!(dirty_rows(&prev, &cur, w, fw, fh), Some((0, 1)));
+    }
+
+    /// 分帧生成（行带）必须与整屏一次生成**逐像素一致**。
+    ///
+    /// 这条不是凑数：壁纸改成分帧生成后，交互路径与 `--shot` 截图走了不同代码路径
+    /// （前者分帧、后者 [`Renderer::prepare_background`] 整屏）。两者只要有差异，
+    /// 就会出现"截图和真机不一样"这种最难查的 bug。
+    #[test]
+    fn background_rows_match_full_generation() {
+        let (w, h) = (37usize, 53usize); // 非 64 整数倍，逼出末段不足一次行数的边界
+        for &mode in &[color::Mode::Light, color::Mode::Dark] {
+            color::set_mode(mode);
+            let (mut whole, mut banded) = (vec![0u32; w * h], vec![0u32; w * h]);
+            draw_background(&mut whole, w, h, 1.2);
+            let mut y = 0;
+            while y < h {
+                let y1 = (y + 8).min(h);
+                draw_background_rows(&mut banded, w, h, 1.2, y, y1);
+                y = y1;
+            }
+            assert_eq!(whole, banded, "mode={mode:?}: 分帧生成与整屏生成不一致");
+        }
+        color::set_mode(color::Mode::Light); // 恢复默认，避免影响后续测试
+    }
+
+    /// 越界的行带必须是无操作，不能 panic、不能写出缓冲区。
+    #[test]
+    fn background_rows_clamps_out_of_range() {
+        let (w, h) = (8usize, 8usize);
+        let mut buf = vec![0u32; w * h];
+        draw_background_rows(&mut buf, w, h, 1.0, h, h + 5); // y0 == h
+        draw_background_rows(&mut buf, w, h, 1.0, 100, 200); // 完全越界
+        draw_background_rows(&mut buf, w, h, 1.0, 5, 2); // 反向区间
+        assert!(buf.iter().all(|&p| p == 0), "越界行带不应写入任何像素");
     }
 }

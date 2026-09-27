@@ -1,12 +1,26 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-24（复核自 git 历史 + 代码实测）· 源码约 8,600 行（7 个 crate，25 个 .rs 源文件，不含 `target/`）
+生成时间：2026-09-27（复核自 git 历史 + 代码实测）· 源码 **10,684 行**（7 个 crate，25 个 .rs 源文件，不含 `target/`）
+
+> ⚠️ 统计陷阱：`wc -l aether-*/src/*.rs` 会**漏掉 `aetherd`**（它的目录名没有连字符，2,041 行不计入）。此前文档里的 7,500 / 8,600 行都是这个原因少算的。逐 crate 统计见下表。
+
+| crate | 行数 | 文件 | 职责 |
+|---|---|---|---|
+| `aether-compositor` | 6,021 | 6 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 3,273 为视觉层） |
+| `aetherd` | 2,041 | 7 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 |
+| `aether-init` | 1,119 | 6 | PID 1 与服务管理 |
+| `aether-ops` | 703 | 3 | AI 运维：日志监控 + 故障诊断 |
+| `aether-install` | 505 | 1 | 磁盘安装器（isohybrid 整盘写入） |
+| `aether-ipc` | 284 | 1 | 全系统 IPC 协议 |
+| `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
+| **合计** | **10,684** | **25** | |
 
 ## 目录总览
 
 ```
 Aether/
-├── Cargo.toml               workspace 定义（7 个 crate 成员）
+├── Cargo.toml               workspace 定义（7 个 crate 成员，license = GPL-3.0-only）
+├── LICENSE                  GPL-3.0 全文（第三方组件清单见 README「许可证」段）
 ├── rust-toolchain.toml      stable-x86_64-pc-windows-gnu
 ├── .cargo/config.toml       rust-lld 链接器 + 自包含 mingw（本机无 MSVC）
 ├── ARCHITECTURE.md          架构与设计决策（ADR-001 ~ ADR-006）
@@ -44,7 +58,7 @@ Aether/
 | 文件 | 内容 |
 |---|---|
 | `src/main.rs` (1,347) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互 |
-| `src/draw.rs` (2,150) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、**双模色板**（`color::*()` 函数 + 模式原子量，`--theme light|dark`，默认明亮）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、壁纸双模（深色=结构化极光带 + 颗粒，明亮=近白底 + 四角粉彩柔光团）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐三种窗口内容、BMP 导出 |
+| `src/draw.rs` (3,273) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、**双模色板**（`color::*()` 函数 + 模式原子量，`--theme light|dark`，默认明亮）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、壁纸双模（深色=结构化极光带 + 颗粒，明亮=近白底 + 四角粉彩柔光团）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐三种窗口内容、BMP 导出 |
 | `src/layout.rs` (171) | 布局引擎：`Layout::{Float,TwoCol,ThreeCol,Monocle}`、平铺目标矩形计算、拖拽边缘吸附 `Snap::{Left,Right,Top}` |
 | `src/text.rs` (277) | fontdue 文本渲染（微软雅黑，CJK 可读）+ `vcenter` 垂直居中；`strings` 模块收口 UI 文案 |
 | `src/input.rs` (228, Linux) | evdev 输入后端：键盘/鼠标原始事件 → UI 事件 |
@@ -114,12 +128,17 @@ Aether/
 | `scripts/shot-diff.py` | 截图像素回归（仅适用于"纯重构不应有视觉变化"的改动） |
 | `scripts/bmp2png.py` | `--shot` 产物 BMP→PNG（仅标准库，供目视走查；勿包成 .sh 调用，见 ui-design-handover §11） |
 | `scripts/png-crop.py` | 走查图裁剪 + 整数倍放大（1:1 检查边框/字重/图标比例） |
+| `scripts/archive-ui-shots.py` | **归档走查图工具**：重建 `docs/host-ui-*.png` 全部 8 张；`--check` 为视觉回归门禁（屏蔽时钟/AI 光标非确定区，差异 > 0.02% 即失败） |
 | `docs/ipc-protocol.md` | aether-ipc 协议草案 |
 | `docs/ai-permissions.md` | AI 权限模型：L0-L3、审计、确认令牌 |
 | `docs/roadmap.md` | 路线图（已复核至 M0–M6 完成态） |
 | `docs/HANDOVER.md` | 交接报告 v4（M4/M5/M6 实测记录 + 构建/验证手册） |
 | `docs/ui-design-handover.md` | UI 设计系统交接 + §10 视觉质量冲刺 + §11 本机环境陷阱 + §12 双模主题（明亮默认/深空备选，含明亮模式四个专属陷阱） |
 | `docs/CODE-REVIEW-2026-09-19.md` | 代码审查 P0–P3 修复记录（37 项） |
+| `docs/CODE-REVIEW-2026-09-22.md` / `CODE-REVIEW-2026-09-26.md` | 第二、三轮代码审查 |
+| `docs/FIX-REPORT-2026-09-26.md` | 第三轮审查的修复报告（含安全链路实测对比） |
+| `docs/PERF-REPORT-2026-09-26.md` | 性能优化报告（91 → 15.5 ms/帧的完整推导） |
+| `docs/UNIMPLEMENTED-2026-09-27.md` | **未实现功能清单**（按「用户会不会卡住」排序，接手先读这份） |
 | `docs/host-ui-*.png` | 主机 `--shot` 走查图（深空：桌面/三列/确认弹窗/菜单；明亮：`host-ui-light-*.png`。与实机 `screenshot-*.png` 区分） |
 
 ## 关键链路
@@ -143,9 +162,14 @@ aether-ops 巡检 → aether-init 服务状态 + /var/log/aether 日志 → 自�
 ## 常用命令
 
 ```bash
-cargo run -p aether-compositor                       # 桌面预览（交互模式）
-cargo run -p aether-compositor -- --shot 2           # 单帧截图自检
-cargo run -p aether-compositor -- --shot 2 --bubble tool --ai-status cloud --confirm 3 --echo  # UI 走查截图
+# ⚠️ 本机 cargo 一律加 --offline：不带会卡在 registry 访问（实测 18 分钟无产出）
+cargo run -p aether-compositor --offline                       # 桌面预览（交互模式，默认明亮）
+cargo run -p aether-compositor --offline -- --theme dark       # 深空主题
+cargo run -p aether-compositor --offline -- --shot 2           # 单帧截图自检
+cargo run -p aether-compositor --offline -- --shot 2 --bubble tool --ai-status cloud --confirm 3 --echo  # UI 走查截图
+cargo run -p aether-compositor --offline -- --bench 120        # 帧耗时基准（首帧/稳态/fps 上限）
+AETHER_RENDER_TIMING=1 cargo run -p aether-compositor           # 逐帧分阶段耗时
+python scripts/archive-ui-shots.py [--check]                   # 归档走查图重建 / 回归门禁
 cargo run -p aetherd -- chat "把窗口排成两列"          # 单轮 agent（需 Ollama 或 AETHER_API_KEY）
 cargo run -p aetherd -- serve                        # 常驻 IPC 服务（7311）
 cargo run -p aether-init -- --dry-run ./platform/overlay/etc/aether/services  # 服务监督自检
@@ -153,11 +177,14 @@ python scripts/e2e-permission-confirm.py             # 权限链路端到端（�
 cargo test --workspace                               # 全部单元测试
 ```
 
-## 测试分布（65 项 Windows 宿主 + 17 项 Linux 专属 = 82 项）
+## 测试分布（Windows 宿主实测 91 项；另 17 项 Linux 专属）
 
-- `aether-ipc`：请求 roundtrip、响应解码、ChatChunk channel 往返/兼容（4）
-- `aether-compositor`：布局全覆盖/三列主列/吸附分区/独占堆叠（layout 4）+ evdev 事件（input 4，Linux）
-- `aetherd`：快速意图 8、路由 7（含 channel 标识）、权限闸门 7、工具系统 9、解析/降级 4（35）
-- `aether-init`：拓扑/环检测/白名单/缺依赖/监督退避/spawn 退避（manager 6）+ 解析校验（unit 3）+ 持久化（persist 4）（13）
+- `aether-ipc`：请求 roundtrip、响应解码、ChatChunk channel 往返/兼容、RegisterUi 往返（6）
+- `aether-compositor`：布局（4）+ evdev（4，Linux）+ 形状快速路径等价性（6）+ 脏行（4）
+  + 壁纸行带等价性/越界（2）+ 行内区间（5）
+- `aetherd`：快速意图、路由（含敏感上下文强制本地）、权限闸门/令牌/拒绝冷却、工具系统、解析降级（42）
+- `aether-init`：拓扑/环检测/白名单/监督退避（6）+ 解析校验（3）+ 持久化（4）（13）
 - `aether-install`：参数/防呆/MBR 读写/分区规划/命名（9）
 - `aether-ops`：监控决策 + 诊断报告（13，Linux 专属）
+
+> 端到端：`scripts/e2e-permission-confirm.py`（17 项断言，需先起 `aetherd serve`）。

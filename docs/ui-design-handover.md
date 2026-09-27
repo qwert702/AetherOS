@@ -489,6 +489,10 @@ gen "--shot 2 --menu --theme light"          docs/host-ui-light-menu.png
 是否等于当前 HEAD，否则"零回归"的结论会建立在错误的基线上（`target/uishot/` 下常有
 作者未归档的中间走查图，是更近的基线）。
 
+> **2026-09-27 更新**：这条教训**又犯了一次** —— 09-27 的文件管理器改动后，8 张归档图
+> 再次全部落后于 HEAD（实测差异 0.95%–1.31%，包围盒覆盖整个文件窗口区）。
+> 根因不是疏忽而是流程：归档靠手敲命令，必然漏。现已工具化，见 §15.2。
+
 ---
 
 ## 14. 合成器性能优化（2026-09-26）
@@ -519,3 +523,70 @@ gen "--shot 2 --menu --theme light"          docs/host-ui-light-menu.png
 路径在 Windows 上跑不到（无 `/dev/fb0`），仅其脏行选择逻辑有单测覆盖。
 
 
+
+---
+
+## 15. 壁纸分帧生成 + 归档图工具化（2026-09-27）
+
+接手方复核 09-26/09-27 的三个提交时提出三项问题，本节记录修复。
+
+### 15.1 壁纸分帧生成：首帧 561 → 30 ms
+
+**问题**：`draw_background` 整屏逐像素生成（极光带 + 颗粒）一次要 0.4–0.6 秒，
+压在单帧里就是开机后一次肉眼可见的卡死。此前只把刷新间隔从 240 帧提到 1800 帧
+（降低频率），**没有解决单次成本**。
+
+**改法**：
+- 拆出 `draw_background_rows(buf, w, h, t, y0, y1)`，按行带生成；每帧生成
+  `BG_ROWS_PER_FRAME = 32` 行 → 760 行 24 帧铺完（30fps 下 0.8 秒），
+  单帧增量约 17ms，落在 33.3ms 预算内。
+- 生成目标是**独立的 `bg` 缓冲**，屏幕内容来自 `shadow_layer`。所以：
+  - 生成期间每帧把 `bg` 拷进 `shadow_layer`（只拷不烘，约 0.4ms）→ 画面**平滑逐层刷出**；
+  - 铺满后做一次完整投影烘焙。
+  - 若不做这一步，屏幕会停在第一帧那张"一条壁纸 + 一片黑"上直到铺满，比原来更难看。
+- `--shot` / `--bench` 走 `Renderer::prepare_background()`（整屏一次补全），
+  保证单帧输出完整。
+
+**验收数字**（`--bench 120`，Windows 开发机）：
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 壁纸整屏生成（一次性） | 561 ms（计入首帧） | 398–424 ms（**不再计入帧内**） |
+| **交互路径首帧** | **561 ms** | **30 ms** |
+| 分帧期间单帧增量 | — | ≈16.6 ms |
+| 稳态帧耗时 | 15.3 ms | 15.3 ms（无变化） |
+
+**回归**：新增 2 项单测 ——
+`background_rows_match_full_generation`（行带生成与整屏生成**逐像素一致**，两种主题各验一遍；
+这条必须有：交互路径分帧、`--shot` 整屏，两条路径不一致就是"截图与真机不同"的隐性 bug）、
+`background_rows_clamps_out_of_range`（越界/反向区间不得写入）。
+单帧输出与改动前逐像素比对：**明亮模式 0 差异，深色模式差异全部落在顶栏时钟区**。
+
+### 15.2 归档图工具化：`scripts/archive-ui-shots.py`
+
+一条命令重建全部 8 张归档图，`--check` 作为视觉回归门禁：
+
+```bash
+cargo build -p aether-compositor --offline   # 脚本直接调二进制，不经过 cargo
+python scripts/archive-ui-shots.py           # 重建 docs/host-ui-*.png
+python scripts/archive-ui-shots.py --check   # 门禁：差异 > 0.02% 即失败（退出码 1）
+```
+
+- 直接调用 `target/debug/aether-compositor[.exe]`，**不经过 cargo** —— 见 §11：嵌套调用
+  时 PATH 会被改写成 Windows 分号形式，cargo 静默失败。
+- 比对时屏蔽两个非确定区：顶栏时钟（`x > w-80` 且 `y < 32`）与 AI 指令条光标
+  （`x 515–530, y 595–630`）。加完掩码后 8 张全部 `0.0000%`。
+- 顺手清掉了工作区里未跟踪的 `docs/host-ui-files-real.png`（无任何文档引用的中间产物）。
+
+### 15.3 一行数统计的坑：`aether-*/src/*.rs` 漏掉 `aetherd`
+
+`aetherd` 的目录名**没有连字符**，所以 `aether-*` 这个 glob 匹配不到它 —— 此前
+INDEX 里的「7,500 行」「8,600 行」都是这样少算了一个 crate（2,041 行）。
+
+**实测**：7 个 crate 共 **10,684 行 / 25 个 .rs 文件**（compositor 6,021 / aetherd 2,041 /
+init 1,119 / ops 703 / install 505 / ipc 284 / shell 11）。INDEX 已改为逐 crate 列表并标注此坑。
+
+### 15.4 顺手同步的文档
+
+`INDEX.md`（行数、crate 表、`--theme`/`--bench`/`AETHER_RENDER_TIMING`/归档脚本、
+测试分布 91 项、新报告清单）、`docs/roadmap.md`（新增「工程化与性能」章节）。

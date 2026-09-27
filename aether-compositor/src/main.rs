@@ -1157,6 +1157,8 @@ fn main() -> anyhow::Result<()> {
             installer,
             confirm,
         };
+        // 单帧输出必须先把壁纸补全（交互路径是分帧生成的）
+        renderer.prepare_background(WIDTH, HEIGHT, 1.2);
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         draw::write_bmp("preview.bmp", &buf, WIDTH, HEIGHT)?;
         println!("preview.bmp written (layout: {})", lay.label());
@@ -1189,13 +1191,25 @@ fn main() -> anyhow::Result<()> {
             confirm: None,
         };
 
-        // 首帧含壁纸生成（每 BG_REFRESH_FRAMES 帧才发生一次），单独计时
+        // 壁纸整屏生成单独计时：交互路径已改为分帧摊开（每帧 64 行），
+        // 这里量的是"整屏一次算完"的原始成本，用于判断还要不要继续优化。
         let mut fresh = draw::Renderer::new(WIDTH, HEIGHT);
         let t_bg = std::time::Instant::now();
-        fresh.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
+        fresh.prepare_background(WIDTH, HEIGHT, 1.2);
         let bg_ms = t_bg.elapsed().as_secs_f64() * 1000.0;
+        let t_frame = std::time::Instant::now();
+        fresh.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
+        let first_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
+
+        // 交互路径的真实首帧：不分帧前这里要 0.4–0.6 秒（开机第一眼就是卡死），
+        // 现在只生成 64 行壁纸。这一行就是"分帧"改动的验收数字。
+        let mut inc = draw::Renderer::new(WIDTH, HEIGHT);
+        let t_inc = std::time::Instant::now();
+        inc.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
+        let inc_first = t_inc.elapsed().as_secs_f64() * 1000.0;
 
         let mut renderer = draw::Renderer::new(WIDTH, HEIGHT);
+        renderer.prepare_background(WIDTH, HEIGHT, 1.2);
         for _ in 0..3 {
             renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         }
@@ -1208,8 +1222,13 @@ fn main() -> anyhow::Result<()> {
         }
         let el = t0.elapsed();
         let per = el.as_secs_f64() * 1000.0 / n as f64;
+        // 分帧生成：整屏行数 ÷ 每帧行数
+        let bg_frames = (HEIGHT as f64 / draw::BG_ROWS_PER_FRAME as f64).ceil();
         println!("bench @ {WIDTH}x{HEIGHT}（两列 + 鼠标）");
-        println!("  首帧（含壁纸生成）: {bg_ms:.2} ms");
+        println!("  壁纸整屏生成（一次性）: {bg_ms:.2} ms");
+        println!("  分帧后单帧增量: ≈{:.2} ms（{bg_frames:.0} 帧铺完，不再阻塞首帧）", bg_ms / bg_frames);
+        println!("  **交互路径首帧**: {inc_first:.2} ms（分帧生效；改动前 = 首帧 + 整屏生成）");
+        println!("  首帧（壁纸已就绪）: {first_ms:.2} ms");
         println!("  稳态 {n} 帧: 平均 {per:.2} ms/帧 → 上限 {:.0} fps", 1000.0 / per);
         println!("  理论 30fps 预算 33.3ms/帧，当前占用 {:.0}%", per / 33.3 * 100.0);
         return Ok(());
