@@ -112,3 +112,6 @@
 - [x] 生产力化 Phase 1 主体：**真实终端**（PTY + VT/ANSI 解析器 + 输入路由 + 剪贴板），
       文件管理器侧栏接真实路径 + 可点击面包屑，窗口缩放，init 救援模式，日志运行期轮转
       —— 测试 112 → 172 项；六个"生产力"硬门禁 2.5/6（详见 PRODUCTION-PLAN 进度表）
+- [x] 跨进程剪贴板（2.2）：ClipboardSet/Get 协议 + aetherd 状态 + AI 工具
+      `clipboard_read`（L1，读到即强制本地推理）/ `clipboard_write`（L0），每次读写落审计
+      —— 测试 172 → 185 项
