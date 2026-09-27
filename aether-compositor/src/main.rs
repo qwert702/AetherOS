@@ -11,7 +11,7 @@
 mod draw;
 #[cfg(target_os = "linux")]
 mod fbdev;
-#[cfg(target_os = "linux")]
+// 输入事件层：事件类型与键位翻译跨平台（可在开发机上单测），仅采集后端限 Linux
 mod input;
 mod layout;
 mod text;
@@ -182,6 +182,22 @@ fn run_fbdev() -> anyhow::Result<()> {
                         toast = Some((msg, Instant::now()));
                     }
                 }
+                input::UiEvent::Ctrl(c) => {
+                    // 关窗会改动窗口数组：拖拽状态必须一起清掉（P2-3 同类越界）
+                    let closed = c == 'w';
+                    if let Some(msg) = apply_ctrl(&mut desktop, c) {
+                        if closed {
+                            drag = None;
+                            snap_zone = layout::Snap::None;
+                        }
+                        toast = Some((msg, Instant::now()));
+                    }
+                }
+                input::UiEvent::Nav(n) => {
+                    if let Some(msg) = apply_nav(&mut desktop, n) {
+                        toast = Some((msg, Instant::now()));
+                    }
+                }
                 input::UiEvent::Enter => {
                     if let Some((req, echo)) = confirm.as_ref() {
                         // 回车 = 允许一次；L3 必须回显匹配才放行
@@ -321,6 +337,27 @@ fn run_fbdev() -> anyhow::Result<()> {
                         drag = None;
                         snap_zone = layout::Snap::None;
                     }
+                }
+            } else if let Some((idx, close, zoom)) = renderer
+                .window_lights
+                .iter()
+                .rev() // 后画的窗口在上层，命中优先
+                .find(|(_, c, z)| c.contains(mouse.0, mouse.1) || z.contains(mouse.0, mouse.1))
+                .copied()
+            {
+                // 红绿灯：此前只画不响应，开满窗口后用户会直接卡住
+                // 中间那颗（最小化）没有接线：没有"最小化到哪去"的语义，不假装支持
+                let msg = if close.contains(mouse.0, mouse.1) {
+                    close_window(&mut desktop, idx)
+                } else if zoom.contains(mouse.0, mouse.1) {
+                    toggle_zoom(&mut desktop, idx, layout::work_area(w, h))
+                } else {
+                    None
+                };
+                drag = None;
+                snap_zone = layout::Snap::None;
+                if let Some(m) = msg {
+                    toast = Some((m, Instant::now()));
                 }
             } else if mouse.1 < layout::TOP_BAR as f32 {
                 let hit_menu = renderer
@@ -488,8 +525,8 @@ fn run_fbdev() -> anyhow::Result<()> {
 #[cfg(target_os = "linux")]
 fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, preview: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None },
     ];
     let work = layout::work_area(w, h);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -499,7 +536,7 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     let active = wins.len() - 1;
     let cwd = draw::default_cwd();
     let (entries, dir_error) = draw::read_dir_entries(&cwd);
-    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, dir_error };
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, dir_error };
     // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
     sync_files_title(&mut d);
     d
@@ -508,9 +545,9 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn demo_desktop() -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, preview: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, preview: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, restore: None, preview: None },
     ];
     let work = layout::work_area(WIDTH, HEIGHT);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -520,7 +557,7 @@ fn demo_desktop() -> Desktop {
     let active = wins.len() - 1;
     let cwd = draw::default_cwd();
     let (entries, dir_error) = draw::read_dir_entries(&cwd);
-    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, dir_error };
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, dir_error };
     // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
     sync_files_title(&mut d);
     d
@@ -955,6 +992,7 @@ fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {    if icon >
         title: APP_TITLES[icon].to_string(),
         kind,
         floating: true,
+        restore: None,
         preview: None,
     };
     desktop.wins.push(win);
@@ -1023,6 +1061,7 @@ fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
             title: ent.name.clone(),
             kind: draw::WinKind::Preview,
             floating: true,
+            restore: None,
             preview: Some(data),
         };
         desktop.wins.push(win);
@@ -1317,20 +1356,44 @@ fn preview_main() -> anyhow::Result<()> {
             .unwrap_or((0.0, 0.0));
         let down = window.get_mouse_down(minifb::MouseButton::Left);
 
-        // ---- 键盘：AI 指令输入 + 布局切换 ----
+        // ---- 键盘：AI 指令输入 + 布局切换 + 窗口/文件导航 ----
         // minifb 无字符级输入 API，预览期用按键映射（字母/空格/常用符号）；
         // 数字键 1-4 保留给布局切换，中文指令可用 aetherd chat CLI
+        let ctrl = window.is_key_down(minifb::Key::LeftCtrl)
+            || window.is_key_down(minifb::Key::RightCtrl);
         let held = window.get_keys_pressed(minifb::KeyRepeat::Yes);
         for k in &held {
+            // 按住 Ctrl 时不产生字符 —— 否则 Ctrl+W 会先把 'w' 打进指令条再关窗
+            if ctrl {
+                continue;
+            }
             if let Some(ch) = key_to_char(k) {
                 ai_input.push(ch);
             }
         }
-        if held.contains(&minifb::Key::Backspace) {
+        if !ctrl && held.contains(&minifb::Key::Backspace) {
             ai_input.pop();
         }
         let keys = window.get_keys_pressed(minifb::KeyRepeat::No);
         for k in &keys {
+            // Ctrl 组合键（目前只有 Ctrl+W 关闭活动窗口）
+            if ctrl {
+                if let Some(ch) = key_to_char(k) {
+                    if let Some(msg) = apply_ctrl(&mut desktop, ch.to_ascii_lowercase()) {
+                        drag = None;
+                        snap_zone = layout::Snap::None;
+                        toast = Some((msg, Instant::now()));
+                        continue;
+                    }
+                }
+            }
+            // 导航键：与真机路径走同一份实现
+            if let Some(nav) = minifb_nav(k) {
+                if let Some(msg) = apply_nav(&mut desktop, nav) {
+                    toast = Some((msg, Instant::now()));
+                }
+                continue;
+            }
             match k {
                 minifb::Key::Enter => {
                     if !ai_input.trim().is_empty() {
@@ -1440,6 +1503,26 @@ fn preview_main() -> anyhow::Result<()> {
                 } else {
                     layout::Snap::None
                 };
+            } else if let Some((idx, close, zoom)) = renderer
+                .window_lights
+                .iter()
+                .rev() // 后画的窗口在上层，命中优先
+                .find(|(_, c, z)| c.contains(mx, my) || z.contains(mx, my))
+                .copied()
+            {
+                // 红绿灯：此前只画不响应
+                let msg = if close.contains(mx, my) {
+                    close_window(&mut desktop, idx)
+                } else if zoom.contains(mx, my) {
+                    toggle_zoom(&mut desktop, idx, layout::work_area(WIDTH, HEIGHT))
+                } else {
+                    None
+                };
+                drag = None;
+                snap_zone = layout::Snap::None;
+                if let Some(m) = msg {
+                    toast = Some((m, Instant::now()));
+                }
             } else if my < layout::TOP_BAR as f32 {
                 // 1. 菜单栏区域
                 let hit_menu = renderer
@@ -1644,6 +1727,25 @@ fn key_to_char(k: &minifb::Key) -> Option<char> {
     Some(c)
 }
 
+/// minifb 按键 → 导航键（与 evdev 路径的 `input::nav_key` 语义一一对应）。
+#[cfg(not(target_os = "linux"))]
+fn minifb_nav(k: &minifb::Key) -> Option<input::NavKey> {
+    use minifb::Key::*;
+    Some(match k {
+        Left => input::NavKey::Left,
+        Right => input::NavKey::Right,
+        Up => input::NavKey::Up,
+        Down => input::NavKey::Down,
+        Home => input::NavKey::Home,
+        End => input::NavKey::End,
+        PageUp => input::NavKey::PageUp,
+        PageDown => input::NavKey::PageDown,
+        Tab => input::NavKey::Tab,
+        Delete => input::NavKey::Delete,
+        _ => return None,
+    })
+}
+
 /// 切换布局（键盘路径）；返回 toast 文案。
 fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
     if lay == desktop.layout {
@@ -1657,6 +1759,106 @@ fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
     Some(format!("布局：{}", lay.label()))
 }
 
+// ---------------------------------------------------------------------------
+// 窗口管理与键盘导航：**两条渲染路径（预览 / fbdev）共用同一份实现**。
+// 写在各自的事件循环里迟早会漂移成"预览能关窗、真机不能"这类只在一条路径成立的差异。
+// ---------------------------------------------------------------------------
+
+/// 关闭窗口。返回 toast 文案。
+///
+/// **必须同时修正 `active`**：窗口数组被移除后旧索引会越界。调用方还负责清 `drag`——
+/// 拖拽中关掉被拖的窗口正是 P2-3 那类 panic 的来源。
+fn close_window(desktop: &mut Desktop, idx: usize) -> Option<String> {
+    if idx >= desktop.wins.len() {
+        return None;
+    }
+    let title = desktop.wins.remove(idx).title;
+    if desktop.wins.is_empty() {
+        desktop.active = 0;
+    } else {
+        // 关掉的不在活动项之前时，焦点前移一位；总体再夹一次，防越界
+        if desktop.active > idx {
+            desktop.active -= 1;
+        }
+        desktop.active = desktop.active.min(desktop.wins.len() - 1);
+    }
+    Some(format!("已关闭「{title}」"))
+}
+
+/// 最大化 / 恢复。用 `restore` 记住原矩形，再点一次回到原位。
+fn toggle_zoom(desktop: &mut Desktop, idx: usize, work: draw::Rect) -> Option<String> {
+    let win = desktop.wins.get_mut(idx)?;
+    match win.restore.take() {
+        Some(prev) => {
+            win.target = Some(prev);
+            Some(format!("已恢复「{}」", win.title))
+        }
+        None => {
+            win.restore = Some(win.rect);
+            win.floating = true; // 脱离平铺，否则下一帧会被布局覆盖回去
+            win.target = Some(work);
+            Some(format!("已最大化「{}」", win.title))
+        }
+    }
+}
+
+/// 活动窗口若是文件管理器，返回它的网格布局（键盘导航要与画出来的一致）。
+fn active_files_grid(desktop: &Desktop) -> Option<draw::GridLayout> {
+    let win = desktop.wins.get(desktop.active)?;
+    if win.kind != draw::WinKind::Files {
+        return None;
+    }
+    Some(draw::grid_layout(draw::files_grid_rect(win.rect)))
+}
+
+/// 导航键动作：Tab 轮换焦点；方向/翻页/Home/End 在文件网格里移动选择并保持可见。
+///
+/// `Delete` **故意不实现** —— 文件写操作（删除/重命名）必须先扩权限模型（L2 敏感写），
+/// 顺手加会绕开闸门与审计。
+fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
+    use input::NavKey::*;
+    if key == Tab {
+        if desktop.wins.len() < 2 {
+            return None;
+        }
+        desktop.active = (desktop.active + 1) % desktop.wins.len();
+        return Some(format!("焦点：{}", desktop.wins[desktop.active].title));
+    }
+    if key == Delete {
+        return None;
+    }
+    let g = active_files_grid(desktop)?;
+    let per_page = g.page_size().max(1);
+    let total = desktop.entries.len();
+    if total == 0 {
+        return None;
+    }
+    let cur = desktop.selected.unwrap_or(0).min(total - 1);
+    let cols = g.cols.max(1);
+    let next = match key {
+        Down => (cur + cols).min(total - 1),
+        Up => cur.saturating_sub(cols),
+        Right => (cur + 1).min(total - 1),
+        Left => cur.saturating_sub(1),
+        PageDown => (cur + per_page).min(total - 1),
+        PageUp => cur.saturating_sub(per_page),
+        Home => 0,
+        End => total - 1,
+        _ => cur,
+    };
+    desktop.selected = Some(next);
+    desktop.scroll = draw::scroll_to_show(next, desktop.scroll, per_page);
+    None
+}
+
+/// Ctrl 组合键动作。目前只有一个：Ctrl+W 关闭活动窗口（配合红绿灯把"关不掉窗口"这条堵死）。
+fn apply_ctrl(desktop: &mut Desktop, c: char) -> Option<String> {
+    match c {
+        'w' => close_window(desktop, desktop.active),
+        _ => None,
+    }
+}
+
 /// 截图模式下立即就位（无缓动）。
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn snap_now(desktop: &mut Desktop, lay: Layout) {
@@ -1666,5 +1868,170 @@ fn snap_now(desktop: &mut Desktop, lay: Layout) {
         if let Some(r) = tg[i] {
             w.rect = r;
         }
+    }
+}
+
+#[cfg(test)]
+mod window_mgmt_tests {
+    use super::*;
+    use draw::{FsEntry, WinKind};
+
+    fn mkwin(title: &str, kind: WinKind) -> Win {
+        Win {
+            rect: Rect { x: 100, y: 100, w: 600, h: 400 },
+            target: None,
+            title: title.to_string(),
+            kind,
+            floating: false,
+            restore: None,
+            preview: None,
+        }
+    }
+
+    fn desk(n: usize) -> Desktop {
+        let wins = (0..n).map(|i| mkwin(&format!("w{i}"), WinKind::Terminal)).collect();
+        Desktop {
+            wins,
+            active: n.saturating_sub(1),
+            layout: Layout::TwoCol,
+            cwd: "/tmp".into(),
+            entries: Vec::new(),
+            selected: None,
+            scroll: 0,
+            dir_error: None,
+        }
+    }
+
+    /// 只读目录：`n` 个条目，交替目录/文件
+    fn files_desk(n: usize) -> Desktop {
+        let mut d = desk(1);
+        d.wins[0] = mkwin("文件", WinKind::Files);
+        d.entries = (0..n)
+            .map(|i| FsEntry { name: format!("e{i}"), is_dir: i % 2 == 0, size: 0 })
+            .collect();
+        d
+    }
+
+    #[test]
+    fn close_keeps_active_in_range() {
+        // 关掉最后一个窗口：active 不能越界（曾是最容易踩的 panic 源）
+        let mut d = desk(3);
+        close_window(&mut d, 2);
+        assert_eq!(d.wins.len(), 2);
+        assert!(d.active < d.wins.len(), "active={} len={}", d.active, d.wins.len());
+    }
+
+    #[test]
+    fn close_shifts_focus_when_removing_before_active() {
+        let mut d = desk(3);
+        d.active = 2;
+        close_window(&mut d, 0); // 关掉活动项之前的一个
+        assert_eq!(d.wins.len(), 2);
+        // 原来 active 指向 w2，删掉 w0 后 w2 落到索引 1
+        assert_eq!(d.active, 1);
+        assert_eq!(d.wins[d.active].title, "w2");
+    }
+
+    #[test]
+    fn close_to_empty_is_safe() {
+        let mut d = desk(1);
+        assert!(close_window(&mut d, 0).is_some());
+        assert!(d.wins.is_empty());
+        assert_eq!(d.active, 0);
+        assert!(close_window(&mut d, 0).is_none()); // 再关是空操作，不 panic
+    }
+
+    #[test]
+    fn zoom_toggles_and_restores_rect() {
+        let mut d = desk(1);
+        let before = d.wins[0].rect;
+        let work = Rect { x: 16, y: 42, w: 1248, h: 602 };
+        toggle_zoom(&mut d, 0, work);
+        assert_eq!(d.wins[0].target, Some(work));
+        assert!(d.wins[0].floating, "最大化必须脱离平铺，否则下一帧被布局覆盖");
+        assert_eq!(d.wins[0].restore, Some(before));
+        toggle_zoom(&mut d, 0, work);
+        assert_eq!(d.wins[0].target, Some(before));
+        assert_eq!(d.wins[0].restore, None);
+    }
+
+    #[test]
+    fn tab_cycles_focus_including_wrap() {
+        let mut d = desk(3);
+        d.active = 0;
+        apply_nav(&mut d, input::NavKey::Tab);
+        assert_eq!(d.active, 1);
+        apply_nav(&mut d, input::NavKey::Tab);
+        apply_nav(&mut d, input::NavKey::Tab);
+        assert_eq!(d.active, 0, "应回绕到第一个");
+        // 只有一个窗口时不切换（否则会出现"看不出发生了什么"的静默行为）
+        let mut one = desk(1);
+        assert!(apply_nav(&mut one, input::NavKey::Tab).is_none());
+    }
+
+    #[test]
+    fn nav_moves_selection_by_grid() {
+        use input::NavKey::*;
+        let mut d = files_desk(20);
+        // 600x400 的窗口 → 网格 3 列 × 3 行（见 grid_layout 的推导）
+        let g = active_files_grid(&d).expect("文件窗口应有网格");
+        assert_eq!((g.cols, g.rows), (3, 3));
+        assert_eq!(g.page_size(), 9);
+
+        apply_nav(&mut d, Down);
+        assert_eq!(d.selected, Some(3), "Down 应下移一行（=cols）");
+        apply_nav(&mut d, Up);
+        assert_eq!(d.selected, Some(0));
+        apply_nav(&mut d, Right);
+        assert_eq!(d.selected, Some(1));
+        apply_nav(&mut d, Left);
+        assert_eq!(d.selected, Some(0));
+        apply_nav(&mut d, End);
+        assert_eq!(d.selected, Some(19));
+        apply_nav(&mut d, Home);
+        assert_eq!(d.selected, Some(0));
+    }
+
+    #[test]
+    fn nav_keeps_selection_visible() {
+        use input::NavKey::*;
+        let mut d = files_desk(20);
+        apply_nav(&mut d, PageDown); // 0 → 9
+        assert_eq!(d.selected, Some(9));
+        assert_eq!(d.scroll, 1, "第 9 项要落进可视页（9+1-9=1）");
+        apply_nav(&mut d, End);
+        assert_eq!(d.selected, Some(19));
+        assert_eq!(d.scroll, 11);
+        apply_nav(&mut d, Home);
+        assert_eq!((d.selected, d.scroll), (Some(0), 0));
+    }
+
+    #[test]
+    fn nav_on_non_files_window_is_noop() {
+        use input::NavKey::*;
+        let mut d = desk(1); // 终端窗口
+        assert!(active_files_grid(&d).is_none());
+        apply_nav(&mut d, Down);
+        assert_eq!(d.selected, None);
+    }
+
+    #[test]
+    fn delete_is_deliberately_not_implemented() {
+        // 写操作必须先扩权限模型（L2 敏感写）：这里必须是 no-op，而不是悄悄删文件
+        let mut d = files_desk(3);
+        d.selected = Some(1);
+        assert!(apply_nav(&mut d, input::NavKey::Delete).is_none());
+        assert_eq!(d.entries.len(), 3, "Delete 不得改动任何条目");
+        assert_eq!(d.selected, Some(1));
+    }
+
+    #[test]
+    fn ctrl_w_closes_active_window() {
+        let mut d = desk(2);
+        d.active = 1;
+        assert!(apply_ctrl(&mut d, 'w').is_some());
+        assert_eq!(d.wins.len(), 1);
+        assert_eq!(d.active, 0);
+        assert!(apply_ctrl(&mut d, 'q').is_none(), "未绑定的组合键不应有副作用");
     }
 }

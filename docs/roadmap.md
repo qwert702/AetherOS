@@ -2,6 +2,9 @@
 
 > 状态：M0–M6 **全部完成**（2026-09-21 复核，依据 git 历史 + 代码实测 + docs/HANDOVER.md）。
 > UI 设计系统 Step 1–4 + 视觉质量冲刺（§10）+ 双模主题（§12）完成，Step 5 仅剩实机重拍，见 docs/ui-design-handover.md。
+>
+> **生产力化清单见 `docs/PRODUCTION-PLAN-2026-09-27.md`** —— 五个阶段、每项带验收标准，
+> 以及「生产力」的六个硬门禁（当前 0/6）。
 
 ## M0 — 开发环境与架构设计 ✅
 - [x] 仓库骨架、Cargo workspace
@@ -102,3 +105,7 @@
 - [x] 壁纸分帧生成（handover §15）：交互路径首帧 561 → 30 ms，不再有开机卡顿
 - [x] 归档走查图工具化：`scripts/archive-ui-shots.py`（重建 + `--check` 门禁），
       堵住"归档图落后于 HEAD 导致回归结论失真"这个已犯两次的流程坑
+- [x] 生产力化 Phase 0 首批（见 `docs/PRODUCTION-PLAN-2026-09-27.md`）：窗口关闭/最大化（红绿灯接线）、
+      修饰键状态机（Ctrl/Shift/Alt）、完整键位映射（方向键/翻页/Home/End/Tab/Delete）、
+      文件列表滚动与键盘导航（含如实状态栏与滚动条）、init 挂载 devpts（PTY 前置）
+      —— 测试 91 → 112 项，双目标零警告

@@ -409,7 +409,7 @@ fn darken_pixel(buf: &mut [u32], idx: usize, alpha: f32) {
     buf[idx] = (r << 16) | (g << 8) | b;
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -987,6 +987,8 @@ pub struct FileView<'a> {
     pub selected: Option<usize>,
     /// 读目录失败的原因；有值时状态栏优先显示它
     pub error: Option<&'a str>,
+    /// 首个可见条目索引（滚动位置）。0 = 从头开始。
+    pub scroll: usize,
 }
 
 /// 桌面状态：窗口列表（含 z 序）与当前布局。
@@ -1000,6 +1002,8 @@ pub struct Desktop {
     pub entries: Vec<FsEntry>,
     /// 文件管理器中选中的条目索引
     pub selected: Option<usize>,
+    /// 文件网格的滚动位置（首个可见条目索引）
+    pub scroll: usize,
     /// 读取 cwd 时的错误；有值时状态栏显示它而不是条目数
     pub dir_error: Option<String>,
 }
@@ -1030,6 +1034,8 @@ pub struct Win {
     /// 内容类型（决定画什么、以及点击怎么处理）
     pub kind: WinKind,
     pub floating: bool,
+    /// 最大化前的矩形；`Some` = 当前处于最大化态（再点一次红绿灯恢复）
+    pub restore: Option<Rect>,
     /// 预览窗口的内容（仅 `WinKind::Preview` 有值）
     pub preview: Option<PreviewData>,
 }
@@ -1200,6 +1206,11 @@ pub struct Renderer {
     pub file_cells: Vec<(Rect, usize)>,
     /// 文件管理器侧栏"上级目录"按钮的命中区；无上级时为空矩形
     pub file_up: Rect,
+    /// 窗口红绿灯命中区：(窗口索引, 关闭按钮, 最大化按钮)。
+    ///
+    /// 此前红绿灯**只画不响应** —— 开了 8 个窗口后没有任何关闭手段，用户会直接卡住。
+    /// 每帧重建，与窗口几何保持同步。
+    pub window_lights: Vec<(usize, Rect, Rect)>,
     /// "开始安装"按钮命中区
     pub installer_button: Rect,
     /// 权限确认弹窗的按钮命中区
@@ -1225,6 +1236,7 @@ impl Renderer {
             installer_rows: Vec::new(),
             file_cells: Vec::new(),
             file_up: Rect { x: 0, y: 0, w: 0, h: 0 },
+            window_lights: Vec::new(),
             installer_button: Rect { x: 0, y: 0, w: 0, h: 0 },
             confirm_buttons: Vec::new(),
             confirm_echo: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -1241,6 +1253,7 @@ impl Renderer {
     ///
     /// 交互路径靠分帧逐步生成，而 `--shot` 只渲染一帧 —— 必须先补全，
     /// 否则截出来的图只有顶上若干行是壁纸，其余是空白。
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅 --shot/--bench 走查路径使用
     pub fn prepare_background(&mut self, w: usize, h: usize, t: f32) {
         if self.bg.len() != w * h {
             self.bg = vec![0; w * h];
@@ -1354,10 +1367,15 @@ impl Renderer {
             entries: &desktop.entries,
             selected: desktop.selected,
             error: desktop.dir_error.as_deref(),
+            scroll: desktop.scroll,
         };
         self.file_cells.clear();
+        self.window_lights.clear();
         for (i, win) in desktop.wins.iter().enumerate() {
-            draw_window(buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv, &mut self.file_cells, &mut self.file_up);
+            draw_window(
+                buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
+                &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
+            );
         }
         mark!("windows");
 
@@ -1476,6 +1494,7 @@ pub fn draw_background_rows(buf: &mut [u32], w: usize, h: usize, t: f32, y0: usi
 }
 
 /// 整屏一次生成（单帧模式与等价性测试用）。
+#[cfg_attr(target_os = "linux", allow(dead_code))] // 单帧整屏生成，仅走查/测试路径调用
 pub fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
     draw_background_rows(buf, w, h, t, 0, h);
 }
@@ -1735,7 +1754,7 @@ fn desktop_key(d: &Desktop) -> u64 {
     h
 }
 
-fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>, fv: &FileView, cells: &mut Vec<(Rect, usize)>, up: &mut Rect) {
+fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>, fv: &FileView, cells: &mut Vec<(Rect, usize)>, up: &mut Rect, win_idx: usize, lights_out: &mut Vec<(usize, Rect, Rect)>) {
     let r = win.rect;
     let title = win.title.as_str();
     let kind = win.kind;
@@ -1773,6 +1792,9 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mou
         h: metric::TITLE_H,
     };
     let hovered = active && group.contains(mouse.0, mouse.1);
+    // 命中区按"可视圆点 + 一点余量"登记（圆点只有 10px，直接用圆点本身太难点）
+    let mut close_rect = Rect { x: 0, y: 0, w: 0, h: 0 };
+    let mut zoom_rect = Rect { x: 0, y: 0, w: 0, h: 0 };
     for (i, c) in lights.iter().enumerate() {
         let lx = r.x + 14 + (i as i32) * (metric::LIGHT_D + metric::LIGHT_GAP);
         let dot = Rect { x: lx, y: ly, w: metric::LIGHT_D, h: metric::LIGHT_D };
@@ -1780,7 +1802,20 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mou
         if hovered {
             light_symbol(buf, w, h, lx + metric::LIGHT_D / 2, ly + metric::LIGHT_D / 2, i);
         }
+        // 命中区扩到 24×24 且垂直居中于标题栏：10px 的圆点在真机上不好点
+        let hit = Rect {
+            x: lx + metric::LIGHT_D / 2 - 12,
+            y: r.y + (metric::TITLE_H - 24) / 2,
+            w: 24,
+            h: 24,
+        };
+        match i {
+            0 => close_rect = hit,
+            2 => zoom_rect = hit,
+            _ => {} // 中间那颗（最小化）暂不接线：没有最小化到哪去的语义
+        }
     }
+    lights_out.push((win_idx, close_rect, zoom_rect));
 
     // 居中标题：激活=纯白，非激活=明确灰阶
     if let Some(tr) = tr {
@@ -2041,9 +2076,10 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
     let sidebar = Rect { x: r.x, y: r.y, w: SIDEBAR_W.min(r.w / 2), h: r.h };
     fill_clipped(buf, w, h, sidebar, win, radius::LG, color::inset(), 0.66);
 
-    // 内容面：比窗口体亮半档的"纸面"——三层明度差是纵深感的全部来源
+    // 内容面：比窗口体亮半档的"纸面"——三层明度差是纵深感的全部来源。
+    // 几何走 `files_grid_rect`，与键盘导航用的是同一份计算
     let area_x = sidebar.x + sidebar.w;
-    let surface = Rect { x: area_x, y: r.y, w: r.x + r.w - area_x, h: r.h - STATUS_H };
+    let surface = files_grid_rect(win);
     fill_clipped(buf, w, h, surface, win, radius::LG, color::surface_2(), 0.42);
     fill_rect(buf, w, h, Rect { x: area_x, y: r.y + 1, w: 1, h: r.h - 2 }, color::hairline(), 0.08);
 
@@ -2090,7 +2126,7 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         }
     }
 
-    let shown = draw_icon_grid(buf, w, h, surface, win, mouse, tr, fv.entries, fv.selected, cells);
+    let shown = draw_icon_grid(buf, w, h, surface, win, mouse, tr, fv.entries, fv.selected, fv.scroll, cells);
 
     // 状态条：贴窗口底角
     let status = Rect { x: r.x, y: r.y + r.h - STATUS_H, w: r.w, h: STATUS_H };
@@ -2101,9 +2137,13 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         let left = match fv.error {
             Some(e) => format!("无法读取目录：{e}"),
             None => {
-                // 条目数取真实值；窗口装不下时补一句"显示 N"，避免数字与画面矛盾
-                let extra = if fv.entries.len() > shown { format!("（显示 {shown}）") } else { String::new() };
-                format!("{} 个项目{extra}", fv.entries.len())
+                // 有滚动时给出**可见区间**（"1–8 / 76"），而不是只说"显示 8"——
+                // 后者让用户不知道下面还有没有内容、也不知道自己看到哪儿了
+                if fv.entries.len() > shown && shown > 0 {
+                    format!("{}–{} / {} 项", fv.scroll + 1, fv.scroll + shown, fv.entries.len())
+                } else {
+                    format!("{} 项", fv.entries.len())
+                }
             }
         };
         let left_rgb = if fv.error.is_some() { color::danger_text() } else { color::text_faint() };
@@ -2117,37 +2157,110 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
 
 /// 图标网格：图标 + 标签（无卡片外框——"框里再放块"是廉价感的来源之一）。
 /// 行列数按可用空间自适应，把窗口填满，不留下大片死灰。返回实际画出的项数。
-fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>, entries: &[FsEntry], selected: Option<usize>, cells: &mut Vec<(Rect, usize)>) -> usize {
-    let Some(tr) = tr else { return 0 };
-    const ICON: i32 = 46;
-    const CELL_W: i32 = 96;
-    const CELL_H: i32 = 84;
-    const GAP_X: i32 = 10;
-    const GAP_Y: i32 = 12;
-    const PAD: i32 = 14;
+const GRID_ICON: i32 = 46;
+const GRID_CELL_W: i32 = 96;
+const GRID_CELL_H: i32 = 84;
+const GRID_GAP_X: i32 = 10;
+const GRID_GAP_Y: i32 = 12;
+const GRID_PAD: i32 = 14;
 
-    let avail_w = area.w - PAD * 2;
-    let avail_h = area.h - PAD * 2;
-    if avail_w < CELL_W || avail_h < CELL_H {
+/// 图标网格的几何。渲染与键盘导航**共用同一份计算** —— 否则"方向键移动几列"
+/// 和"画出来几列"迟早会对不上（两处各写一套几何是这类 bug 的温床）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridLayout {
+    pub cols: usize,
+    pub rows: usize,
+    pub cell_w: i32,
+    pub cell_h: i32,
+    /// 网格左上角
+    pub ox: i32,
+    pub oy: i32,
+}
+
+impl GridLayout {
+    /// 一屏能放多少条
+    pub fn page_size(&self) -> usize {
+        self.cols * self.rows
+    }
+
+    /// 第 `i` 个格子（`i` 为页内序号）的矩形
+    pub fn cell(&self, i: usize) -> Rect {
+        let col = (i % self.cols.max(1)) as i32;
+        let row = (i / self.cols.max(1)) as i32;
+        Rect {
+            x: self.ox + col * (GRID_CELL_W + GRID_GAP_X),
+            y: self.oy + row * (GRID_CELL_H + GRID_GAP_Y),
+            w: GRID_CELL_W,
+            h: GRID_CELL_H,
+        }
+    }
+}
+
+/// 文件窗口的网格区（= 内容面，去掉侧栏与状态条）。
+/// main.rs 的键盘导航要拿它算页大小，所以必须与绘制共用。
+pub fn files_grid_rect(win: Rect) -> Rect {
+    const SIDEBAR_W: i32 = 150;
+    const STATUS_H: i32 = 26;
+    let content_y = win.y + metric::TITLE_H + 1;
+    let content_h = win.h - metric::TITLE_H - 2;
+    let x0 = win.x + 1 + SIDEBAR_W.min((win.w - 2) / 2);
+    Rect {
+        x: x0,
+        y: content_y,
+        w: (win.x + win.w - 1 - x0).max(0),
+        h: (content_h - STATUS_H).max(0),
+    }
+}
+
+/// 计算网格布局；空间不足时返回 0 列（调用方据此不画任何格子）。
+pub fn grid_layout(area: Rect) -> GridLayout {
+    let mut g = GridLayout { cols: 0, rows: 0, cell_w: GRID_CELL_W, cell_h: GRID_CELL_H, ox: area.x, oy: area.y };
+    let avail_w = area.w - GRID_PAD * 2;
+    let avail_h = area.h - GRID_PAD * 2;
+    if avail_w < GRID_CELL_W || avail_h < GRID_CELL_H {
+        return g;
+    }
+    g.cols = (avail_w / (GRID_CELL_W + GRID_GAP_X)).clamp(1, 5) as usize;
+    g.rows = (avail_h / (GRID_CELL_H + GRID_GAP_Y)).clamp(1, 5) as usize;
+    let grid_w = g.cols as i32 * GRID_CELL_W + (g.cols as i32 - 1) * GRID_GAP_X;
+    let grid_h = g.rows as i32 * GRID_CELL_H + (g.rows as i32 - 1) * GRID_GAP_Y;
+    g.ox = area.x + (area.w - grid_w) / 2;
+    g.oy = area.y + (area.h - grid_h) / 2;
+    g
+}
+
+/// 让 `selected` 落在以 `scroll` 为首页的可视范围内，返回修正后的 `scroll`。
+///
+/// 纯函数：方向键移动、翻页、Home/End 之后都过它归一化，
+/// 保证"选中项永远可见"这条规则只有一处实现（也便于单测）。
+pub fn scroll_to_show(selected: usize, scroll: usize, per_page: usize) -> usize {
+    if per_page == 0 {
         return 0;
     }
-    let cols = (avail_w / (CELL_W + GAP_X)).clamp(1, 5);
-    let rows = (avail_h / (CELL_H + GAP_Y)).clamp(1, 5);
-    let n = ((cols * rows) as usize).min(entries.len());
-    let grid_w = cols * CELL_W + (cols - 1) * GAP_X;
-    let grid_h = rows * CELL_H + (rows - 1) * GAP_Y;
-    let ox = area.x + (area.w - grid_w) / 2;
-    let oy = area.y + (area.h - grid_h) / 2;
+    if selected < scroll {
+        selected
+    } else if selected >= scroll + per_page {
+        selected + 1 - per_page
+    } else {
+        scroll
+    }
+}
 
-    for i in 0..n {
-        let col = i as i32 % cols;
-        let row = i as i32 / cols;
-        let cell = Rect {
-            x: ox + col * (CELL_W + GAP_X),
-            y: oy + row * (CELL_H + GAP_Y),
-            w: CELL_W,
-            h: CELL_H,
-        };
+/// 文件名网格：图标 + 标签（无卡片外框——"框里再放个块"是廉价感的来源之一）。
+/// 从 `scroll` 开始铺满可视页，返回实际画出的项数。
+fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>, entries: &[FsEntry], selected: Option<usize>, scroll: usize, cells: &mut Vec<(Rect, usize)>) -> usize {
+    let Some(tr) = tr else { return 0 };
+    let g = grid_layout(area);
+    let per_page = g.page_size();
+    if per_page == 0 {
+        return 0;
+    }
+    // 只铺可视页：从 scroll 开始，画满一页为止
+    let start = scroll.min(entries.len());
+    let end = (start + per_page).min(entries.len());
+
+    for (slot, i) in (start..end).enumerate() {
+        let cell = g.cell(slot);
         let is_sel = selected == Some(i);
         let hovered = cell.contains(mouse.0, mouse.1);
         // 记下命中区：main.rs 的点击处理据此判断"点了哪个条目"
@@ -2159,27 +2272,40 @@ fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mo
         } else if hovered {
             fill_clipped(buf, w, h, cell, win, radius::LG, color::hairline(), state::hover());
         }
-        let icon_x = cell.x + (CELL_W - ICON) / 2;
+        let icon_x = cell.x + (GRID_CELL_W - GRID_ICON) / 2;
         let icon_y = cell.y + 8;
         if entries[i].is_dir {
-            draw_folder_icon(buf, w, h, icon_x, icon_y, ICON);
+            draw_folder_icon(buf, w, h, icon_x, icon_y, GRID_ICON);
         } else {
-            draw_file_icon(buf, w, h, icon_x, icon_y, ICON);
+            draw_file_icon(buf, w, h, icon_x, icon_y, GRID_ICON);
         }
 
-        let label_y = icon_y + ICON + 4;
-        let shown = ellipsize(tr, &entries[i].name, font::LABEL, (CELL_W - 10) as f32);
+        let label_y = icon_y + GRID_ICON + 4;
+        let shown = ellipsize(tr, &entries[i].name, font::LABEL, (GRID_CELL_W - 10) as f32);
         let lw = tr.measure(&shown, font::LABEL);
         draw_text(
             tr, buf, w, h,
-            cell.x as f32 + (CELL_W as f32 - lw) / 2.0,
+            cell.x as f32 + (GRID_CELL_W as f32 - lw) / 2.0,
             tr.vcenter(label_y as f32, 14.0, font::LABEL),
             &shown, font::LABEL,
             if is_sel || hovered { color::text() } else { color::text_dim() },
             if is_sel { 1.0 } else if hovered { 0.98 } else { 0.94 },
         );
     }
-    n
+
+    // 细滚动条：内容超过一页时出现。位置即"看到哪儿了"——
+    // 没有它用户不知道下面还有东西（此前状态栏只写「显示 N」，等于让用户自己猜）。
+    if entries.len() > per_page && area.h > 60 {
+        let track_h = area.h - 26;
+        let thumb_h = ((track_h as usize * per_page / entries.len()) as i32).max(20);
+        let max_scroll = entries.len() - per_page;
+        let t = if max_scroll == 0 { 0.0 } else { scroll as f32 / max_scroll as f32 };
+        let ty = area.y + 13 + ((track_h - thumb_h) as f32 * t) as i32;
+        let x = area.x + area.w - 6;
+        rounded_rect(buf, w, h, Rect { x, y: area.y + 13, w: 3, h: track_h }, 1.5, color::hairline(), 0.07);
+        rounded_rect(buf, w, h, Rect { x, y: ty, w: 3, h: thumb_h }, 1.5, color::hairline(), 0.26);
+    }
+    end - start
 }
 
 /// 文本预览窗口：行号栏 + 内容行。

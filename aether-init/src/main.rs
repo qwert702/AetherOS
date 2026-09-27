@@ -54,6 +54,34 @@ fn run_pid1() -> anyhow::Result<()> {
                 .unwrap_or(false);
             eprintln!("[aether-init] mount {fs} -> {dst}: {ok}");
         }
+
+        // devpts：**PTY 的硬前置**。
+        //
+        // 没有它 `posix_openpt` 无法创建 slave 端（/dev/pts/N 不会出现），
+        // 于是"真实终端"这条路根本走不通 —— 这也是此前终端只能画死数据的原因之一。
+        // ptmxmode=0666 让非 root 也能打开 /dev/ptmx；gid=5(tty) + mode=620 是发行版惯例。
+        let pts = "/dev/pts";
+        let ok = std::fs::create_dir_all(pts).map(|_| ()).map_err(|e| e.to_string());
+        if let Err(e) = ok {
+            eprintln!("[aether-init] 警告：创建 {pts} 失败：{e}（PTY 将不可用）");
+        }
+        // 已经挂好就不要再挂：重复挂载会返回 EBUSY，那会打出一条**假告警**，
+        // 让"终端能用"这件事在日志里看起来像坏了
+        if std::path::Path::new("/dev/pts/ptmx").exists() {
+            eprintln!("[aether-init] devpts 已就绪（/dev/pts/ptmx 存在）");
+        } else {
+            let mounted = std::process::Command::new("/bin/mount")
+                .args(["-t", "devpts", "devpts", pts, "-o", "gid=5,mode=620,ptmxmode=0666"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if mounted {
+                eprintln!("[aether-init] mount devpts -> {pts}: true");
+            } else {
+                // 显式告警：静默失败会让"终端打不开"变成一个查不出原因的现象
+                eprintln!("[aether-init] 警告：mount devpts -> {pts} 失败，PTY（真实终端）将不可用");
+            }
+        }
     }
     eprintln!("[aether-init] PID 1 启动");
     // 持久化分区在服务之前挂载：logtee 写 /var/log/aether 时已是真磁盘

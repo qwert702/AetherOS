@@ -3,6 +3,7 @@
 use crate::manager::{Manager, SvcState};
 use aether_ipc::{decode, encode, Request, Response, ServiceAction, ServiceStatus, SysReport};
 use std::io::{BufRead, BufReader, Read};
+#[cfg(not(target_os = "linux"))]
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 

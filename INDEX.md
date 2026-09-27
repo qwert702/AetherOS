@@ -138,6 +138,7 @@ Aether/
 | `docs/CODE-REVIEW-2026-09-22.md` / `CODE-REVIEW-2026-09-26.md` | 第二、三轮代码审查 |
 | `docs/FIX-REPORT-2026-09-26.md` | 第三轮审查的修复报告（含安全链路实测对比） |
 | `docs/PERF-REPORT-2026-09-26.md` | 性能优化报告（91 → 15.5 ms/帧的完整推导） |
+| `docs/PRODUCTION-PLAN-2026-09-27.md` | **生产力化清单**：五阶段（Phase 0 立即 → Phase 4 可靠性）、每项带验收标准与依赖、六个硬门禁。**要动手先读这份** |
 | `docs/UNIMPLEMENTED-2026-09-27.md` | **未实现功能清单**（按「用户会不会卡住」排序，接手先读这份） |
 | `docs/host-ui-*.png` | 主机 `--shot` 走查图（深空：桌面/三列/确认弹窗/菜单；明亮：`host-ui-light-*.png`。与实机 `screenshot-*.png` 区分） |
 
@@ -177,11 +178,28 @@ python scripts/e2e-permission-confirm.py             # 权限链路端到端（�
 cargo test --workspace                               # 全部单元测试
 ```
 
-## 测试分布（Windows 宿主实测 91 项；另 17 项 Linux 专属）
+## 键盘（2026-09-27 新增）
+
+| 按键 | 作用 |
+|---|---|
+| `Tab` | 轮换活动窗口（焦点） |
+| `Ctrl+W` | 关闭活动窗口 |
+| `方向键` | 文件网格移动选择（上下按行、左右按格） |
+| `PgUp` / `PgDn` | 文件网格整页翻动 |
+| `Home` / `End` | 跳到首/末条目 |
+| `1`–`4` | 切换布局（按住 Shift 时让位给上档符号 `!@#$`） |
+| `Esc` / `Enter` / `Backspace` | 关闭浮层 / 确认 / 退格 |
+| `Delete` | **故意不接线**：写操作要先扩权限模型（L2 敏感写） |
+
+> 修饰键状态在输入层统一跟踪（`input::Mods`），`Ctrl+C`/`Ctrl+V` 已可上报 ——
+> 剪贴板与终端输入是后续消费方（见 `docs/PRODUCTION-PLAN-2026-09-27.md`）。
+
+## 测试分布（Windows 宿主实测 112 项；另 13 项 Linux 专属）
 
 - `aether-ipc`：请求 roundtrip、响应解码、ChatChunk channel 往返/兼容、RegisterUi 往返（6）
-- `aether-compositor`：布局（4）+ evdev（4，Linux）+ 形状快速路径等价性（6）+ 脏行（4）
-  + 壁纸行带等价性/越界（2）+ 行内区间（5）
+- `aether-compositor`：布局（4）+ 形状快速路径等价性（6）+ 脏行（4）+ 壁纸行带（2）
+  + 行内区间（5）+ **输入层键位翻译（11，跨平台）** + **窗口管理与导航（10）**
+  + evdev 采集（4，仅 Linux）
 - `aetherd`：快速意图、路由（含敏感上下文强制本地）、权限闸门/令牌/拒绝冷却、工具系统、解析降级（42）
 - `aether-init`：拓扑/环检测/白名单/监督退避（6）+ 解析校验（3）+ 持久化（4）（13）
 - `aether-install`：参数/防呆/MBR 读写/分区规划/命名（9）

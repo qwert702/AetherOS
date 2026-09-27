@@ -590,3 +590,84 @@ init 1,119 / ops 703 / install 505 / ipc 284 / shell 11）。INDEX 已改为逐 
 
 `INDEX.md`（行数、crate 表、`--theme`/`--bench`/`AETHER_RENDER_TIMING`/归档脚本、
 测试分布 91 项、新报告清单）、`docs/roadmap.md`（新增「工程化与性能」章节）。
+
+---
+
+## 16. 生产力化首批：输入层、窗口管理、列表滚动（2026-09-27）
+
+依据 `docs/PRODUCTION-PLAN-2026-09-27.md` 的 Phase 0 首批 + Phase 1 前置。
+本轮的共同点：**都是"看着能用、实际不能用"的地方**，改完才是真能用。
+
+### 16.1 输入层：把纯逻辑从 Linux 限定里拿出来
+
+`input.rs` 此前整个模块被 `#[cfg(target_os = "linux")]` 挡住 —— 后果是**按键翻译这段纯逻辑
+在开发机上既不能编译也不能测**（它 4 项测试长期是"Linux 专属"）。现在拆开：
+
+| 部分 | 平台 |
+|---|---|
+| `UiEvent` / `Mods` / `NavKey` / `translate` / `key_char` / `shift_of` | **跨平台**（含 11 项单测，开发机可跑） |
+| `spawn` / `open_devices`（evdev 采集） | 仅 Linux |
+
+### 16.2 修饰键状态机（三处共同的前置）
+
+**此前完全没有 Ctrl/Shift/Alt 概念** —— 所以 `Ctrl+C`、`Ctrl+V`、`Shift+选择`
+在任何地方都不可能实现。新增 `Mods` 状态（跨事件累积），并新增两个事件变体：
+
+- `UiEvent::Ctrl(char)`：Ctrl+字母**独立于 `Char`**上报。混在一起会让"按住 Ctrl 时字符被吞掉"
+  变成隐式行为；而 Ctrl+符号直接丢弃（否则 `Ctrl+;` 会漏出一个散字）。
+- `UiEvent::Nav(NavKey)`：方向/翻页/Home/End/Tab/Delete。
+- Shift 统一经 `shift_of()` 施加：字母变大写、`1`→`!`、`-`→`_` …
+  **按住 Shift 时数字 1–4 让位给上档符号**，不再触发布局切换。
+
+### 16.3 窗口管理：红绿灯不再是装饰
+
+红绿灯此前**只画不响应**，开满 8 个窗口后没有任何关闭手段（UNIMPLEMENTED 里的 P1-1）。
+现在登记命中区（圆点 10px 太小，命中区扩到 24×24）并接线：
+
+- 关闭 → `close_window()`：**同时修正 `active`，并要求调用方清 `drag`**
+  —— 拖拽中关掉被拖的窗口正是 P2-3 那类越界 panic。
+- 最大化 → `toggle_zoom()`：用 `Win.restore` 记住原矩形，再点一次恢复；必须 `floating = true`
+  否则下一帧被平铺布局覆盖回去。
+- 中间那颗（最小化）**不接线**：没有"最小化到哪去"的语义，不假装支持。
+- 键盘补充：`Ctrl+W` 关闭活动窗口、`Tab` 轮换焦点。
+
+### 16.4 文件列表：滚动 + 键盘导航
+
+`Desktop.scroll` + `FileView.scroll`；几何抽成**渲染与键盘共用**的一份：
+
+```rust
+pub fn files_grid_rect(win: Rect) -> Rect      // 网格区
+pub fn grid_layout(area: Rect) -> GridLayout   // 列/行/单元格
+pub fn scroll_to_show(sel, scroll, per_page) -> usize   // 选中项可见（纯函数）
+```
+
+两处各写一套几何是这类 bug 的温床（"方向键移动 3 列"和"画出来 4 列"会悄悄漂移）。
+键盘：`Up/Down` 按行（= cols）、`Left/Right` 单格、`PgUp/PgDn` 整页、`Home/End` 首尾。
+**滚轮不做**（minifb 与 evdev 两条路径都要接线，成本远高于键盘，见计划 §0.4）。
+
+界面如实化：状态栏由"76 个项目（显示 8）"改为 **"1–8 / 76 项"**（可见区间），
+右侧加细滚动条 —— 没有它用户不知道下面还有东西。
+
+### 16.5 Phase 1 前置：init 挂载 devpts
+
+`aether-init` 此前只挂 proc/sysfs/devtmpfs。**没有 devpts，`posix_openpt` 创建不出 slave 端，
+PTY 终端根本无从谈起**。新增挂载（`gid=5,mode=620,ptmxmode=0666`），并特意处理两件事：
+
+- 已挂载则跳过：重复 mount 返回 EBUSY，会打出**假告警**，让"终端可用"在日志里看起来像坏了。
+- 失败**显式告警**：静默失败会让"终端打不开"变成查不出原因的现象。
+
+### 16.6 验证
+
+| 项 | 结果 |
+|---|---|
+| `cargo test --workspace --offline` | **112 项全过**（91 → 112：+11 input 跨平台、+10 窗口管理） |
+| Windows 目标 | 零警告 |
+| Linux musl 目标（compositor / init） | 零警告（顺手修掉 init 的 1 处 unused import + 2 处 unnecessary unsafe） |
+| Linux musl 目标（全 workspace） | ⚠️ **本机不可用**：`aetherd` 的 `ureq`→`ring` 需要 `x86_64-linux-musl-gcc`（本机未装），与本次改动无关 |
+| 归档门禁 | 8/8 `0.0000%`（视觉有变：状态栏文案 + 滚动条，已按流程重建） |
+
+新增测试覆盖的正是验收标准：`close_keeps_active_in_range`、`close_shifts_focus_when_removing_before_active`、
+`close_to_empty_is_safe`、`zoom_toggles_and_restores_rect`、`tab_cycles_focus_including_wrap`、
+`nav_moves_selection_by_grid`、`nav_keeps_selection_visible`、`nav_on_non_files_window_is_noop`、
+`ctrl_w_closes_active_window`，以及一条**反向断言**：
+`delete_is_deliberately_not_implemented`（写操作必须先扩权限模型，不能顺手加）。

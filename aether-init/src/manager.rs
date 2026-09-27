@@ -241,8 +241,9 @@ impl Manager {
                 .values_mut()
                 .find(|s| s.child.as_ref().map(|c| c.id()) == Some(pid))
             {
-                let code = if unsafe { libc::WIFEXITED(status) } {
-                    unsafe { libc::WEXITSTATUS(status) }
+                // libc 的 WIFEXITED / WEXITSTATUS 在 Linux 上是安全函数，无需 unsafe
+                let code = if libc::WIFEXITED(status) {
+                    libc::WEXITSTATUS(status)
                 } else {
                     -1
                 };
