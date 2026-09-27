@@ -286,8 +286,6 @@ pub mod strings {
     pub const WIN_SETTINGS: &str = "设置";
     /// Dock 第 6 图标（仅 Live ISO 会话显示）：打开安装向导
     pub const INSTALLER: &str = "安装";
-    /// 文件窗口侧栏项
-    pub const SIDEBAR_ITEMS: &[&str] = &["文档", "图片", "音乐", "项目"];
     /// 音乐窗口曲目（演示内容）：(曲名, 艺人, 时长)。
     /// 数量要够把这扇窗填满，否则列表下方会留一大片空灰。
     pub const TRACKS: &[(&str, &str, &str)] = &[

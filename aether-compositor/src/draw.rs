@@ -989,6 +989,8 @@ pub struct FileView<'a> {
     pub error: Option<&'a str>,
     /// 首个可见条目索引（滚动位置）。0 = 从头开始。
     pub scroll: usize,
+    /// 侧栏"位置"列表（(显示名, 路径)）
+    pub sidebar: &'a [(String, String)],
 }
 
 /// 桌面状态：窗口列表（含 z 序）与当前布局。
@@ -1004,6 +1006,8 @@ pub struct Desktop {
     pub selected: Option<usize>,
     /// 文件网格的滚动位置（首个可见条目索引）
     pub scroll: usize,
+    /// 侧栏"位置"：（显示名, 真实路径）。只含真实存在的目录。
+    pub sidebar: Vec<(String, String)>,
     /// 剪贴板 v1：进程内一段全局文本（终端/文件路径/AI 指令条共用）。
     ///
     /// 跨进程剪贴板要另加 IPC 消息（计划 §2.2）——当前所有"应用"都在合成器进程内，
@@ -1214,6 +1218,10 @@ pub struct Renderer {
     pub file_cells: Vec<(Rect, usize)>,
     /// 文件管理器侧栏"上级目录"按钮的命中区；无上级时为空矩形
     pub file_up: Rect,
+    /// 侧栏"位置"命中区：(矩形, 侧栏索引)
+    pub sidebar_hits: Vec<(Rect, usize)>,
+    /// 面包屑路径段命中区：(矩形, 目标路径)
+    pub crumb_hits: Vec<(Rect, String)>,
     /// 窗口红绿灯命中区：(窗口索引, 关闭按钮, 最大化按钮)。
     ///
     /// 此前红绿灯**只画不响应** —— 开了 8 个窗口后没有任何关闭手段，用户会直接卡住。
@@ -1245,6 +1253,8 @@ impl Renderer {
             file_cells: Vec::new(),
             file_up: Rect { x: 0, y: 0, w: 0, h: 0 },
             window_lights: Vec::new(),
+            sidebar_hits: Vec::new(),
+            crumb_hits: Vec::new(),
             installer_button: Rect { x: 0, y: 0, w: 0, h: 0 },
             confirm_buttons: Vec::new(),
             confirm_echo: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -1376,13 +1386,17 @@ impl Renderer {
             selected: desktop.selected,
             error: desktop.dir_error.as_deref(),
             scroll: desktop.scroll,
+            sidebar: &desktop.sidebar,
         };
         self.file_cells.clear();
         self.window_lights.clear();
+        self.sidebar_hits.clear();
+        self.crumb_hits.clear();
         for (i, win) in desktop.wins.iter().enumerate() {
             draw_window(
                 buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
+                &mut self.sidebar_hits, &mut self.crumb_hits,
             );
         }
         mark!("windows");
@@ -1762,7 +1776,24 @@ fn desktop_key(d: &Desktop) -> u64 {
     h
 }
 
-fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mouse: (f32, f32), t: f32, tr: Option<&TextRenderer>, fv: &FileView, cells: &mut Vec<(Rect, usize)>, up: &mut Rect, win_idx: usize, lights_out: &mut Vec<(usize, Rect, Rect)>) {
+#[allow(clippy::too_many_arguments)]
+fn draw_window(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    win: &Win,
+    active: bool,
+    mouse: (f32, f32),
+    t: f32,
+    tr: Option<&TextRenderer>,
+    fv: &FileView,
+    cells: &mut Vec<(Rect, usize)>,
+    up: &mut Rect,
+    win_idx: usize,
+    lights_out: &mut Vec<(usize, Rect, Rect)>,
+    sidebar_hits: &mut Vec<(Rect, usize)>,
+    crumb_hits: &mut Vec<(Rect, String)>,
+) {
     let r = win.rect;
     let title = win.title.as_str();
     let kind = win.kind;
@@ -1842,7 +1873,9 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mou
         WinKind::Terminal => draw_term_content(buf, w, h, r, win.term.as_ref(), active, t, tr),
         WinKind::Music => draw_music_content(buf, w, h, content, r, mouse, tr),
         // Preview 暂时复用文件管理器的纸面底，真正的预览渲染在后续阶段接入
-        WinKind::Files => draw_files_content(buf, w, h, content, r, mouse, tr, fv, cells, up),
+        WinKind::Files => draw_files_content(
+            buf, w, h, content, r, mouse, tr, fv, cells, up, sidebar_hits, crumb_hits,
+        ),
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
     }
 }
@@ -2113,7 +2146,21 @@ fn draw_term_content(
 }
 
 /// 文件窗口内容：侧栏（深底座）→ 内容面（纸面）→ 状态条（深底座）三层。
-fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>, fv: &FileView, cells: &mut Vec<(Rect, usize)>, up: &mut Rect) {
+#[allow(clippy::too_many_arguments)]
+fn draw_files_content(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    r: Rect,
+    win: Rect,
+    mouse: (f32, f32),
+    tr: Option<&TextRenderer>,
+    fv: &FileView,
+    cells: &mut Vec<(Rect, usize)>,
+    up: &mut Rect,
+    sidebar_hits: &mut Vec<(Rect, usize)>,
+    crumb_hits: &mut Vec<(Rect, String)>,
+) {
     *up = Rect { x: 0, y: 0, w: 0, h: 0 };
     const SIDEBAR_W: i32 = 150;
     const STATUS_H: i32 = 26;
@@ -2149,11 +2196,12 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
             *up = row;
             base += 30;
         }
-        for (i, item) in strings::SIDEBAR_ITEMS.iter().enumerate() {
+        for (i, (label, path)) in fv.sidebar.iter().enumerate() {
             let y = base + i as i32 * 30;
-            // 侧栏这些"位置"目前仍是静态列表，点击无响应 —— 所以不再假装第 0 项被选中
-            let selected = false;
+            // 当前所在位置高亮：用户随时知道"我在哪一栏"（此前恒为 false，等于没有反馈）
+            let selected = path == fv.cwd || fv.cwd.starts_with(&format!("{path}{}", std::path::MAIN_SEPARATOR));
             let row = Rect { x: r.x + 8, y, w: sidebar.w - 16, h: 26 };
+            sidebar_hits.push((row, i));
             if selected {
                 rounded_rect(buf, w, h, row, radius::SM - 2.0, color::accent(), 0.20);
                 // 选中项左侧标记条：比整块底色更克制
@@ -2165,7 +2213,7 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
                 tr, buf, w, h,
                 (row.x + 14) as f32,
                 tr.vcenter(row.y as f32, row.h as f32, font::BODY),
-                item, font::BODY,
+                label, font::BODY,
                 if selected { color::text() } else { color::text_dim() },
                 if selected { 0.96 } else { 0.88 },
             );
@@ -2194,10 +2242,41 @@ fn draw_files_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         };
         let left_rgb = if fv.error.is_some() { color::danger_text() } else { color::text_faint() };
         draw_text(tr, buf, w, h, (status.x + 12) as f32, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &left, font::LABEL, left_rgb, 0.9);
-        // 右侧显示当前路径（原先写死的"磁盘可用空间"是假数据）
-        let right = ellipsize(tr, fv.cwd, font::LABEL, (status.w / 2) as f32);
-        let rw = tr.measure(&right, font::LABEL);
-        draw_text(tr, buf, w, h, (status.x + status.w - 12) as f32 - rw, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), &right, font::LABEL, color::text_faint(), 0.9);
+        // 右侧：**可点击的面包屑**（整条路径不再是一串只能看的字）。
+        // 只保留能放下的末几段：从右侧往左累加宽度，放不下就停，并在前面补一个"…"。
+        let segs = crumbs(fv.cwd);
+        let sep_w = tr.measure(" › ", font::LABEL);
+        let budget = (status.w / 2) as f32;
+        let mut used = 0.0f32;
+        let mut keep: Vec<usize> = Vec::new();
+        for (i, (name, _)) in segs.iter().enumerate().rev() {
+            let wseg = tr.measure(name, font::LABEL) + if keep.is_empty() { 0.0 } else { sep_w };
+            if used + wseg > budget {
+                break;
+            }
+            used += wseg;
+            keep.push(i);
+        }
+        keep.reverse();
+        let mut x = (status.x + status.w - 12) as f32 - used;
+        for (n, &i) in keep.iter().enumerate() {
+            let (name, path) = &segs[i];
+            if n > 0 {
+                draw_text(tr, buf, w, h, x, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), " › ", font::LABEL, color::text_faint(), 0.7);
+                x += sep_w;
+            }
+            let last = i + 1 == segs.len();
+            let wname = tr.measure(name, font::LABEL);
+            // 末段（当前目录）用主色强调，其余是次要色
+            let rgb = if last { color::text_dim() } else { color::text_faint() };
+            draw_text(tr, buf, w, h, x, tr.vcenter(status.y as f32, status.h as f32, font::LABEL), name, font::LABEL, rgb, if last { 0.95 } else { 0.9 });
+            crumb_hits.push((
+                Rect { x: x as i32, y: status.y, w: wname.ceil() as i32, h: status.h },
+                path.clone(),
+            ));
+            x += wname;
+        }
+
     }
 }
 
@@ -2256,6 +2335,30 @@ pub fn files_grid_rect(win: Rect) -> Rect {
         w: (win.x + win.w - 1 - x0).max(0),
         h: (content_h - STATUS_H).max(0),
     }
+}
+
+/// 路径 → 面包屑：(显示名, 目标路径)。Windows 盘符与 Unix 根都处理。
+///
+/// 纯函数，便于单测 —— 路径解析是最容易出边界 bug 的地方（盘符、根、结尾分隔符）。
+pub fn crumbs(path: &str) -> Vec<(String, String)> {
+    let sep = if path.contains('\\') { '\\' } else { '/' };
+    let mut out = Vec::new();
+    let mut acc = String::new();
+    for (i, part) in path.split(sep).filter(|s| !s.is_empty()).enumerate() {
+        if i == 0 {
+            acc = if part.ends_with(':') {
+                format!("{part}{sep}")
+            } else {
+                format!("{sep}{part}")
+            };
+        } else if acc.ends_with(sep) {
+            acc.push_str(part);
+        } else {
+            acc = format!("{acc}{sep}{part}");
+        }
+        out.push((part.to_string(), acc.clone()));
+    }
+    out
 }
 
 /// 终端窗口里能放下的列/行数。

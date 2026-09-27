@@ -408,6 +408,27 @@ fn run_fbdev() -> anyhow::Result<()> {
                 } else if let Some(msg) = open_app(&mut desktop, icon) {
                     toast = Some((msg, Instant::now()));
                 }
+            } else if let Some((_, i)) = renderer
+                .sidebar_hits
+                .iter()
+                .find(|(r, _)| r.contains(mouse.0, mouse.1))
+                .copied()
+            {
+                if let Some((label, path)) = desktop.sidebar.get(i).cloned() {
+                    if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                        toast = Some((msg, Instant::now()));
+                    }
+                }
+            } else if let Some((_, path)) = renderer
+                .crumb_hits
+                .iter()
+                .find(|(r, _)| r.contains(mouse.0, mouse.1))
+                .cloned()
+            {
+                let label = draw::path_leaf(&path);
+                if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                    toast = Some((msg, Instant::now()));
+                }
             } else if renderer.file_up.contains(mouse.0, mouse.1) {
                 // 返回上级目录
                 open_menu = None;
@@ -554,7 +575,7 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     let active = wins.len() - 1;
     let cwd = draw::default_cwd();
     let (entries, dir_error) = draw::read_dir_entries(&cwd);
-    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), dir_error };
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), sidebar: sidebar_targets(), dir_error };
     // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
     sync_files_title(&mut d);
     d
@@ -575,7 +596,7 @@ fn demo_desktop() -> Desktop {
     let active = wins.len() - 1;
     let cwd = draw::default_cwd();
     let (entries, dir_error) = draw::read_dir_entries(&cwd);
-    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), dir_error };
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), sidebar: sidebar_targets(), dir_error };
     // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
     sync_files_title(&mut d);
     d
@@ -1030,17 +1051,46 @@ fn go_up(desktop: &mut Desktop) -> Option<String> {
     if up == desktop.cwd {
         return Some("已在最上层目录".into());
     }
-    let (entries, err) = draw::read_dir_entries(&up);
+    navigate_to(desktop, &up, "上级目录")
+}
+
+/// 导航到指定目录（侧栏、面包屑、上级都走这一条路径）。
+///
+/// 只有一处实现，才不会出现"从侧栏进去没重置选中项、从面包屑进去重置了"这类差异。
+fn navigate_to(desktop: &mut Desktop, path: &str, label: &str) -> Option<String> {
+    let (entries, err) = draw::read_dir_entries(path);
     if let Some(e) = err {
-        desktop.dir_error = Some(format!("无法返回上级：{e}"));
-        return Some("无法返回上级".into());
+        // 保留原目录与旧条目：导航失败不该把用户丢到一个读不了的目录里
+        desktop.dir_error = Some(format!("无法打开「{label}」：{e}"));
+        return Some(format!("无法打开「{label}」"));
     }
-    desktop.cwd = up;
+    desktop.cwd = path.to_string();
     desktop.entries = entries;
+    // 换目录必须重置选中与滚动，否则会指向上一个目录的第 N 项
     desktop.selected = None;
+    desktop.scroll = 0;
     desktop.dir_error = None;
     sync_files_title(desktop);
     None
+}
+
+/// 侧栏"位置"列表：只列**真实存在**的目录，不存在的不显示（而不是画一个点了没反应的项）。
+fn sidebar_targets() -> Vec<(String, String)> {
+    let home = draw::default_cwd();
+    let mut out = vec![("主目录".to_string(), home.clone())];
+    for (label, sub) in [
+        ("文档", "Documents"),
+        ("图片", "Pictures"),
+        ("音乐", "Music"),
+        ("下载", "Downloads"),
+        ("桌面", "Desktop"),
+    ] {
+        let p = draw::join_path(&home, sub);
+        if std::path::Path::new(&p).is_dir() {
+            out.push((label.to_string(), p));
+        }
+    }
+    out
 }
 
 /// 让文件窗口的标题跟随当前目录（只显示末段 —— 全路径会挤掉红绿灯）。
@@ -1613,6 +1663,31 @@ fn preview_main() -> anyhow::Result<()> {
                 }
             }
             // 3.4 侧栏"上级目录"
+            else if let Some((_, i)) = renderer
+                .sidebar_hits
+                .iter()
+                .find(|(r, _)| r.contains(mx, my))
+                .copied()
+            {
+                // 侧栏"位置"：接真实目录
+                if let Some((label, path)) = desktop.sidebar.get(i).cloned() {
+                    if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                        toast = Some((msg, Instant::now()));
+                    }
+                }
+            }
+            else if let Some((_, path)) = renderer
+                .crumb_hits
+                .iter()
+                .find(|(r, _)| r.contains(mx, my))
+                .cloned()
+            {
+                // 面包屑：点哪一段就跳到哪一级
+                let label = draw::path_leaf(&path);
+                if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                    toast = Some((msg, Instant::now()));
+                }
+            }
             else if renderer.file_up.contains(mx, my) {
                 open_menu = None;
                 if let Some(msg) = go_up(&mut desktop) {
@@ -2055,6 +2130,7 @@ mod window_mgmt_tests {
             selected: None,
             scroll: 0,
             clipboard: String::new(),
+            sidebar: sidebar_targets(),
             dir_error: None,
         }
     }
@@ -2195,6 +2271,52 @@ mod window_mgmt_tests {
             term: Some(term::Terminal::spawn(40, 8, None)),
         };
         d
+    }
+
+    #[test]
+    fn crumbs_split_windows_and_unix_paths() {
+        // 用原始字符串写 Windows 路径，避免转义把反斜杠吃掉
+        let win = r"C:\Users\cbn";
+        let w = draw::crumbs(win);
+        assert_eq!(
+            w.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["C:", "Users", "cbn"]
+        );
+        assert_eq!(w[2].1, win, "末段应等于原路径");
+        assert_eq!(w[1].1, r"C:\Users");
+        // 正斜杠形式的 Windows 路径（有些 API 会返回这种）同样要能拆
+        let fwd = draw::crumbs("C:/Users/cbn");
+        assert_eq!(fwd.len(), 3, "正斜杠路径也应拆出三段");
+        assert_eq!(fwd[2].1, "C:/Users/cbn");
+        let u = draw::crumbs("/home/u");
+        assert_eq!(
+            u.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["home", "u"]
+        );
+        assert_eq!(u[1].1, "/home/u");
+        assert!(draw::crumbs("").is_empty(), "空路径不应产生面包屑");
+    }
+
+    #[test]
+    fn navigate_resets_selection_and_scroll() {
+        let mut d = files_desk(5);
+        d.selected = Some(3);
+        d.scroll = 2;
+        let tmp = std::env::temp_dir();
+        let msg = navigate_to(&mut d, &tmp.to_string_lossy(), "测试目录");
+        assert!(msg.is_none(), "系统临时目录应可读：{msg:?}");
+        assert_eq!(d.selected, None, "换目录后选中项必须重置");
+        assert_eq!(d.scroll, 0, "换目录后滚动位置必须重置");
+    }
+
+    #[test]
+    fn navigate_failure_keeps_current_dir() {
+        let mut d = files_desk(3);
+        let before = d.cwd.clone();
+        let msg = navigate_to(&mut d, "__aether_absent_dir__", "不存在的目录");
+        assert!(msg.is_some(), "失败要有反馈");
+        assert_eq!(d.cwd, before, "导航失败不应把用户丢到读不了的目录");
+        assert!(d.dir_error.is_some(), "失败原因要能显示在界面上");
     }
 
     #[test]
