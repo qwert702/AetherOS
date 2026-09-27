@@ -22,8 +22,10 @@ fn main() -> anyhow::Result<()> {
     match args.get(1).map(String::as_str) {
         Some("--pid1") => run_pid1(),
         Some("--dry-run") | None => run_dry_run(args.get(2).map(|s| s.as_str())),
+        Some("--rescue") => rescue_console("手动进入救援模式（--rescue）"),
         Some(other) => {
-            eprintln!("aether-init — AetherOS PID 1\n\n用法:\n  aether-init --pid1            真机 PID 1 模式（仅 Linux）\n  aether-init --dry-run [DIR]   开发自检：加载服务定义并跑监督循环\n\n服务定义目录默认 /etc/aether/services");
+            eprintln!("aether-init — AetherOS PID 1\n\n用法:\n  aether-init --pid1            真机 PID 1 模式（仅 Linux）\n  aether-init --dry-run [DIR]   开发自检：加载服务定义并跑监督循环
+  aether-init --rescue          手动进入救援模式（打印原因 + 控制台 shell）\n\n服务定义目录默认 /etc/aether/services");
             if other != "--help" {
                 std::process::exit(2);
             }
@@ -98,6 +100,58 @@ fn run_dry_run(dir: Option<&str>) -> anyhow::Result<()> {
     run_loop(dir.unwrap_or("./services"), false)
 }
 
+/// 救援模式：打印**可操作的**原因与出路，并给一个控制台 shell。永不返回。
+///
+/// 之前的实现是 `sleep(3600)` 死等 —— 那与"黑屏"几乎没有区别：用户既看不到原因，
+/// 也没有任何修复手段。救援模式的价值全在"给人一条出路"。
+///
+/// PID 1 不允许退出（退出即内核 panic），所以这里是个永不结束的循环：
+/// shell 退出后重新打印并再来一次。
+fn rescue_console(reason: &str) -> ! {
+    loop {
+        eprintln!("======================================================");
+        eprintln!("[aether-init] 救援模式（rescue mode）");
+        eprintln!("  原因：{reason}");
+        eprintln!("  影响：没有启动任何服务 —— 桌面（compositor）与 AI 中枢（aetherd）都不会起来");
+        eprintln!("  排查：看 /etc/aether/services/*.json");
+        eprintln!("        · 单个文件写坏只会被跳过（上面有告警），不至于整机不可用");
+        eprintln!("        · 全部不可用才会进到这里（目录不存在 / 权限 / 全部解析失败）");
+        eprintln!("  修复：改好配置后执行 reboot，或用下面这个 shell 现场处理");
+        eprintln!("  PID 1 不会退出；此 shell 退出后会重新进入救援模式");
+        eprintln!("======================================================");
+        #[cfg(target_os = "linux")]
+        {
+            // 控制台 shell：stdin/out/err 都指向 /dev/console（串口/本机终端）
+            // 开三个独立句柄分别给 stdin/stdout/stderr（/dev/console 是设备文件，多次打开没问题；
+            // 用 clone 链容易把同一个 File 移动两次，那是编译器会直接拒绝的写法）
+            match std::fs::OpenOptions::new().read(true).write(true).open("/dev/console") {
+                Ok(con_in) => {
+                    let out = std::fs::OpenOptions::new().write(true).open("/dev/console");
+                    let err = std::fs::OpenOptions::new().write(true).open("/dev/console");
+                    match (out, err) {
+                        (Ok(o), Ok(e)) => {
+                            let mut cmd = std::process::Command::new("/bin/sh");
+                            cmd.stdin(std::process::Stdio::from(con_in))
+                                .stdout(std::process::Stdio::from(o))
+                                .stderr(std::process::Stdio::from(e));
+                            match cmd.status() {
+                                Ok(st) => eprintln!("[aether-init] 救援 shell 退出：{st}"),
+                                Err(e) => eprintln!("[aether-init] 无法启动救援 shell：{e}"),
+                            }
+                        }
+                        _ => eprintln!("[aether-init] /dev/console 打开不全：仅保持存活，等待人工处理"),
+                    }
+                }
+                Err(e) => eprintln!("[aether-init] 打不开 /dev/console（{e}）：仅保持存活，等待人工处理"),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        eprintln!("[aether-init] 非 Linux 平台：不启动救援 shell，仅保持存活");
+
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
 fn run_loop(services_dir: &str, pid1: bool) -> anyhow::Result<()> {
     let (specs, warnings) = unit::load_dir(&PathBuf::from(services_dir)).unwrap_or_else(|e| {
         eprintln!("[aether-init] 错误: {e:#}");
@@ -109,11 +163,9 @@ fn run_loop(services_dir: &str, pid1: bool) -> anyhow::Result<()> {
     if specs.is_empty() {
         let msg = format!("服务目录 {services_dir} 无可用服务定义");
         if pid1 {
-            // 救援模式：PID 1 不能退出（退出即内核 panic），保持存活等待人工修复
-            eprintln!("[aether-init] 致命: {msg} —— 进入救援模式（不启动任何服务与 IPC）");
-            loop {
-                std::thread::sleep(Duration::from_secs(3600));
-            }
+            // PID 1 不能退出（退出即内核 panic）→ 进救援模式
+            eprintln!("[aether-init] 致命: {msg}");
+            rescue_console(&msg);
         }
         anyhow::bail!("{msg}");
     }
