@@ -106,6 +106,8 @@ fn run_fbdev() -> anyhow::Result<()> {
     // 本帧待处理的点击（按下-抬起可能同帧到达）
     let mut click_pending = false;
     let mut drag: Option<(usize, f32, f32)> = None;
+    // 缩放中的窗口：(索引, 边, 按下时的原始矩形)
+    let mut resize: Option<(usize, Edge, draw::Rect)> = None;
     let mut snap_zone = layout::Snap::None;
     let mut toast: Option<(String, Instant)> = None;
     let mut ai_input = String::new();
@@ -200,10 +202,10 @@ fn run_fbdev() -> anyhow::Result<()> {
                         toast = Some((msg, Instant::now()));
                     }
                 }
-                input::UiEvent::Ctrl(c) => {
+                input::UiEvent::Ctrl(c, shift) => {
                     // 关窗会改动窗口数组：拖拽状态必须一起清掉（P2-3 同类越界）
-                    let closed = c == 'w';
-                    if let Some(msg) = apply_ctrl(&mut desktop, c) {
+                    let closed = !shift && c == 'w';
+                    if let Some(msg) = apply_ctrl(&mut desktop, c, shift) {
                         if closed {
                             drag = None;
                             snap_zone = layout::Snap::None;
@@ -338,7 +340,17 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
             }
         } else if mouse_down || click_pending {
-            if let Some((i, lx, ly)) = drag {
+            if let Some((idx, edge, orig)) = resize {
+                if mouse_down {
+                    if let Some(w) = desktop.wins.get_mut(idx) {
+                        apply_resize(w, edge, orig, mouse.0, mouse.1);
+                    } else {
+                        resize = None; // 窗口被关掉了
+                    }
+                } else {
+                    resize = None; // 松手结束
+                }
+            } else if let Some((i, lx, ly)) = drag {
                 // 窗口数组可能在拖拽中被修改（如 AI 关窗），索引失效即取消拖拽
                 match desktop.wins.get_mut(i) {
                     Some(win) => {
@@ -377,6 +389,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                 if let Some(m) = msg {
                     toast = Some((m, Instant::now()));
                 }
+            } else if let Some((idx, edge)) = topmost_edge(&desktop, mouse.0, mouse.1) {
+                // 窗口边缘 → 缩放（标题栏仍归拖动，所以上边不参与）
+                open_menu = None;
+                resize = begin_resize(&mut desktop, idx, edge);
+                drag = None;
+                snap_zone = layout::Snap::None;
             } else if mouse.1 < layout::TOP_BAR as f32 {
                 let hit_menu = renderer
                     .menubar_menus
@@ -1414,6 +1432,8 @@ fn preview_main() -> anyhow::Result<()> {
 
     let start = Instant::now();
     let mut drag: Option<(usize, f32, f32)> = None;
+    // 缩放中的窗口：(索引, 边, 按下时的原始矩形)
+    let mut resize: Option<(usize, Edge, draw::Rect)> = None;
     let mut snap_zone = layout::Snap::None;
     let mut toast: Option<(String, Instant)> = None;
     let mut ai_input = String::new();
@@ -1596,7 +1616,17 @@ fn preview_main() -> anyhow::Result<()> {
                 None => {}
             }
         } else if down {
-            if let Some((i, lx, ly)) = drag {
+            if let Some((idx, edge, orig)) = resize {
+                if down {
+                    if let Some(w) = desktop.wins.get_mut(idx) {
+                        apply_resize(w, edge, orig, mx, my);
+                    } else {
+                        resize = None;
+                    }
+                } else {
+                    resize = None;
+                }
+            } else if let Some((i, lx, ly)) = drag {
                 // 拖拽进行中：移动窗口 + 更新吸附区
                 let w = &mut desktop.wins[i].rect;
                 w.x += (mx - lx) as i32;
@@ -1627,6 +1657,11 @@ fn preview_main() -> anyhow::Result<()> {
                 if let Some(m) = msg {
                     toast = Some((m, Instant::now()));
                 }
+            } else if let Some((idx, edge)) = topmost_edge(&desktop, mx, my) {
+                open_menu = None;
+                resize = begin_resize(&mut desktop, idx, edge);
+                drag = None;
+                snap_zone = layout::Snap::None;
             } else if my < layout::TOP_BAR as f32 {
                 // 1. 菜单栏区域
                 let hit_menu = renderer
@@ -1873,6 +1908,103 @@ fn minifb_nav(k: &minifb::Key) -> Option<input::NavKey> {
         Delete => input::NavKey::Delete,
         _ => return None,
     })
+}
+
+/// 可拖拽的窗口边缘。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Edge {
+    Left,
+    Right,
+    Bottom,
+    BottomLeft,
+    BottomRight,
+}
+
+/// 鼠标落在哪条边上（纯函数，便于单测）。
+///
+/// 只有左/右/下/两角：上边是标题栏，它的语义是"拖动窗口"，
+/// 抢过来当缩放区会让用户没法拖窗口。
+fn edge_at(win: &Win, mx: f32, my: f32) -> Option<Edge> {
+    const T: f32 = 6.0; // 抓取厚度：太薄点不中，太厚会挡住内容
+    let (l, r, b) = (
+        win.rect.x as f32,
+        win.rect.x as f32 + win.rect.w as f32,
+        win.rect.y as f32 + win.rect.h as f32,
+    );
+    let inside_y = my >= win.rect.y as f32 - T && my <= b + T;
+    let inside_x = mx >= l - T && mx <= r + T;
+    if !inside_x || !inside_y {
+        return None;
+    }
+    let near_left = (mx - l).abs() <= T;
+    let near_right = (mx - r).abs() <= T;
+    let near_bottom = (my - b).abs() <= T;
+    match (near_left, near_right, near_bottom) {
+        (true, _, true) => Some(Edge::BottomLeft),
+        (_, true, true) => Some(Edge::BottomRight),
+        (true, _, _) => Some(Edge::Left),
+        (_, true, _) => Some(Edge::Right),
+        (_, _, true) => Some(Edge::Bottom),
+        _ => None,
+    }
+}
+
+/// 最上层那条边（后画的窗口在上层，命中优先）。
+fn topmost_edge(desktop: &Desktop, mx: f32, my: f32) -> Option<(usize, Edge)> {
+    for (i, win) in desktop.wins.iter().enumerate().rev() {
+        if win.rect.w <= 0 {
+            continue;
+        }
+        if let Some(e) = edge_at(win, mx, my) {
+            return Some((i, e));
+        }
+    }
+    None
+}
+
+/// 按鼠标位置改窗口矩形。以**按下时的原始矩形**为基准计算，
+/// 否则每次移动都在上一次结果上叠加，会产生累积漂移。
+///
+/// 语义是"被拖的那条边跟着鼠标走"，而不是"在旧尺寸上加减"：
+/// 直接由鼠标坐标算出新尺寸/位置，重复应用同一坐标结果恒等。
+fn apply_resize(win: &mut Win, edge: Edge, orig: draw::Rect, mx: f32, my: f32) {
+    const MIN_W: i32 = 320;
+    const MIN_H: i32 = 200;
+    let mx = mx.round() as i32;
+    let my = my.round() as i32;
+    let right = orig.x + orig.w;
+    match edge {
+        Edge::Right => win.rect.w = (mx - orig.x).max(MIN_W),
+        Edge::Bottom => win.rect.h = (my - orig.y).max(MIN_H),
+        Edge::Left => {
+            // 右边固定：新宽度与原右边一起决定新的 x
+            let w = (right - mx).max(MIN_W);
+            win.rect.x = right - w;
+            win.rect.w = w;
+        }
+        Edge::BottomRight => {
+            win.rect.w = (mx - orig.x).max(MIN_W);
+            win.rect.h = (my - orig.y).max(MIN_H);
+        }
+        Edge::BottomLeft => {
+            let w = (right - mx).max(MIN_W);
+            win.rect.x = right - w;
+            win.rect.w = w;
+            win.rect.h = (my - orig.y).max(MIN_H);
+        }
+    }
+    win.rect.w = win.rect.w.max(MIN_W);
+    win.rect.h = win.rect.h.max(MIN_H);
+    win.rect.y = win.rect.y.max(crate::layout::TOP_BAR);
+}
+
+/// 开始缩放：脱离平铺并清掉动画目标（否则下一帧被布局改回去）。
+fn begin_resize(desktop: &mut Desktop, idx: usize, edge: Edge) -> Option<(usize, Edge, draw::Rect)> {
+    let win = desktop.wins.get_mut(idx)?;
+    win.floating = true;
+    win.target = None;
+    desktop.active = idx;
+    Some((idx, edge, win.rect))
 }
 
 /// 活动窗口是否是终端 —— 决定键盘归谁。
@@ -2271,6 +2403,71 @@ mod window_mgmt_tests {
             term: Some(term::Terminal::spawn(40, 8, None)),
         };
         d
+    }
+
+    #[test]
+    fn edge_detection_covers_sides_and_corners() {
+        let w = mkwin("w", WinKind::Files); // rect = 100,100 600x400
+        assert_eq!(edge_at(&w, 100.0, 300.0), Some(Edge::Left));
+        assert_eq!(edge_at(&w, 700.0, 300.0), Some(Edge::Right));
+        assert_eq!(edge_at(&w, 400.0, 500.0), Some(Edge::Bottom));
+        assert_eq!(edge_at(&w, 700.0, 500.0), Some(Edge::BottomRight));
+        assert_eq!(edge_at(&w, 100.0, 500.0), Some(Edge::BottomLeft));
+        // 窗口内部与**上边**都不是缩放区：上边是标题栏，归拖动
+        assert_eq!(edge_at(&w, 400.0, 300.0), None);
+        assert_eq!(edge_at(&w, 400.0, 100.0), None, "上边必须留给拖动");
+        assert_eq!(edge_at(&w, 400.0, 600.0), None, "窗口外远端不算边缘");
+    }
+
+    #[test]
+    fn resize_right_edge_changes_width_only() {
+        let mut w = mkwin("w", WinKind::Files);
+        let orig = w.rect;
+        apply_resize(&mut w, Edge::Right, orig, 760.0, 300.0);
+        assert_eq!(w.rect.x, orig.x);
+        assert_eq!(w.rect.w, orig.w + 60);
+        assert_eq!(w.rect.h, orig.h, "只有右边时高度不应变");
+    }
+
+    #[test]
+    fn resize_left_edge_keeps_right_border_fixed() {
+        let mut w = mkwin("w", WinKind::Files);
+        let orig = w.rect;
+        let right_before = orig.x + orig.w;
+        apply_resize(&mut w, Edge::Left, orig, 200.0, 300.0);
+        assert_eq!(w.rect.x + w.rect.w, right_before, "拖左边时右边必须固定");
+        assert_eq!(w.rect.w, orig.w - 100);
+    }
+
+    #[test]
+    fn resize_clamps_to_min_size() {
+        let mut w = mkwin("w", WinKind::Files);
+        let orig = w.rect;
+        apply_resize(&mut w, Edge::Right, orig, 110.0, 300.0);
+        assert!(w.rect.w >= 320, "不能小于最小宽度，实际 {}", w.rect.w);
+        apply_resize(&mut w, Edge::Bottom, orig, 400.0, 120.0);
+        assert!(w.rect.h >= 200, "不能小于最小高度，实际 {}", w.rect.h);
+    }
+
+    #[test]
+    fn resize_uses_original_rect_so_no_drift() {
+        // 以"按下的原始矩形"为基准：同一目标位置重复应用结果一致（不会累积漂移）
+        let mut w = mkwin("w", WinKind::Files);
+        let orig = w.rect;
+        apply_resize(&mut w, Edge::Right, orig, 700.0, 0.0);
+        let once = w.rect.w;
+        apply_resize(&mut w, Edge::Right, orig, 700.0, 0.0);
+        assert_eq!(w.rect.w, once, "重复应用同一拖拽量不应继续变宽");
+    }
+
+    #[test]
+    fn begin_resize_detaches_from_tiling() {
+        let mut d = desk(1);
+        let r = begin_resize(&mut d, 0, Edge::BottomRight).expect("应能开始缩放");
+        assert_eq!(r.0, 0);
+        assert!(d.wins[0].floating, "缩放必须脱离平铺，否则下一帧被布局改回");
+        assert_eq!(d.wins[0].target, None);
+        assert_eq!(d.active, 0);
     }
 
     #[test]
