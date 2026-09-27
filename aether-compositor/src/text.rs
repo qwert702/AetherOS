@@ -233,6 +233,16 @@ impl TextRenderer {
         self.render(buf, w, h, x, y, text, px, rgb, alpha, true)
     }
 
+    /// 终端单元格尺寸（等宽近似）。
+    ///
+    /// 字体是比例字体（msyh/wqy），所以终端**必须逐格绝对定位**绘制，
+    /// 不能靠字符串自然推进——否则 "i" 与 "M" 混排就会错位。
+    pub fn mono_cell(&self) -> (f32, f32) {
+        let w = self.measure("M", crate::draw::theme::font::MONO).max(5.0);
+        let h = (crate::draw::theme::font::MONO * 1.4).ceil();
+        (w, h)
+    }
+
     /// 测量文本宽度（像素）。
     pub fn measure(&self, text: &str, px: f32) -> f32 {
         self.measure_with(text, px, false)

@@ -13,8 +13,14 @@ mod draw;
 mod fbdev;
 // 输入事件层：事件类型与键位翻译跨平台（可在开发机上单测），仅采集后端限 Linux
 mod input;
+#[cfg(target_os = "linux")]
+mod pty;
 mod layout;
 mod text;
+// 终端：胶合层跨平台（Linux 走真 PTY，开发机喂真实 ANSI 脚本走同一解析路径）
+mod term;
+// VT/ANSI 解析器：纯逻辑跨平台（终端正确性靠它的单测保证）
+mod vt;
 
 use aether_ipc::{Request, Response};
 use draw::{Desktop, Rect, Win};
@@ -115,8 +121,20 @@ fn run_fbdev() -> anyhow::Result<()> {
         let frame_start = Instant::now();
         let t = start.elapsed().as_secs_f32();
 
+        // 终端会话维护（读 PTY / 同步 winsize）—— 每帧一次
+        maintain_terminals(&mut desktop, tr.as_ref());
+
         // ---- 1. evdev 输入（drain 本帧积累的全部事件）----
         while let Ok(ev) = input_rx.try_recv() {
+            // 终端拿到焦点时按键归 shell（否则 Ctrl+C 会被当成关窗、方向键会去翻文件列表）。
+            // 但模态弹窗优先：确认卡片/安装向导打开时，键盘仍归它们，否则用户无法回答。
+            if confirm.is_none() && !installer.open && focused_terminal(&desktop) {
+                if let Some(k) = term_key_from_ui(&ev) {
+                    if feed_terminal(&mut desktop, k) {
+                        continue;
+                    }
+                }
+            }
             match ev {
                 input::UiEvent::MouseMove { dx, dy } => {
                     // 位移在事件流里累积，不受 10fps 渲染帧率影响；
@@ -525,8 +543,8 @@ fn run_fbdev() -> anyhow::Result<()> {
 #[cfg(target_os = "linux")]
 fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) },
     ];
     let work = layout::work_area(w, h);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -536,7 +554,7 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     let active = wins.len() - 1;
     let cwd = draw::default_cwd();
     let (entries, dir_error) = draw::read_dir_entries(&cwd);
-    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, dir_error };
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), dir_error };
     // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
     sync_files_title(&mut d);
     d
@@ -545,9 +563,9 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn demo_desktop() -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, restore: None, preview: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, restore: None, preview: None, term: None },
     ];
     let work = layout::work_area(WIDTH, HEIGHT);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -557,7 +575,7 @@ fn demo_desktop() -> Desktop {
     let active = wins.len() - 1;
     let cwd = draw::default_cwd();
     let (entries, dir_error) = draw::read_dir_entries(&cwd);
-    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, dir_error };
+    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), dir_error };
     // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
     sync_files_title(&mut d);
     d
@@ -994,6 +1012,12 @@ fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {    if icon >
         floating: true,
         restore: None,
         preview: None,
+        // 终端窗口在建立时就开会话（尺寸稍后由每帧维护同步给 PTY）
+        term: if kind == draw::WinKind::Terminal {
+            Some(term::Terminal::spawn(80, 24, Some(&desktop.cwd)))
+        } else {
+            None
+        },
     };
     desktop.wins.push(win);
     desktop.active = desktop.wins.len() - 1;
@@ -1063,6 +1087,7 @@ fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
             floating: true,
             restore: None,
             preview: Some(data),
+            term: None,
         };
         desktop.wins.push(win);
         desktop.active = desktop.wins.len() - 1;
@@ -1356,11 +1381,37 @@ fn preview_main() -> anyhow::Result<()> {
             .unwrap_or((0.0, 0.0));
         let down = window.get_mouse_down(minifb::MouseButton::Left);
 
+        // 终端会话维护（读 PTY / 同步 winsize）—— 每帧一次
+        maintain_terminals(&mut desktop, tr.as_ref());
+
         // ---- 键盘：AI 指令输入 + 布局切换 + 窗口/文件导航 ----
         // minifb 无字符级输入 API，预览期用按键映射（字母/空格/常用符号）；
         // 数字键 1-4 保留给布局切换，中文指令可用 aetherd chat CLI
         let ctrl = window.is_key_down(minifb::Key::LeftCtrl)
             || window.is_key_down(minifb::Key::RightCtrl);
+        // 终端拿到焦点时按键归 shell（与真机路径同一条规则）
+        let term_owns_keys = confirm.is_none() && focused_terminal(&desktop);
+        if term_owns_keys {
+            for k in window.get_keys_pressed(minifb::KeyRepeat::Yes) {
+                let tk = if ctrl {
+                    minifb_nav(&k)
+                        .map(term::TermKey::Nav)
+                        .or_else(|| key_to_char(&k).map(term::TermKey::Ctrl))
+                } else if let Some(nav) = minifb_nav(&k) {
+                    Some(term::TermKey::Nav(nav))
+                } else {
+                    match k {
+                        minifb::Key::Enter => Some(term::TermKey::Enter),
+                        minifb::Key::Backspace => Some(term::TermKey::Backspace),
+                        _ => key_to_char(&k).map(term::TermKey::Char),
+                    }
+                };
+                if let Some(tk) = tk {
+                    feed_terminal(&mut desktop, tk);
+                }
+            }
+            // 终端占据键盘时，下面的 AI 指令条输入/导航/布局键一律跳过
+        } else {
         let held = window.get_keys_pressed(minifb::KeyRepeat::Yes);
         for k in &held {
             // 按住 Ctrl 时不产生字符 —— 否则 Ctrl+W 会先把 'w' 打进指令条再关窗
@@ -1376,10 +1427,12 @@ fn preview_main() -> anyhow::Result<()> {
         }
         let keys = window.get_keys_pressed(minifb::KeyRepeat::No);
         for k in &keys {
-            // Ctrl 组合键（目前只有 Ctrl+W 关闭活动窗口）
+            // Ctrl 组合键：Ctrl+W 关窗、Ctrl+Shift+C/V 复制粘贴
             if ctrl {
                 if let Some(ch) = key_to_char(k) {
-                    if let Some(msg) = apply_ctrl(&mut desktop, ch.to_ascii_lowercase()) {
+                    let shift = window.is_key_down(minifb::Key::LeftShift)
+                        || window.is_key_down(minifb::Key::RightShift);
+                    if let Some(msg) = apply_ctrl(&mut desktop, ch.to_ascii_lowercase(), shift) {
                         drag = None;
                         snap_zone = layout::Snap::None;
                         toast = Some((msg, Instant::now()));
@@ -1428,6 +1481,7 @@ fn preview_main() -> anyhow::Result<()> {
                 }
                 _ => {}
             }
+        }
         }
 
         // ---- AI 事件轮询（非阻塞）----
@@ -1746,6 +1800,61 @@ fn minifb_nav(k: &minifb::Key) -> Option<input::NavKey> {
     })
 }
 
+/// 活动窗口是否是终端 —— 决定键盘归谁。
+///
+/// 终端是文本界面：它拿到焦点时，按键（尤其是 Ctrl+C/Ctrl+W 这类）
+/// 属于 shell 而不属于窗口管理器。否则 `Ctrl+C` 会被当成"关窗"，终端里永远中断不了命令。
+fn focused_terminal(desktop: &Desktop) -> bool {
+    desktop.wins.get(desktop.active).map(|w| w.term.is_some()).unwrap_or(false)
+}
+
+/// 每帧维护终端会话：读 PTY、并把窗口尺寸同步成 winsize。
+///
+/// 两条渲染路径共用一份（否则会出现"真机能刷新、预览不刷新"这类只在一条路径成立的差异）。
+fn maintain_terminals(desktop: &mut Desktop, tr: Option<&text::TextRenderer>) {
+    let (cw, ch) = match tr {
+        Some(t) => t.mono_cell(),
+        None => (8.0, 18.0),
+    };
+    for win in desktop.wins.iter_mut() {
+        if let Some(t) = win.term.as_mut() {
+            t.pump();
+            let (cols, rows) = draw::term_grid_size(win.rect, cw, ch);
+            t.resize(cols, rows);
+        }
+    }
+}
+
+/// evdev 事件 → 终端按键（返回 `None` 表示这个事件与终端无关，交给上层照常处理）。
+/// 仅真机（Linux）路径使用 —— 预览路径走 minifb 自己的键映射。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn term_key_from_ui(ev: &input::UiEvent) -> Option<term::TermKey> {
+    Some(match ev {
+        input::UiEvent::Char(c) => term::TermKey::Char(*c),
+        // Ctrl+Shift+X 是剪贴板动作（复制/粘贴），不归 shell —— 返回 None 交给上层
+        input::UiEvent::Ctrl(c, false) => term::TermKey::Ctrl(*c),
+        input::UiEvent::Ctrl(_, true) => return None,
+        input::UiEvent::Enter => term::TermKey::Enter,
+        input::UiEvent::Backspace => term::TermKey::Backspace,
+        input::UiEvent::Escape => term::TermKey::Escape,
+        input::UiEvent::Nav(k) => term::TermKey::Nav(*k),
+        _ => return None,
+    })
+}
+
+/// 把终端按键写进活动窗口的会话。返回是否已消费该按键。
+fn feed_terminal(desktop: &mut Desktop, key: term::TermKey) -> bool {
+    let Some(t) = desktop
+        .wins
+        .get_mut(desktop.active)
+        .and_then(|w| w.term.as_mut())
+    else {
+        return false;
+    };
+    t.write(&term::bytes_for(key));
+    true
+}
+
 /// 切换布局（键盘路径）；返回 toast 文案。
 fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
     if lay == desktop.layout {
@@ -1851,10 +1960,56 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
     None
 }
 
-/// Ctrl 组合键动作。目前只有一个：Ctrl+W 关闭活动窗口（配合红绿灯把"关不掉窗口"这条堵死）。
-fn apply_ctrl(desktop: &mut Desktop, c: char) -> Option<String> {
-    match c {
-        'w' => close_window(desktop, desktop.active),
+/// 复制到剪贴板。目标是终端就复制可见内容，是文件管理器就复制选中项路径。
+/// 返回 toast 文案。
+fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
+    // 终端优先：它的"内容"就是屏幕
+    if let Some(t) = desktop.wins.get(desktop.active).and_then(|w| w.term.as_ref()) {
+        let text = t.screen.to_lines().join("\n");
+        let trimmed = text.trim_end().to_string();
+        let lines = trimmed.lines().count();
+        desktop.clipboard = trimmed;
+        return Some(format!("已复制终端内容（{lines} 行）"));
+    }
+    // 文件管理器：复制选中项的完整路径（比复制文件名有用得多）
+    if let Some(i) = desktop.selected {
+        if let Some(e) = desktop.entries.get(i) {
+            desktop.clipboard = draw::join_path(&desktop.cwd, &e.name);
+            return Some(format!("已复制路径「{}」", e.name));
+        }
+    }
+    None
+}
+
+/// 粘贴。目标是终端就直接送进 PTY（返回 None 表示已消费）；
+/// 否则把文本交回调用方插入输入框。
+fn clipboard_paste(desktop: &mut Desktop) -> Option<String> {
+    if desktop.clipboard.is_empty() {
+        return None;
+    }
+    let text = desktop.clipboard.clone();
+    if let Some(t) = desktop.wins.get_mut(desktop.active).and_then(|w| w.term.as_mut()) {
+        t.write(&term::paste_bytes(&text));
+        return None;
+    }
+    Some(text)
+}
+
+/// Ctrl 组合键动作。
+///
+/// 规则：`Ctrl+W` 关窗；`Ctrl+Shift+C/V` 复制粘贴。**带 Shift 的才做剪贴板** ——
+/// 终端里 `Ctrl+C` 必须留给 shell（中断命令），不区分 shift 就会两件事抢一个键。
+fn apply_ctrl(desktop: &mut Desktop, c: char, shift: bool) -> Option<String> {
+    match (c, shift) {
+        ('c', true) => clipboard_copy(desktop),
+        ('v', true) => clipboard_paste(desktop).map(|t| {
+            // 粘贴到单行输入框：换行折成空格，避免出现看不见的换行
+            let one_line: String = t.replace(['\r', '\n'], " ");
+            let n = one_line.chars().count();
+            desktop.clipboard = one_line;
+            format!("已粘贴 {n} 个字符")
+        }),
+        ('w', false) => close_window(desktop, desktop.active),
         _ => None,
     }
 }
@@ -1885,6 +2040,7 @@ mod window_mgmt_tests {
             floating: false,
             restore: None,
             preview: None,
+            term: None,
         }
     }
 
@@ -1898,6 +2054,7 @@ mod window_mgmt_tests {
             entries: Vec::new(),
             selected: None,
             scroll: 0,
+            clipboard: String::new(),
             dir_error: None,
         }
     }
@@ -2025,13 +2182,75 @@ mod window_mgmt_tests {
         assert_eq!(d.selected, Some(1));
     }
 
+    fn term_desk() -> Desktop {
+        let mut d = desk(1);
+        d.wins[0] = Win {
+            rect: Rect { x: 100, y: 100, w: 600, h: 400 },
+            target: None,
+            title: "终端".into(),
+            kind: WinKind::Terminal,
+            floating: false,
+            restore: None,
+            preview: None,
+            term: Some(term::Terminal::spawn(40, 8, None)),
+        };
+        d
+    }
+
+    #[test]
+    fn clipboard_copies_selected_entry_path() {
+        let mut d = files_desk(3);
+        d.selected = Some(1);
+        let msg = clipboard_copy(&mut d).expect("应有复制反馈");
+        assert!(msg.contains("路径"), "{}", msg);
+        // 复制的是**完整路径**，不是文件名 —— 粘贴出去才有用
+        assert_eq!(d.clipboard, draw::join_path("/tmp", "e1"));
+    }
+
+    #[test]
+    fn clipboard_copies_terminal_visible_content() {
+        let mut d = term_desk();
+        let msg = clipboard_copy(&mut d).expect("终端应可复制");
+        assert!(msg.contains("行"), "{}", msg);
+        assert!(d.clipboard.contains("aether@localhost"), "应包含演示会话内容");
+        assert!(
+            !d.clipboard.contains("\u{0}"),
+            "复制内容不应带控制字符残留"
+        );
+    }
+
+    #[test]
+    fn clipboard_paste_into_terminal_is_consumed() {
+        let mut d = term_desk();
+        d.clipboard = "echo hi\n".into();
+        // 粘贴进终端：由终端消费（返回 None + 不再回给输入框）
+        assert!(clipboard_paste(&mut d).is_none());
+    }
+
+    #[test]
+    fn clipboard_paste_to_input_returns_text_for_ai_bar() {
+        let mut d = files_desk(1);
+        d.clipboard = "/tmp/x\n".into();
+        let text = clipboard_paste(&mut d).expect("非终端目标应把文本交回调用方");
+        assert_eq!(text, "/tmp/x\n");
+    }
+
+    #[test]
+    fn ctrl_shift_c_copies_and_does_not_close_window() {
+        // 这条是 shift 区分的意义所在：Ctrl+Shift+C 不能变成"关窗"
+        let mut d = term_desk();
+        let before = d.wins.len();
+        assert!(apply_ctrl(&mut d, 'c', true).is_some(), "Ctrl+Shift+C 应复制");
+        assert_eq!(d.wins.len(), before, "Ctrl+Shift+C 不得关窗");
+    }
+
     #[test]
     fn ctrl_w_closes_active_window() {
         let mut d = desk(2);
         d.active = 1;
-        assert!(apply_ctrl(&mut d, 'w').is_some());
+        assert!(apply_ctrl(&mut d, 'w', false).is_some());
         assert_eq!(d.wins.len(), 1);
         assert_eq!(d.active, 0);
-        assert!(apply_ctrl(&mut d, 'q').is_none(), "未绑定的组合键不应有副作用");
+        assert!(apply_ctrl(&mut d, 'q', false).is_none(), "未绑定的组合键不应有副作用");
     }
 }

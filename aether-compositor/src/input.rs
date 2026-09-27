@@ -60,9 +60,12 @@ pub enum UiEvent {
     Enter,
     Backspace,
     Escape,
-    /// Ctrl + 字母（Ctrl+C/Ctrl+W…）。**独立于 Char**：组合键与字符是两类语义，
-    /// 混在一起会让"按住 Ctrl 时字符被吞掉"变成隐式行为。
-    Ctrl(char),
+    /// Ctrl + 字母（Ctrl+C/Ctrl+W…），第二项是**是否同时按住 Shift**。
+    ///
+    /// 独立于 `Char` 是因为组合键与字符是两类语义（混在一起会让"按住 Ctrl 时字符被吞掉"
+    /// 变成隐式行为）。带 Shift 是必需的：终端里 `Ctrl+C` 必须归 shell（中断命令），
+    /// 复制只能走 `Ctrl+Shift+C` —— 不区分 shift 的话这两件事会抢同一个按键。
+    Ctrl(char, bool),
     /// 导航键（方向/翻页/Home/End/Tab/Delete）
     Nav(NavKey),
     /// 数字键 1–4：布局快捷键
@@ -239,7 +242,7 @@ fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
             if mods.ctrl {
                 // Ctrl+字母 → 组合键；Ctrl+其他不产生字符（否则会漏出 ';' 之类的散字）
                 return if base.is_ascii_alphabetic() {
-                    vec![UiEvent::Ctrl(base.to_ascii_lowercase())]
+                    vec![UiEvent::Ctrl(base.to_ascii_lowercase(), mods.shift)]
                 } else {
                     vec![]
                 };
@@ -412,12 +415,22 @@ mod tests {
         // 按住 Ctrl 时字母变成组合键，而不是普通字符
         assert_eq!(
             translate(&ev(EV_KEY, 46, 1), &mut m),
-            vec![UiEvent::Ctrl('c')] // KEY_C
+            vec![UiEvent::Ctrl('c', false)] // KEY_C
         );
         // 松开后恢复为普通字符
         assert!(translate(&ev(EV_KEY, KEY_LEFTCTRL, 0), &mut m).is_empty());
         assert!(!m.ctrl);
         assert_eq!(translate(&ev(EV_KEY, 46, 1), &mut m), vec![UiEvent::Char('c')]);
+    }
+
+    #[test]
+    fn ctrl_shift_is_reported_separately() {
+        // Ctrl+Shift+C 与 Ctrl+C 必须是**不同的**事件：前者是"复制"，后者是"中断"
+        let mut m = Mods { ctrl: true, shift: true, alt: false };
+        assert_eq!(
+            translate(&ev(EV_KEY, 46, 1), &mut m),
+            vec![UiEvent::Ctrl('c', true)]
+        );
     }
 
     #[test]

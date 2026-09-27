@@ -1004,6 +1004,11 @@ pub struct Desktop {
     pub selected: Option<usize>,
     /// 文件网格的滚动位置（首个可见条目索引）
     pub scroll: usize,
+    /// 剪贴板 v1：进程内一段全局文本（终端/文件路径/AI 指令条共用）。
+    ///
+    /// 跨进程剪贴板要另加 IPC 消息（计划 §2.2）——当前所有"应用"都在合成器进程内，
+    /// 一段文本就够用，先把交互跑通。
+    pub clipboard: String,
     /// 读取 cwd 时的错误；有值时状态栏显示它而不是条目数
     pub dir_error: Option<String>,
 }
@@ -1038,6 +1043,9 @@ pub struct Win {
     pub restore: Option<Rect>,
     /// 预览窗口的内容（仅 `WinKind::Preview` 有值）
     pub preview: Option<PreviewData>,
+    /// 终端会话（仅 `WinKind::Terminal` 有值）。
+    /// 内容由 `term::Terminal` 持有：Linux 上是真实 PTY，开发机预览是喂进同一解析器的演示脚本。
+    pub term: Option<crate::term::Terminal>,
 }
 
 /// AI 回复气泡的类别（用户/AI/工具调用三类样式，语义一眼可分）。
@@ -1831,7 +1839,7 @@ fn draw_window(buf: &mut [u32], w: usize, h: usize, win: &Win, active: bool, mou
 
     let content = Rect { x: r.x + 1, y: r.y + metric::TITLE_H + 1, w: r.w - 2, h: r.h - metric::TITLE_H - 2 };
     match kind {
-        WinKind::Terminal => draw_term_content(buf, w, h, content, r, t, tr),
+        WinKind::Terminal => draw_term_content(buf, w, h, r, win.term.as_ref(), active, t, tr),
         WinKind::Music => draw_music_content(buf, w, h, content, r, mouse, tr),
         // Preview 暂时复用文件管理器的纸面底，真正的预览渲染在后续阶段接入
         WinKind::Files => draw_files_content(buf, w, h, content, r, mouse, tr, fv, cells, up),
@@ -2015,54 +2023,92 @@ fn light_symbol(buf: &mut [u32], w: usize, h: usize, cx: i32, cy: i32, kind: usi
 
 /// 终端内容：提示符分色 + 命令与输出 + 末尾光标。
 /// 密度做足——空荡的终端窗口看起来像没做完。
-fn draw_term_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, t: f32, tr: Option<&TextRenderer>) {
-    fill_clipped(buf, w, h, r, win, radius::LG, color::inset(), 0.95);
-    let Some(tr) = tr else { return };
+fn draw_term_content(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    win_rect: Rect,
+    term: Option<&crate::term::Terminal>,
+    active: bool,
+    t: f32,
+    tr: Option<&TextRenderer>,
+) {
+    let r = term_content_rect(win_rect);
+    // 终端底色固定深色（理由见 term::ansi_rgb）：内容区之外也要铺满，
+    // 否则窗口体（浅色）会从内边距里透出来，看起来像没画完
+    fill_clipped(buf, w, h, r, win_rect, radius::LG, TERM_BG, 1.0);
 
-    // 每行是若干 (文本, 颜色, 不透明度) 段；提示符分色是"真终端"的视觉签名。
-    // 行数给足并**按可用高度裁切**——窗口矮时不会画出窗口外，窗口高时不留死灰。
-    let host = ("aether@localhost", color::accent(), 0.95);
-    let sep = (" ~ $ ", color::text_dim(), 0.85);
-    let lines: [&[(&str, [u8; 3], f32)]; 9] = [
-        &[host, sep, ("uname -a", color::text(), 0.95)],
-        &[("AetherOS 0.1.0 aether-kernel x86_64 GNU/Linux", color::text_dim(), 0.9)],
-        &[host, sep, ("aether-status", color::text(), 0.95)],
-        &[("服务 5/5 运行中 · AI 中枢在线 · 已开机 00:07:12", color::success(), 0.85)],
-        &[host, sep, ("cat /etc/aether/services/aetherd.json", color::text(), 0.95)],
-        &[("name=aetherd  after=network  restart=true  essential=true", color::text_dim(), 0.9)],
-        &[host, sep, ("aether-ipc --probe 7311", color::text(), 0.95)],
-        &[("7311 在线 · NDJSON 协议 · 本地模型 llama3.2:3b", color::text_dim(), 0.9)],
-        &[host, sep],
-    ];
-    let mut y = r.y + 14;
-    let mut caret_x = r.x + 16;
-    let bottom = r.y + r.h - 10;
-    let right = r.x + r.w - 14;
-    for (i, segs) in lines.iter().enumerate() {
-        if y + 20 > bottom {
-            break;
-        }
-        let mut x = (r.x + 16) as f32;
-        for (text, rgb, a) in segs.iter() {
-            // 逐段裁切：文本绘制没有横向裁剪，不截断就会画到窗口外面去
-            let room = right as f32 - x;
-            if room < 8.0 {
-                break;
+    let Some(tr) = tr else { return };
+    let Some(term) = term else {
+        draw_text(
+            tr, buf, w, h, (r.x + 6) as f32, (r.y + 4) as f32,
+            "（终端会话未建立）", font::MONO, color::text_faint(), 0.9,
+        );
+        return;
+    };
+    let (cell_w, cell_h) = tr.mono_cell();
+    let (cols, rows) = term_grid_size(win_rect, cell_w, cell_h);
+
+    for y in 0..rows.min(term.screen.rows) {
+        let py = r.y as f32 + y as f32 * cell_h;
+        for x in 0..cols.min(term.screen.cols) {
+            let cell = term.screen.cell(x, y);
+            // 宽字符的第二格是占位：画了就重复，跳过才是对齐的
+            if cell.wide_tail {
+                continue;
             }
-            if tr.measure(text, font::MONO) > room {
-                let cut = ellipsize(tr, text, font::MONO, room);
-                x = draw_text(tr, buf, w, h, x, y as f32, &cut, font::MONO, *rgb, *a);
-                break;
+            let px = r.x as f32 + x as f32 * cell_w;
+            if crate::term::cell_has_custom_bg(&cell) {
+                fill_rect(
+                    buf, w, h,
+                    Rect { x: px as i32, y: py as i32, w: cell_w.ceil() as i32, h: cell_h as i32 },
+                    crate::term::ansi_rgb(cell.bg, false),
+                    1.0,
+                );
             }
-            x = draw_text(tr, buf, w, h, x, y as f32, text, font::MONO, *rgb, *a);
+            if cell.ch == ' ' {
+                continue; // 空格不画字形：整屏大半是空的，这一条省掉绝大部分绘制
+            }
+            let rgb = crate::term::ansi_rgb(cell.fg, cell.bold);
+            let mut buf4 = [0u8; 4];
+            let glyph = cell.ch.encode_utf8(&mut buf4);
+            draw_text(tr, buf, w, h, px, py, glyph, font::MONO, rgb, 1.0);
         }
-        if i + 1 == lines.len() {
-            caret_x = x as i32;
-        }
-        y += 22;
     }
-    if (t * 2.0) as i32 % 2 == 0 && y - 18 + 15 <= bottom && caret_x + 8 <= right {
-        fill_rect(buf, w, h, Rect { x: caret_x, y: y - 18, w: 8, h: 15 }, color::text(), 0.72);
+
+    // 光标：只有活动窗口才闪（非活动窗口闪烁是干扰）
+    if active {
+        let cx = term.screen.cur_x.min(cols.saturating_sub(1));
+        let cy = term.screen.cur_y.min(rows.saturating_sub(1));
+        if (t * 2.0) as i32 % 2 == 0 {
+            let px = r.x as f32 + cx as f32 * cell_w;
+            let py = r.y as f32 + cy as f32 * cell_h;
+            fill_rect(
+                buf, w, h,
+                Rect { x: px as i32, y: py as i32, w: cell_w.ceil() as i32, h: cell_h as i32 },
+                crate::term::ansi_rgb(7, false),
+                0.65,
+            );
+        }
+    }
+
+    // 会话状态角标：退出/不可用时必须说清楚，否则用户会以为"卡住了"
+    match term.status() {
+        crate::term::TermStatus::Running => {}
+        crate::term::TermStatus::Exited(code) => {
+            let msg = format!("会话已结束（状态 {code}）· 点 Dock 里的终端可再开一个");
+            draw_text(
+                tr, buf, w, h, (r.x + 6) as f32, (r.y + r.h - 18) as f32,
+                &msg, font::LABEL, color::text_faint(), 0.95,
+            );
+        }
+        crate::term::TermStatus::Unavailable(why) => {
+            let shown = ellipsize(tr, why, font::LABEL, (r.w - 12) as f32);
+            draw_text(
+                tr, buf, w, h, (r.x + 6) as f32, (r.y + r.h - 18) as f32,
+                &shown, font::LABEL, color::warning_text(), 0.95,
+            );
+        }
     }
 }
 
@@ -2211,6 +2257,31 @@ pub fn files_grid_rect(win: Rect) -> Rect {
         h: (content_h - STATUS_H).max(0),
     }
 }
+
+/// 终端窗口里能放下的列/行数。
+///
+/// 渲染与"同步给 PTY 的 winsize"必须用**同一个**结果 —— 否则 `vim` 会按
+/// 一个尺寸排版、而画面按另一个尺寸裁剪，出现谁也说不清的对不齐。
+pub fn term_grid_size(win: Rect, cell_w: f32, cell_h: f32) -> (usize, usize) {
+    let r = term_content_rect(win);
+    let cols = (r.w as f32 / cell_w.max(1.0)).floor().max(1.0) as usize;
+    let rows = (r.h as f32 / cell_h.max(1.0)).floor().max(1.0) as usize;
+    (cols, rows)
+}
+
+/// 终端内容区（窗口体去掉标题栏与内边距）。
+pub fn term_content_rect(win: Rect) -> Rect {
+    let pad = 8;
+    Rect {
+        x: win.x + 1 + pad,
+        y: win.y + metric::TITLE_H + 1 + pad,
+        w: (win.w - 2 - pad * 2).max(1),
+        h: (win.h - metric::TITLE_H - 2 - pad * 2).max(1),
+    }
+}
+
+/// 终端底色（两种主题都用深底，理由见 `term::ansi_rgb` 的注释）。
+const TERM_BG: [u8; 3] = [18, 20, 26];
 
 /// 计算网格布局；空间不足时返回 0 列（调用方据此不画任何格子）。
 pub fn grid_layout(area: Rect) -> GridLayout {
