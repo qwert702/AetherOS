@@ -40,6 +40,38 @@ pub struct Tool {
 pub fn registry() -> Vec<Tool> {
     vec![
         Tool {
+            name: "clipboard_read",
+            description: "读取系统剪贴板的当前内容（跨进程）。剪贴板里常出现密码/令牌，读取会被记录到审计日志，且读到的内容会强制后续推理留在本地。",
+            level: Level::L1,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            run: tool_clipboard_read,
+            consequence: "",
+            echo_field: None,
+            // 剪贴板 = 用户可能刚复制的密码：读到即视为敏感上下文（P0-4b 同一逻辑）
+            sensitive_output: true,
+        },
+        Tool {
+            name: "clipboard_write",
+            description: "把一段文本写入系统剪贴板（跨进程），供用户粘贴到别处。",
+            level: Level::L0,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "要放入剪贴板的文本（上限 64KB）"}
+                },
+                "required": ["text"]
+            }),
+            run: tool_clipboard_write,
+            consequence: "",
+            echo_field: None,
+            sensitive_output: false,
+        },
+
+        Tool {
             name: "sys_info",
             description: "查询系统状态：内存、磁盘、服务列表（由 aether 系统服务提供）",
             level: Level::L0,
@@ -207,6 +239,22 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
         }),
         Verdict::Denied(reason) => bail!("DENIED: {reason}"),
     }
+}
+
+fn tool_clipboard_read(_args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let text = crate::clipboard::get();
+    if text.is_empty() {
+        return Ok("（剪贴板为空）".into());
+    }
+    Ok(text)
+}
+
+fn tool_clipboard_write(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let Some(text) = args.get("text").and_then(|v| v.as_str()) else {
+        bail!("缺少参数 text");
+    };
+    let bytes = crate::clipboard::set(text).map_err(|e| anyhow::anyhow!(e))?;
+    Ok(format!("已写入剪贴板（{bytes} 字节）"))
 }
 
 fn tool_sys_info(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
@@ -616,9 +664,15 @@ mod tests {
         let reg = registry();
         let rf = reg.iter().find(|t| t.name == "read_file").expect("read_file 应注册");
         assert!(rf.sensitive_output, "read_file 的输出必须标记为敏感（强制本地通道）");
-        // 其余工具不应误标（否则云端通道会被无谓地禁用）
-        for t in reg.iter().filter(|t| t.name != "read_file") {
+        // 敏感集合：文件内容 + 剪贴板（用户可能刚复制的密码）——读到就强制本地通道。
+        // 其余工具不应误标（否则云端通道会被无谓地禁用）。
+        let sensitive = ["read_file", "clipboard_read"];
+        for t in reg.iter().filter(|t| !sensitive.contains(&t.name)) {
             assert!(!t.sensitive_output, "{} 不应标记为敏感输出", t.name);
+        }
+        for name in sensitive {
+            let t = reg.iter().find(|t| t.name == name).expect(name);
+            assert!(t.sensitive_output, "{name} 必须标记为敏感输出");
         }
     }
 }

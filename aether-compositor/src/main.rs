@@ -2230,6 +2230,25 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
     None
 }
 
+/// 把本地剪贴板同步给 aetherd（2.2 跨进程剪贴板的落地点）。
+///
+/// 尽力而为：连不上/超时都**静默放弃** —— 剪贴板同步失败不该打扰用户，
+/// 更不该在交互线程里等网络。AI 的 `clipboard_read` 工具读的就是这份状态。
+fn sync_clipboard_to_daemon(text: String) {
+    std::thread::spawn(move || {
+        let run = || -> anyhow::Result<()> {
+            let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
+            let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+            stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+            stream.write_all(aether_ipc::encode(&Request::ClipboardSet { text }).as_bytes())?;
+            let mut line = String::new();
+            BufReader::new(&mut stream).read_line(&mut line)?;
+            Ok(())
+        };
+        let _ = run();
+    });
+}
+
 /// 复制到剪贴板。目标是终端就复制可见内容，是文件管理器就复制选中项路径。
 /// 返回 toast 文案。
 fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
@@ -2241,12 +2260,14 @@ fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
         let lines = trimmed.lines().count();
         let what = if t.sel.is_some() { "选区" } else { "终端内容" };
         desktop.clipboard = trimmed;
+        sync_clipboard_to_daemon(desktop.clipboard.clone());
         return Some(format!("已复制{what}（{lines} 行）"));
     }
     // 文件管理器：复制选中项的完整路径（比复制文件名有用得多）
     if let Some(i) = desktop.selected {
         if let Some(e) = desktop.entries.get(i) {
             desktop.clipboard = draw::join_path(&desktop.cwd, &e.name);
+            sync_clipboard_to_daemon(desktop.clipboard.clone());
             return Some(format!("已复制路径「{}」", e.name));
         }
     }

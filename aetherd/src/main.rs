@@ -8,6 +8,7 @@
 
 mod intent;
 mod llm;
+mod clipboard;
 mod perm;
 mod router;
 mod server;
@@ -200,6 +201,20 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
         pending: None,
         channel: last_channel.map(|c| c.label().to_string()),
     })
+}
+
+/// 供 server 分发测试用的最小配置（不指向任何真实端点）。
+#[cfg(test)]
+pub(crate) fn test_config() -> Config {
+    Config {
+        local: llm::Endpoint {
+            base_url: "http://127.0.0.1:1/v1".into(),
+            api_key: "test".into(),
+            model: "test".into(),
+        },
+        cloud: None,
+        local_only: true,
+    }
 }
 
 fn main() -> Result<()> {

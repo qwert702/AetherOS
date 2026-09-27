@@ -54,6 +54,12 @@ pub enum Request {
         token: String,
     },
     /// 查询系统状态（CPU/内存/磁盘/服务列表等）。
+    /// 写入跨进程剪贴板（上限见 aetherd clipboard::MAX_BYTES；超长整体拒绝）。
+    ClipboardSet {
+        text: String,
+    },
+    /// 读取跨进程剪贴板。
+    ClipboardGet,
     SysInfo {
         scope: SysInfoScope,
     },
@@ -90,6 +96,14 @@ pub enum Response {
         unit: String,
         ok: bool,
         message: String,
+    },
+    /// 剪贴板内容（`Request::ClipboardGet` 的应答）。
+    ClipboardText {
+        text: String,
+    },
+    /// 剪贴板写入确认（`Request::ClipboardSet` 的应答），`bytes` 为写入字节数。
+    ClipboardWritten {
+        bytes: usize,
     },
     /// 桌面行为指令（aetherd → Shell/合成器）：切换布局、开关通知等。
     /// Shell 收到后执行本地动作，这是"AI 操作桌面"的正道。
@@ -247,6 +261,28 @@ mod tests {
     #[test]
     fn ui_registration_and_cancel_roundtrip() {
         // 令牌绑定确认方（P1-8）与拒绝通路（P1-9）的协议面
+        // 剪贴板请求/应答
+        let req = Request::ClipboardSet { text: "跨进程
+内容".into() };
+        match decode::<Request>(&encode(&req)).unwrap() {
+            Request::ClipboardSet { text } => assert_eq!(text, "跨进程
+内容"),
+            other => panic!("{other:?}"),
+        }
+        match decode::<Request>(&encode(&Request::ClipboardGet)).unwrap() {
+            Request::ClipboardGet => {}
+            other => panic!("{other:?}"),
+        }
+        let resp = Response::ClipboardText { text: "abc".into() };
+        match decode::<Response>(&encode(&resp)).unwrap() {
+            Response::ClipboardText { text } => assert_eq!(text, "abc"),
+            other => panic!("{other:?}"),
+        }
+        let resp = Response::ClipboardWritten { bytes: 42 };
+        match decode::<Response>(&encode(&resp)).unwrap() {
+            Response::ClipboardWritten { bytes } => assert_eq!(bytes, 42),
+            other => panic!("{other:?}"),
+        }
         let r = Request::RegisterUi { key: "deadbeef".into() };
         match decode::<Request>(&encode(&r)).unwrap() {
             Request::RegisterUi { key } => assert_eq!(key, "deadbeef"),

@@ -236,6 +236,18 @@ fn handle_request(
             }
             out
         }
+        Request::ClipboardSet { text } => {
+            // 剪贴板常被用来复制密码：每次读写都落审计，"谁在何时碰过它"必须可查
+            let _ = gate.audit("clipboard_set", Level::L0, "", "allowed");
+            match crate::clipboard::set(&text) {
+                Ok(bytes) => vec![Response::ClipboardWritten { bytes }],
+                Err(e) => vec![Response::Error { code: 413, message: e }],
+            }
+        }
+        Request::ClipboardGet => {
+            let _ = gate.audit("clipboard_get", Level::L1, "", "allowed");
+            vec![Response::ClipboardText { text: crate::clipboard::get() }]
+        }
         Request::SysInfo { .. } => vec![Response::SysInfo(sys_report())],
         Request::ServiceControl { unit, action } => vec![Response::ServiceAck {
             unit,
@@ -337,4 +349,62 @@ fn handle_chat(
 fn sys_report() -> SysReport {
     // 真实数据：/proc 内存 + aether-init 服务列表（collect_sys_report 内部按缺省降级）
     crate::collect_sys_report()
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use crate::perm::{Approvals, Gate};
+    use crate::test_config;
+
+    /// 剪贴板是**进程级全局状态**，而测试默认并行 —— 不串行化会互相覆盖。
+    /// 这是全局状态 + 并行测试的标准处理方式。
+    static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn handle_line(line: &str, is_ui: &mut bool) -> Vec<Response> {
+        let cfg = test_config();
+        let gate = Gate::new(std::env::temp_dir().join("aether_clipboard_audit_test.log"));
+        let approvals = Approvals::new();
+        handle_request(line, &cfg, &gate, &approvals, "test-key", is_ui)
+    }
+
+    #[test]
+    fn clipboard_set_then_get_roundtrip() {
+        let _g = lock();
+        let mut is_ui = false;
+        let mut out = handle_line(
+            &aether_ipc::encode(&Request::ClipboardSet { text: "abc 剪贴板".into() }),
+            &mut is_ui,
+        );
+        assert!(
+            matches!(out.remove(0), Response::ClipboardWritten { .. }),
+            "写入应得到确认"
+        );
+        let out = handle_line(&aether_ipc::encode(&Request::ClipboardGet), &mut is_ui);
+        match &out[0] {
+            Response::ClipboardText { text } => assert_eq!(text, "abc 剪贴板"),
+            other => panic!("意外的应答：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn clipboard_oversized_is_rejected_without_clobbering() {
+        let _g = lock();
+        let mut is_ui = false;
+        crate::clipboard::set("keep").unwrap();
+        let big = "x".repeat(crate::clipboard::MAX_BYTES + 1);
+        let out = handle_line(
+            &aether_ipc::encode(&Request::ClipboardSet { text: big }),
+            &mut is_ui,
+        );
+        assert!(
+            matches!(out[0], Response::Error { code: 413, .. }),
+            "超长应整体拒绝"
+        );
+        assert_eq!(crate::clipboard::get(), "keep", "拒绝后原内容不受影响");
+    }
 }
