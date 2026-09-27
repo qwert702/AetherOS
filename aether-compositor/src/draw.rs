@@ -2082,6 +2082,27 @@ fn draw_term_content(
     let (cell_w, cell_h) = tr.mono_cell();
     let (cols, rows) = term_grid_size(win_rect, cell_w, cell_h);
 
+    // 拖选高亮：铺在字形**下面**（不是加在文字上），颜色与选中态一致
+    if let Some(sel) = term.sel.as_ref() {
+        let ((ax, ay), (bx, by)) = {
+            let (sx, sy, ex, ey) = (sel.sx, sel.sy, sel.ex, sel.ey);
+            let (ax, ay, bx, by) = if (sy, sx) <= (ey, ex) { (sx, sy, ex, ey) } else { (ex, ey, sx, sy) };
+            ((ax.min(bx), ay.min(by)), (bx.max(ax), by.max(ay)))
+        };
+        for y in ay..=by.min(rows.saturating_sub(1)) {
+            for x in ax.min(cols.saturating_sub(1))..=bx.min(cols.saturating_sub(1)) {
+                let px = r.x as f32 + x as f32 * cell_w;
+                let py = r.y as f32 + y as f32 * cell_h;
+                fill_rect(
+                    buf, w, h,
+                    Rect { x: px as i32, y: py as i32, w: cell_w.ceil() as i32, h: cell_h as i32 },
+                    color::accent(),
+                    0.35,
+                );
+            }
+        }
+    }
+
     for y in 0..rows.min(term.screen.rows) {
         let py = r.y as f32 + y as f32 * cell_h;
         for x in 0..cols.min(term.screen.cols) {

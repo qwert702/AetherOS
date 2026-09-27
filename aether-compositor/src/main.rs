@@ -350,6 +350,9 @@ fn run_fbdev() -> anyhow::Result<()> {
                 } else {
                     resize = None; // 松手结束
                 }
+            } else if focused_terminal(&desktop) && mouse_down {
+                // 按住并移动 = 继续拖选
+                terminal_drag_select(&mut desktop, tr.as_ref(), mouse.0, mouse.1, false);
             } else if let Some((i, lx, ly)) = drag {
                 // 窗口数组可能在拖拽中被修改（如 AI 关窗），索引失效即取消拖拽
                 match desktop.wins.get_mut(i) {
@@ -389,6 +392,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                 if let Some(m) = msg {
                     toast = Some((m, Instant::now()));
                 }
+            } else if focused_terminal(&desktop)
+                && active_term_contains(&desktop, tr.as_ref(), mouse.0, mouse.1)
+            {
+                // 终端内容区：按下 = 开始拖选（不再走"点标题拖窗口"的分支）
+                open_menu = None;
+                drag = None;
+                terminal_drag_select(&mut desktop, tr.as_ref(), mouse.0, mouse.1, true);
             } else if let Some((idx, edge)) = topmost_edge(&desktop, mouse.0, mouse.1) {
                 // 窗口边缘 → 缩放（标题栏仍归拖动，所以上边不参与）
                 open_menu = None;
@@ -469,7 +479,8 @@ fn run_fbdev() -> anyhow::Result<()> {
                 for i in (0..desktop.wins.len()).rev() {
                     let r = desktop.wins[i].rect;
                     let title_hit = draw::Rect { x: r.x, y: r.y, w: r.w, h: metric::TITLE_HIT_H };
-                    if title_hit.contains(mouse.0, mouse.1) {
+                    let body_hit = r.contains(mouse.0, mouse.1);
+                    if title_hit.contains(mouse.0, mouse.1) || body_hit {
                         let clicked = desktop.wins.remove(i);
                         desktop.wins.push(clicked);
                         desktop.active = desktop.wins.len() - 1;
@@ -1626,6 +1637,8 @@ fn preview_main() -> anyhow::Result<()> {
                 } else {
                     resize = None;
                 }
+            } else if focused_terminal(&desktop) && down {
+                terminal_drag_select(&mut desktop, tr.as_ref(), mx, my, false);
             } else if let Some((i, lx, ly)) = drag {
                 // 拖拽进行中：移动窗口 + 更新吸附区
                 let w = &mut desktop.wins[i].rect;
@@ -1657,6 +1670,12 @@ fn preview_main() -> anyhow::Result<()> {
                 if let Some(m) = msg {
                     toast = Some((m, Instant::now()));
                 }
+            } else if focused_terminal(&desktop)
+                && active_term_contains(&desktop, tr.as_ref(), mx, my)
+            {
+                open_menu = None;
+                drag = None;
+                terminal_drag_select(&mut desktop, tr.as_ref(), mx, my, true);
             } else if let Some((idx, edge)) = topmost_edge(&desktop, mx, my) {
                 open_menu = None;
                 resize = begin_resize(&mut desktop, idx, edge);
@@ -2007,6 +2026,48 @@ fn begin_resize(desktop: &mut Desktop, idx: usize, edge: Edge) -> Option<(usize,
     Some((idx, edge, win.rect))
 }
 
+/// 点击是否落在**活动终端**的内容区里（决定按下是"选择文本"还是别的交互）。
+fn active_term_contains(desktop: &Desktop, _tr: Option<&text::TextRenderer>, mx: f32, my: f32) -> bool {
+    let Some(win) = desktop.wins.get(desktop.active) else {
+        return false;
+    };
+    let Some(_) = win.term.as_ref() else {
+        return false;
+    };
+    draw::term_content_rect(win.rect).contains(mx, my)
+}
+
+/// 终端拖选的每帧推进。`start_new = true` 表示按下那一刻（重设起点）。
+///
+/// 终端聚焦时，内容区里的按下/拖动是**选择文本**而不是拖动窗口 ——
+/// 这与所有终端的行为一致。
+fn terminal_drag_select(
+    desktop: &mut Desktop,
+    tr: Option<&text::TextRenderer>,
+    mx: f32,
+    my: f32,
+    start_new: bool,
+) -> bool {
+    let cell = match tr {
+        Some(t) => t.mono_cell(),
+        None => (8.0, 18.0),
+    };
+    let Some(win) = desktop.wins.get_mut(desktop.active) else {
+        return false;
+    };
+    let Some(t) = win.term.as_mut() else {
+        return false;
+    };
+    let content = draw::term_content_rect(win.rect);
+    let (cols, rows) = draw::term_grid_size(win.rect, cell.0, cell.1);
+    if !content.contains(mx, my) {
+        return false;
+    }
+    let (c, r) = term::Terminal::cell_at(content, cell.0, cell.1, mx, my, cols, rows);
+    t.select_at(c, r, start_new);
+    true
+}
+
 /// 活动窗口是否是终端 —— 决定键盘归谁。
 ///
 /// 终端是文本界面：它拿到焦点时，按键（尤其是 Ctrl+C/Ctrl+W 这类）
@@ -2059,6 +2120,8 @@ fn feed_terminal(desktop: &mut Desktop, key: term::TermKey) -> bool {
         return false;
     };
     t.write(&term::bytes_for(key));
+    // 键入即清选区（与所有终端一致：开始打字就意味着放弃选择）
+    t.clear_selection();
     true
 }
 
@@ -2172,11 +2235,13 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
 fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
     // 终端优先：它的"内容"就是屏幕
     if let Some(t) = desktop.wins.get(desktop.active).and_then(|w| w.term.as_ref()) {
-        let text = t.screen.to_lines().join("\n");
+        // 有拖选复制选区，没有则退化为整屏（两条路都不让 Ctrl+Shift+C 落空）
+        let text = t.selection_text();
         let trimmed = text.trim_end().to_string();
         let lines = trimmed.lines().count();
+        let what = if t.sel.is_some() { "选区" } else { "终端内容" };
         desktop.clipboard = trimmed;
-        return Some(format!("已复制终端内容（{lines} 行）"));
+        return Some(format!("已复制{what}（{lines} 行）"));
     }
     // 文件管理器：复制选中项的完整路径（比复制文件名有用得多）
     if let Some(i) = desktop.selected {

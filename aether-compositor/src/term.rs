@@ -23,11 +23,35 @@ pub enum TermStatus {
     Unavailable(String),
 }
 
+/// 拖选区域（屏幕坐标，格）。`sx/sy` 是按下点，`ex/ey` 是当前点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub sx: usize,
+    pub sy: usize,
+    pub ex: usize,
+    pub ey: usize,
+}
+
+impl Selection {
+    /// 归一化成 (起始格, 结束格)（行序与列序都从小到大）
+    fn norm(&self) -> ((usize, usize), (usize, usize)) {
+        let ((ax, ay), (bx, by)) = if (self.sy, self.sx) <= (self.ey, self.ex) {
+            ((self.sx, self.sy), (self.ex, self.ey))
+        } else {
+            ((self.ex, self.ey), (self.sx, self.sy))
+        };
+        // 跨行的选区按"整块矩形"处理（块选择，简单且可预期）
+        ((ax.min(bx), ay), (bx.max(ax), by))
+    }
+}
+
 pub struct Terminal {
     pub screen: Screen,
     /// 复用读缓冲：终端输出是高频的，每帧新建 Vec 会持续制造垃圾
     read_buf: Vec<u8>,
     status: TermStatus,
+    /// 当前拖选；`None` = 无选区
+    pub sel: Option<Selection>,
     #[cfg(target_os = "linux")]
     pty: Option<crate::pty::Pty>,
 }
@@ -44,6 +68,7 @@ impl Terminal {
                         screen,
                         read_buf: Vec::new(),
                         status: TermStatus::Running,
+                        sel: None,
                         pty: Some(p),
                     }
                 }
@@ -53,6 +78,7 @@ impl Terminal {
                         screen,
                         read_buf: Vec::new(),
                         status: TermStatus::Unavailable(format!("PTY 不可用：{e}")),
+                        sel: None,
                         pty: None,
                     };
                     term.feed_demo(cwd);
@@ -66,6 +92,7 @@ impl Terminal {
                 screen,
                 read_buf: Vec::new(),
                 status: TermStatus::Unavailable("开发机预览：PTY 仅在 Linux 上可用".into()),
+                sel: None,
             };
             term.feed_demo(cwd);
             term
@@ -91,6 +118,78 @@ impl Terminal {
         &self.status
     }
 
+/// 把鼠标位置换算成屏幕格坐标（越界则夹到边界内）。
+pub fn cell_at(
+    content: crate::draw::Rect,
+    cell_w: f32,
+    cell_h: f32,
+    mx: f32,
+    my: f32,
+    cols: usize,
+    rows: usize,
+) -> (usize, usize) {
+    let col = ((mx - content.x as f32) / cell_w.max(1.0)).floor() as i32;
+    let row = ((my - content.y as f32) / cell_h.max(1.0)).floor() as i32;
+    (
+        (col.max(0) as usize).min(cols.saturating_sub(1)),
+        (row.max(0) as usize).min(rows.saturating_sub(1)),
+    )
+}
+
+    /// 开始/更新拖选。
+    pub fn select_at(&mut self, col: usize, row: usize, start: bool) {
+        let (c, r) = (
+            col.min(self.screen.cols.saturating_sub(1)),
+            row.min(self.screen.rows.saturating_sub(1)),
+        );
+        self.sel = match (start, self.sel) {
+            (true, _) => Some(Selection { sx: c, sy: r, ex: c, ey: r }),
+            (false, Some(mut s)) => {
+                s.ex = c;
+                s.ey = r;
+                Some(s)
+            }
+            (false, None) => None,
+        };
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.sel = None;
+    }
+
+    /// 提取选区文本。行尾空格裁掉，行间用 `\n` 连接。
+    ///
+    /// 有选区取选区；没有则取**全部可见内容**（`Ctrl+Shift+C` 在没拖选时也能用）。
+    pub fn selection_text(&self) -> String {
+        let Some(sel) = self.sel else {
+            // 没有选区 = 复制全部可见内容（行裁剪逻辑只有 to_lines 这一份实现）
+            return self.screen.to_lines().join("\n");
+        };
+        let ((_, y0), (_, y1)) = sel.norm();
+        let rows = y0..=y1.min(self.screen.rows.saturating_sub(1));
+        let ((ax, _), (bx, _)) = sel.norm();
+        let x1 = bx.min(self.screen.cols.saturating_sub(1));
+        let mut out = String::new();
+        for (n, y) in rows.enumerate() {
+            if n > 0 {
+                out.push('\n');
+            }
+            let mut line = String::new();
+            for x in ax..=x1 {
+                let c = self.screen.cell(x, y);
+                if c.wide_tail {
+                    continue; // 宽字符占位格不进文本
+                }
+                line.push(c.ch);
+            }
+            while line.ends_with(' ') {
+                line.pop();
+            }
+            out.push_str(&line);
+        }
+        out
+    }
+
     /// 每帧调用：把 PTY 里现有的数据搬进解析器。绝不阻塞。
     pub fn pump(&mut self) {
         #[cfg(target_os = "linux")]
@@ -101,6 +200,8 @@ impl Terminal {
             pty.read_available(&mut self.read_buf, MAX_READ_PER_FRAME);
             if !self.read_buf.is_empty() {
                 self.screen.feed(&self.read_buf);
+                // 屏幕内容变了，旧选区指的已不是原来的文本 —— 清掉比保持错位诚实
+                self.sel = None;
             }
             if let Some(code) = pty.try_wait() {
                 self.status = TermStatus::Exited(code);
@@ -136,6 +237,7 @@ impl Terminal {
             return;
         }
         self.screen.resize(cols, rows);
+        self.sel = None;
         #[cfg(target_os = "linux")]
         if let Some(pty) = self.pty.as_mut() {
             pty.resize(cols as u16, rows as u16);
@@ -380,5 +482,57 @@ mod tests {
     #[test]
     fn paste_keeps_utf8_intact() {
         assert_eq!(paste_bytes("中文"), "中文".as_bytes().to_vec());
+    }
+
+    #[test]
+    fn selection_extracts_rectangular_region() {
+        let mut t = Terminal::spawn(20, 4, None);
+        t.screen.feed(b"\x1b[2J\x1b[Habcdef\r\nghijkl");
+        t.sel = Some(Selection { sx: 1, sy: 0, ex: 3, ey: 1 });
+        assert_eq!(t.selection_text(), "bcd\nhij", "块选择：矩形内的两行");
+    }
+
+    #[test]
+    fn selection_normalizes_when_dragging_backwards() {
+        let mut t = Terminal::spawn(20, 4, None);
+        t.screen.feed(b"\x1b[2J\x1b[Habcdef\r\nghijkl");
+        // 从右下往左上拖：结果必须与正向拖一致
+        t.sel = Some(Selection { sx: 3, sy: 1, ex: 1, ey: 0 });
+        assert_eq!(t.selection_text(), "bcd\nhij");
+    }
+
+    #[test]
+    fn selection_single_cell() {
+        let mut t = Terminal::spawn(20, 4, None);
+        t.screen.feed(b"\x1b[2J\x1b[Habcdef");
+        t.sel = Some(Selection { sx: 2, sy: 0, ex: 2, ey: 0 });
+        assert_eq!(t.selection_text(), "c");
+    }
+
+    #[test]
+    fn selection_skips_wide_tail_cells() {
+        let mut t = Terminal::spawn(20, 4, None);
+        t.screen
+            .feed("\x1b[2J\x1b[2;1H中文".as_bytes()); // 第 2 行 = 中文（宽字符）
+        t.sel = Some(Selection { sx: 0, sy: 1, ex: 3, ey: 1 });
+        assert_eq!(t.selection_text(), "中文", "占位格不能变成多余空格");
+    }
+
+    #[test]
+    fn no_selection_falls_back_to_whole_screen() {
+        let mut t = Terminal::spawn(20, 4, None);
+        t.screen.feed(b"\x1b[2J\x1b[Hhello");
+        assert!(t.sel.is_none());
+        assert!(t.selection_text().contains("hello"));
+    }
+
+    #[test]
+    fn typing_clears_selection() {
+        let mut t = Terminal::spawn(20, 4, None);
+        t.screen.feed(b"\x1b[2J\x1b[Habcdef");
+        t.sel = Some(Selection { sx: 1, sy: 0, ex: 2, ey: 0 });
+        t.write(b"x"); // 预览路径：写即回显
+        t.clear_selection();
+        assert!(t.sel.is_none());
     }
 }
