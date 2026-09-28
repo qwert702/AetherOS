@@ -175,6 +175,33 @@ Aether/
 | `README.md` | 构建说明 |
 | `build/` | 构建中间产物（空目录，产物不纳入版本控制） |
 
+### 系统里到底有什么 / 能不能装软件（2026-09-28 实测）
+
+实测自构建产物（`platform/build/output/target`，**41 MB**）：
+
+| 内容 | 说明 |
+|---|---|
+| BusyBox | 约 200 个 applet，`/bin` 与 `/usr/bin` 基本全是它。含 wget / telnet / md5sum / less / top / lsof / fdisk / chroot |
+| e2fsprogs | `mke2fs` / `fsck.ext4` / `tune2fs` / `dumpe2fs` —— 持久化分区要用 |
+| grub + syslinux | 引导安装工具（`grub-install` 等） |
+| **glibc** | `libc.so.6` + `ld-linux-x86-64.so.2`。**不是 musl** —— 这是"能不能跑外部二进制"的关键 |
+| 自研 5 个二进制 | `aether-init` / `aetherd` / `aether-ops` / `aether-compositor` / `aether-install`，都在 `/usr/bin`（本身是 musl 静态链接） |
+| 文泉驿微米黑 | compositor 在 Linux 下从中加载中文字形，缺了桌面就没字 |
+| **没有** | 任何包管理器（opkg / apk / apt / rpm / pacman 全无）、编译器、解释器（无 gcc / python / perl） |
+
+**结论：装不了软件。** Buildroot 的模型是构建期定死、运行期不改系统。三条可行路径：
+
+1. 拷**静态链接的 x86-64 二进制**到持久化分区 `/var`（ext4）或 U 盘 → 直接能跑
+2. 动态链接的发行版二进制**基本跑不起来**：glibc 版本对不上、没有依赖解析、没有 `ld.so.cache`
+3. 要加常驻软件 → 改 `platform/br2-external/configs/aetheros_defconfig` 加 `BR2_PACKAGE_*` 重建 ISO，
+   或把文件丢进 `platform/overlay/`
+
+文件系统布局：系统区只读（ISO9660 + initramfs 启动时整个读进内存）；
+只有持久化分区（`/dev/vda2`，卷标 `AETHER`，挂到 `/var`）可写且跨重启保留。
+`/init` 负责挂 `/proc`、`/sys`、`/dev`、拉起 `lo`，然后 `exec aether-init --pid1`。
+
+**是 Linux 软件吗**：是 —— 内核是 Linux，用户态是 glibc 的 x86-64，能跑的就是 Linux ELF 二进制。
+
 ### scripts / docs
 | 文件 | 内容 |
 |---|---|
@@ -285,7 +312,7 @@ cargo check -p aether-compositor --offline --target x86_64-unknown-linux-musl
   空格提交 / 退格删拼音，**未被 IME 吃掉的字符才送 PTY**（`3a34f49`）；Esc 取消拼字同轮接上
 - ⚠️ 终端里的中文输入**只做过编译与源码级确认，没有实机键盘交互验证**（`--shot` 出静态帧，测不了输入）
 
-## 测试分布（2026-09-28 实测：**Windows 301 / Linux 311，均全绿；双目标零警告**）
+## 测试分布（2026-09-28 实测：**Windows 302 / Linux 312，均全绿；双目标零警告**）
 
 **两个目标都要跑** —— 不是可选项。`cfg(target_os="linux")` 门控的代码在 Windows 上
 整段不编译，**Linux 侧的问题在开发机上一次都发现不了**。实测踩到两次：
@@ -296,12 +323,12 @@ cargo check -p aether-compositor --offline --target x86_64-unknown-linux-musl
 |---|---|---|---|
 | `aether-compositor` | 187 | 183 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
 | `aether-ops` | 0 | **13** | 整个 crate 是 Linux 专属，Windows 不参与 |
-| `aetherd` | 81 | 82 | |
+| `aetherd` | 82 | 83 | |
 | `aether-init` | 17 | 17 | 含 `shipped_essential_services_must_be_restartable`（见下） |
 | `aether-install` | 9 | 9 | |
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **301** | **311** | |
+| **合计** | **302** | **312** | |
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。

@@ -8,7 +8,7 @@
 > （compositor 已能自愈，实机 kill 验证过），**唯一缺口是 1a**：连续 8 小时不崩，需实机长跑。
 >
 > 代码规模（2026-09-28 实测）：**19,556 行 / 40 个 .rs**（7 crate）；
-> 测试 **Windows 301 / Linux 311，均全绿**；`cargo check` **双目标零警告**。
+> 测试 **Windows 302 / Linux 312，均全绿**；`cargo check` **双目标零警告**。
 > ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 与二级子目录。
 >
 > ⚠️ **两个目标都要测**：`cfg(target_os="linux")` 的代码在 Windows 上整段不编译，
@@ -189,12 +189,16 @@
 
 ### 实机验证暴露的两点（2026-09-28 实测，未修）
 
-- **`read_file` 对"不存在的越权路径"报的是"无法访问"而不是策略拒绝** ——
-  因为 `resolve_readable` 先 `canonicalize` 再查白名单，文件不存在时前者先失败。
-  实测：guest 内 `read_file /root/.bashrc` → `无法访问 … No such file or directory`
-  （该路径其实也在白名单外）。**不是安全漏洞**（两条路都拒），但运维看到"文件不存在"
-  会往错方向查。正解是两阶段：先按**词法规范化**路径做一次策略判定，`canonicalize`
-  之后再判一次（后者仍负责挡符号链接与 `..`）。
+- ✅ **`read_file` 的报错顺序已修**（2026-09-28）。原症状：对"不存在的越权路径"报的是
+  "无法访问"而不是策略拒绝 —— 因为 `resolve_readable` 先 `canonicalize` 再查白名单，
+  文件不存在时前者先失败。实测：guest 内 `read_file /root/.bashrc` →
+  `无法访问 … No such file or directory`（该路径其实也在白名单外）。
+  **不是安全漏洞**（两条路都拒），但读的人会往"文件不存在"的方向查。
+  修法：在 `canonicalize` 的 **Err 分支**上先做一次词法层策略判定再报错。
+  只加在 Err 分支、不动已存在路径的行为 —— 无条件前置会误伤
+  "词法上不在白名单、但经符号链接落到白名单里"的路径。
+  回归测试 `nonexistent_out_of_whitelist_reports_policy_not_io`（开发机即可跑）；
+  Linux 侧那条测试也顺势去掉了"路径不存在就跳过"的兜底，6 条路径全部走完整入口断言。
 - **`-m 512` 下 ops 内存告警每轮刷屏**：实测 guest 内 `可用 3MB / 468MB`，
   `aether-ops` 每轮都打 `⚠ 内存紧张`。live ISO 的 rootfs 在内存盘里，`MemAvailable`
   天然偏低 —— 要么把 `qemu-verify.sh` 的内存调大，要么让压力阈值考虑 tmpfs。

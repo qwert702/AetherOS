@@ -437,9 +437,21 @@ pub(crate) fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf
 /// 校验并规范化待读路径；不可读则返回带原因的 Err。
 fn resolve_readable(path: &str) -> Result<std::path::PathBuf> {
     // canonicalize 同时解析 `..` 与符号链接——这两条绕行路径因此被堵死
-    let canon = std::fs::canonicalize(path)
-        .map_err(|e| anyhow::anyhow!("无法访问 {path}: {e}"))?;
-    let canon = strip_verbatim_prefix(canon);
+    let canon = match std::fs::canonicalize(path) {
+        Ok(c) => strip_verbatim_prefix(c),
+        Err(e) => {
+            // 目标不存在（或不可达）时，**先做一次词法层策略判定再报错**。
+            //
+            // 为什么：canonicalize 先失败的话，一条越权路径得到的是"无法访问：No such file"
+            // —— 读的人会往"文件不存在"的方向查，而真正的原因是策略拒了它。
+            // 实测（QEMU guest 内以 root 读 `/root/.bashrc`）就是这个表现。
+            //
+            // 只加在这条 Err 分支上，**不动已存在路径的行为**：词法判定会误伤
+            // "词法上不在白名单、但经符号链接落到白名单里"的路径，所以不能无条件前置。
+            check_read_policy(std::path::Path::new(path), path)?;
+            return Err(anyhow::anyhow!("无法访问 {path}: {e}"));
+        }
+    };
     check_read_policy(&canon, path)?;
     Ok(canon)
 }
@@ -940,16 +952,31 @@ mod tests {
                 "{p} 策略实得: {policy}"
             );
 
-            if !std::path::Path::new(p).exists() {
-                continue;
-            }
+            // 注：不再按"路径是否存在"跳过 —— 修掉 `resolve_readable` 的报错顺序之后，
+            // 不存在的越权路径也会得到策略拒绝，所以全部 6 条都能走完整入口断言。
             let err = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false)
                 .expect_err(&format!("{p} 应被拒绝"))
                 .to_string();
             assert!(
                 err.contains("不在允许读取的范围内") || err.contains("凭证类"),
-                "{p} 入口实得: {err}"
+                "{p} 入口实得: {err}（不该报「无法访问」—— 那说明策略判定被 canonicalize 的失败盖住了）"
             );
+        }
+    }
+
+    /// 不存在的越权路径必须报"策略拒绝"，不能报"无法访问"。
+    ///
+    /// 这条在**开发机上就能跑**（路径不存在是前提，不是障碍），所以它是这个修复的
+    /// 主要回归防线：`resolve_readable` 原先先 `canonicalize`，文件不存在就报
+    /// "无法访问：No such file"，读的人会往"文件不存在"的方向查，而真因是策略拒了。
+    #[test]
+    fn nonexistent_out_of_whitelist_reports_policy_not_io() {
+        let mut ctx = ToolCtx::default();
+        for p in ["/etc/shadow", "/definitely/not/here/nope.txt", "C:/Windows/win.ini"] {
+            let err = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false)
+                .expect_err(&format!("{p} 应被拒绝"))
+                .to_string();
+            assert!(err.contains("不在允许读取的范围内"), "{p} 实得: {err}");
         }
     }
 

@@ -116,7 +116,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
 cargo run -p aether-compositor -- --theme dark     # 深空主题
 cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试（Windows 301 项）
+cargo test --workspace                             # 单元测试（Windows 302 项）
 ```
 
 构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
@@ -149,7 +149,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 301 / Linux 311，均全绿 |
+| 单元测试 | Windows 302 / Linux 312，均全绿 |
 | 编译警告 | 两个目标都是 0 条 |
 | 视觉回归 | 10 张归档走查图逐像素比对，当前 10/10 零差异 |
 | 代码审查 | 四轮全量 / 增量审查 + 修复报告 |
