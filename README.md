@@ -37,21 +37,32 @@ PID 1、窗口合成器、终端、中文输入、AI 中枢、AI 运维、安装
 - 没有连续长跑记录，所有验证都在虚拟机里做的
 - `aether-shell` 是 11 行的占位，Shell 职责暂时压在 compositor 里
 
-## 软件怎么装
+## 装应用
 
-装不了。系统里没有包管理器（opkg / apk / apt / rpm 都没有），没有编译器，没有软件仓库。
-Buildroot 的做法是软件在构建期定死，运行期不改系统。
+没有包管理器（opkg / apk / apt / rpm 都没有），也没有软件仓库，但有一套自己的安装机制。
+一个"应用包"就是一个目录：`app.json` 清单 + 可执行文件，可选 `lib/` 放自带的共享库。
 
-可行的三条路：
+```sh
+aetherd app install /tmp/hello    # 装（先做依赖预检）
+aetherd app list                  # 列出已装
+aetherd app remove hello          # 卸载（进回收站，不是直接删）
+```
 
-1. 往持久化分区（`/var`，ext4）或 U 盘里拷**静态链接的 x86-64 二进制**，可以直接执行
-2. 动态链接的程序要看依赖。镜像里的 glibc 是 2.38 且**向后兼容**，所以"版本对不上"这个说法
-   是不准确的 —— 实测在 Ubuntu 24.04（glibc 2.39）上编的 hello 直接就跑通了，因为它只要求
-   `GLIBC_2.2.5 / 2.3.4 / 2.34` 这些老符号。**真正会挂的是缺共享库**：把宿主的 `/usr/bin/ls`
-   拷进去会报 `libselinux.so.1: cannot open shared object file`。发行版程序通常要拖一串库，
-   所以要么静态链接，要么把依赖一起带上（镜像里没有 `ld.so.cache`，也没有依赖解析）
-3. 要加常驻软件，改 `platform/br2-external/configs/aetheros_defconfig` 加 `BR2_PACKAGE_*`，
-   重建 ISO；或者把文件丢进 `platform/overlay/`
+装完 `/usr/local/bin` 里会生成一个包装脚本，终端直接敲 `hello` 就能跑。
+也可以让 AI 装：「把这个装上」→ 弹 L2 确认卡片 → 走同一套逻辑。
+
+**装之前会做预检**，因为装完跑不起来比装不上更糟。实测结论：
+
+| 情况 | 结果 |
+|---|---|
+| 静态链接（`gcc -static` / Rust musl 静态 / Go 默认） | 一定能跑 |
+| 动态链接，依赖的库都在镜像里 | 能跑 |
+| 动态链接，缺依赖库 | 报 `error while loading shared libraries`，预检会列出缺哪几个 |
+
+镜像里的 glibc 是 2.38 且向后兼容，所以"glibc 版本对不上"通常不是问题；真正会挂的是缺 `.so`
+—— 镜像里只有 glibc、libgcc 等少数几个库。**最省事就是静态链接。**
+
+写一个包、清单字段、边界，见 [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.md)。
 
 系统区是只读的（ISO9660 + initramfs 全在内存），只有 `/var` 那个 ext4 分区可写、重启保留。
 
@@ -152,7 +163,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 302 / Linux 312，均全绿 |
+| 单元测试 | Windows 316 / Linux 326，均全绿 |
 | 编译警告 | 两个目标都是 0 条 |
 | 视觉回归 | 10 张归档走查图逐像素比对，当前 10/10 零差异 |
 | 代码审查 | 四轮全量 / 增量审查 + 修复报告 |
@@ -170,6 +181,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 | [`docs/roadmap.md`](docs/roadmap.md) | 里程碑 M0–M6，以及已知的工程质量缺口 |
 | [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（当前 5.5/6，缺口是"连续 8 小时不崩"） |
 | [`docs/ui-design-handover.md`](docs/ui-design-handover.md) | 视觉设计的权威依据：设计令牌、双模主题、环境陷阱 |
+| [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.md) | 应用包格式：怎么做、怎么装、预检怎么读、边界在哪 |
 | [`docs/ai-permissions.md`](docs/ai-permissions.md) | AI 权限模型 |
 | [`docs/WRITE-OPS-2026-09-28.md`](docs/WRITE-OPS-2026-09-28.md) | 可写文件操作的约束 |
 | [`docs/PHASE3-DECISION-2026-09-28.md`](docs/PHASE3-DECISION-2026-09-28.md) | Wayland 的决策框架与放弃条件 |

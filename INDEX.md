@@ -1,7 +1,7 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-28 19:50（复核自 git 历史 + 代码实测）· 源码 **19,556 行**
-（7 个 crate，40 个 .rs 源文件，不含 `target/`）
+生成时间：2026-09-28 21:20（复核自 git 历史 + 代码实测）· 源码 **20,700 行**
+（7 个 crate，41 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
 > `wc -l aether-*/src/*.rs` 的通配 `aether-*` **匹配不到 `aetherd`**（目录名没有连字符），
@@ -11,13 +11,13 @@
 | crate | 行数 | 文件 | 职责 |
 |---|---|---|---|
 | `aether-compositor` | 12,720 | 18 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 3,775 视觉层 / `main.rs` 3,192 主循环 / `wayland/` 7 文件 2,192 行为 3.1 spike） |
-| `aetherd` | 3,945 | 10 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 |
+| `aetherd` | 5,075 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
 | `aether-init` | 1,305 | 6 | PID 1 与服务管理 |
 | `aether-ops` | 736 | 3 | AI 运维：日志监控 + 故障诊断 |
 | `aether-install` | 505 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 334 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **19,556** | **40** | |
+| **合计** | **20,700** | **41** | |
 
 > 口径：2026-09-28 19:50 工作区实测。逐文件行数**每次提交都会漂**，引用前先跑 `wc -l`。
 
@@ -91,12 +91,13 @@ Aether/
 - 与 aetherd 交互：`query_aether`（后台线程连接 7311，发 `Request::Chat`，收 ChatChunk[含 channel]/Action/NeedsConfirmation）
 - 顶栏 AI 三态：`AiStatus::{Local,Cloud,Offline}`（本地青/云端紫/离线灰），由 ChatChunk.channel 驱动
 
-### aetherd（AI 中枢，3,945 行 / 10 文件）
+### aetherd（AI 中枢，5,075 行 / 11 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/tools.rs` (1,279) | 工具系统：`registry`（**12 个工具**，见下）、`execute` 管线（闸门→审计→执行）、罐头探针（命令全为编译期常量）、写白名单 **写 ⊆ 读**（有测试守着） |
+| `src/tools.rs` (1,409) | 工具系统：`registry`（**15 个工具**，见下）、`execute` 管线（闸门→审计→执行）、罐头探针（命令全为编译期常量）、写白名单 **写 ⊆ 读**（有测试守着） |
+| `src/apps.rs` (893) | **应用安装**（2026-09-28 新增）：清单校验、目录安装、卸载（进回收站）、**安装前依赖预检**（自己解析 ELF 的 `PT_INTERP` 与 `DT_NEEDED`，缺哪个 `.so` 直接列出来）、生成终端包装脚本。包格式与边界见 `docs/APP-PACKAGES.md` |
+| `src/main.rs` (636) | 入口：`chat` / `serve` / `config` / **`app`** 四组子命令；`serve` 启动时把已装应用挂进 `/usr/local/bin` |
 | `src/server.rs` (572) | `serve`：TCP 127.0.0.1:7311 每连接一线程（连接数/行长上限）；`handle_chat` 先快速意图后 LLM，Action/确认必须先于 done 发送；`ipc_gating_tests` 把"每个 `Request` 变体都过闸门"固化成回归测试 |
-| `src/main.rs` (529) | 入口：`chat` 单轮 agent CLI / `serve` 常驻 IPC / `config` 模型配置 CLI；`agent_run` 工具调用循环（≤4 轮，L2+ 中断上抛结构化确认）；真实系统状态汇总（/proc + init） |
 | `src/perm.rs` (412) | 权限闸门 `Gate`：`Level::{L0..L3}`、`judge` 裁决、`audit` 审计日志（**带轮转**）；`Approvals` 一次性确认令牌表（128 位、绑定 tool+参数、5 分钟、用后即废） |
 | `src/trash.rs` (414) | 回收站：条目数 + 总字节 + 存活天数**三重上限**；恢复不覆盖、挡路径穿越 |
 | `src/modelcfg.rs` (235) | 模型配置持久化：优先级**环境变量 > 文件 > 默认**；损坏回退默认；`summary()` 脱敏；启用条件"有 Key **或** 有 Base URL"（支持自建网关） |
@@ -109,9 +110,9 @@ Aether/
 
 | 等级 | 工具 |
 |---|---|
-| L0（免确认） | `sys_info`、`read_file`、`sys_probe`、`trash_list` |
+| L0（免确认） | `sys_info`、`read_file`、`sys_probe`、`trash_list`、**`app_list`** |
 | L1（免确认） | `clipboard_read`、`clipboard_write`、`desktop` |
-| L2（**需确认**） | `file_write`、`file_delete`、`file_rename`、`trash_restore` |
+| L2（**需确认**） | `file_write`、`file_delete`、`file_rename`、`trash_restore`、**`app_install`**、**`app_remove`** |
 | L3（**需确认 + confirm 回显目标**） | `install_disk` |
 
 - `read_file` / `clipboard_read` 标记为**敏感输出**（`is_sensitive_output`）
@@ -189,9 +190,14 @@ Aether/
 | 文泉驿微米黑 | compositor 在 Linux 下从中加载中文字形，缺了桌面就没字 |
 | **没有** | 任何包管理器（opkg / apk / apt / rpm / pacman 全无）、编译器、解释器（无 gcc / python / perl） |
 
-**结论：装不了软件（没有安装机制）。** Buildroot 的模型是构建期定死、运行期不改系统。
+**结论：没有包管理器 —— 但有一套自己的应用安装机制**（`aetherd/src/apps.rs`）。
 
-但"能不能跑外部程序"门槛比想象中低 —— 2026-09-28 用 `chroot` 进镜像根文件系统实测：
+Buildroot 的模型是构建期定死、运行期不改系统，所以 opkg/apt/rpm 这类东西不在设计里。
+取而代之的是"应用目录 + 清单"：`/var/apps/<id>/` 里放 `app.json` 与可执行文件，
+`aetherd app install/list/remove` 管它，AI 侧也有 `app_list`/`app_install`/`app_remove`
+三个工具（后两个 L2 走确认卡片）。包格式与边界见 `docs/APP-PACKAGES.md`。
+
+**关键是装之前会预检依赖** —— 实测（`chroot` 进构建输出）证明跑不跑得起来取决于依赖库：
 
 | 情况 | 结果 | 原因 |
 |---|---|---|
@@ -204,12 +210,14 @@ Aether/
 **① 缺共享库**（发行版程序基本都要拖一串）、② 依赖新于 glibc 2.38 的符号。
 镜像里没有 `ld.so.cache`，也没有任何依赖解析 —— 要装就只能静态链接，或把依赖一起带上。
 
-三条可行路径：
+给应用作者的三条建议：
 
-1. 拷**静态链接的 x86-64 二进制**到持久化分区 `/var`（ext4）或 U 盘 → 直接能跑
-2. 动态链接的发行版二进制**基本跑不起来**：glibc 版本对不上、没有依赖解析、没有 `ld.so.cache`
-3. 要加常驻软件 → 改 `platform/br2-external/configs/aetheros_defconfig` 加 `BR2_PACKAGE_*` 重建 ISO，
-   或把文件丢进 `platform/overlay/`
+1. **静态链接最省事** —— `gcc -static`、Rust 的 musl 静态、Go 默认输出，这些一定能跑
+2. 动态链接就要看依赖：镜像里只有 glibc / libgcc / libblkid 等少数几个库，
+   缺 `.so` 会报 `error while loading shared libraries`。注意 **glibc 版本不是问题**（向后兼容），
+   缺库才是。要么静态，要么把依赖放进包的 `lib/`
+3. 想加**常驻**软件（不是应用，而是系统组件）→ 改 `aetheros_defconfig` 加 `BR2_PACKAGE_*`
+   重建 ISO，或丢进 `platform/overlay/`
 
 文件系统布局：系统区只读（ISO9660 + initramfs 启动时整个读进内存）；
 只有持久化分区（`/dev/vda2`，卷标 `AETHER`，挂到 `/var`）可写且跨重启保留。
@@ -327,7 +335,7 @@ cargo check -p aether-compositor --offline --target x86_64-unknown-linux-musl
   空格提交 / 退格删拼音，**未被 IME 吃掉的字符才送 PTY**（`3a34f49`）；Esc 取消拼字同轮接上
 - ⚠️ 终端里的中文输入**只做过编译与源码级确认，没有实机键盘交互验证**（`--shot` 出静态帧，测不了输入）
 
-## 测试分布（2026-09-28 实测：**Windows 302 / Linux 312，均全绿；双目标零警告**）
+## 测试分布（2026-09-28 实测：**Windows 316 / Linux 326，均全绿；双目标零警告**）
 
 **两个目标都要跑** —— 不是可选项。`cfg(target_os="linux")` 门控的代码在 Windows 上
 整段不编译，**Linux 侧的问题在开发机上一次都发现不了**。实测踩到两次：
@@ -338,12 +346,12 @@ cargo check -p aether-compositor --offline --target x86_64-unknown-linux-musl
 |---|---|---|---|
 | `aether-compositor` | 187 | 183 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
 | `aether-ops` | 0 | **13** | 整个 crate 是 Linux 专属，Windows 不参与 |
-| `aetherd` | 82 | 83 | |
+| `aetherd` | 96 | 97 | 含 `apps.rs` 的 13 项（清单校验/目录穿越/符号链接拒绝/ELF 解析/预检/包装脚本） |
 | `aether-init` | 17 | 17 | 含 `shipped_essential_services_must_be_restartable`（见下） |
 | `aether-install` | 9 | 9 | |
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **302** | **312** | |
+| **合计** | **316** | **326** | |
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。

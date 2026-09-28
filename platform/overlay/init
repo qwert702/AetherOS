@@ -1,7 +1,9 @@
 #!/bin/sh
 # AetherOS /init — 内核引导的第一个用户态程序（rootfs overlay）
 # initramfs 启动后以 PID 1 执行本脚本，交接给 aether-init。
-export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+# /usr/local/bin 放的是"已装应用"的包装脚本（由 aetherd 在 /var 挂载后生成）。
+# 它必须在 PATH 里，否则用户装了应用却在终端里敲不到。
+export PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null

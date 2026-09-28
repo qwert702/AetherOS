@@ -6,6 +6,7 @@
 //!   供 Shell 指令条调用；离线快速意图先行，LLM 兜底
 //! - 所有工具执行经过权限闸门（docs/ai-permissions.md）+ 审计日志
 
+mod apps;
 mod intent;
 mod llm;
 mod clipboard;
@@ -268,16 +269,122 @@ fn main() -> Result<()> {
             println!("{}", out.answer);
         }
         Some("serve") => {
+            // 开机把已装应用挂进 PATH。
+            //
+            // 为什么放在这儿：`/usr` 在内存盘里，重启就还原，所以包装脚本必须每次开机重建
+            // （见 apps.rs::link_all）；而 `/var/apps` 是 aether-init 挂上持久化分区之后才有的，
+            // /init 里做不了这件事。aetherd 是应用目录的主人，由它来做最自然。
+            #[cfg(target_os = "linux")]
+            {
+                let root = apps::default_root();
+                match apps::link_all(&root, std::path::Path::new("/usr/local/bin")) {
+                    Ok(names) if !names.is_empty() => eprintln!(
+                        "[aetherd] 已挂载 {} 个应用到 /usr/local/bin：{}",
+                        names.len(),
+                        names.join(" ")
+                    ),
+                    Ok(_) => {}
+                    // 挂载失败不该拦住服务启动：应用是附加能力，AI 中枢才是本体
+                    Err(e) => eprintln!("[aetherd] 挂载已装应用失败（不影响服务启动）: {e}"),
+                }
+            }
             server::serve(config_from_env())?;
         }
         Some("config") => {
             run_config(&args[2..])?;
         }
+        Some("app") => {
+            run_app(&args[2..])?;
+        }
         _ => {
-            eprintln!("aetherd — AetherOS AI 中枢\n\n用法:\n  aetherd chat <指令>   单轮 agent 对话\n  aetherd serve         常驻 IPC 服务（127.0.0.1:{}）\n  aetherd config ...    模型配置（0.6，见 aetherd config --help）\n\n环境变量（优先级高于配置文件）:\n  AETHER_API_KEY        云端 API Key（GLM 等 OpenAI 兼容端点）\n  AETHER_API_BASE       云端 Base URL（默认 GLM）\n  AETHER_MODEL          云端模型（默认 glm-4-flash）\n  AETHER_LOCAL_URL      本地 Ollama 地址（默认 127.0.0.1:11434/v1）\n  AETHER_LOCAL_ONLY     置 1 强制仅本地\n\n配置文件: {}", aether_ipc::DEFAULT_PORT, modelcfg::config_path().display());
+            eprintln!("aetherd — AetherOS AI 中枢\n\n用法:\n  aetherd chat <指令>   单轮 agent 对话\n  aetherd serve         常驻 IPC 服务（127.0.0.1:{}）\n  aetherd config ...    模型配置（0.6，见 aetherd config --help）\n  aetherd app ...       已装应用的管理（见 aetherd app）\n\n环境变量（优先级高于配置文件）:\n  AETHER_API_KEY        云端 API Key（GLM 等 OpenAI 兼容端点）\n  AETHER_API_BASE       云端 Base URL（默认 GLM）\n  AETHER_MODEL          云端模型（默认 glm-4-flash）\n  AETHER_LOCAL_URL      本地 Ollama 地址（默认 127.0.0.1:11434/v1）\n  AETHER_LOCAL_ONLY     置 1 强制仅本地\n\n配置文件: {}", aether_ipc::DEFAULT_PORT, modelcfg::config_path().display());
         }
     }
     Ok(())
+}
+
+/// `aetherd app` —— 已装应用的列表 / 安装 / 卸载 / 挂进 PATH。
+///
+/// 为什么做成子命令而不是"只有图形界面"：镜像里没有包管理器，"装应用"必须有一个
+/// 能被脚本调用、能在救援控制台里用的入口；Dock 和 AI 工具都只是它的外壳。
+fn run_app(args: &[String]) -> Result<()> {
+    let root = apps::default_root();
+    match args.first().map(String::as_str) {
+        Some("list") | None => {
+            let items = apps::list(&root);
+            if items.is_empty() {
+                println!("还没装任何应用。安装目录：{}", root.display());
+                println!("安装：aetherd app install <包目录>");
+                return Ok(());
+            }
+            println!("已装 {} 个应用（{}）：", items.len(), root.display());
+            for a in items {
+                println!(
+                    "  {:<14} {:<18} {:<8} {:>7} KB  {}",
+                    a.manifest.id,
+                    a.manifest.name,
+                    a.manifest.version,
+                    a.bytes / 1024,
+                    a.manifest.desc
+                );
+            }
+            Ok(())
+        }
+        Some("install") => {
+            let src = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("用法: aetherd app install <包目录>"))?;
+            let (a, pre) = apps::install(&root, std::path::Path::new(src))?;
+            println!(
+                "已装「{}」（{}）→ {}",
+                a.manifest.name,
+                a.manifest.id,
+                a.dir.display()
+            );
+            println!("大小 {} KB", a.bytes / 1024);
+            println!("预检：{}", pre.detail);
+            if pre.kind == apps::PreflightKind::Risky {
+                println!("注意：预检不通过也装上了，但很可能跑不起来 —— 上面写了缺什么。");
+            }
+            println!("（新开一个 shell，或跑 `aetherd app link`，就能直接敲 `{}`）", a.manifest.id);
+            Ok(())
+        }
+        Some("remove") => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("用法: aetherd app remove <id>"))?;
+            let trashed = apps::remove(&root, id)?;
+            println!("已卸载「{id}」，移入回收站：{}", trashed.display());
+            println!("（终端里的命令下次开机消失；想立刻清掉就跑 `aetherd app link`）");
+            Ok(())
+        }
+        Some("link") => {
+            let bindir = args
+                .get(1)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/usr/local/bin"));
+            let names = apps::link_all(&root, &bindir)?;
+            if names.is_empty() {
+                println!("没有已装应用，{} 已清理干净", bindir.display());
+            } else {
+                println!("已挂载 {} 个应用到 {}：{}", names.len(), bindir.display(), names.join(" "));
+            }
+            Ok(())
+        }
+        Some(other) => {
+            eprintln!(
+                "aetherd app —— 应用管理（见 aetherd/src/apps.rs）\n\n用法:\n  \
+                 aetherd app list                列出已装应用\n  \
+                 aetherd app install <包目录>    安装（目录里要有 app.json）\n  \
+                 aetherd app remove <id>         卸载（进回收站，不是直接删）\n  \
+                 aetherd app link [目录]         把已装应用挂进 PATH（/init 开机调用）\n\n\
+                 安装目录: {}（可用 AETHER_APPS_DIR 覆盖）\n\
+                 包格式: 一个目录，含 app.json 与 entry 指向的可执行文件；可选 lib/ 放自带共享库。",
+                apps::default_root().display()
+            );
+            anyhow::bail!("未知子命令: {other}")
+        }
+    }
 }
 
 fn print_config_help() {

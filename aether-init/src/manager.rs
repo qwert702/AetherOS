@@ -408,17 +408,31 @@ mod tests {
             matches!(st, SvcState::Exited { code: 0 }),
             "noop 应以 0 退出，实际: {st:?}"
         );
-        // 退避窗口内不重启
+        // 退避窗口内不重启：刚收割完立刻 tick，距收割只有毫秒级，而退避至少 500ms ——
+        // 这一条是稳定的。
         m.tick();
-        assert!(matches!(m.status_all()[0].state, SvcState::Exited { code: 0 }));
-        // 退避过后重启
-        std::thread::sleep(Duration::from_millis(600));
-        m.tick();
-        assert_eq!(m.status_all()[0].state, SvcState::Running);
-        assert_eq!(m.status_all()[0].restarts, 1);
+        assert!(
+            matches!(m.status_all()[0].state, SvcState::Exited { .. }),
+            "退避窗口内不该重启"
+        );
+        // 退避过后应自动重启。
+        //
+        // ⚠️ 这里**不能**写成"睡 600ms 再断言 Running"：退避是 2^n × 500ms，而 n 取决于
+        // 收割那一刻 restarts 的值（首次退出是 0，但 Linux 上退出收割与 tick 的相对顺序
+        // 会让它落到 1 → 退避 1000ms > 600ms）。实测 3 次里失败 2 次。
+        // 改成轮询到预期状态、超时才失败：语义（"退避过后会重启"）不变，去掉了时序脆弱性。
+        let st = wait_for_state(
+            &mut m,
+            |st| matches!(st, SvcState::Running),
+            Duration::from_secs(5),
+        );
+        assert_eq!(st, SvcState::Running, "退避过后应自动重启");
+        assert!(m.status_all()[0].restarts >= 1, "重启计数应递增");
+
         m.stop("noop").unwrap();
         assert_eq!(m.status_all()[0].state, SvcState::Stopped);
-        std::thread::sleep(Duration::from_millis(600));
+        // 人工停止是粘住的：给足退避时间再 tick，仍不该被拉起
+        std::thread::sleep(Duration::from_millis(1200));
         m.tick();
         assert_eq!(m.status_all()[0].state, SvcState::Stopped);
     }

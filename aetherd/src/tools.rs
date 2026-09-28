@@ -254,6 +254,52 @@ pub fn registry() -> Vec<Tool> {
             echo_field: Some("disk"),
             sensitive_output: false,
         },
+        Tool {
+            name: "app_list",
+            description: "列出这台机器上已安装的应用。要装应用、排障、或者确认某个程序在不在，先看这个。",
+            level: Level::L0,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            run: tool_app_list,
+            consequence: "",
+            echo_field: None,
+            sensitive_output: false,
+        },
+        Tool {
+            name: "app_install",
+            description: "把一个应用包（含 app.json 的目录）装进系统，装完在终端里直接敲名字就能运行。**装之前会做依赖预检**：静态链接、缺哪些共享库、或者根本不是本机能执行的格式，都会在装之前讲清楚。",
+            level: Level::L2,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "应用包目录（里面要有 app.json）。通常先把它放在家目录或 /tmp"}
+                },
+                "required": ["path"]
+            }),
+            run: tool_app_install,
+            consequence: "该目录会被复制进 /var/apps/<id>/，并出现在终端的 PATH 里。装进来的程序以你的权限运行。",
+            echo_field: None,
+            sensitive_output: false,
+        },
+        Tool {
+            name: "app_remove",
+            description: "卸载一个已安装的应用。不是直接删 —— 会移入回收站，删错了还能捞回来。",
+            level: Level::L2,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "应用 id（先用 app_list 查）"}
+                },
+                "required": ["id"]
+            }),
+            run: tool_app_remove,
+            consequence: "该应用从系统里移除（移入回收站），终端里的命令随之失效。",
+            echo_field: None,
+            sensitive_output: false,
+        },
     ]
 }
 
@@ -346,6 +392,58 @@ fn tool_clipboard_write(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     Ok(format!("已写入剪贴板（{bytes} 字节）"))
 }
 
+fn tool_app_list(_args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let root = crate::apps::default_root();
+    let items = crate::apps::list(&root);
+    if items.is_empty() {
+        return Ok(format!("还没有装任何应用（目录 {}）", root.display()));
+    }
+    let mut s = format!("已装 {} 个应用：\n", items.len());
+    for a in items {
+        s.push_str(&format!(
+            "- {}（{}）{} · {} KB · {}\n",
+            a.manifest.id,
+            a.manifest.name,
+            a.manifest.version,
+            a.bytes / 1024,
+            a.manifest.desc
+        ));
+    }
+    Ok(s)
+}
+
+fn tool_app_install(args: &Value, ctx: &mut ToolCtx) -> Result<String> {
+    let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
+        bail!("缺少参数 path");
+    };
+    // 源目录也要过读白名单：否则这个 L2 工具就成了"把系统任意文件搬进应用目录"的跳板
+    let src = resolve_readable(path)?;
+    let root = crate::apps::default_root();
+    let (a, pre) = crate::apps::install(&root, &src)?;
+    let mut s = format!(
+        "已装「{}」（{}）→ {}\n大小 {} KB\n预检：{}",
+        a.manifest.name,
+        a.manifest.id,
+        a.dir.display(),
+        a.bytes / 1024,
+        pre.detail
+    );
+    if pre.kind == crate::apps::PreflightKind::Risky {
+        s.push_str("\n⚠ 预检不通过但已装上 —— 它很可能跑不起来，缺什么上面写了。");
+    }
+    let _ = ctx;
+    Ok(s)
+}
+
+fn tool_app_remove(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let Some(id) = args.get("id").and_then(|v| v.as_str()) else {
+        bail!("缺少参数 id");
+    };
+    let root = crate::apps::default_root();
+    let trashed = crate::apps::remove(&root, id)?;
+    Ok(format!("已卸载「{id}」，移入回收站：{}", trashed.display()))
+}
+
 fn tool_sys_info(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("memory");
     match scope {
@@ -379,6 +477,7 @@ const READ_ALLOWED_ROOTS: &[&str] = &[
     "/etc/aether",     // aether 自身配置
     "/var/log/aether", // 审计日志
     "/run/aether",     // 运行时状态
+    "/var/apps",       // 已装应用（见 apps.rs）
     "/tmp",            // 临时文件
 ];
 
@@ -399,19 +498,23 @@ const READ_DENY_SUBPATHS: &[&str] = &[
     ".git-credentials",
 ];
 
-/// **写操作的允许根：比读更窄。**
+/// 写操作的允许根：比读更窄。
 ///
 /// 为什么不复用读白名单：读 `/etc/aether` 只是"看配置"，而**写**它等于让 AI
 /// 修改自己的权限规则；写 `/var/log/aether` 等于篡改审计记录（灭证）。
 /// 这两条都是提权/灭证，不是"文件编辑" —— 必须挡在闸门之外。
+///
+/// `/var/apps` 是**只加的那一个子目录**：装应用要往那儿写，而 `/var/log/aether`
+/// 仍然不可写。把整个 `/var` 放开就等于允许灭证，所以只能加到子目录粒度。
 ///
 /// 写操作**不能**在允许根之外新建文件，所以这里不需要"拒绝子路径"那一层来
 /// 排除系统区；但凭证类路径（`.ssh` 等）本来就在允许根**之内**，仍需单独拒绝，
 /// 见 `resolve_writable`。
 #[cfg(target_os = "linux")]
 const WRITE_ALLOWED_ROOTS: &[&str] = &[
-    "/home", // 用户数据
-    "/tmp",  // 临时文件
+    "/home",     // 用户数据
+    "/var/apps", // 已装应用（安装/卸载要写这里）
+    "/tmp",      // 临时文件
 ];
 
 /// 开发机（Windows）上的对应白名单。
