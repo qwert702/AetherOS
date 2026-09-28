@@ -162,5 +162,31 @@
   `main.rs` 未使用的 `DISPLAY_ID` 导入、`wayland/session.rs` 一处 `unused mut` 与一处 `unused var`。
   集中在 3.1 spike，属低成本待办
 - `aether-ops` 与 `aetherd` 的部分代码路径是 `cfg(target_os="linux")` 门控的，**Windows 构建会整段屏蔽** ——
-  改这些路径必须跑 `--target x86_64-unknown-linux-musl` 交叉检查，否则等于没编译
+  改这些路径必须跑 `--target x86_64-unknown-linux-musl` 交叉检查，否则等于没编译。
+  **已验证的实例**：`aether-ops/diagnose.rs` 的测试辅助漏了 `ServiceStatus` 两个字段，
+  Windows 全绿、Linux 直接编译失败（2026-09-28 修）
 - `platform/build/` 是空的：ISO 构建依赖构建机，本机无法复现
+
+### 实机验证暴露的两点（2026-09-28 实测，未修）
+
+- **`read_file` 对"不存在的越权路径"报的是"无法访问"而不是策略拒绝** ——
+  因为 `resolve_readable` 先 `canonicalize` 再查白名单，文件不存在时前者先失败。
+  实测：guest 内 `read_file /root/.bashrc` → `无法访问 … No such file or directory`
+  （该路径其实也在白名单外）。**不是安全漏洞**（两条路都拒），但运维看到"文件不存在"
+  会往错方向查。正解是两阶段：先按**词法规范化**路径做一次策略判定，`canonicalize`
+  之后再判一次（后者仍负责挡符号链接与 `..`）。
+- **`-m 512` 下 ops 内存告警每轮刷屏**：实测 guest 内 `可用 3MB / 468MB`，
+  `aether-ops` 每轮都打 `⚠ 内存紧张`。live ISO 的 rootfs 在内存盘里，`MemAvailable`
+  天然偏低 —— 要么把 `qemu-verify.sh` 的内存调大，要么让压力阈值考虑 tmpfs。
+  （诊断报告本身只在状态**翻转**时出一次，这点是对的。）
+
+### 实机验证覆盖情况（2026-09-28）
+
+已验证（QEMU guest 内 root + hostfwd 到 7311 发真实 IPC）：读白名单拒绝系统区、
+aether 自身配置可读、L2/L3 工具对未注册连接 403、L0 工具免确认执行、
+init 的 socket 建立早于服务启动。
+
+**未验证**：Delete 键与终端拖选（需 QMP 键鼠注入）；W5 的 `SCM_RIGHTS` fd 收包
+（需真机 + 一个真实 Wayland 客户端）；写操作白名单的**端到端**路径
+（`file_write` 过闸门后才会走路径校验，需要 UI 通道密钥，即 `/var/log/aether/ui.key`）；
+门禁 1a 的 8 小时长跑。
