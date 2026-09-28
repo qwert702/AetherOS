@@ -932,6 +932,9 @@ pub struct PreviewData {
     pub error: Option<String>,
     /// 是否因超长被截断
     pub truncated: bool,
+    /// 滚动偏移（2.4：长文件能翻页，不再只能看前 N 行）。
+    /// 夹取逻辑在 `textview::ScrollView` 里只有一份。
+    pub scroll: crate::textview::ScrollView,
 }
 
 /// 预览单次读取的字节上限：再大就不是"看一眼"而是"打开大文件"了，
@@ -946,7 +949,7 @@ pub fn read_preview(path: &str) -> PreviewData {
     let meta = std::fs::metadata(path);
     if let Ok(m) = &meta {
         if m.is_dir() {
-            return PreviewData { path: path.into(), lines: Vec::new(), error: Some("这是一个目录".into()), truncated: false };
+            return PreviewData { path: path.into(), lines: Vec::new(), error: Some("这是一个目录".into()), truncated: false, scroll: Default::default() };
         }
         if m.len() > PREVIEW_MAX_BYTES {
             return PreviewData {
@@ -954,6 +957,7 @@ pub fn read_preview(path: &str) -> PreviewData {
                 lines: Vec::new(),
                 error: Some(format!("文件过大（{}），暂不支持预览", FsEntry { name: String::new(), is_dir: false, size: m.len() }.size_label())),
                 truncated: false,
+                scroll: Default::default(),
             };
         }
     }
@@ -963,7 +967,7 @@ pub fn read_preview(path: &str) -> PreviewData {
             let text = match String::from_utf8(bytes) {
                 Ok(t) => t,
                 Err(_) => {
-                    return PreviewData { path: path.into(), lines: Vec::new(), error: Some("二进制文件，无法以文本预览".into()), truncated: false };
+                    return PreviewData { path: path.into(), lines: Vec::new(), error: Some("二进制文件，无法以文本预览".into()), truncated: false, scroll: Default::default() };
                 }
             };
             let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -971,9 +975,9 @@ pub fn read_preview(path: &str) -> PreviewData {
             if truncated {
                 lines.truncate(PREVIEW_MAX_LINES);
             }
-            PreviewData { path: path.into(), lines, error: None, truncated }
+            PreviewData { path: path.into(), lines, error: None, truncated, scroll: Default::default() }
         }
-        Err(e) => PreviewData { path: path.into(), lines: Vec::new(), error: Some(format!("{e}")), truncated: false },
+        Err(e) => PreviewData { path: path.into(), lines: Vec::new(), error: Some(format!("{e}")), truncated: false, scroll: Default::default() },
     }
 }
 
@@ -1137,6 +1141,8 @@ pub struct UiState<'a> {
     pub snap: Option<Rect>,
     pub toast: Option<(&'a str, f32)>,
     pub ai_input: &'a str,
+    /// 输入光标位置（第几个**字符**之前）。2.4：支持在中间编辑，不再只能追加。
+    pub ai_cursor: usize,
     /// 指令条是否处于焦点（画青紫渐变环）
     pub ai_focused: bool,
     /// 是否在等待 AI 回复（呼吸动效）
@@ -2503,6 +2509,15 @@ fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mo
     end - start
 }
 
+/// 文本预览窗口一屏能显示多少行。
+///
+/// **必须与 `draw_preview_content` 的算法一致** —— 主循环用它算翻页步长，
+/// 渲染用它算可见区间；两处不一致会导致翻页跳过或重复内容。
+pub fn preview_visible_lines(rect: Rect) -> usize {
+    const LINE_H: i32 = 18;
+    ((rect.h - 20) / LINE_H).max(1) as usize
+}
+
 /// 文本预览窗口：行号栏 + 内容行。
 ///
 /// 出错时**在窗口内显示原因**（而不是空白）—— "打不开"和"文件是空的"必须能区分，
@@ -2524,15 +2539,21 @@ fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Opti
 
     const LINE_H: i32 = 18;
     const GUTTER: i32 = 52;
-    let max_lines = ((r.h - 20) / LINE_H).max(1) as usize;
-    let n = d.lines.len().min(max_lines);
+    let max_lines = preview_visible_lines(r);
+    // 滚动偏移在这里**只读地**夹取：窗口缩放后原偏移可能越界，
+    // 而渲染函数拿的是 `&PreviewData`，不该改状态（状态由主循环改）
+    let total = d.lines.len();
+    let max_off = total.saturating_sub(max_lines);
+    let start = d.scroll.offset().min(max_off);
+    let end = (start + max_lines).min(total);
 
     // 行号栏
     fill_clipped(buf, w, h, Rect { x: r.x, y: r.y, w: GUTTER, h: r.h }, r, radius::LG, color::inset(), 0.5);
     fill_rect(buf, w, h, Rect { x: r.x + GUTTER, y: r.y + 1, w: 1, h: r.h - 2 }, color::hairline(), 0.08);
 
-    for i in 0..n {
-        let ly = (r.y + 8 + i as i32 * LINE_H) as f32;
+    for (slot, i) in (start..end).enumerate() {
+        let ly = (r.y + 8 + slot as i32 * LINE_H) as f32;
+        // 行号用**真实行号**（滚动后仍与源文件一一对应）
         let num = format!("{}", i + 1);
         let nw = tr.measure(&num, font::LABEL);
         draw_text(tr, buf, w, h, (r.x + GUTTER - 10) as f32 - nw, ly, &num, font::LABEL, color::text_faint(), 0.7);
@@ -2541,8 +2562,12 @@ fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Opti
         draw_text(tr, buf, w, h, (r.x + GUTTER + 10) as f32, ly, &shown, font::LABEL, color::text(), 0.92);
     }
 
-    if d.truncated || d.lines.len() > n {
-        let msg = format!("… 共 {} 行，当前窗口可显示 {n} 行", d.lines.len());
+    if start > 0 || end < total {
+        let msg = if total == 0 {
+            "… 空文件".to_string()
+        } else {
+            format!("… 第 {}-{} 行 / 共 {total} 行", start + 1, end)
+        };
         draw_text(tr, buf, w, h, (r.x + GUTTER + 10) as f32, (r.y + r.h - 24) as f32, &msg, font::LABEL, color::text_faint(), 0.85);
     }
 
@@ -2620,20 +2645,18 @@ impl Renderer {
 
     let text_x = (bar.x + 58) as f32;
     let text_y = tr.vcenter(bar.y as f32, bar.h as f32, font::BODY);
+    // 可见窗口按**光标**位置算，而不是"保证末尾可见" —— 2.4 支持中间编辑后，
+    // 光标可能在任意位置，"末尾可见"对用户没有意义
+    let max_w = bar.x as f32 + bar.w as f32 - 96.0 - text_x;
+    let (shown, prefix) = visible_window(tr, input, ui.ai_cursor, max_w);
     if input.is_empty() {
         draw_text(tr, buf, w, h, text_x, text_y, strings::AI_BAR_HINT, font::BODY, color::text_dim(), 0.85);
     } else {
-        // 从左截断，保证光标所在的内容始终可见
-        let max_w = bar.x as f32 + bar.w as f32 - 96.0 - text_x;
-        let mut shown: String = input.to_string();
-        while tr.measure(&shown, font::BODY) > max_w && shown.chars().count() > 1 {
-            shown.remove(0);
-        }
-        draw_text(tr, buf, w, h, text_x, text_y, &shown, font::BODY, color::text(), 0.95);
+        draw_text(tr, buf, w, h, text_x, text_y, shown, font::BODY, color::text(), 0.95);
     }
 
-    // 输入光标
-    let caret_x = text_x + tr.measure(if input.is_empty() { "" } else { input_tail_visible(tr, input, text_x, bar.x as f32 + bar.w as f32 - 96.0) }, font::BODY) + 4.0;
+    // 输入光标：x 由"光标前那一段"的宽度决定
+    let caret_x = text_x + tr.measure(prefix, font::BODY) + 4.0;
     if ui.ai_thinking {
         // 思考中：三点呼吸，明确"在等我"而不是"在等你打字"
         for i in 0..3 {
@@ -2655,15 +2678,25 @@ impl Renderer {
     }
 }
 
-fn input_tail_visible<'a>(tr: &TextRenderer, input: &'a str, x: f32, max_right: f32) -> &'a str {
-    let mut s = input;
-    while tr.measure(s, font::BODY) > max_right - x {
-        match s.char_indices().nth(1) {
-            Some((byte_idx, _)) => s = &s[byte_idx..],
-            None => break,
+/// 指令条的可见窗口：保证**光标**（第 `caret` 个字符之前）落在窗口内。
+///
+/// 返回 `(要画的整段, 光标前那一段)` —— 后者用来定位光标的 x。
+/// 返回 `&str` 切片而非 `String`：这个函数**每帧都跑**，不该制造分配。
+fn visible_window<'a>(tr: &TextRenderer, text: &'a str, caret: usize, max_w: f32) -> (&'a str, &'a str) {
+    let caret_byte = text
+        .char_indices()
+        .nth(caret)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    let mut start = 0usize;
+    // 向右推起点直到宽度合适，但**不越过光标** —— 否则光标会被推出可视区
+    while start < caret_byte {
+        if tr.measure(&text[start..], font::BODY) <= max_w {
+            break;
         }
+        start += text[start..].chars().next().map(char::len_utf8).unwrap_or(1);
     }
-    s
+    (&text[start..], &text[start..caret_byte])
 }
 
 fn t_now() -> f32 {

@@ -19,6 +19,8 @@ mod layout;
 mod text;
 // 终端：胶合层跨平台（Linux 走真 PTY，开发机喂真实 ANSI 脚本走同一解析路径）
 mod term;
+// 文本视图共享状态：光标 / 滚动 / 导航键映射（2.4 统一文本交互）
+mod textview;
 // VT/ANSI 解析器：纯逻辑跨平台（终端正确性靠它的单测保证）
 mod vt;
 
@@ -111,6 +113,8 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut snap_zone = layout::Snap::None;
     let mut toast: Option<(String, Instant)> = None;
     let mut ai_input = String::new();
+    // 2.4：输入光标 —— 支持在中间插入/删除，不再只能追加（打错一个字要全删重来）
+    let mut ai_cursor = textview::TextCursor::default();
     let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let mut open_menu: Option<usize> = None;
     // L2+ 权限确认：待确认请求 + 用户已输入的回显文本
@@ -171,7 +175,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         }
                     } else if !installer.open {
                         // 向导打开时键盘让位给向导，字符不进指令条
-                        ai_input.push(c);
+                        ai_cursor.insert(&mut ai_input, c);
                     }
                 }
                 input::UiEvent::Backspace => {
@@ -180,7 +184,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             echo.pop();
                         }
                         None => {
-                            ai_input.pop();
+                            ai_cursor.backspace(&mut ai_input);
                         }
                     }
                 }
@@ -214,12 +218,9 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Nav(n) => {
-                    // Delete = 删除文件管理器选中项：走 L2 确认链路（只发起，不执行）
-                    if n == input::NavKey::Delete {
-                        if let Some(msg) = request_delete(&desktop, &ai_tx) {
-                            toast = Some((msg, Instant::now()));
-                        }
-                    } else if let Some(msg) = apply_nav(&mut desktop, n) {
+                    if let Some(msg) =
+                        dispatch_nav(&mut desktop, n, &mut ai_input, &mut ai_cursor, &ai_tx)
+                    {
                         toast = Some((msg, Instant::now()));
                     }
                 }
@@ -240,6 +241,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     } else if !ai_input.trim().is_empty() {
                         let text = ai_input.trim().to_string();
                         ai_input.clear();
+                        ai_cursor.home(); // 发送后光标回到开头
                         // 先把自己的话显示成"用户"气泡，再进入思考态
                         ai_reply = Some((text.clone(), draw::BubbleKind::User, Instant::now()));
                         thinking = true;
@@ -554,6 +556,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             snap: snap_preview,
             toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             ai_input: &ai_input,
+            ai_cursor: ai_cursor.pos(),
             // 确认弹窗打开时指令条同时失焦：键盘已经归弹窗
             ai_focused: confirm.is_none(),
             ai_thinking: thinking,
@@ -1322,6 +1325,7 @@ fn main() -> anyhow::Result<()> {
             snap: None,
             toast: None,
             ai_input: sample_input,
+            ai_cursor: sample_input.chars().count(),
             ai_focused: true,
             ai_thinking: args.iter().any(|a| a == "--thinking"),
             ai_status,
@@ -1355,6 +1359,7 @@ fn main() -> anyhow::Result<()> {
             snap: None,
             toast: None,
             ai_input: "把窗口排成两列",
+            ai_cursor: "把窗口排成两列".chars().count(),
             ai_focused: true,
             ai_thinking: false,
             ai_status: draw::AiStatus::Local,
@@ -1481,6 +1486,8 @@ fn preview_main() -> anyhow::Result<()> {
     let mut snap_zone = layout::Snap::None;
     let mut toast: Option<(String, Instant)> = None;
     let mut ai_input = String::new();
+    // 2.4：输入光标 —— 支持在中间插入/删除，不再只能追加（打错一个字要全删重来）
+    let mut ai_cursor = textview::TextCursor::default();
     let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let (tx, rx) = mpsc::channel::<AiEvent>();
     let mut open_menu: Option<usize> = None;
@@ -1533,11 +1540,11 @@ fn preview_main() -> anyhow::Result<()> {
                 continue;
             }
             if let Some(ch) = key_to_char(k) {
-                ai_input.push(ch);
+                ai_cursor.insert(&mut ai_input, ch);
             }
         }
         if !ctrl && held.contains(&minifb::Key::Backspace) {
-            ai_input.pop();
+            ai_cursor.backspace(&mut ai_input);
         }
         let keys = window.get_keys_pressed(minifb::KeyRepeat::No);
         for k in &keys {
@@ -1554,14 +1561,11 @@ fn preview_main() -> anyhow::Result<()> {
                     }
                 }
             }
-            // 导航键：与真机路径走同一份实现
+            // 导航键：三级分流（指令条编辑 → 预览滚动 → 文件列表），与真机同一条实现
             if let Some(nav) = minifb_nav(k) {
-                // Delete = 删除选中项：走 L2 确认链路（只发起，不执行）
-                if nav == input::NavKey::Delete {
-                    if let Some(msg) = request_delete(&desktop, &tx) {
-                        toast = Some((msg, Instant::now()));
-                    }
-                } else if let Some(msg) = apply_nav(&mut desktop, nav) {
+                if let Some(msg) =
+                    dispatch_nav(&mut desktop, nav, &mut ai_input, &mut ai_cursor, &tx)
+                {
                     toast = Some((msg, Instant::now()));
                 }
                 continue;
@@ -1571,6 +1575,7 @@ fn preview_main() -> anyhow::Result<()> {
                     if !ai_input.trim().is_empty() {
                         let text = ai_input.trim().to_string();
                         ai_input.clear();
+                        ai_cursor.home(); // 发送后光标回到开头
                         // 先把自己的话显示成"用户"气泡，再进入思考态
                         ai_reply = Some((text.clone(), draw::BubbleKind::User, Instant::now()));
                         thinking = true;
@@ -1890,6 +1895,7 @@ fn preview_main() -> anyhow::Result<()> {
             snap: snap_preview,
             toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             ai_input: &ai_input,
+            ai_cursor: ai_cursor.pos(),
             ai_focused: confirm.is_none(),
             ai_thinking: thinking,
             ai_status,
@@ -2238,10 +2244,100 @@ fn active_files_grid(desktop: &Desktop) -> Option<draw::GridLayout> {
     Some(draw::grid_layout(draw::files_grid_rect(win.rect)))
 }
 
+/// 活动窗口若是文本预览，返回 (滚动视图, 总行数, 一屏行数)。
+///
+/// 三个值一起返回是因为它们必须来自**同一个**窗口状态 —— 分两次借用拿不到。
+fn focused_preview(desktop: &mut Desktop) -> Option<(&mut textview::ScrollView, usize, usize)> {
+    let idx = desktop.active;
+    let w = desktop.wins.get_mut(idx)?;
+    if w.kind != draw::WinKind::Preview {
+        return None;
+    }
+    let visible = draw::preview_visible_lines(w.rect);
+    let p = w.preview.as_mut()?;
+    Some((&mut p.scroll, p.lines.len(), visible))
+}
+
+/// 导航键的**三级分流**（2.4）：指令条编辑 → 预览滚动 → 文件列表。
+///
+/// 优先级是刻意的：
+/// 1. 用户正在打字时，左右 / Home / End / Delete 归文本光标（不该被预览或列表抢走）；
+/// 2. 活动窗口是文本预览时，翻页键归它的滚动；
+/// 3. 其余归文件列表导航。
+///
+/// 集中在一处而不是散在两个事件循环里 —— 真机（evdev）与预览（minifb）两条路径
+/// 各写一套必然漂移。
+fn dispatch_nav(
+    desktop: &mut Desktop,
+    nav: input::NavKey,
+    ai_input: &mut String,
+    ai_cursor: &mut textview::TextCursor,
+    tx: &mpsc::Sender<AiEvent>,
+) -> Option<String> {
+    if !ai_input.is_empty() {
+        let len = ai_input.chars().count();
+        let handled = match nav {
+            input::NavKey::Left => {
+                ai_cursor.left();
+                true
+            }
+            input::NavKey::Right => {
+                ai_cursor.right(len);
+                true
+            }
+            input::NavKey::Home => {
+                ai_cursor.home();
+                true
+            }
+            input::NavKey::End => {
+                ai_cursor.end(len);
+                true
+            }
+            input::NavKey::Delete => {
+                ai_cursor.delete(ai_input);
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            return None;
+        }
+    }
+    if let Some((scroll, total, visible)) = focused_preview(desktop) {
+        let handled = match nav {
+            input::NavKey::PageUp => {
+                scroll.page(false, total, visible);
+                true
+            }
+            input::NavKey::PageDown => {
+                scroll.page(true, total, visible);
+                true
+            }
+            input::NavKey::Home => {
+                scroll.home();
+                true
+            }
+            input::NavKey::End => {
+                scroll.end(total, visible);
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            return None;
+        }
+    }
+    // 非编辑态的 Delete：删除文件管理器选中项（走 L2 确认链路，只发起不执行）
+    if nav == input::NavKey::Delete {
+        return request_delete(desktop, tx);
+    }
+    apply_nav(desktop, nav)
+}
+
 /// 导航键动作：Tab 轮换焦点；方向/翻页/Home/End 在文件网格里移动选择并保持可见。
 ///
-/// `Delete` **故意不实现** —— 文件写操作（删除/重命名）必须先扩权限模型（L2 敏感写），
-/// 顺手加会绕开闸门与审计。
+/// `Delete` 不在这里处理 —— 它要么归文本光标（指令条非空），要么走
+/// `request_delete`（L2 确认链路）。见 `dispatch_nav`。
 fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
     use input::NavKey::*;
     if key == Tab {
