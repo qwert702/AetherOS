@@ -13,6 +13,7 @@ mod perm;
 mod router;
 mod server;
 mod tools;
+mod trash;
 
 use anyhow::{Context, Result};
 use perm::Gate;

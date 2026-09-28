@@ -7,7 +7,7 @@
 use crate::intent::DesktopAction;
 use crate::perm::verdict;
 use crate::perm::{Gate, Level, Verdict};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 /// 工具执行上下文：桌面类工具产生的行为指令在此累积，
@@ -72,6 +72,58 @@ pub fn registry() -> Vec<Tool> {
             }),
             run: tool_clipboard_write,
             consequence: "",
+            echo_field: None,
+            sensitive_output: false,
+        },
+
+        // ---- 写操作（4.1）：L2 敏感写，必须过闸门 + 用户确认 ----
+        Tool {
+            name: "file_write",
+            description: "写入（或覆盖）一个文本文件。路径必须在用户数据区（家目录、/tmp）内；aether 自身的配置与日志不可写。",
+            level: Level::L2,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "目标文件绝对路径"},
+                    "content": {"type": "string", "description": "文件内容（上限 256KB，超长整体拒绝）"}
+                },
+                "required": ["path", "content"]
+            }),
+            run: tool_file_write,
+            consequence: "覆盖写入目标文件：原有内容不会进回收站，直接不可恢复（新建则无影响）",
+            echo_field: None,
+            sensitive_output: false,
+        },
+        Tool {
+            name: "file_delete",
+            description: "把文件或目录移入回收站（可恢复）。不做永久删除。",
+            level: Level::L2,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "要删除的路径"}
+                },
+                "required": ["path"]
+            }),
+            run: tool_file_delete,
+            consequence: "移入回收站，可从回收站恢复；但超过 7 天、或回收站条目/容量超限时会被自动清理",
+            echo_field: None,
+            sensitive_output: false,
+        },
+        Tool {
+            name: "file_rename",
+            description: "重命名或移动文件/目录。源与目标都必须在用户数据区内。",
+            level: Level::L2,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "description": "源路径"},
+                    "to": {"type": "string", "description": "目标路径"}
+                },
+                "required": ["from", "to"]
+            }),
+            run: tool_file_rename,
+            consequence: "移动或改名；若目标已存在则拒绝（不覆盖）",
             echo_field: None,
             sensitive_output: false,
         },
@@ -315,9 +367,31 @@ const READ_DENY_SUBPATHS: &[&str] = &[
     ".git-credentials",
 ];
 
+/// **写操作的允许根：比读更窄。**
+///
+/// 为什么不复用读白名单：读 `/etc/aether` 只是"看配置"，而**写**它等于让 AI
+/// 修改自己的权限规则；写 `/var/log/aether` 等于篡改审计记录（灭证）。
+/// 这两条都是提权/灭证，不是"文件编辑" —— 必须挡在闸门之外。
+///
+/// 写操作**不能**在允许根之外新建文件，所以这里不需要"拒绝子路径"那一层来
+/// 排除系统区；但凭证类路径（`.ssh` 等）本来就在允许根**之内**，仍需单独拒绝，
+/// 见 `resolve_writable`。
+#[cfg(target_os = "linux")]
+const WRITE_ALLOWED_ROOTS: &[&str] = &[
+    "/home", // 用户数据
+    "/tmp",  // 临时文件
+];
+
+/// 开发机（Windows）上的对应白名单。
+#[cfg(not(target_os = "linux"))]
+const WRITE_ALLOWED_ROOTS: &[&str] = &["C:/Users", "C:/Temp"];
+
+/// 单次写入的字节上限。超长整体拒绝（不做截断 —— 截断会静默产生半个文件）。
+const MAX_WRITE_BYTES: usize = 256 * 1024;
+
 /// 去掉 Windows canonicalize 产生的 `\\?\` 扩展长度前缀，
 /// 否则白名单前缀永远匹配不上。
-fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
+pub(crate) fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
     #[cfg(windows)]
     {
         let s = p.to_string_lossy();
@@ -355,6 +429,44 @@ fn is_credential_path(canon: &std::path::Path) -> bool {
     READ_DENY_SUBPATHS.iter().any(|d| lower.contains(d))
 }
 
+/// 校验并规范化待写路径；不可写则返回带原因的 Err。
+///
+/// 与 `resolve_readable` 的两点差异：
+/// 1. 允许根更窄（见 `WRITE_ALLOWED_ROOTS`）；
+/// 2. 目标**可以尚不存在**（新建文件、重命名到新名字）—— 此时 `canonicalize`
+///    会直接失败，所以改为"规范化父目录 + 拼上文件名"。
+///
+/// 仍然先 canonicalize：`..` 穿越与符号链接绕行因此同样被堵死。
+fn resolve_writable(path: &str) -> Result<std::path::PathBuf> {
+    let p = std::path::Path::new(path);
+    let canon = if p.exists() {
+        std::fs::canonicalize(p).map_err(|e| anyhow::anyhow!("无法访问 {path}: {e}"))?
+    } else {
+        let parent = p
+            .parent()
+            .filter(|s| !s.as_os_str().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("路径缺少父目录: {path}"))?;
+        let file = p
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("路径缺少文件名: {path}"))?;
+        let cparent = std::fs::canonicalize(parent)
+            .map_err(|e| anyhow::anyhow!("父目录不可访问（{}）: {e}", parent.display()))?;
+        cparent.join(file)
+    };
+    let canon = strip_verbatim_prefix(canon);
+
+    if !WRITE_ALLOWED_ROOTS.iter().any(|root| canon.starts_with(root)) {
+        bail!(
+            "路径不在允许写入的范围内（{path}）：写操作仅限用户数据区（家目录、/tmp）。\
+             aether 自身的配置与日志不可写 —— 那等于让 AI 改自己的权限规则与审计记录"
+        );
+    }
+    if is_credential_path(&canon) {
+        bail!("拒绝写入凭证类路径（{path}）");
+    }
+    Ok(canon)
+}
+
 fn tool_read_file(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
         bail!("缺少 path 参数");
@@ -363,6 +475,86 @@ fn tool_read_file(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let content = std::fs::read_to_string(&canon)?;
     let truncated: String = content.chars().take(4000).collect();
     Ok(truncated)
+}
+
+// ---------------------------------------------------------------------------
+// 写操作（4.1）：全部 L2 —— 必须过闸门 + 用户确认卡片
+//
+// 三条设计约束（来自 `docs/PRODUCTION-PLAN-2026-09-28.md` §7）：
+// 1. 所有入口走 `Gate::judge`（这三个是 `ToolCall`，自动过闸门；**不要**另加
+//    `Request` 变体，那会绕过闸门 —— P1-1 的教训）；
+// 2. 删除先进回收站，且回收站有容量上限与过期清理；
+// 3. 审计先补齐（4.3b 已完成），否则 L2 写操作没有追溯手段。
+// ---------------------------------------------------------------------------
+
+/// 写入（或覆盖）文本文件（L2）。
+fn tool_file_write(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
+        bail!("缺少 path 参数");
+    };
+    let Some(content) = args.get("content").and_then(|v| v.as_str()) else {
+        bail!("缺少 content 参数");
+    };
+    if content.len() > MAX_WRITE_BYTES {
+        bail!(
+            "内容 {} 字节，超过单次写入上限 {MAX_WRITE_BYTES}（拒绝整段，不做截断）",
+            content.len()
+        );
+    }
+    let canon = resolve_writable(path)?;
+    if canon.is_dir() {
+        bail!("目标是目录，不能写入: {}", canon.display());
+    }
+    let existed = canon.exists();
+    std::fs::write(&canon, content).with_context(|| format!("写入失败: {}", canon.display()))?;
+    Ok(format!(
+        "{} {}（{} 字节）",
+        if existed { "已覆盖" } else { "已创建" },
+        canon.display(),
+        content.len()
+    ))
+}
+
+/// 删除文件/目录（L2）—— **移入回收站**，不做永久删除。
+fn tool_file_delete(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
+        bail!("缺少 path 参数");
+    };
+    let canon = resolve_writable(path)?;
+    if !canon.exists() {
+        bail!("路径不存在: {}", canon.display());
+    }
+    let root = crate::trash::default_root();
+    // 先按策略清理：回收站自己没上限的话，它只是把"磁盘满"挪了个位置
+    let purged = crate::trash::purge(&root, &crate::trash::Policy::default());
+    let name = crate::trash::trash(&root, &canon)?;
+    let mut msg = format!("已移入回收站: {}（条目 {name}，可恢复）", canon.display());
+    if purged > 0 {
+        msg.push_str(&format!("；顺带清理了 {purged} 个过期条目"));
+    }
+    Ok(msg)
+}
+
+/// 重命名 / 移动（L2）。源与目标都必须在可写白名单内。
+fn tool_file_rename(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let Some(from) = args.get("from").and_then(|v| v.as_str()) else {
+        bail!("缺少 from 参数");
+    };
+    let Some(to) = args.get("to").and_then(|v| v.as_str()) else {
+        bail!("缺少 to 参数");
+    };
+    let src = resolve_writable(from)?;
+    let dst = resolve_writable(to)?;
+    if !src.exists() {
+        bail!("源不存在: {}", src.display());
+    }
+    // 不覆盖已存在的目标：静默盖掉一个文件比"操作失败"糟得多
+    if dst.exists() {
+        bail!("目标已存在，拒绝覆盖: {}", dst.display());
+    }
+    std::fs::rename(&src, &dst)
+        .with_context(|| format!("重命名失败: {} → {}", src.display(), dst.display()))?;
+    Ok(format!("已重命名: {} → {}", src.display(), dst.display()))
 }
 
 /// 罐头探针执行体：命令与参数全部为编译期常量。
@@ -679,5 +871,163 @@ mod tests {
             let t = reg.iter().find(|t| t.name == name).expect(name);
             assert!(t.sensitive_output, "{name} 必须标记为敏感输出");
         }
+    }
+
+    // ---- 4.1 写操作 ----
+
+    /// **写白名单必须是读白名单的子集** —— "写不能比读更宽"的机械保证。
+    ///
+    /// 比逐条列举路径更耐改：将来有人往写白名单里加目录，若它不在读白名单内，
+    /// 这条会红。
+    #[test]
+    fn write_roots_are_subset_of_read_roots() {
+        for w in WRITE_ALLOWED_ROOTS {
+            assert!(
+                READ_ALLOWED_ROOTS.iter().any(|r| r == w),
+                "写白名单 {w} 不在读白名单内 —— 写操作不能比读更宽"
+            );
+        }
+    }
+
+    /// 目标平台（Linux）上 aether 自身的配置与日志**可读但不可写**。
+    ///
+    /// 写 `/etc/aether` = 让 AI 改自己的权限规则（提权）；
+    /// 写 `/var/log/aether` = 篡改审计记录（灭证）。两者都必须挡在闸门之外。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_write_excludes_aether_own_config_and_logs() {
+        assert!(READ_ALLOWED_ROOTS.contains(&"/etc/aether"), "配置应可读");
+        assert!(READ_ALLOWED_ROOTS.contains(&"/var/log/aether"), "日志应可读");
+        assert!(!WRITE_ALLOWED_ROOTS.contains(&"/etc/aether"), "配置不可写");
+        assert!(!WRITE_ALLOWED_ROOTS.contains(&"/var/log/aether"), "日志不可写");
+    }
+
+    /// 三个写工具都必须是 **L2**（敏感写 → 弹确认卡片）。
+    #[test]
+    fn write_tools_are_l2_and_not_sensitive_output() {
+        let reg = registry();
+        for name in ["file_write", "file_delete", "file_rename"] {
+            let t = reg
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{name} 应注册"));
+            assert_eq!(t.level, Level::L2, "{name} 必须是 L2（敏感写，需确认）");
+            assert!(!t.sensitive_output, "{name} 的输出不含用户数据，不应标敏感");
+        }
+    }
+
+    /// L2 写操作不带 approval 时必须停在确认上 —— 这是"AI 不能自己动手"的落点。
+    #[test]
+    fn write_tools_need_confirmation_without_approval() {
+        let mut ctx = ToolCtx::default();
+        let cases = [
+            ("file_write", serde_json::json!({"path": "C:/Temp/x.txt", "content": "hi"})),
+            ("file_delete", serde_json::json!({"path": "C:/Temp/x.txt"})),
+            ("file_rename", serde_json::json!({"from": "C:/Temp/a", "to": "C:/Temp/b"})),
+        ];
+        for (name, args) in cases {
+            let out = execute(&gate(), &mut ctx, name, &args, false)
+                .unwrap_or_else(|e| panic!("{name} 应停在确认而非报错: {e}"));
+            assert!(
+                matches!(out, ExecOutcome::NeedsConfirmation { .. }),
+                "{name} 不带 approval 必须弹确认"
+            );
+        }
+    }
+
+    /// 写操作不能碰白名单之外的路径（用 `approved=true` 绕过闸门，直测路径校验）。
+    #[test]
+    fn write_rejects_paths_outside_whitelist() {
+        let mut ctx = ToolCtx::default();
+        for (tool, args) in [
+            ("file_write", serde_json::json!({"path": "C:/Windows/win.ini", "content": "x"})),
+            ("file_delete", serde_json::json!({"path": "C:/Windows/win.ini"})),
+            ("file_rename", serde_json::json!({"from": "C:/Windows/win.ini", "to": "C:/Windows/x"})),
+        ] {
+            let r = execute(&gate(), &mut ctx, tool, &args, true);
+            let err = r
+                .expect_err(&format!("{tool} 对系统区应被拒绝"))
+                .to_string();
+            assert!(
+                err.contains("不在允许写入的范围内"),
+                "{tool} 实得: {err}"
+            );
+        }
+    }
+
+    /// 超长内容整体拒绝，不产生半个文件。
+    #[test]
+    fn file_write_rejects_oversized_wholesale() {
+        let mut ctx = ToolCtx::default();
+        let big = "x".repeat(MAX_WRITE_BYTES + 1);
+        let r = execute(
+            &gate(),
+            &mut ctx,
+            "file_write",
+            &serde_json::json!({"path": "C:/Temp/big.txt", "content": big}),
+            true,
+        );
+        let err = r.expect_err("超长应被拒绝").to_string();
+        assert!(err.contains("超过单次写入上限"), "实得: {err}");
+    }
+
+    /// 删除 → 回收站 → 恢复的完整往返（走真实工具入口，不只测 trash 模块）。
+    #[test]
+    fn delete_then_restore_roundtrip_via_tool() {
+        let dir = std::env::temp_dir().join("aether_write_tool_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let f = dir.join("victim.txt");
+        std::fs::write(&f, b"content").unwrap();
+
+        let mut ctx = ToolCtx::default();
+        let out = execute(
+            &gate(),
+            &mut ctx,
+            "file_delete",
+            &serde_json::json!({"path": f.to_string_lossy()}),
+            true,
+        )
+        .expect("删除应成功");
+        let ExecOutcome::Done(msg) = out else {
+            panic!("应返回 Done");
+        };
+        assert!(msg.contains("已移入回收站"), "实得: {msg}");
+        assert!(!f.exists(), "原文件应已被移走");
+
+        // 清理：回收站是**共享**的（%TEMP%/aether-trash），测试不该留下条目
+        let root = crate::trash::default_root();
+        for e in crate::trash::list(&root) {
+            if e.origin.ends_with("victim.txt") {
+                let _ = std::fs::remove_dir_all(root.join(&e.name));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 重命名不覆盖已存在的目标。
+    #[test]
+    fn rename_refuses_to_overwrite_existing() {
+        let dir = std::env::temp_dir().join("aether_rename_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+
+        let mut ctx = ToolCtx::default();
+        let r = execute(
+            &gate(),
+            &mut ctx,
+            "file_rename",
+            &serde_json::json!({"from": a.to_string_lossy(), "to": b.to_string_lossy()}),
+            true,
+        );
+        let err = r.expect_err("目标已存在应被拒绝").to_string();
+        assert!(err.contains("拒绝覆盖"), "实得: {err}");
+        assert_eq!(std::fs::read(&b).unwrap(), b"b", "目标内容不应被动过");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

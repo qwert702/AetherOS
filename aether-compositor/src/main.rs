@@ -214,7 +214,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Nav(n) => {
-                    if let Some(msg) = apply_nav(&mut desktop, n) {
+                    // Delete = 删除文件管理器选中项：走 L2 确认链路（只发起，不执行）
+                    if n == input::NavKey::Delete {
+                        if let Some(msg) = request_delete(&desktop, &ai_tx) {
+                            toast = Some((msg, Instant::now()));
+                        }
+                    } else if let Some(msg) = apply_nav(&mut desktop, n) {
                         toast = Some((msg, Instant::now()));
                     }
                 }
@@ -700,6 +705,33 @@ fn dispatch_approved(req: ConfirmRequest, tx: &mpsc::Sender<AiEvent>) {
     });
 }
 
+/// 请求删除文件管理器里选中的项（4.1）。
+///
+/// **只发起，不执行**：服务端把 `file_delete` 判为 L2 → 回 `NeedsConfirmation`
+/// + 令牌 → 主循环弹确认卡片 → 用户点「允许一次」才真的删。
+/// 所以这个函数做的事只有"把请求发出去"。
+///
+/// 不复用 `apply_nav`：那里拿不到 `ai_tx`，而删除必须走 IPC（不能本地直接删 ——
+/// 那会绕开闸门与审计）。
+fn request_delete(desktop: &Desktop, tx: &mpsc::Sender<AiEvent>) -> Option<String> {
+    let i = desktop.selected?;
+    let e = desktop.entries.get(i)?;
+    let path = draw::join_path(&desktop.cwd, &e.name);
+    let name = e.name.clone();
+    let args = serde_json::json!({ "path": path });
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        if let Err(err) = send_tool_call("file_delete".into(), args, None, ConfirmOrigin::Ai, &tx) {
+            let _ = tx.send(AiEvent::ToolDone {
+                ok: false,
+                output: err.to_string(),
+                origin: ConfirmOrigin::Ai,
+            });
+        }
+    });
+    Some(format!("请求删除「{name}」…"))
+}
+
 /// AI 事件（后台线程 → 渲染主循环）。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum AiEvent {
@@ -1021,9 +1053,10 @@ fn apply_action(desktop: &mut Desktop, name: &str, args: &serde_json::Value) -> 
         }
         "close_active" => {
             if desktop.wins.len() > 1 {
-                desktop.wins.pop();
-                desktop.active = desktop.wins.len() - 1;
-                Some("已关闭活动窗口".into())
+                // 统一走 close_window：它有索引边界检查与 active 夹取，
+                // 且不会像裸 pop 那样在"拖拽中"留下失效的 drag 索引（0.8 审计）
+                let idx = desktop.active;
+                close_window(desktop, idx)
             } else {
                 Some("至少保留一个窗口".into())
             }
@@ -1187,9 +1220,9 @@ fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<Str
         }
         (0, 1) => {
             if desktop.wins.len() > 1 {
-                desktop.wins.pop();
-                desktop.active = desktop.wins.len() - 1;
-                (Some("窗口已关闭".into()), None)
+                // 同 close_active：统一走 close_window，避免裸 pop 留下失效 drag（0.8 审计）
+                let idx = desktop.active;
+                (close_window(desktop, idx), None)
             } else {
                 (Some("至少保留一个窗口".into()), None)
             }
@@ -1523,7 +1556,12 @@ fn preview_main() -> anyhow::Result<()> {
             }
             // 导航键：与真机路径走同一份实现
             if let Some(nav) = minifb_nav(k) {
-                if let Some(msg) = apply_nav(&mut desktop, nav) {
+                // Delete = 删除选中项：走 L2 确认链路（只发起，不执行）
+                if nav == input::NavKey::Delete {
+                    if let Some(msg) = request_delete(&desktop, &tx) {
+                        toast = Some((msg, Instant::now()));
+                    }
+                } else if let Some(msg) = apply_nav(&mut desktop, nav) {
                     toast = Some((msg, Instant::now()));
                 }
                 continue;
@@ -1641,15 +1679,25 @@ fn preview_main() -> anyhow::Result<()> {
                 terminal_drag_select(&mut desktop, tr.as_ref(), mx, my, false);
             } else if let Some((i, lx, ly)) = drag {
                 // 拖拽进行中：移动窗口 + 更新吸附区
-                let w = &mut desktop.wins[i].rect;
-                w.x += (mx - lx) as i32;
-                w.y = (w.y + (my - ly) as i32).max(layout::TOP_BAR);
-                drag = Some((i, mx, my));
-                snap_zone = if desktop.wins[i].floating {
-                    layout::detect(mx, my, WIDTH, HEIGHT)
+                //
+                // **先校验索引**：窗口可能已被**其它路径**关掉（AI 的 close_active、
+                // 菜单「关闭窗口」），而它们只 `wins.pop()` 不清 `drag`。若拖的正好是
+                // 最后一个窗口，pop 后 `wins[drag.0]` 就出界 —— 而 compositor 是
+                // essential + restart:false，**一次 panic 等于桌面永久死掉**（0.8 审计）。
+                if i >= desktop.wins.len() {
+                    drag = None;
+                    snap_zone = layout::Snap::None;
                 } else {
-                    layout::Snap::None
-                };
+                    let w = &mut desktop.wins[i].rect;
+                    w.x += (mx - lx) as i32;
+                    w.y = (w.y + (my - ly) as i32).max(layout::TOP_BAR);
+                    drag = Some((i, mx, my));
+                    snap_zone = if desktop.wins[i].floating {
+                        layout::detect(mx, my, WIDTH, HEIGHT)
+                    } else {
+                        layout::Snap::None
+                    };
+                }
             } else if let Some((idx, close, zoom)) = renderer
                 .window_lights
                 .iter()
@@ -2406,6 +2454,28 @@ mod window_mgmt_tests {
         assert!(d.wins.is_empty());
         assert_eq!(d.active, 0);
         assert!(close_window(&mut d, 0).is_none()); // 再关是空操作，不 panic
+    }
+
+    /// 0.8 审计：窗口可能在**拖拽进行中**被其它路径关掉
+    /// （AI 的 `close_active`、菜单「关闭窗口」）。
+    ///
+    /// 拖拽分支用 `wins[drag.0]` 直接索引 —— 索引一旦失效就是越界 panic，
+    /// 而 compositor 是 essential + `restart: false`，**panic 等于桌面永久死掉**。
+    /// 这条测试锁住"关掉最后一个窗口后旧索引确实失效"这个前提
+    /// （守卫条件本身在拖拽分支里，无法直接单测）。
+    #[test]
+    fn closing_last_window_invalidates_stale_drag_index() {
+        let mut d = desk(3);
+        d.active = 2;
+        let stale = 2; // 拖拽开始时记下的索引
+        let idx = d.active;
+        close_window(&mut d, idx);
+        assert_eq!(d.wins.len(), 2);
+        assert!(d.active < d.wins.len(), "active 必须仍在界内");
+        assert!(
+            stale >= d.wins.len(),
+            "旧拖拽索引应已失效，这正是要防的越界条件"
+        );
     }
 
     #[test]
