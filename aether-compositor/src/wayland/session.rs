@@ -11,7 +11,20 @@ use std::collections::HashMap;
 
 use super::object::{ObjectTable, DISPLAY_ID};
 use super::protocol::*;
+use super::shm::{read_pixels, BufferInfo};
 use super::wire::{self, Arg, Message};
+
+/// pool 的数据来源。
+///
+/// 真机上 `create_pool` 带一个 fd，服务端 `mmap` 它得到字节 —— 那一步是
+/// 平台相关的，真机阶段接。在此之前 pool 处于 `Pending`，协议流程照常走，
+/// 只是读不到像素（commit 时像素为空，不报错 —— 客户端可能真的还没写完）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PoolData {
+    Ready(Vec<u8>),
+    #[default]
+    Pending,
+}
 
 /// surface 的状态。
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -19,8 +32,12 @@ pub struct SurfaceState {
     /// 被赋予的角色（`xdg_surface.get_toplevel` 之后）
     pub role: Option<Role>,
     pub has_buffer: bool,
+    /// 最近一次 attach 的 buffer id（commit 时据此读像素）
+    pub attached_buffer: Option<u32>,
     /// 对应的 `xdg_surface` 对象 id（发 configure 事件用）
     pub xdg_surface: Option<u32>,
+    /// 最近一次 commit 读出的像素（RGBA8888）。pool 未 Ready 时为 None
+    pub pixels: Option<Vec<u8>>,
 }
 
 /// 顶层窗口的角色数据。
@@ -46,6 +63,10 @@ pub struct ProtocolError {
 pub struct Session {
     pub objects: ObjectTable,
     pub surfaces: HashMap<u32, SurfaceState>,
+    /// pool id → 数据（fd 在真机上 mmap 后填 `Ready`）
+    pub pools: HashMap<u32, PoolData>,
+    /// buffer id → 参数（像素在 pool 里）
+    pub buffers: HashMap<u32, BufferInfo>,
     /// global name → 接口名（`wl_registry.bind` 靠它校验）
     pub globals: HashMap<u32, &'static str>,
     next_serial: u32,
@@ -74,6 +95,8 @@ impl Session {
         Self {
             objects,
             surfaces: HashMap::new(),
+            pools: HashMap::new(),
+            buffers: HashMap::new(),
             globals,
             next_serial: 1,
             mapped: Vec::new(),
@@ -236,11 +259,14 @@ impl Session {
         match msg.opcode {
             0 | 2 | 7 | 8 | 9 => Ok(vec![]),
             1 => {
-                // attach：buffer 为 0 表示"解除"，非 0 才算有内容
-                if let Some(Arg::Object(b)) = msg.args.first() {
-                    if let Some(s) = self.surfaces.get_mut(&surface) {
-                        s.has_buffer = *b != 0;
-                    }
+                // attach：buffer 为 0 表示"解除"，非 0 记下 id（commit 读像素用）
+                let buf = match msg.args.first() {
+                    Some(Arg::Object(b)) => *b,
+                    _ => 0,
+                };
+                if let Some(s) = self.surfaces.get_mut(&surface) {
+                    s.has_buffer = buf != 0;
+                    s.attached_buffer = if buf != 0 { Some(buf) } else { None };
                 }
                 Ok(vec![])
             }
@@ -272,6 +298,22 @@ impl Session {
             // 没内容就不 map（unmap 的情形），不是错误
             self.mapped.retain(|m| *m != surface);
             return Ok(vec![]);
+        }
+        // 读像素：buffer → pool → 格式转换。
+        //
+        // pool 未 Ready（真机 mmap 未接 / 客户端还没写完）或读失败都**不阻断协议
+        // 流程** —— 像素为 None 只表示"这次 commit 没有可显示的内容"。
+        // 把读像素失败当成协议错误会误伤合法的时序（客户端先 commit 后写像素
+        // 是常见模式，帧回调之后才画）。
+        let pixels = st
+            .attached_buffer
+            .and_then(|bid| self.buffers.get(&bid).cloned())
+            .and_then(|info| match self.pools.get(&info.pool_id) {
+                Some(PoolData::Ready(data)) => read_pixels(data, &info).ok(),
+                _ => None,
+            });
+        if let Some(s) = self.surfaces.get_mut(&surface) {
+            s.pixels = pixels;
         }
         let Some(role) = &st.role else {
             return Ok(vec![]); // 没角色的 surface（光标之类）map 与否 spike 不关心
@@ -306,20 +348,57 @@ impl Session {
     fn handle_shm(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
         debug_assert!(msg.opcode == 0);
         let id = arg_newid(msg, 0)?;
-        // fd 参数（Arg::Fd）在 spike 阶段不读：共享内存的 mmap 集成是真机阶段的事，
-        // 这里只把对象挂上表，让协议流程能继续走
+        // fd 在签名 "nhi" 里占**索引 1**（wire 解码时保留槽位、值来自 SCM_RIGHTS），
+        // 所以 size 在索引 2 —— 按索引 1 取会拿到 Fd
+        let size = arg_int(msg, 2)?;
+        if size < 0 {
+            return Err(ProtocolError {
+                object_id: msg.object_id,
+                code: 0,
+                message: format!("create_pool 的 size 为负（{size}）"),
+            });
+        }
+        // fd（Arg::Fd）在 spike 阶段不 mmap：数据来源是平台相关的。
+        // pool 先记为 Pending；真机 mmap 后（或测试里）用 `attach_pool_data` 填。
         self.objects.insert(id, "wl_shm_pool", 1, 0);
+        self.pools.insert(id, PoolData::Pending);
         Ok(vec![])
+    }
+
+    /// 给 pool 挂数据（真机：mmap 出的字节；测试：直接注入）。
+    pub fn attach_pool_data(&mut self, pool_id: u32, data: Vec<u8>) {
+        self.pools.insert(pool_id, PoolData::Ready(data));
     }
 
     fn handle_shm_pool(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
         match msg.opcode {
             0 => {
                 let id = arg_newid(msg, 0)?;
+                let offset = arg_int(msg, 1)? as usize;
+                let width = arg_int(msg, 2)?;
+                let height = arg_int(msg, 3)?;
+                let stride = arg_int(msg, 4)?;
+                let format = arg_uint(msg, 5)?;
                 self.objects.insert(id, "wl_buffer", 1, 0);
+                self.buffers.insert(
+                    id,
+                    BufferInfo {
+                        pool_id: msg.object_id,
+                        offset,
+                        width,
+                        height,
+                        stride,
+                        format,
+                    },
+                );
                 Ok(vec![])
             }
-            1 | 2 => Ok(vec![]),
+            1 => {
+                // destroy：buffer 参数一并清掉，别留悬空引用
+                self.buffers.remove(&msg.object_id);
+                Ok(vec![])
+            }
+            2 => Ok(vec![]), // resize：真机上要重新 mmap，spike 忽略
             _ => Err(bad_opcode(msg, "wl_shm_pool")),
         }
     }
@@ -687,6 +766,63 @@ mod tests {
             out.iter().any(|m| m.object_id == TOPLEVEL && m.opcode == 0),
             "应有 toplevel.configure: {out:?}"
         );
+    }
+
+    /// ★ W3 核心场景：pool 数据就位后，commit 能读出像素（客户端画红+蓝，
+    /// 合成器读回 RGBA —— 字节序错了这里立刻现形）。
+    #[test]
+    fn commit_reads_pixels_from_pool() {
+        let mut s = setup_registry();
+        s.handle(&Message {
+            object_id: REGISTRY,
+            opcode: 0,
+            args: vec![Arg::Uint(2), Arg::Str("wl_shm".into()), Arg::Uint(1), Arg::NewId(SHM)],
+        }
+        .encode("usun"))
+        .unwrap();
+        // create_pool：fd 占索引 1（值 -1 占位），size 在索引 2（签名 "nhi"）
+        const POOL: u32 = 10;
+        s.handle(&Message {
+            object_id: SHM,
+            opcode: 0,
+            args: vec![Arg::NewId(POOL), Arg::Fd(-1), Arg::Int(64)],
+        }
+        .encode("nhi"))
+        .unwrap();
+        // 客户端往 pool 里画两个 XRGB 像素：纯红、纯蓝
+        // 小端字节序：0x00FF0000 → [00,00,FF,00]，0x000000FF → [FF,00,00,00]
+        s.attach_pool_data(POOL, vec![0, 0, 0xff, 0, 0xff, 0, 0, 0]);
+        // create_buffer：2×1，XRGB8888（签名 "niiiiu"）
+        s.handle(&Message {
+            object_id: POOL,
+            opcode: 0,
+            args: vec![
+                Arg::NewId(BUFFER),
+                Arg::Int(0),
+                Arg::Int(2),
+                Arg::Int(1),
+                Arg::Int(8),
+                Arg::Uint(1), // XRGB8888
+            ],
+        }
+        .encode("niiiiu"))
+        .unwrap();
+        // surface + attach + commit
+        s.objects.insert(COMPOSITOR, "wl_compositor", 4, 0);
+        s.handle(&Message { object_id: COMPOSITOR, opcode: 0, args: vec![Arg::NewId(SURFACE)] }
+            .encode("n"))
+        .unwrap();
+        s.handle(&Message {
+            object_id: SURFACE,
+            opcode: 1,
+            args: vec![Arg::Object(BUFFER), Arg::Int(0), Arg::Int(0)],
+        }
+        .encode("oii"))
+        .unwrap();
+        s.handle(&Message { object_id: SURFACE, opcode: 6, args: vec![] }.encode("")).unwrap();
+
+        let pixels = s.surfaces[&SURFACE].pixels.as_deref().expect("像素应已读出");
+        assert_eq!(pixels, &[0xff, 0, 0, 255, 0, 0, 0xff, 255], "XRGB → RGBA");
     }
 
     #[test]

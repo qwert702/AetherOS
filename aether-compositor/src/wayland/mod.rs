@@ -34,4 +34,5 @@
 pub mod object;
 pub mod protocol;
 pub mod session;
+pub mod shm;
 pub mod wire;
