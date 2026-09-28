@@ -25,6 +25,8 @@ mod term;
 mod textview;
 // VT/ANSI 解析器：纯逻辑跨平台（终端正确性靠它的单测保证）
 mod vt;
+// Wayland 协议实现（3.1 spike）：wire/object 是纯逻辑，跨平台可测
+mod wayland;
 
 use aether_ipc::{Request, Response};
 use draw::{Desktop, Rect, Win};
