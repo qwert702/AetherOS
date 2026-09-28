@@ -9,22 +9,37 @@
 //! 所以每个接口的 `requests` 数组都配了 opcode 索引测试 ——
 //! opcode 是协议定义的常量，不能按"加了一个方法"顺手推。
 
-/// 一个接口的请求表。数组索引即 opcode。
+/// 一个接口的请求与事件表。数组索引即 opcode。
 pub struct Interface {
     pub name: &'static str,
     pub version: u32,
-    /// (请求名, 签名)。**索引即 opcode**。
+    /// (请求名, 签名)。**索引即 opcode**（客户端 → 服务端）。
     pub requests: &'static [(&'static str, &'static str)],
+    /// (事件名, 签名)。**索引即 opcode**（服务端 → 客户端）。
+    ///
+    /// 必须与 `requests` 分开：编码事件时要用**事件**签名打包，
+    /// 拿请求签名去编码会打出格式错误的字节 —— 客户端解析时直接崩，
+    /// 而服务端这边一点异常都看不到。
+    pub events: &'static [(&'static str, &'static str)],
 }
 
 impl Interface {
-    /// opcode → 签名。
+    /// opcode → 请求签名。
     pub fn signature_of(&self, opcode: u16) -> Option<&'static str> {
         self.requests.get(opcode as usize).map(|(_, sig)| *sig)
     }
 
     pub fn request_of(&self, opcode: u16) -> Option<&'static str> {
         self.requests.get(opcode as usize).map(|(name, _)| *name)
+    }
+
+    /// opcode → 事件签名。
+    pub fn event_signature_of(&self, opcode: u16) -> Option<&'static str> {
+        self.events.get(opcode as usize).map(|(_, sig)| *sig)
+    }
+
+    pub fn event_of(&self, opcode: u16) -> Option<&'static str> {
+        self.events.get(opcode as usize).map(|(name, _)| *name)
     }
 }
 
@@ -34,12 +49,14 @@ pub const WL_DISPLAY: Interface = Interface {
     name: "wl_display",
     version: 1,
     requests: &[("sync", "n"), ("get_registry", "n")],
+    events: &[("error", "ous"), ("delete_id", "u")],
 };
 
 pub const WL_REGISTRY: Interface = Interface {
     name: "wl_registry",
     version: 1,
     requests: &[("bind", "usun")],
+    events: &[("global", "usu"), ("global_remove", "u")],
 };
 
 /// `wl_callback` 只有事件（done），没有请求。
@@ -47,12 +64,14 @@ pub const WL_CALLBACK: Interface = Interface {
     name: "wl_callback",
     version: 1,
     requests: &[],
+    events: &[("done", "u")],
 };
 
 pub const WL_COMPOSITOR: Interface = Interface {
     name: "wl_compositor",
     version: 4,
     requests: &[("create_surface", "n"), ("create_region", "n")],
+    events: &[],
 };
 
 pub const WL_SURFACE: Interface = Interface {
@@ -70,6 +89,7 @@ pub const WL_SURFACE: Interface = Interface {
         ("set_buffer_scale", "i"),
         ("damage_buffer", "iiii"),
     ],
+    events: &[("enter", "o"), ("leave", "o")],
 };
 
 pub const WL_SHM: Interface = Interface {
@@ -79,24 +99,28 @@ pub const WL_SHM: Interface = Interface {
     // 参数个数对不上直接触发 encode 的 debug_assert。这就是协议定义要逐条
     // 对照 wayland.xml 的原因
     requests: &[("create_pool", "nhi")],
+    events: &[("format", "u")],
 };
 
 pub const WL_SHM_POOL: Interface = Interface {
     name: "wl_shm_pool",
     version: 1,
     requests: &[("create_buffer", "niiiiu"), ("destroy", ""), ("resize", "i")],
+    events: &[],
 };
 
 pub const WL_BUFFER: Interface = Interface {
     name: "wl_buffer",
     version: 1,
     requests: &[("destroy", "")],
+    events: &[("release", "")],
 };
 
 pub const WL_REGION: Interface = Interface {
     name: "wl_region",
     version: 1,
     requests: &[("destroy", ""), ("add", "iiii"), ("subtract", "iiii")],
+    events: &[],
 };
 
 // ---- xdg-shell（稳定版，v1）----
@@ -109,6 +133,7 @@ pub const XDG_WM_BASE: Interface = Interface {
         ("create_positioner", "n"),
         ("get_xdg_surface", "no"),
     ],
+    events: &[("ping", "u")],
 };
 
 pub const XDG_SURFACE: Interface = Interface {
@@ -121,6 +146,7 @@ pub const XDG_SURFACE: Interface = Interface {
         ("set_window_geometry", "iiii"),
         ("ack_configure", "u"),
     ],
+    events: &[("configure", "u")],
 };
 
 pub const XDG_TOPLEVEL: Interface = Interface {
@@ -142,6 +168,7 @@ pub const XDG_TOPLEVEL: Interface = Interface {
         ("unset_fullscreen", ""),
         ("set_minimized", ""),
     ],
+    events: &[("configure", "iia"), ("close", "")],
 };
 
 /// 服务端要 advertise 给客户端的全局对象：`(接口定义, 全局名, 版本)`。

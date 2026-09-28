@@ -60,6 +60,10 @@ pub struct ProtocolError {
 }
 
 /// 一个客户端连接。
+///
+/// `Clone` 是给 socket 层用的：连接线程持有自己的会话，每处理完一批消息
+/// 就克隆一份同步给渲染主循环（spike 阶段的开销可接受）。
+#[derive(Clone)]
 pub struct Session {
     pub objects: ObjectTable,
     pub surfaces: HashMap<u32, SurfaceState>,
@@ -540,7 +544,8 @@ fn arg_str(msg: &Message, i: usize) -> Result<String, ProtocolError> {
     }
 }
 
-fn iface_by_name(name: &str) -> Option<&'static Interface> {
+/// 按接口名查定义。socket 层编码事件时也要用它（查事件签名）。
+pub(crate) fn iface_by_name(name: &str) -> Option<&'static Interface> {
     Some(match name {
         "wl_display" => &WL_DISPLAY,
         "wl_registry" => &WL_REGISTRY,

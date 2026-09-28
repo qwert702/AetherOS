@@ -50,18 +50,23 @@ fn config_from_env() -> Config {
         api_key: "ollama".into(),
         model: pick("AETHER_LOCAL_MODEL", file.local_model.as_ref(), "qwen2.5:7b"),
     };
-    let cloud = std::env::var("AETHER_API_KEY")
-        .ok()
-        .or_else(|| file.api_key.clone())
-        .map(|key| llm::Endpoint {
-            base_url: pick(
-                "AETHER_API_BASE",
-                file.cloud_base.as_ref(),
-                "https://open.bigmodel.cn/api/paas/v4",
-            ),
-            api_key: key,
+    // 云端端点：**有 Key 或 有 Base URL** 就算配了。
+    //
+    // 为什么要允许"只有地址"：自建网关（客户端 → 自己的服务器 → 各家 AI）的
+    // 认证方式可能与上游不同，甚至内网免认证 —— 强制要 Key 会把这种部署挡在门外。
+    // 空 Key 会发成 `Authorization: Bearer `，上游返回 401 时错误信息是清楚的，
+    // 比"端点根本没启用、只说 AI 不可用"好排查得多。
+    let cloud_key = std::env::var("AETHER_API_KEY").ok().or_else(|| file.api_key.clone());
+    let cloud_base = std::env::var("AETHER_API_BASE").ok().or_else(|| file.cloud_base.clone());
+    let cloud = if cloud_key.is_some() || cloud_base.is_some() {
+        Some(llm::Endpoint {
+            base_url: cloud_base.unwrap_or_else(|| "https://open.bigmodel.cn/api/paas/v4".into()),
+            api_key: cloud_key.unwrap_or_default(),
             model: pick("AETHER_MODEL", file.cloud_model.as_ref(), "glm-4-flash"),
-        });
+        })
+    } else {
+        None
+    };
     let local_only = std::env::var("AETHER_LOCAL_ONLY")
         .map(|v| v == "1")
         .unwrap_or(file.local_only);

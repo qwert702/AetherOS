@@ -29,7 +29,7 @@ pub struct Object {
 }
 
 /// 对象表。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ObjectTable {
     map: HashMap<u32, Object>,
     /// 下一个可分配的服务端 id

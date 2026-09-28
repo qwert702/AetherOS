@@ -92,10 +92,12 @@ impl ModelConfig {
 
     /// 是否已有可用的模型配置。
     ///
-    /// 判据是"至少配了一个端点"：本地 URL 或云端 Key。只配了模型名不算 ——
-    /// 那是给默认端点换名字，不是新增能力。
+    /// 判据是"至少配了一个端点"：本地 URL、云端 Key、**或云端 Base URL**。
+    /// 最后一条不能漏 —— 自建网关（客户端 → 自己的服务器 → 各家 AI）的认证
+    /// 方式可能与上游不同，甚至内网免认证，"只填地址"是合法配置。
+    /// 只配了模型名不算 —— 那是给默认端点换名字，不是新增能力。
     pub fn is_configured(&self) -> bool {
-        self.local_url.is_some() || self.api_key.is_some()
+        self.local_url.is_some() || self.api_key.is_some() || self.cloud_base.is_some()
     }
 
     /// 脱敏摘要：**绝不回传 API Key 本身**，只说"配没配 + 末尾 4 位"。
@@ -181,6 +183,19 @@ mod tests {
 
         let with_key = ModelConfig { api_key: Some("sk-x".into()), ..Default::default() };
         assert!(with_key.is_configured());
+    }
+
+    /// **只填 Base URL 也算配置** —— 自建网关（客户端 → 自己的服务器 → 各家 AI）
+    /// 可能内网免认证，强制要 Key 会把这种部署挡在门外。
+    #[test]
+    fn base_url_alone_is_enough() {
+        let only_base =
+            ModelConfig { cloud_base: Some("http://10.0.0.2:8080/v1".into()), ..Default::default() };
+        assert!(only_base.is_configured(), "只有 Base URL 应视为已配置");
+        assert!(only_base.api_key.is_none());
+        // 摘要里要说清楚"Key 没配"，而不是显示一个空值让人以为配错了
+        let s = only_base.summary().to_string();
+        assert!(s.contains("未配置"), "摘要应说明 Key 未配置: {s}");
     }
 
     /// 摘要会经 IPC 回到合成器（可能上屏），**不能带 Key**。

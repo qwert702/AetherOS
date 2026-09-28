@@ -2496,27 +2496,30 @@ fn dispatch_nav(
     }
     if !ai_input.is_empty() {
         let len = ai_input.chars().count();
-        let handled = match nav {
-            input::NavKey::Left => {
+        // 走 `textview::nav_action` 而不是自己 match NavKey ——
+        // "哪些键属于文本导航"只应有一处定义，否则迟早和预览/列表的分流漂移
+        let handled = match textview::nav_action(nav) {
+            Some(textview::TextNav::Left) => {
                 ai_cursor.left();
                 true
             }
-            input::NavKey::Right => {
+            Some(textview::TextNav::Right) => {
                 ai_cursor.right(len);
                 true
             }
-            input::NavKey::Home => {
+            Some(textview::TextNav::Home) => {
                 ai_cursor.home();
                 true
             }
-            input::NavKey::End => {
+            Some(textview::TextNav::End) => {
                 ai_cursor.end(len);
                 true
             }
-            input::NavKey::Delete => {
+            Some(textview::TextNav::Delete) => {
                 ai_cursor.delete(ai_input);
                 true
             }
+            // PageUp/PageDown 在编辑态留给列表/预览滚动，不归光标
             _ => false,
         };
         if handled {
