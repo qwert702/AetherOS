@@ -643,8 +643,8 @@ fn run_fbdev() -> anyhow::Result<()> {
 #[cfg(target_os = "linux")]
 fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None, wayland: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) , wayland: None },
     ];
     let work = layout::work_area(w, h);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -663,9 +663,9 @@ fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn demo_desktop() -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, restore: None, preview: None, term: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None, wayland: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) , wayland: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, restore: None, preview: None, term: None, wayland: None },
     ];
     let work = layout::work_area(WIDTH, HEIGHT);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -1146,6 +1146,7 @@ fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {    if icon >
         } else {
             None
         },
+        wayland: None,
     };
     desktop.wins.push(win);
     desktop.active = desktop.wins.len() - 1;
@@ -1245,6 +1246,7 @@ fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
             restore: None,
             preview: Some(data),
             term: None,
+            wayland: None,
         };
         desktop.wins.push(win);
         desktop.active = desktop.wins.len() - 1;
@@ -2358,6 +2360,88 @@ fn active_files_grid(desktop: &Desktop) -> Option<draw::GridLayout> {
     Some(draw::grid_layout(draw::files_grid_rect(win.rect)))
 }
 
+/// 把 Wayland 会话里已 map 的 surface 同步成桌面窗口（3.1 spike W4）。
+///
+/// **以 surface 的对象 id 为身份**（`WaylandSurface.surface_id`）：
+/// - 新 map 的 surface → 新窗口（置为活动）
+/// - 已 destroy / unmap 的 surface → 窗口移除
+/// - 已有窗口 → 只更新标题与像素（客户端每帧 commit，不能每帧重建窗口 ——
+///   那会把用户摆好的窗口位置全部冲掉）
+///
+/// 每个 commit 都调一次（渲染主循环里），所以这里必须是**幂等**的：
+/// 同一个 session 状态同步两遍，结果必须一样。
+pub fn sync_wayland(desktop: &mut Desktop, session: &wayland::session::Session) {
+    // 1. 移除不再 map 的 Wayland 窗口
+    desktop.wins.retain(|w| match &w.wayland {
+        Some(ws) => session.mapped.contains(&ws.surface_id),
+        None => true,
+    });
+    // 2. 新 map 的 → 建窗口
+    for sid in &session.mapped {
+        let already = desktop
+            .wins
+            .iter()
+            .any(|w| w.wayland.as_ref().map(|x| x.surface_id) == Some(*sid));
+        if already {
+            continue;
+        }
+        let Some(st) = session.surfaces.get(sid) else { continue };
+        let Some(role) = &st.role else { continue };
+        let Some(pixels) = &st.pixels else { continue };
+        // 尺寸来自 buffer（客户端自己决定的大小）
+        let (bw, bh) = st
+            .attached_buffer
+            .and_then(|bid| session.buffers.get(&bid))
+            .map(|i| (i.width as u32, i.height as u32))
+            .unwrap_or((1, 1));
+        let win = Win {
+            rect: Rect {
+                x: 120,
+                y: 120,
+                w: bw as i32 + 2,
+                h: bh as i32 + metric::TITLE_H + 2,
+            },
+            target: None,
+            title: if role.title.is_empty() {
+                role.app_id.clone()
+            } else {
+                role.title.clone()
+            },
+            kind: draw::WinKind::Wayland,
+            floating: true,
+            restore: None,
+            preview: None,
+            term: None,
+            wayland: Some(draw::WaylandSurface {
+                surface_id: *sid,
+                app_id: role.app_id.clone(),
+                width: bw,
+                height: bh,
+                pixels: pixels.clone(),
+            }),
+        };
+        desktop.wins.push(win);
+        desktop.active = desktop.wins.len() - 1;
+    }
+    // 3. 更新已有窗口（标题 / 像素 / 尺寸），不动位置
+    for w in desktop.wins.iter_mut() {
+        let Some(ws) = &mut w.wayland else { continue };
+        let Some(st) = session.surfaces.get(&ws.surface_id) else { continue };
+        if let Some(role) = &st.role {
+            if !role.title.is_empty() {
+                w.title = role.title.clone();
+            }
+        }
+        if let (Some(bid), Some(pixels)) = (st.attached_buffer, &st.pixels) {
+            if let Some(info) = session.buffers.get(&bid) {
+                ws.width = info.width as u32;
+                ws.height = info.height as u32;
+                ws.pixels = pixels.clone();
+            }
+        }
+    }
+}
+
 /// 把一段文本插到光标处（逐字符走 `TextCursor`，中文安全）。
 fn push_str(input: &mut String, cursor: &mut textview::TextCursor, s: &str) {
     for ch in s.chars() {
@@ -2632,6 +2716,7 @@ mod window_mgmt_tests {
             restore: None,
             preview: None,
             term: None,
+            wayland: None,
         }
     }
 
@@ -2807,6 +2892,7 @@ mod window_mgmt_tests {
             restore: None,
             preview: None,
             term: Some(term::Terminal::spawn(40, 8, None)),
+        wayland: None,
         };
         d
     }
@@ -2977,5 +3063,124 @@ mod window_mgmt_tests {
         assert_eq!(d.wins.len(), 1);
         assert_eq!(d.active, 0);
         assert!(apply_ctrl(&mut d, 'q', false).is_none(), "未绑定的组合键不应有副作用");
+    }
+}
+
+/// W4：`sync_wayland` 的身份同步测试。
+#[cfg(test)]
+mod wayland_sync_tests {
+    use super::*;
+    use wayland::object::DISPLAY_ID;
+    use wayland::session::{Role, Session, SurfaceState};
+    use wayland::shm::BufferInfo;
+
+    const SURFACE: u32 = 6;
+    const BUFFER: u32 = 7;
+
+    /// 手工构造一个"已 map"的 surface 状态（协议流程在 session 的测试里验过，
+    /// 这里只需要终态）。
+    fn mapped_session(title: &str, pixels: Vec<u8>) -> Session {
+        let mut s = Session::new();
+        s.objects.insert(SURFACE, "wl_surface", 4, 0);
+        s.objects.insert(BUFFER, "wl_buffer", 1, 0);
+        s.surfaces.insert(
+            SURFACE,
+            SurfaceState {
+                role: Some(Role {
+                    title: title.into(),
+                    app_id: "test-app".into(),
+                    toplevel: Some(9),
+                    acked_serial: Some(1),
+                }),
+                has_buffer: true,
+                attached_buffer: Some(BUFFER),
+                xdg_surface: Some(8),
+                pixels: Some(pixels),
+            },
+        );
+        s.buffers.insert(
+            BUFFER,
+            BufferInfo { pool_id: 10, offset: 0, width: 1, height: 1, stride: 4, format: 1 },
+        );
+        s.mapped.push(SURFACE);
+        s
+    }
+
+    #[test]
+    fn new_mapped_surface_becomes_window() {
+        let mut desktop = demo_desktop();
+        let n0 = desktop.wins.len();
+        let s = mapped_session("测试窗口", vec![0xff, 0, 0, 255]);
+        sync_wayland(&mut desktop, &s);
+        assert_eq!(desktop.wins.len(), n0 + 1, "应新增一个窗口");
+        let w = desktop.wins.last().unwrap();
+        assert_eq!(w.kind, draw::WinKind::Wayland);
+        assert_eq!(w.title, "测试窗口");
+        assert_eq!(w.wayland.as_ref().unwrap().surface_id, SURFACE);
+    }
+
+    /// 同步必须**幂等**：同一状态同步两遍不产生重复窗口（每帧都会调）。
+    #[test]
+    fn sync_is_idempotent() {
+        let mut desktop = demo_desktop();
+        let s = mapped_session("w", vec![0, 0, 0, 255]);
+        sync_wayland(&mut desktop, &s);
+        let n1 = desktop.wins.len();
+        sync_wayland(&mut desktop, &s);
+        assert_eq!(desktop.wins.len(), n1, "第二次同步不该新建窗口");
+    }
+
+    #[test]
+    fn unmap_removes_window_but_keeps_others() {
+        let mut desktop = demo_desktop();
+        let n0 = desktop.wins.len();
+        let s = mapped_session("w", vec![0, 0, 0, 255]);
+        sync_wayland(&mut desktop, &s);
+        assert_eq!(desktop.wins.len(), n0 + 1);
+        // surface 消失（unmap/destroy）
+        let mut s2 = mapped_session("w", vec![0, 0, 0, 255]);
+        s2.mapped.clear();
+        sync_wayland(&mut desktop, &s2);
+        assert_eq!(desktop.wins.len(), n0, "Wayland 窗口应移除");
+        // 原有窗口（demo 的 Files/Music/Terminal）必须完好
+        assert!(
+            desktop.wins.iter().all(|w| w.wayland.is_none()),
+            "不该误删本地窗口"
+        );
+    }
+
+    #[test]
+    fn existing_window_updates_content_without_recreating() {
+        let mut desktop = demo_desktop();
+        let s = mapped_session("v1", vec![0xff, 0, 0, 255]);
+        sync_wayland(&mut desktop, &s);
+        let w = desktop.wins.last().unwrap();
+        let rect_before = w.rect;
+        // 客户端改了标题和像素（下一帧 commit）
+        let s2 = mapped_session("v2", vec![0, 0, 0xff, 255]);
+        sync_wayland(&mut desktop, &s2);
+        let w = desktop.wins.last().unwrap();
+        assert_eq!(w.title, "v2", "标题应更新");
+        assert_eq!(w.rect, rect_before, "窗口位置不应被重建冲掉");
+        assert_eq!(
+            w.wayland.as_ref().unwrap().pixels,
+            vec![0, 0, 0xff, 255],
+            "像素应更新"
+        );
+    }
+
+    /// 红绿灯 / 拖拽等按 `wins[i]` 索引的逻辑依赖窗口顺序 —— 移除中间窗口时
+    /// 不能让本地窗口跟着错位（P2 的教训在 Wayland 侧同样适用）。
+    #[test]
+    fn remove_middle_wayland_window_keeps_local_windows() {
+        let mut desktop = demo_desktop();
+        let n0 = desktop.wins.len();
+        let s1 = mapped_session("wl-1", vec![0, 0, 0, 255]);
+        sync_wayland(&mut desktop, &s1);
+        // 两个 Wayland surface，只保留第一个 —— 第二个的窗口应被移除
+        let mut s2 = mapped_session("wl-1", vec![0, 0, 0, 255]);
+        s2.mapped.clear();
+        sync_wayland(&mut desktop, &s2);
+        assert_eq!(desktop.wins.len(), n0, "全部移除后回到初始数量");
     }
 }

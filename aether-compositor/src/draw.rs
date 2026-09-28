@@ -1036,6 +1036,8 @@ pub enum WinKind {
     Terminal,
     /// 文本文件预览
     Preview,
+    /// Wayland 客户端窗口（3.1 spike）：内容由客户端经 wl_shm 提供
+    Wayland,
 }
 
 pub struct Win {
@@ -1054,6 +1056,23 @@ pub struct Win {
     /// 终端会话（仅 `WinKind::Terminal` 有值）。
     /// 内容由 `term::Terminal` 持有：Linux 上是真实 PTY，开发机预览是喂进同一解析器的演示脚本。
     pub term: Option<crate::term::Terminal>,
+    /// Wayland 客户端窗口的内容（仅 `WinKind::Wayland` 有值）
+    pub wayland: Option<WaylandSurface>,
+}
+
+/// Wayland 客户端窗口的内容快照（3.1 spike）。
+///
+/// 每次 commit 时从 `Session` **拷贝**一份 —— 渲染循环是同步的，
+/// 不与客户端共享内存指针，避免"客户端改一半、合成器读一半"的撕裂。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WaylandSurface {
+    /// 来源 surface 的对象 id（同步时的身份）
+    pub surface_id: u32,
+    pub app_id: String,
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8888（shm.rs::read_pixels 的输出）
+    pub pixels: Vec<u8>,
 }
 
 /// AI 回复气泡的类别（用户/AI/工具调用三类样式，语义一眼可分）。
@@ -1885,6 +1904,7 @@ fn draw_window(
             buf, w, h, content, r, mouse, tr, fv, cells, up, sidebar_hits, crumb_hits,
         ),
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
+        WinKind::Wayland => draw_wayland_content(buf, w, h, content, win.wayland.as_ref()),
     }
 }
 
@@ -2587,6 +2607,46 @@ fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Opti
     let px = (r.x + r.w - 12) as f32 - pw;
     if px > (r.x + GUTTER + 10) as f32 {
         draw_text(tr, buf, w, h, px, (r.y + r.h - 24) as f32, &d.path, font::LABEL, color::text_faint(), 0.8);
+    }
+}
+
+/// Wayland 客户端窗口：把客户端提供的 RGBA 像素画进内容区。
+///
+/// **不缩放**：客户端的 buffer 多大就画多大，超出窗口的裁掉，小于窗口的露底色
+/// —— 拉伸会让客户端以为自己的尺寸判断是对的，而"窗口比 buffer 小"恰恰是
+/// 合成器应该让客户端通过 configure 事件知道的事，不是靠悄悄变形来遮掩。
+///
+/// alpha 走 `blend_pixel`：客户端可以画半透明（ARGB8888），XRGB 的 alpha 恒 255。
+/// framebuffer 越界由 `blend_pixel` 的 `idx >= buf.len()` 兜底（窗口贴边时 dy/dx
+/// 可能算出负数行，先在循环里裁掉）。
+fn draw_wayland_content(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    clip: Rect,
+    surface: Option<&WaylandSurface>,
+) {
+    fill_clipped(buf, w, h, clip, clip, radius::LG, color::surface_1(), 0.96);
+    let Some(s) = surface else { return };
+    let need = (s.width as usize) * (s.height as usize) * 4;
+    if s.width == 0 || s.height == 0 || s.pixels.len() < need {
+        return; // 没内容或数据不完整：露底色（Pending pool 的 commit 也走这里）
+    }
+    for row in 0..s.height as i64 {
+        let dy = clip.y as i64 + row;
+        if dy < clip.y as i64 || dy >= clip.y as i64 + clip.h as i64 {
+            continue;
+        }
+        for col in 0..s.width as i64 {
+            let dx = clip.x as i64 + col;
+            if dx < clip.x as i64 || dx >= clip.x as i64 + clip.w as i64 {
+                continue;
+            }
+            let p = (row as usize * s.width as usize + col as usize) * 4;
+            let rgb = [s.pixels[p], s.pixels[p + 1], s.pixels[p + 2]];
+            let a = s.pixels[p + 3] as f32 / 255.0;
+            blend_pixel(buf, dy as usize * w + dx as usize, rgb, a);
+        }
     }
 }
 
