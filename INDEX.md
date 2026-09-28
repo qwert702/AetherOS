@@ -320,7 +320,7 @@ cargo check -p aether-compositor --offline --target x86_64-unknown-linux-musl
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | 复制 / 粘贴（终端内容、文件完整路径、AI 指令条） |
 | `拖窗口边缘` | 缩放窗口（上边不参与：那是标题栏，归拖动） |
 | 终端内的 `Ctrl+C` | 送给 shell（中断命令）——所以复制用 `Ctrl+Shift+C` |
-| `Delete` | **仍未接线**。4.1 已把写操作扩到 L2（`file_delete` 走 `ToolCall`），接线的障碍已消失，缺的只是 UI 入口 —— 属可直接开工的小项 |
+| `Delete` | 删除文件管理器里选中的项。**走 L2 确认链路**：`request_delete` 发一条不带令牌的 `file_delete` ToolCall → 服务端判 L2 → 弹确认卡片 → 点「允许一次」才真删（`main.rs::request_delete`）。⚠️ 只在文件管理器聚焦、且指令条为空时生效；**没有做过实机按键验证** |
 
 > 修饰键状态在输入层统一跟踪（`input::Mods`）。**键盘归属**：终端聚焦时按键归 shell，
 > 否则 `Ctrl+C` 会被误判成关窗 —— 这是 `Ctrl+Shift+C` 存在的原因。

@@ -2874,9 +2874,17 @@ mod window_mgmt_tests {
         assert_eq!(d.selected, None);
     }
 
+    /// `apply_nav` 绝不能自己处理 `Delete`。
+    ///
+    /// `Delete` 走的是 `dispatch_nav` → `request_delete` → 发一条**不带令牌**的
+    /// `file_delete` ToolCall → 服务端判 L2 → 回确认卡片 → 用户点「允许一次」才真删。
+    /// 这条测试守的是"绕过去"的那种写法：如果哪天有人图省事在 `apply_nav` 里直接
+    /// 删条目，就会同时绕开闸门与审计 —— 那是权限模型的破口，不是少写一次 IPC。
+    ///
+    /// （这个测试原名叫 `delete_is_deliberately_not_implemented`，是 4.1 落地之前留下的，
+    /// 名字已经和事实相反 —— 它容易被读成"Delete 没做"，从而误导文档。2026-09-28 改名。）
     #[test]
-    fn delete_is_deliberately_not_implemented() {
-        // 写操作必须先扩权限模型（L2 敏感写）：这里必须是 no-op，而不是悄悄删文件
+    fn apply_nav_must_not_handle_delete_locally() {
         let mut d = files_desk(3);
         d.selected = Some(1);
         assert!(apply_nav(&mut d, input::NavKey::Delete).is_none());

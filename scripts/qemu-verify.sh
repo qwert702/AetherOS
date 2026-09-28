@@ -9,11 +9,16 @@ MEM="${MEM:-512}"
 # 测试用 scratch 磁盘（virtio → guest /dev/vda，供 aether-install 实测）
 DISK=/home/aether/dist.raw
 [ -f "$DISK" ] || truncate -s 512M "$DISK"
-# 按进程名精确匹配来关（**不要**用 `pkill -f qemu-system-x86_64`：-f 匹配整条命令行，
-# 会连"发起它的那条命令"一起杀掉，输出凭空消失，看起来像命令没跑）
-pgrep -x qemu-system-x86_64 | while read -r p; do kill "$p" 2>/dev/null; done; sleep 1
+# 按进程名精确匹配来关。**注意 comm 被截断到 15 字符** —— 进程名实际是
+# `qemu-system-x86`，所以：
+#   - `pgrep -x qemu-system-x86_64` 永远匹配不到（静默空操作，实测踩过：以为停了其实在跑）
+#   - `pkill -f qemu-system-x86_64` 会匹配整条命令行，连"发起它的那条 SSH 命令"一起杀掉
+pgrep -x qemu-system-x86 | while read -r p; do kill "$p" 2>/dev/null; done; sleep 1
+rm -f qmp.sock qemu.pid vram.bin screen.ppm
 cd /home/aether
-rm -f qemu-serial.log qmp.sock qemu.pid vram.bin screen.ppm
+# ⚠️ 归档上一轮的串口日志，**不要直接删**：长跑的证据就在里面。
+# 2026-09-28 吃过一次亏 —— 一次失败的启动（端口被占）把跑了一小时的日志抹了。
+[ -f qemu-serial.log ] && mv qemu-serial.log "qemu-serial.$(date +%s).log"
 setsid /usr/bin/qemu-system-x86_64 \
     -m "$MEM" -smp 2 \
     -cdrom /home/aether/aetheros-0.1-amd64.iso -boot d \
