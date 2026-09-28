@@ -349,13 +349,24 @@ mod tests {
 
     #[test]
     fn log_scan_hits_literals_only() {
+        // 模式是**字面量罐头**（见 ALERT_PATTERNS），不猜语义：
+        // 实机上那行 `[aetherd] ERROR LLM 请求失败（…）` 之所以被捕获，
+        // 是因为它含 "ERROR"，不是因为 "请求失败"（模式里没有这个词）
         let alerts = scan_new_lines(
-            "starting ok\nthread 'main' panicked at foo\n[aetherd] LLM 请求失败: timeout\nnothing wrong here\n",
+            "starting ok\nthread 'main' panicked at foo\n[aetherd] ERROR LLM 请求失败: timeout\nnothing wrong here\n",
         );
         assert_eq!(alerts.len(), 2);
         assert!(alerts[0].contains("panicked"));
-        assert!(alerts[1].contains("请求失败"));
+        assert!(alerts[1].contains("ERROR"));
         assert!(scan_new_lines("all good\n").is_empty());
+        // 只有"请求失败"、没有 ERROR 的行**不该**告警 —— 这正是 literals_only 的含义
+        assert!(
+            scan_new_lines("LLM 请求失败: timeout\n").is_empty(),
+            "模式里没有「请求失败」，不该命中"
+        );
+        // 其余字面量也要能命中
+        assert_eq!(scan_new_lines("x Segmentation fault y\n").len(), 1);
+        assert_eq!(scan_new_lines("aether-ops: 服务状态查询失败\n").len(), 1);
     }
 
     #[test]

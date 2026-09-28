@@ -3021,6 +3021,10 @@ mod window_mgmt_tests {
         assert_eq!(d.clipboard, draw::join_path("/tmp", "e1"));
     }
 
+    // 只在开发机跑：Linux 下 `Terminal::spawn` 开的是**真 PTY**（/bin/sh），
+    // 屏幕初始是空的；这些测试验的是"演示脚本能被正确解析"，而演示脚本
+    // 只在非 Linux 路径存在。Linux 侧的终端行为由实机验证覆盖。
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn clipboard_copies_terminal_visible_content() {
         let mut d = term_desk();

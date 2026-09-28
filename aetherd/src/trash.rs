@@ -25,7 +25,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Linux 用持久化分区上的 `/var/trash`（与审计日志同盘，跨重启保留）；
 /// 开发机用临时目录。**放在用户数据区之外**是有意的：否则 AI 的写操作
 /// 有可能把回收站本身也删掉。
+///
+/// 可用环境变量 `AETHER_TRASH_DIR` 覆盖。两个理由：测试要能在任意机器上跑
+/// （Linux 下 `/var/trash` 需要 root，而开发/CI 用户通常不是），以及部署时
+/// 想把回收站放到另一块盘。**aether-init 不注入该变量**，系统内永远走默认值。
 pub fn default_root() -> PathBuf {
+    if let Some(p) = std::env::var_os("AETHER_TRASH_DIR") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     #[cfg(target_os = "linux")]
     {
         PathBuf::from("/var/trash")

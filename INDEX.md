@@ -133,6 +133,11 @@ Aether/
 
 > ⚠️ `compositor.json` 是 `essential: true` + **`restart: false`**（`unit.rs` 的默认值是 `true`，只有它显式关掉）
 > → compositor 一次 panic = 桌面永久死掉，必须手动重启整机。门禁 1 的主要风险点。
+>
+> **启动顺序**（2026-09-28 修）：`run_loop` 必须**先 `ipc::spawn` 建 `/run/aether-init.sock`，再启动服务**。
+> 反过来的话，任何启动后立刻查询 init 的服务（`aether-ops` 第一轮巡检就是）会报一次
+> "服务状态查询失败（No such file or directory）"的假故障。启动序列**持锁**执行，
+> 让这期间到达的 IPC 请求排队到 boot 完成。实机串口日志可验证：socket 行必须早于"自启动序列"行。
 
 ### aether-install（磁盘安装器，505 行 / 1 文件）
 | 文件 | 内容 |
@@ -170,8 +175,10 @@ Aether/
 | 文件 | 内容 |
 |---|---|
 | `scripts/setup-vm.ps1` | Windows 宿主：VirtualBox 装 Ubuntu 24.04 构建机 |
-| `scripts/transfer.py` / `vm.py` | 构建机远程命令与文件同步（注意 MSYS2_ARG_CONV_EXCL；`transfer.py` 曾因二进制损坏被修） |
-| `scripts/vm-pull.py` | 从构建机取回文件（新增） |
+| `scripts/transfer.py` | 上传到构建机。⚠️ 两点：Git Bash 下**必须** `MSYS2_ARG_CONV_EXCL="*"`（否则 `/home/...` 被 MSYS 改写成本地路径）；它会对文本做 **CRLF→LF 归一**，所以上传后 md5 必然与本地不同（差值 = CR 个数），**比对前要先去掉 CR**，否则会误判成"文件损坏" |
+| `scripts/vm.py` | 构建机远程命令（`vm.py sh "<cmd>" [timeout]`）。⚠️ 命令里的 `$VAR` 会被**本地** bash 先展开，要用单引号或绝对路径，别写 `$PATH` |
+| `scripts/vm-pull.py` | 从构建机取回文件，带重试（sftp 的 `SSHFX_NO_SUCH_FILE` 偶发）。同样需要 `MSYS2_ARG_CONV_EXCL="*"` |
+| `scripts/vm-build-iso.sh` | 在构建机内跑 ISO 构建：补 `~/.cargo/bin` 到 PATH（**SSH 非交互会话没有它**）、输出落 `iso-build.log`、末尾打 `RESULT=PASS/FAIL` |
 | `scripts/qmp-verify.py` / `qemu-verify.sh` / `qmp-slow-click.py` | QEMU QMP 键鼠注入 + 截图端到端验证 |
 | `scripts/e2e-permission-confirm.py` | L2+ 权限链路端到端（需先起 `aetherd serve`） |
 | `scripts/m6-run-install.py` / `m6-toolcall.py` / `upload-*.py` | M6 安装器端到端与构建机上传 |
@@ -272,20 +279,28 @@ cargo check -p aether-compositor --offline --target x86_64-unknown-linux-musl
 - 已验证：走查图 `docs/host-ui-ime.png` / `host-ui-light-ime.png`（归档门禁内）
 - ⚠️ **终端内未接**（需在 `feed_terminal` 前拦一层）—— 门禁 5 因此限定为"指令条内可打中文"
 
-## 测试分布（2026-09-28 Windows 宿主实测 **300 项全绿**）
+## 测试分布（2026-09-28 实测：**Windows 300 / Linux 310，均全绿**）
 
-| crate | 项数 | 备注 |
-|---|---|---|
-| `aether-compositor` | **187** | 布局、形状快速路径等价性、脏行、壁纸行带、行内区间、**输入层键位翻译**、窗口管理/导航/剪贴板/缩放、**VT/ANSI 解析器（跨平台）**、终端胶合层与按键字节映射、`dispatch_nav` 分流、Wayland 协议/session/shm（跨平台手造字节流）、evdev 采集（仅 Linux） |
-| `aetherd` | **81** | 快速意图、路由（含敏感上下文强制本地）、权限闸门/令牌/拒绝冷却、审计轮转、工具系统（写白名单 ⊆ 读）、回收站、IPC 变体**逐条闸门**测试、模型配置 |
-| `aether-init` | 16 | 拓扑/环检测/白名单/监督退避/解析校验/持久化 |
-| `aether-install` | 9 | 参数/防呆/MBR 读写/分区规划/命名 |
-| `aether-ipc` | 7 | 请求 roundtrip、响应解码、ChatChunk channel 往返、RegisterUi 往返 |
-| `aether-ops` | **0（Windows）** | 13 项 Linux 专属 —— 本机不参与，改这里必须交叉检查 |
-| `aether-shell` | 0 | 占位 |
+**两个目标都要跑** —— 不是可选项。`cfg(target_os="linux")` 门控的代码在 Windows 上
+整段不编译，**Linux 侧的问题在开发机上一次都发现不了**（实测：`aether-ops` 的
+`ServiceStatus` 少两个字段，Windows 全绿，Linux 直接编译失败）。
+
+| crate | Windows | Linux | 备注 |
+|---|---|---|---|
+| `aether-compositor` | 187 | 183 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
+| `aether-ops` | 0 | **13** | 整个 crate 是 Linux 专属，Windows 不参与 |
+| `aetherd` | 81 | 82 | |
+| `aether-init` | 16 | 16 | |
+| `aether-install` | 9 | 9 | |
+| `aether-ipc` | 7 | 7 | |
+| `aether-shell` | 0 | 0 | 占位 |
+| **合计** | **300** | **310** | |
+
+跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
+（Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。
 
 > **端到端**：`scripts/e2e-permission-confirm.py`（权限链路，需先起 `aetherd serve`）、
 > `scripts/m6-run-install.py`（安装器）。Wayland socket 与 `SCM_RIGHTS` 收包**只能在真机验证**。
 >
-> ⚠️ 测试数在 09-28 一天内从 185 → 300（+115），其中约 60 项来自 Wayland spike。
+> ⚠️ 测试数在 09-28 一天内从 185 → 300+（+115 以上），其中约 60 项来自 Wayland spike。
 > 引用具体数字前先跑一遍 —— 这一天里 HEAD 动了 15 个提交。

@@ -440,19 +440,30 @@ fn resolve_readable(path: &str) -> Result<std::path::PathBuf> {
     let canon = std::fs::canonicalize(path)
         .map_err(|e| anyhow::anyhow!("无法访问 {path}: {e}"))?;
     let canon = strip_verbatim_prefix(canon);
+    check_read_policy(&canon, path)?;
+    Ok(canon)
+}
 
+/// **纯策略**：这个（已规范化的）路径允不允许读。不碰文件系统。
+///
+/// 单独拆出来的理由：策略判断**不该依赖目标是否存在**。原写法是先
+/// `canonicalize` 再查白名单，于是"不存在的系统路径"报的是"无法访问"而不是
+/// "不在允许读取的范围内" —— 策略结论被环境细节盖住了。拆开之后策略可以
+/// 跨平台确定性测试（构建机上 `/sys/kernel/osrelease` 恰好不存在，正是这条
+/// 把该测试暴露出来的）。
+fn check_read_policy(canon: &std::path::Path, shown: &str) -> Result<()> {
     // 1. 必须落在白名单根之内（Path::starts_with 按组件匹配，/homeevil ≠ /home）
     if !READ_ALLOWED_ROOTS.iter().any(|root| canon.starts_with(root)) {
         bail!(
-            "路径不在允许读取的范围内（{path}）：read_file 仅可读用户数据区（家目录、/tmp）\
+            "路径不在允许读取的范围内（{shown}）：read_file 仅可读用户数据区（家目录、/tmp）\
              与 aether 自身配置/日志；系统区与其它用户目录不可读"
         );
     }
     // 2. 白名单根之内的凭证类子路径仍然拒绝
-    if is_credential_path(&canon) {
-        bail!("拒绝读取凭证类路径（{path}）");
+    if is_credential_path(canon) {
+        bail!("拒绝读取凭证类路径（{shown}）");
     }
-    Ok(canon)
+    Ok(())
 }
 
 /// 规范化路径是否命中凭证类子路径（私钥、云凭证、令牌文件）。
@@ -486,17 +497,23 @@ fn resolve_writable(path: &str) -> Result<std::path::PathBuf> {
         cparent.join(file)
     };
     let canon = strip_verbatim_prefix(canon);
+    check_write_policy(&canon, path)?;
+    Ok(canon)
+}
 
+/// **纯策略**：这个（已规范化的）路径允不允许写。不碰文件系统（理由同
+/// `check_read_policy`）。
+fn check_write_policy(canon: &std::path::Path, shown: &str) -> Result<()> {
     if !WRITE_ALLOWED_ROOTS.iter().any(|root| canon.starts_with(root)) {
         bail!(
-            "路径不在允许写入的范围内（{path}）：写操作仅限用户数据区（家目录、/tmp）。\
+            "路径不在允许写入的范围内（{shown}）：写操作仅限用户数据区（家目录、/tmp）。\
              aether 自身的配置与日志不可写 —— 那等于让 AI 改自己的权限规则与审计记录"
         );
     }
-    if is_credential_path(&canon) {
-        bail!("拒绝写入凭证类路径（{path}）");
+    if is_credential_path(canon) {
+        bail!("拒绝写入凭证类路径（{shown}）");
     }
-    Ok(canon)
+    Ok(())
 }
 
 fn tool_read_file(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
@@ -726,13 +743,40 @@ fn tool_desktop(args: &Value, ctx: &mut ToolCtx) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// 回收站是**进程外共享状态**（`%TEMP%/aether-trash`），而测试默认并行 ——
-    /// 两个测试同时 `purge`/`trash` 会互相干扰（实测：偶发的"删除失败"）。
+    /// 回收站是**进程外共享状态**（开发机 `%TEMP%/aether-trash`，Linux `/var/trash`），
+    /// 而测试默认并行 —— 两个测试同时 `purge`/`trash` 会互相干扰（实测：偶发的"删除失败"）。
     /// 这是全局状态 + 并行测试的标准处理方式（与 `server.rs` 的剪贴板锁同款）。
     static TRASH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn trash_guard() -> std::sync::MutexGuard<'static, ()> {
         TRASH_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 把回收站根临时改到测试私有目录。
+    ///
+    /// 为什么必须有：Linux 下默认根是 `/var/trash`，**只有 root 建得出来** —— 而
+    /// 构建机/开发用户都不是 root，于是"删除 → 回收站 → 恢复"这条链在 Linux 上
+    /// 直接以 `Permission denied` 失败（2026-09-28 构建机实测，4 个失败里的 2 个）。
+    /// 通过 `AETHER_TRASH_DIR` 重定向，测试才能在任意机器上跑真实路径。
+    ///
+    /// 调用方必须持有 `trash_guard()` —— 它改的是进程全局环境变量。
+    /// 离开作用域时恢复（`Drop`），避免污染后续测试。
+    struct TrashDir(#[allow(dead_code)] std::path::PathBuf);
+
+    impl TrashDir {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("aether-trash-tool-{tag}"));
+            let _ = std::fs::remove_dir_all(&p);
+            std::env::set_var("AETHER_TRASH_DIR", &p);
+            Self(p)
+        }
+    }
+
+    impl Drop for TrashDir {
+        fn drop(&mut self) {
+            std::env::remove_var("AETHER_TRASH_DIR");
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     fn gate() -> Gate {
@@ -870,6 +914,12 @@ mod tests {
     }
 
     /// 目标平台（Linux）上 aetherd 以 root 运行，这些路径此前全部可读。
+    ///
+    /// 分两层断言：**策略层**是纯函数、不依赖路径是否存在；**入口层**只在路径
+    /// 真实存在时测，用来证明工具确实接到了同一个策略。
+    /// 为什么不能只测入口层：构建机上 `/sys/kernel/osrelease` 恰好不存在，于是
+    /// `canonicalize` 先失败、报的是"无法访问"而不是策略拒绝 —— 测试就会以
+    /// 一个与策略无关的理由失败（2026-09-28 构建机实测）。
     #[cfg(target_os = "linux")]
     #[test]
     fn read_file_rejects_system_paths_on_target() {
@@ -882,11 +932,23 @@ mod tests {
             "/boot/vmlinuz",
             "/root/.bashrc",
         ] {
-            let r = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false);
-            let err = r.expect_err(&format!("{p} 应被拒绝")).to_string();
+            let policy = check_read_policy(std::path::Path::new(p), p)
+                .expect_err(&format!("{p} 应被策略拒绝"))
+                .to_string();
+            assert!(
+                policy.contains("不在允许读取的范围内") || policy.contains("凭证类"),
+                "{p} 策略实得: {policy}"
+            );
+
+            if !std::path::Path::new(p).exists() {
+                continue;
+            }
+            let err = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false)
+                .expect_err(&format!("{p} 应被拒绝"))
+                .to_string();
             assert!(
                 err.contains("不在允许读取的范围内") || err.contains("凭证类"),
-                "{p} 实得: {err}"
+                "{p} 入口实得: {err}"
             );
         }
     }
@@ -1014,13 +1076,23 @@ mod tests {
     }
 
     /// 写操作不能碰白名单之外的路径（用 `approved=true` 绕过闸门，直测路径校验）。
+    ///
+    /// 路径必须**按平台给**：写死 `C:/Windows/...` 在 Linux 上会先撞"父目录不可访问"，
+    /// 报的错就不是白名单拒绝 —— 测试会以一个与策略无关的理由失败（构建机实测的
+    /// 4 个失败里的第 4 个）。这里两边都选**真实存在**的系统路径，
+    /// 保证 canonicalize 能成功、失败原因必然是策略。
     #[test]
     fn write_rejects_paths_outside_whitelist() {
         let mut ctx = ToolCtx::default();
+        #[cfg(not(target_os = "linux"))]
+        let (outside, inside) = ("C:/Windows/win.ini", "C:/Temp/aether-inside.txt");
+        #[cfg(target_os = "linux")]
+        let (outside, inside) = ("/etc/passwd", "/tmp/aether-inside.txt");
+
         for (tool, args) in [
-            ("file_write", serde_json::json!({"path": "C:/Windows/win.ini", "content": "x"})),
-            ("file_delete", serde_json::json!({"path": "C:/Windows/win.ini"})),
-            ("file_rename", serde_json::json!({"from": "C:/Windows/win.ini", "to": "C:/Windows/x"})),
+            ("file_write", serde_json::json!({"path": outside, "content": "x"})),
+            ("file_delete", serde_json::json!({"path": outside})),
+            ("file_rename", serde_json::json!({"from": outside, "to": inside})),
         ] {
             let r = execute(&gate(), &mut ctx, tool, &args, true);
             let err = r
@@ -1053,6 +1125,7 @@ mod tests {
     #[test]
     fn delete_then_restore_roundtrip_via_tool() {
         let _g = trash_guard();
+        let _t = TrashDir::new("roundtrip");
         let dir = std::env::temp_dir().join("aether_write_tool_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建临时目录");
@@ -1117,6 +1190,7 @@ mod tests {
     #[test]
     fn delete_then_restore_through_tools() {
         let _g = trash_guard();
+        let _t = TrashDir::new("through");
         // 目录名必须与 `trash.rs` 里的 `tmp("roundtrip")`（→ aether_trash_roundtrip）
         // **不同** —— 重名时本测试开头的 remove_dir_all 会把对方的目录删掉，
         // 表现为"对方偶发失败"，很难一眼看出是自己造成的

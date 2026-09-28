@@ -40,6 +40,12 @@ pub fn build_report(
     let mut r = String::new();
     r.push_str("=== AetherOS 诊断报告 ===\n");
     r.push_str(&format!("[事件] {title}\n"));
+    // 触发告警的**那一行原文**：报告里最有价值的就是它 ——
+    // 只说"日志异常"等于没说，得让人看到到底是哪一行、错在哪。
+    // （这里原来漏了，`line` 参数根本没被使用，是测试在 Linux 下跑起来才发现的）
+    if let Incident::LogAlert { line, .. } = incident {
+        r.push_str(&format!("[日志] {line}\n"));
+    }
     r.push_str(&format!("[时间] 运行 {}s\n", metrics.uptime_secs.unwrap_or(0)));
     match (metrics.mem_avail_mb, metrics.mem_total_mb) {
         (Some(a), Some(t)) => r.push_str(&format!("[内存] 可用 {a}/{t}MB（{:.0}%）\n", a as f32 / t.max(1) as f32 * 100.0)),
@@ -93,7 +99,16 @@ mod tests {
     use super::*;
 
     fn svc(unit: &str, state: &str) -> ServiceStatus {
-        ServiceStatus { unit: unit.into(), state: state.into(), pid: None }
+        // 字段要与 `aether_ipc::ServiceStatus` 同步 —— 这个文件是
+        // `#[cfg(target_os = "linux")]`，Windows 上不编译，所以本机 `cargo test`
+        // 发现不了漏字段，**只有构建机（Linux）会报错**（2026-09-28 实测）
+        ServiceStatus {
+            unit: unit.into(),
+            state: state.into(),
+            pid: None,
+            restart: true,
+            essential: false,
+        }
     }
 
     #[test]
@@ -120,7 +135,7 @@ mod tests {
         let r = build_report(
             &Incident::LogAlert { unit: "aetherd".into(), line: "ERROR LLM 请求失败".into() },
             &[svc("aetherd", "Running")],
-            Metrics::default(),
+            &Metrics::default(),
             "",
             "",
         );

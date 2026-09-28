@@ -169,17 +169,29 @@ fn run_loop(services_dir: &str, pid1: bool) -> anyhow::Result<()> {
         }
         anyhow::bail!("{msg}");
     }
-    let mut mgr = Manager::new(specs)?;
-    let boot = mgr.boot_sequence()?;
-    eprintln!("[aether-init] 自启动序列: {boot:?}");
-    for name in &boot {
-        if let Err(e) = mgr.start(name) {
-            eprintln!("[aether-init] 启动 {name} 失败: {e}");
+    // ⚠️ 顺序很重要：**先建控制通道，再拉服务**。
+    //
+    // 服务在起来之后可能立刻查询 init —— `aether-ops` 第一轮巡检就是这么干的。
+    // 原来 socket 建在服务启动之后，于是 ops 第一轮必然报一次假故障：
+    //     aether-ops: 服务状态查询失败（No such file or directory）
+    // 它在第二轮自愈，所以曾被当成"噪音 P3"；但这是**设计缺陷**而不是运气问题：
+    // 任何启动期想跟 init 说话的服务都会踩，而且表现成"故障"会污染日志与告警。
+    let mgr = Arc::new(Mutex::new(Manager::new(specs)?));
+    ipc::spawn(mgr.clone())?;
+
+    // 启动序列**持锁**执行：这期间到达的 IPC 请求会排队到 boot 完成 ——
+    // 比让外部看到"半启动"的服务状态更正确。不会死锁：IPC 线程只在处理
+    // 请求时取锁，而此刻它还没开始处理任何请求。
+    {
+        let mut g = mgr.lock().unwrap_or_else(|e| e.into_inner());
+        let boot = g.boot_sequence()?;
+        eprintln!("[aether-init] 自启动序列: {boot:?}");
+        for name in &boot {
+            if let Err(e) = g.start(name) {
+                eprintln!("[aether-init] 启动 {name} 失败: {e}");
+            }
         }
     }
-
-    let mgr = Arc::new(Mutex::new(mgr));
-    ipc::spawn(mgr.clone())?;
 
     // 监督主循环
     loop {

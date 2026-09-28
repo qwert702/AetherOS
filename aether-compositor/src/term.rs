@@ -376,6 +376,10 @@ pub fn cell_has_custom_bg(c: &Cell) -> bool {
 mod tests {
     use super::*;
 
+    // 只在开发机跑：Linux 下 `Terminal::spawn` 开的是**真 PTY**（/bin/sh），
+    // 屏幕初始是空的；这些测试验的是"演示脚本能被正确解析"，而演示脚本
+    // 只在非 Linux 路径存在。Linux 侧的终端行为由实机验证覆盖。
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn demo_transcript_parses_into_lines() {
         let t = Terminal::spawn(60, 12, Some("/home/u"));
@@ -388,6 +392,10 @@ mod tests {
         assert!(matches!(t.status(), TermStatus::Unavailable(_)));
     }
 
+    // 只在开发机跑：Linux 下 `Terminal::spawn` 开的是**真 PTY**（/bin/sh），
+    // 屏幕初始是空的；这些测试验的是"演示脚本能被正确解析"，而演示脚本
+    // 只在非 Linux 路径存在。Linux 侧的终端行为由实机验证覆盖。
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn demo_uses_real_ansi_colors() {
         let t = Terminal::spawn(60, 12, None);
@@ -427,6 +435,10 @@ mod tests {
         assert_eq!(ansi_rgb(15, false), [246, 248, 252]);
     }
 
+    // 只在开发机跑：Linux 下 `Terminal::spawn` 开的是**真 PTY**（/bin/sh），
+    // 屏幕初始是空的；这些测试验的是"演示脚本能被正确解析"，而演示脚本
+    // 只在非 Linux 路径存在。Linux 侧的终端行为由实机验证覆盖。
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn blank_detection() {
         let t = Terminal::spawn(40, 6, None);
