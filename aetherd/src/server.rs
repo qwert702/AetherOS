@@ -175,6 +175,19 @@ fn handle_request(
             }
         }
         Request::ConfirmCancel { token } => {
+            // 与剪贴板 / 配置重载同一门槛：撤销令牌也是"改系统状态"。
+            //
+            // 未注册连接**本来**拿不到令牌（L2+ 请求会被 403 且不下发），所以这不是
+            // 可利用的漏洞；补它是为了**一致性** —— 万一令牌从别的路径泄漏（日志、
+            // 转发），也不该让未注册连接能撤销用户的确认。
+            if !*is_ui {
+                audit_or_warn(gate, "confirm_cancel", Level::L2, verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝撤销令牌：本连接未注册为 UI 通道");
+                return vec![Response::Error {
+                    code: 403,
+                    message: "确认撤销必须由已注册的 UI 通道发起".into(),
+                }];
+            }
             // 让"用户拒绝了"成为服务端的事实：撤销令牌 + 记入拒绝冷却 + 落审计。
             // 此前合成器的"拒绝"只是本地 UI 状态，服务端既不知道也没留痕（P1-9）。
             match approvals.revoke(&token) {
@@ -512,12 +525,23 @@ mod ipc_gating_tests {
             ("clipboard_get", Request::ClipboardGet),
             ("clipboard_set", Request::ClipboardSet { text: "x".into() }),
             ("reload_config", Request::ReloadConfig),
+            ("confirm_cancel", Request::ConfirmCancel { token: "deadbeef".into() }),
             (
                 "tool_call(L3)",
                 Request::ToolCall {
                     session_id: "gate-test".into(),
                     tool: "install_disk".into(),
                     arguments: serde_json::json!({"disk": "/dev/vda", "confirm": "/dev/vda"}),
+                    approval: None,
+                },
+            ),
+            (
+                // 写操作也是 L2：未注册连接同样拿不到令牌
+                "tool_call(L2 写)",
+                Request::ToolCall {
+                    session_id: "gate-test".into(),
+                    tool: "file_delete".into(),
+                    arguments: serde_json::json!({"path": "C:/Temp/x"}),
                     approval: None,
                 },
             ),

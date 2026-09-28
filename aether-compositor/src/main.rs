@@ -140,7 +140,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             // 但模态弹窗优先：确认卡片/安装向导打开时，键盘仍归它们，否则用户无法回答。
             if confirm.is_none() && !installer.open && focused_terminal(&desktop) {
                 if let Some(k) = term_key_from_ui(&ev) {
-                    if feed_terminal(&mut desktop, k) {
+                    if feed_terminal(&mut desktop, k, &mut ime) {
                         continue;
                     }
                 }
@@ -222,6 +222,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Escape => {
+                    // IME 拼字中：Esc 先取消拼字（与主流输入法一致），
+                    // 而不是顺手把确认弹窗也拒了
+                    if ime.composing() {
+                        ime.cancel();
+                    } else {
                     open_menu = None;
                     if let Some((req, _)) = confirm.take() {
                         // 拒绝路径：回传服务端撤销令牌并落审计（P1-9）。
@@ -232,6 +237,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
                     } else if installer.open && !installer.running {
                         installer.open = false;
+                    }
                     }
                 }
                 input::UiEvent::LayoutKey(n) => {
@@ -1578,7 +1584,7 @@ fn preview_main() -> anyhow::Result<()> {
                     }
                 };
                 if let Some(tk) = tk {
-                    feed_terminal(&mut desktop, tk);
+                    feed_terminal(&mut desktop, tk, &mut ime);
                 }
             }
             // 终端占据键盘时，下面的 AI 指令条输入/导航/布局键一律跳过
@@ -2244,7 +2250,32 @@ fn term_key_from_ui(ev: &input::UiEvent) -> Option<term::TermKey> {
 }
 
 /// 把终端按键写进活动窗口的会话。返回是否已消费该按键。
-fn feed_terminal(desktop: &mut Desktop, key: term::TermKey) -> bool {
+/// 把按键送给活动终端。返回是否真的送进去了（活动窗口不是终端则为 false）。
+///
+/// **中文输入法在这里介入**（2.3）：被 IME 吃掉的字符不进 PTY —— 否则拼音字母会
+/// 直接打到 shell 里，用户看到的是 `nihao` 而不是「你好」。
+fn feed_terminal(desktop: &mut Desktop, key: term::TermKey, ime: &mut ime::Ime) -> bool {
+    let bytes: Option<Vec<u8>> = match key {
+        term::TermKey::Char(c) => {
+            let mut committed: Option<String> = None;
+            if ime.composing() {
+                if let Some(d) = c.to_digit(10).filter(|d| *d >= 1) {
+                    committed = ime.select_index(d as usize - 1);
+                } else if c == ' ' {
+                    committed = ime.commit();
+                }
+            }
+            match committed {
+                Some(text) => Some(text.into_bytes()),
+                // 未被 IME 吃掉的字符才送 PTY
+                None => ime.push(c).map(String::into_bytes),
+            }
+        }
+        // 拼字中退格 = 删拼音，不送 PTY
+        term::TermKey::Backspace if ime.backspace() => None,
+        other => Some(term::bytes_for(other)),
+    };
+
     let Some(t) = desktop
         .wins
         .get_mut(desktop.active)
@@ -2252,7 +2283,9 @@ fn feed_terminal(desktop: &mut Desktop, key: term::TermKey) -> bool {
     else {
         return false;
     };
-    t.write(&term::bytes_for(key));
+    if let Some(b) = bytes {
+        t.write(&b);
+    }
     // 键入即清选区（与所有终端一致：开始打字就意味着放弃选择）
     t.clear_selection();
     true

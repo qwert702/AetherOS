@@ -43,6 +43,10 @@ SHOTS: list[tuple[list[str], str]] = [
     (["--shot", "2", "--confirm", "3", "--theme", "light"], "host-ui-light-confirm.png"),
     (["--shot", "2", "--installer", "--theme", "light"], "host-ui-light-installer.png"),
     (["--shot", "2", "--menu", "--theme", "light"], "host-ui-light-menu.png"),
+    # 中文输入法候选框（2.3）：两个主题各一张 —— 候选框是新增的浮层，
+    # 深浅两套配色都要有基线，否则将来改色板时它会是唯一没被比对到的地方
+    (["--shot", "2", "--ime", "--theme", "dark"], "host-ui-ime.png"),
+    (["--shot", "2", "--ime", "--theme", "light"], "host-ui-light-ime.png"),
 ]
 
 # 非确定区（相对左上角，右边界用图像宽度推）
