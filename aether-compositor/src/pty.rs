@@ -13,6 +13,7 @@ use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 pub struct Pty {
     master: File,
@@ -21,6 +22,12 @@ pub struct Pty {
 
 /// 默认 shell。用绝对路径避免 PATH 差异（PID 1 环境里 PATH 由 /init 设置）。
 const SHELL: &str = "/bin/sh";
+
+/// `write_all` 遇到 `EAGAIN` 时的最大等待时长。
+///
+/// 有界是必须的：主循环每帧都可能往 PTY 写，不能因为一个卡住的 shell 拖住渲染。
+const MAX_WRITE_WAIT: Duration = Duration::from_millis(50);
+const WRITE_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 
 impl Pty {
     /// 开一对 PTY 并 exec shell。`cols`/`rows` 决定 shell 看到的窗口大小。
@@ -106,8 +113,14 @@ impl Pty {
         total
     }
 
+    /// 把字节写进 PTY 主端。
+    ///
+    /// 主端是 `O_NONBLOCK`：shell 来不及消费时 `write` 返回 `EAGAIN`。直接放弃会
+    /// **静默丢掉用户键入的字节**（第四轮审查 P3-3）—— 大段粘贴尤其容易命中，
+    /// 表现是"粘贴少了一截"，极难排查。所以对 `EAGAIN` 做**有界重试**。
     pub fn write_all(&mut self, bytes: &[u8]) {
         let mut off = 0;
+        let mut waited = Duration::ZERO;
         while off < bytes.len() {
             let n = unsafe {
                 libc::write(
@@ -116,10 +129,18 @@ impl Pty {
                     bytes.len() - off,
                 )
             };
-            if n <= 0 {
+            if n > 0 {
+                off += n as usize;
+                continue;
+            }
+            // n <= 0：EAGAIN（缓冲满，可重试）或真错误（EIO 等，放弃）。
+            // EWOULDBLOCK 与 EAGAIN 在 Linux 上是同一个值，不必分开判。
+            let would_block = io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN);
+            if !would_block || waited >= MAX_WRITE_WAIT {
                 break;
             }
-            off += n as usize;
+            std::thread::sleep(WRITE_RETRY_INTERVAL);
+            waited += WRITE_RETRY_INTERVAL;
         }
     }
 

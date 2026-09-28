@@ -5,6 +5,7 @@
 //! 常量，AI 只能在探针集合里选择，不存在用户输入进入命令行的路径。
 
 use crate::intent::DesktopAction;
+use crate::perm::verdict;
 use crate::perm::{Gate, Level, Verdict};
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -57,7 +58,11 @@ pub fn registry() -> Vec<Tool> {
         Tool {
             name: "clipboard_write",
             description: "把一段文本写入系统剪贴板（跨进程），供用户粘贴到别处。",
-            level: Level::L0,
+            // 写操作 → L1（可逆写），与 clipboard_read 同级。
+            // 第四轮审查（P2-1）前这里是 L0（只读），而 L0 的语义是"读" ——
+            // 一个写操作标成只读，意味着它既无确认也无正确的审计分级；
+            // 而且当时读（L1）比写（L0）级别高，方向是反的。
+            level: Level::L1,
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -201,9 +206,9 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
     let args_str = args.to_string();
     let verdict = gate.judge(name, tool.level, args, approved);
     let verdict_str = match &verdict {
-        Verdict::Allowed => "allowed",
-        Verdict::NeedsConfirmation => "needs_confirmation",
-        Verdict::Denied(_) => "denied",
+        Verdict::Allowed => verdict::ALLOWED,
+        Verdict::NeedsConfirmation => verdict::NEEDS_CONFIRMATION,
+        Verdict::Denied(_) => verdict::DENIED,
     };
     // 审计失败不阻断执行，但必须显式可见：错误随输出返回调用方，并落 stderr。
     let audit_warn = gate.audit(name, tool.level, &args_str, verdict_str).err().map(|e| {
@@ -219,7 +224,7 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
             Err(e) => {
                 // 执行失败也留痕：否则"闸门放行"与"真的读到了"在审计里无法区分
                 // （例如 read_file 通过闸门但被路径白名单拒绝，只记 allowed 会误导）
-                if let Err(ae) = gate.audit(name, tool.level, &args_str, "failed") {
+                if let Err(ae) = gate.audit(name, tool.level, &args_str, verdict::FAILED) {
                     eprintln!("[aetherd] 审计日志写入失败: {ae}");
                 }
                 Err(e)

@@ -261,28 +261,6 @@ mod tests {
     #[test]
     fn ui_registration_and_cancel_roundtrip() {
         // 令牌绑定确认方（P1-8）与拒绝通路（P1-9）的协议面
-        // 剪贴板请求/应答
-        let req = Request::ClipboardSet { text: "跨进程
-内容".into() };
-        match decode::<Request>(&encode(&req)).unwrap() {
-            Request::ClipboardSet { text } => assert_eq!(text, "跨进程
-内容"),
-            other => panic!("{other:?}"),
-        }
-        match decode::<Request>(&encode(&Request::ClipboardGet)).unwrap() {
-            Request::ClipboardGet => {}
-            other => panic!("{other:?}"),
-        }
-        let resp = Response::ClipboardText { text: "abc".into() };
-        match decode::<Response>(&encode(&resp)).unwrap() {
-            Response::ClipboardText { text } => assert_eq!(text, "abc"),
-            other => panic!("{other:?}"),
-        }
-        let resp = Response::ClipboardWritten { bytes: 42 };
-        match decode::<Response>(&encode(&resp)).unwrap() {
-            Response::ClipboardWritten { bytes } => assert_eq!(bytes, 42),
-            other => panic!("{other:?}"),
-        }
         let r = Request::RegisterUi { key: "deadbeef".into() };
         match decode::<Request>(&encode(&r)).unwrap() {
             Request::RegisterUi { key } => assert_eq!(key, "deadbeef"),
@@ -299,6 +277,34 @@ mod tests {
         match decode::<Response>(&encode(&cc)).unwrap() {
             Response::ConfirmCancelled { token } => assert_eq!(token, "abc"),
             other => panic!("应为 ConfirmCancelled，实得 {other:?}"),
+        }
+    }
+
+    /// 剪贴板请求/应答的编解码往返。
+    ///
+    /// 单独成测试而不是塞进上面的 UI 注册用例：失败时的报错才会指向正确的地方
+    /// （第四轮审查 P3-5 —— 之前它被插在 `ui_registration_and_cancel_roundtrip`
+    /// 里，名字与内容不符）。
+    #[test]
+    fn clipboard_roundtrip() {
+        let req = Request::ClipboardSet { text: "跨进程\n内容".into() };
+        match decode::<Request>(&encode(&req)).unwrap() {
+            Request::ClipboardSet { text } => assert_eq!(text, "跨进程\n内容"),
+            other => panic!("应为 ClipboardSet，实得 {other:?}"),
+        }
+        match decode::<Request>(&encode(&Request::ClipboardGet)).unwrap() {
+            Request::ClipboardGet => {}
+            other => panic!("应为 ClipboardGet，实得 {other:?}"),
+        }
+        let resp = Response::ClipboardText { text: "abc".into() };
+        match decode::<Response>(&encode(&resp)).unwrap() {
+            Response::ClipboardText { text } => assert_eq!(text, "abc"),
+            other => panic!("应为 ClipboardText，实得 {other:?}"),
+        }
+        let resp = Response::ClipboardWritten { bytes: 42 };
+        match decode::<Response>(&encode(&resp)).unwrap() {
+            Response::ClipboardWritten { bytes } => assert_eq!(bytes, 42),
+            other => panic!("应为 ClipboardWritten，实得 {other:?}"),
         }
     }
 

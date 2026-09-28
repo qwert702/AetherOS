@@ -2240,9 +2240,16 @@ fn sync_clipboard_to_daemon(text: String) {
             let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
             let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
             stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+            let mut reader = BufReader::new(stream.try_clone()?);
+            // 剪贴板 IPC 要求已注册 UI 通道（第四轮审查 P1-1）：不注册会被 403。
+            //
+            // 顺带消掉了"端口劫持"（P2-3）：注册需要 ui.key，冒充 aetherd 的本机进程
+            // 拿不到密钥，所以即便抢到 7311 也无法让这条推送成功 —— 服务端那侧会
+            // 因密钥不匹配而拒绝。此前这里是"连上就发"，对端身份完全不校验。
+            register_ui(&mut stream, &mut reader)?;
             stream.write_all(aether_ipc::encode(&Request::ClipboardSet { text }).as_bytes())?;
             let mut line = String::new();
-            BufReader::new(&mut stream).read_line(&mut line)?;
+            reader.read_line(&mut line)?;
             Ok(())
         };
         let _ = run();
@@ -2258,9 +2265,18 @@ fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
         let text = t.selection_text();
         let trimmed = text.trim_end().to_string();
         let lines = trimmed.lines().count();
-        let what = if t.sel.is_some() { "选区" } else { "终端内容" };
+        let explicit = t.sel.is_some();
+        let what = if explicit { "选区" } else { "终端内容" };
         desktop.clipboard = trimmed;
-        sync_clipboard_to_daemon(desktop.clipboard.clone());
+        // 只有**显式拖选**的内容才同步给 aetherd。
+        //
+        // 为什么：无选区时复制的是**整屏**，而终端里出现 `cat /etc/shadow` 的输出、
+        // 密码提示、环境变量打印都不罕见。用户随手按一下 Ctrl+Shift+C 不该等于
+        // "授权 AI 读取这一屏"（第四轮审查 P3-2）。
+        // 本地粘贴不受影响 —— 用户仍能从 desktop.clipboard 粘贴整屏内容。
+        if explicit {
+            sync_clipboard_to_daemon(desktop.clipboard.clone());
+        }
         return Some(format!("已复制{what}（{lines} 行）"));
     }
     // 文件管理器：复制选中项的完整路径（比复制文件名有用得多）

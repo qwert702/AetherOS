@@ -50,6 +50,24 @@ pub struct Gate {
 /// 用户拒绝后，同一操作在此时长内不再重复询问（直接 Denied）。
 const DENY_TTL: Duration = Duration::from_secs(300);
 
+/// 审计日志大小上限（与服务日志的 `logtee::MAX_LOG_BYTES` 取同一值，便于记忆）。
+const MAX_AUDIT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 审计裁决列取值。
+///
+/// 前 5 个与 `docs/ai-permissions.md` 的表格一致；`REJECTED_NO_UI` 是第四轮审查
+/// 新增的第 6 个 —— "未注册通道访问剪贴板"这类**入侵尝试**必须能与
+/// "用户拒绝过"（`denied`）区分开，否则审计无法回答"有没有人在敲门"。
+pub mod verdict {
+    pub const ALLOWED: &str = "allowed";
+    pub const NEEDS_CONFIRMATION: &str = "needs_confirmation";
+    pub const DENIED_BY_USER: &str = "denied_by_user";
+    pub const DENIED: &str = "denied";
+    pub const FAILED: &str = "failed";
+    /// 未注册为 UI 通道的连接发起了受限请求（剪贴板 / L2+ 令牌兑现）。
+    pub const REJECTED_NO_UI: &str = "rejected_no_ui";
+}
+
 /// 闸门裁决结果。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -122,7 +140,12 @@ impl Gate {
     }
 
     /// 追加一条审计记录。审计失败不阻断执行，但会显式报错给调用方记录。
+    ///
+    /// `docs/ai-permissions.md` 的承诺是"审计写入失败不阻断执行，但**不允许静默
+    /// 零留痕**" —— 所以调用方**不应**忽略这里的返回值：至少要在失败时打一条
+    /// stderr，否则"审计静默停止"会变成一个查不出原因的现象。
     pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std::io::Result<()> {
+        self.rotate_if_needed();
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -132,6 +155,32 @@ impl Gate {
             .append(true)
             .open(&self.audit_path)?;
         writeln!(f, "{ts}\t{level}\t{tool}\t{args}\t{verdict}")
+    }
+
+    /// 审计日志超过上限就轮转（旧档只留一份）。
+    ///
+    /// 为什么需要：审计日志是**追加写且无上限**的，而 aetherd 是常驻守护进程
+    /// （`restart` 默认 true）。长期运行必然撑满持久化分区，届时 `audit()` 会
+    /// 开始失败 —— 若调用方忽略返回值，安全机制就静默蒸发了。
+    /// 第四轮审查（P2-2）发现：服务日志有 8MB 轮转，**安全关键的审计日志反而没有**。
+    ///
+    /// 与 `aether-init/src/logtee.rs::rotate_in` 同构。没有提取成共享工具是因为
+    /// 两者分属不同 crate，为此新建一个 crate 不划算 —— **若将来出现第三处，就该提取**。
+    ///
+    /// 轮转失败不阻断本次写入（下一次写入会再试）；`for_test()` 的空路径直接跳过。
+    fn rotate_if_needed(&self) {
+        if self.audit_path.as_os_str().is_empty() {
+            return;
+        }
+        let Ok(meta) = std::fs::metadata(&self.audit_path) else {
+            return; // 文件还不存在：本次写入会创建它
+        };
+        if meta.len() <= MAX_AUDIT_BYTES {
+            return;
+        }
+        let old = PathBuf::from(format!("{}.1", self.audit_path.display()));
+        let _ = std::fs::remove_file(&old); // 旧档只留一份
+        let _ = std::fs::rename(&self.audit_path, &old);
     }
 }
 
@@ -315,5 +364,49 @@ mod tests {
         assert!(a.redeem(&tok, "install_disk", &args).is_err());
         // 重复撤销：返回 None，不 panic
         assert!(a.revoke(&tok).is_none());
+    }
+
+    /// P2-2：审计日志超过上限要轮转，且轮转后**新日志只含新记录**。
+    #[test]
+    fn audit_rotates_when_oversized() {
+        let dir = std::env::temp_dir().join("aether_audit_rotate_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("aether-audit.log");
+        let g = Gate::new(path.clone());
+
+        // set_len 造超限文件是 O(1)，不用真写 8MB
+        std::fs::File::create(&path)
+            .expect("建日志文件")
+            .set_len(MAX_AUDIT_BYTES + 1)
+            .expect("扩容");
+
+        g.audit("read_file", Level::L0, "", "allowed").expect("审计应成功");
+
+        let archived = std::fs::metadata(format!("{}.1", path.display()))
+            .expect("旧内容应被归档到 .1");
+        assert_eq!(archived.len(), MAX_AUDIT_BYTES + 1, "旧内容应整体归档");
+        let now = std::fs::read_to_string(&path).expect("新日志可读");
+        assert!(now.contains("read_file"), "新日志应含新写入的一条：{now:?}");
+        assert!(now.len() < 1000, "新日志不应含旧内容（只有一条记录）：{now:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 审计文件不存在时不应因轮转检查而失败 —— 首次写入要能正常创建。
+    #[test]
+    fn audit_creates_file_when_absent() {
+        let dir = std::env::temp_dir().join("aether_audit_create_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("aether-audit.log");
+        let g = Gate::new(path.clone());
+
+        g.audit("clipboard_get", Level::L1, "", "allowed").expect("首次写入应成功");
+        assert!(path.exists(), "审计文件应被创建");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("clipboard_get"), "实得 {content:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

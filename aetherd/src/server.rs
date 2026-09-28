@@ -3,6 +3,7 @@
 //! 每连接一线程；Chat 请求先走离线快速意图，未命中再进 LLM agent；
 //! 一个 Chat 请求可产生多条响应（ChatChunk + Action）。
 
+use crate::perm::verdict;
 use crate::{intent, perm::{Approvals, Gate, Level}, tools, Config};
 use aether_ipc::{encode, Request, Response, SysReport};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -136,6 +137,17 @@ fn handle_conn(
     }
 }
 
+/// 写一条审计，失败时打 stderr。
+///
+/// `docs/ai-permissions.md` 机制 2 承诺"审计写入失败不阻断执行，但**不允许静默
+/// 零留痕**"。用 `let _ = gate.audit(...)` 恰恰就是静默 —— 磁盘满之后审计会停止，
+/// 而系统继续正常运行，没有任何人会发现。这里把它显式化。
+fn audit_or_warn(gate: &Gate, tool: &str, level: Level, verdict: &str) {
+    if let Err(e) = gate.audit(tool, level, "", verdict) {
+        eprintln!("[aetherd] 审计日志写入失败（{tool}/{verdict}）: {e}");
+    }
+}
+
 fn handle_request(
     line: &str,
     cfg: &Config,
@@ -165,7 +177,7 @@ fn handle_request(
             match approvals.revoke(&token) {
                 Some((tool, args)) => {
                     gate.mark_denied(&tool, &args);
-                    if let Err(e) = gate.audit(&tool, tool_level(&tool), &args.to_string(), "denied_by_user") {
+                    if let Err(e) = gate.audit(&tool, tool_level(&tool), &args.to_string(), verdict::DENIED_BY_USER) {
                         eprintln!("[aetherd] 审计日志写入失败: {e}");
                     }
                     eprintln!("[aetherd] 用户拒绝了 {tool}：令牌已撤销，{} 秒内不再重复询问", DENY_COOLDOWN_SECS);
@@ -216,7 +228,9 @@ fn handle_request(
                         }];
                     }
                     let token = approvals.issue(&tool, &arguments);
-                    eprintln!("[aetherd] 工具 {tool} 需 L{level} 确认，已下发确认请求");
+                    // `Level` 的 Display 已经是 "L3 危险"，这里只取数字，避免拼成 "LL3 危险"
+                    // （第四轮审查 P3-1）。与 handle_chat 里的同一行保持同一种写法。
+                    eprintln!("[aetherd] 工具 {tool} 需 L{} 确认，已下发确认请求", level as u8);
                     vec![Response::NeedsConfirmation {
                         tool,
                         level: level as u8,
@@ -236,16 +250,39 @@ fn handle_request(
             }
             out
         }
+        // 剪贴板是"读用户数据 + 写用户环境"的端点：它常被用来复制密码，
+        // 而写入等于替用户决定他下次粘贴出什么。因此与 L2+ 令牌**同一门槛**：
+        // 只有已注册的 UI 通道能碰。
+        //
+        // 第四轮审查（P1-1）前这里是零门槛的 —— 未注册连接可直接读写，只补了一行
+        // audit。根因是 `handle_request` 的权限检查**逐分支手写**，新增 `Request`
+        // 变体就多一处漏检的入口。本文件的 `request_variants_are_gated` 测试
+        // 就是为了防止重演。
         Request::ClipboardSet { text } => {
-            // 剪贴板常被用来复制密码：每次读写都落审计，"谁在何时碰过它"必须可查
-            let _ = gate.audit("clipboard_set", Level::L0, "", "allowed");
+            if !*is_ui {
+                audit_or_warn(gate, "clipboard_set", Level::L1, verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝剪贴板写入：本连接未注册为 UI 通道");
+                return vec![Response::Error {
+                    code: 403,
+                    message: "剪贴板访问必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            audit_or_warn(gate, "clipboard_set", Level::L1, verdict::ALLOWED);
             match crate::clipboard::set(&text) {
                 Ok(bytes) => vec![Response::ClipboardWritten { bytes }],
                 Err(e) => vec![Response::Error { code: 413, message: e }],
             }
         }
         Request::ClipboardGet => {
-            let _ = gate.audit("clipboard_get", Level::L1, "", "allowed");
+            if !*is_ui {
+                audit_or_warn(gate, "clipboard_get", Level::L1, verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝剪贴板读取：本连接未注册为 UI 通道");
+                return vec![Response::Error {
+                    code: 403,
+                    message: "剪贴板访问必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            audit_or_warn(gate, "clipboard_get", Level::L1, verdict::ALLOWED);
             vec![Response::ClipboardText { text: crate::clipboard::get() }]
         }
         Request::SysInfo { .. } => vec![Response::SysInfo(sys_report())],
@@ -352,7 +389,7 @@ fn sys_report() -> SysReport {
 }
 
 #[cfg(test)]
-mod clipboard_tests {
+mod ipc_gating_tests {
     use super::*;
     use crate::perm::{Approvals, Gate};
     use crate::test_config;
@@ -375,7 +412,7 @@ mod clipboard_tests {
     #[test]
     fn clipboard_set_then_get_roundtrip() {
         let _g = lock();
-        let mut is_ui = false;
+        let mut is_ui = true; // 剪贴板要求已注册 UI 通道
         let mut out = handle_line(
             &aether_ipc::encode(&Request::ClipboardSet { text: "abc 剪贴板".into() }),
             &mut is_ui,
@@ -394,7 +431,7 @@ mod clipboard_tests {
     #[test]
     fn clipboard_oversized_is_rejected_without_clobbering() {
         let _g = lock();
-        let mut is_ui = false;
+        let mut is_ui = true;
         crate::clipboard::set("keep").unwrap();
         let big = "x".repeat(crate::clipboard::MAX_BYTES + 1);
         let out = handle_line(
@@ -406,5 +443,72 @@ mod clipboard_tests {
             "超长应整体拒绝"
         );
         assert_eq!(crate::clipboard::get(), "keep", "拒绝后原内容不受影响");
+    }
+
+    /// P1-1 回归：剪贴板是"读用户数据 + 写用户环境"的端点，未注册连接一律 403。
+    #[test]
+    fn clipboard_requires_registered_ui() {
+        let _g = lock();
+        let mut is_ui = false;
+        let out = handle_line(&aether_ipc::encode(&Request::ClipboardGet), &mut is_ui);
+        assert!(
+            matches!(out[0], Response::Error { code: 403, .. }),
+            "未注册连接读剪贴板必须被拒，实得 {out:?}"
+        );
+        let out = handle_line(
+            &aether_ipc::encode(&Request::ClipboardSet { text: "x".into() }),
+            &mut is_ui,
+        );
+        assert!(
+            matches!(out[0], Response::Error { code: 403, .. }),
+            "未注册连接写剪贴板必须被拒，实得 {out:?}"
+        );
+    }
+
+    /// 2.2b：把"每个能读用户数据或改系统状态的 `Request` 变体都必须被拦"
+    /// 固化成门禁。
+    ///
+    /// 存在的理由：`handle_request` 的权限检查是**逐分支手写**的，新增变体容易
+    /// 漏掉门槛 —— P1-1（剪贴板零门槛）就是这么来的。**新增变体时若忘了加门槛，
+    /// 这里会红。**
+    #[test]
+    fn request_variants_are_gated() {
+        let _g = lock();
+        let mut is_ui = false;
+        let cases: Vec<(&str, Request)> = vec![
+            ("clipboard_get", Request::ClipboardGet),
+            ("clipboard_set", Request::ClipboardSet { text: "x".into() }),
+            (
+                "tool_call(L3)",
+                Request::ToolCall {
+                    session_id: "gate-test".into(),
+                    tool: "install_disk".into(),
+                    arguments: serde_json::json!({"disk": "/dev/vda", "confirm": "/dev/vda"}),
+                    approval: None,
+                },
+            ),
+        ];
+        for (name, req) in cases {
+            let out = handle_line(&aether_ipc::encode(&req), &mut is_ui);
+            let denied = out.iter().any(|r| matches!(r, Response::Error { code: 403, .. }));
+            assert!(denied, "{name} 在未注册连接下必须被拒（403），实得 {out:?}");
+        }
+    }
+
+    /// 反向断言：不该被拦的变体要保持可用 —— 否则上面的门禁可以靠"一律拒绝"作弊。
+    #[test]
+    fn unprivileged_variants_still_work() {
+        let _g = lock();
+        let mut is_ui = false;
+        let out = handle_line(&aether_ipc::encode(&Request::Ping), &mut is_ui);
+        assert!(matches!(out[0], Response::Pong), "ping 不应要求注册，实得 {out:?}");
+        let out = handle_line(
+            &aether_ipc::encode(&Request::SysInfo { scope: aether_ipc::SysInfoScope::Memory }),
+            &mut is_ui,
+        );
+        assert!(
+            matches!(out[0], Response::SysInfo(_)),
+            "只读的 sys_info 不应要求注册，实得 {out:?}"
+        );
     }
 }
