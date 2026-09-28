@@ -25,7 +25,7 @@
 | **磁盘安装器** | **自研** `aether-install` |
 | **IPC 协议** | **自研** `aether-ipc`（通信脊柱） |
 
-自研部分共 **19,426 行 Rust / 40 个源文件 / 7 个 crate**（2026-09-28 实测）。
+自研部分共 **19,556 行 Rust / 40 个源文件 / 7 个 crate**（2026-09-28 实测，不含 `target/`）。
 
 ## 现在能做什么
 
@@ -69,11 +69,10 @@
   子集的 spike（线协议 / 对象表 / 协议表 / `wl_shm` 像素读取 / surface 接进渲染管线均已完成），
   但**未接入生产路径**，见 `docs/PHASE3-DECISION-2026-09-28.md`
 - **AI 没有接过真实模型** —— 协议层已用双假端点验证（21 项断言全过），真实 LLM 端到端待做
-- **中文输入只在 AI 指令条内可用**，终端内未接
-- **`compositor` 是 `essential: true` + `restart: false`** —— 一次 panic = 桌面永久死掉、必须重启整机。
-  待改成 `restart: true`，或把 panic 审计扩到全部渲染路径
+- **中文输入已接线到指令条与终端，但没做过实机键盘交互验证**（`--shot` 只能出静态帧，测不了输入）
 - **`aether-shell` 是 11 行的占位**，Shell 职责暂时压在 compositor 里（已 12.7k 行，该拆了）
-- 所有验证都在**虚拟机**内完成，没有物理机长跑记录
+- **没有连续长跑记录** —— 门禁 1a（连续 8 小时不崩）未做，所有验证都在虚拟机内完成
+- 输入侧还有未验证的交互：`Delete` 键未接线、终端拖选复制只在源码层面确认过
 
 ## 架构
 
@@ -114,10 +113,10 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
-| `aether-compositor/` | 12,719 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
-| `aetherd/` | 3,862 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站） | M4 |
-| `aether-init/` | 1,266 | PID 1 与服务管理 | M3 |
-| `aether-ops/` | 729 | AI 运维与自修复 | M5 |
+| `aether-compositor/` | 12,720 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
+| `aetherd/` | 3,945 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站） | M4 |
+| `aether-init/` | 1,305 | PID 1 与服务管理 | M3 |
+| `aether-ops/` | 736 | AI 运维与自修复 | M5 |
 | `aether-install/` | 505 | 磁盘安装器 | M6 |
 | `aether-ipc/` | 334 | 全系统 IPC 协议 | M0 |
 | `aether-shell/` | 11 | 占位骨架 | M2 |
@@ -136,7 +135,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
 cargo run -p aether-compositor -- --theme dark     # 深空主题
 cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试
+cargo test --workspace                             # 单元测试（Windows 301 项）
 ```
 
 构建可引导 ISO 需要 Linux 构建机（Buildroot），见 `platform/README.md`。
@@ -149,10 +148,12 @@ cargo test --workspace                             # 单元测试
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | **300 项全绿**（`cargo test --workspace --offline --no-fail-fast`） |
+| 单元测试 | **Windows 301 / Linux 311，均全绿**（`cargo test --workspace --offline --no-fail-fast`） |
+| 编译警告 | **双目标 0 条**（`cargo check --workspace --all-targets`） |
 | 视觉回归门禁 | **10 张归档走查图逐像素比对**，当前 10/10 零差异（`scripts/archive-ui-shots.py --check`） |
 | 代码审查 | 四轮全量 / 增量审查 + 修复报告（`docs/CODE-REVIEW-*.md`、`docs/FIX-REPORT-*.md`） |
 | 端到端 | 权限链路（`scripts/e2e-permission-confirm.py`）、安装器、QEMU QMP 键鼠注入 + 截图 |
+| 实机自愈 | QEMU 内 kill 掉合成器 → init 自动拉起并重新初始化显示/字体/输入（门禁 1b） |
 | 性能观测 | `--bench`（首帧 / 稳态 / 上限）、`AETHER_RENDER_TIMING=1`（逐阶段耗时） |
 
 > ⚠️ 改 `cfg(target_os = "linux")` 的代码后**必须**跑 `--target x86_64-unknown-linux-musl` 交叉检查 ——
@@ -185,7 +186,7 @@ cargo test --workspace                             # 单元测试
 |---|---|
 | [`INDEX.md`](INDEX.md) | **代码索引**：组件与入口、逐文件职责、工具清单、测试分布、键盘、命令 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 里程碑 M0–M6 + 已知工程质量缺口 |
-| [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（当前 5/6） |
+| [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（当前 **5.5/6**，唯一缺口是"连续 8 小时不崩"） |
 | [`docs/ui-design-handover.md`](docs/ui-design-handover.md) | **视觉改动的权威依据**：设计系统、双模主题、环境陷阱 |
 | [`docs/ai-permissions.md`](docs/ai-permissions.md) | AI 权限模型 |
 | [`docs/WRITE-OPS-2026-09-28.md`](docs/WRITE-OPS-2026-09-28.md) | 可写文件操作的设计约束 |

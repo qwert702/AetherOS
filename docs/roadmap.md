@@ -4,12 +4,16 @@
 > UI 设计系统 Step 1–4 + 视觉质量冲刺（§10）+ 双模主题（§12）完成，Step 5 仅剩实机重拍，见 docs/ui-design-handover.md。
 >
 > **生产力化清单见 `docs/PRODUCTION-PLAN-2026-09-28.md`**（09-27 版保留为决策历史）—— 五个阶段、每项带验收标准。
-> 「生产力」六个硬门禁：**5 / 6**（2026-09-28 复核）。
-> 唯一未达成的是**门禁 1**：1a"连续 8 小时不崩"需实机长跑；1b 靠 0.8 的 panic 审计部分达成，
-> 但 `compositor` 仍是 `essential: true` + `restart: false` —— 一次 panic = 桌面永久死掉。
+> 「生产力」六个硬门禁：**5.5 / 6**（2026-09-28 复核）。门禁 1 拆成 1a/1b —— **1b 已达成**
+> （compositor 已能自愈，实机 kill 验证过），**唯一缺口是 1a**：连续 8 小时不崩，需实机长跑。
 >
-> 代码规模（2026-09-28 实测）：**19,426 行 / 40 个 .rs**（7 crate）；测试 **300 项全绿**。
-> ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 和二级子目录。
+> 代码规模（2026-09-28 实测）：**19,556 行 / 40 个 .rs**（7 crate）；
+> 测试 **Windows 301 / Linux 311，均全绿**；`cargo check` **双目标零警告**。
+> ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 与二级子目录。
+>
+> ⚠️ **两个目标都要测**：`cfg(target_os="linux")` 的代码在 Windows 上整段不编译，
+> Linux 侧的编译错误与警告在开发机**一次都发现不了**（09-28 实测踩到两次：`aether-ops`
+> 的编译失败、以及 3 条只在 Linux 出现的警告）。
 
 ## M0 — 开发环境与架构设计 ✅
 - [x] 仓库骨架、Cargo workspace
@@ -152,16 +156,31 @@
       协议层全部**跨平台可测**（手造字节流跑完整 map 流程），是 spike 最有价值的副产品
 - [ ] **3.1 W5 剩余**：socket 服务端已就绪，但 **fd 的 `SCM_RIGHTS` 收包未做**（需真机验证）；
       渲染主循环尚未启动服务端，真客户端端到端未跑
-- [ ] 门禁 1a：连续 8 小时不崩（需实机长跑）
-- [ ] 门禁 1b：`compositor` 的 `restart: false` 未动 —— **一次 panic = 桌面永久死掉**
+- [x] **门禁 1b：`compositor` 现在能自愈**（2026-09-28 实机验证）。
+      原来它是 `essential: true` + `restart: false` —— **一次 panic 桌面永久死掉**。
+      根因是跨提交的**语义漂移**：09-12 设 `restart:false` 的理由是"崩溃由 ops 巡检自愈，
+      监督器不接管"；09-19（`a0f1268`，P1-3"重启策略以服务定义为唯一事实来源"）把 ops
+      改成 `if !s.restart { 不冷拉起 }`，语义变成"**没人接管**"，而 compositor 的配置没回头核对。
+      改回 `restart: true`（init 监督 + ops 冷拉起双通道），并加了一条不变量测试
+      `shipped_essential_services_must_be_restartable` 钉死"essential 却不可恢复"这种组合。
+      **验证**（QEMU + QMP 注入）：root 登录 tty1 → `killall aether-compositor` →
+      `[aether-init] compositor 退出 (code=-1, restarts=0)` →
+      `[aether-init] compositor 已重启 (第 1 次)` → 重新初始化 fbdev/字体/evdev → `已渲染 1 帧`
+- [ ] 门禁 1a：连续 8 小时不崩（需实机长跑）—— **这是六个硬门禁里唯一的缺口**
 
 ## 已知的工程质量缺口（2026-09-28 复核）
 
 > 这一节记录**已知但未修**的东西，接手时不必重新发现。
 
-- `cargo check --workspace --all-targets` **有 3 条警告**（基线是零警告）：
-  `main.rs` 未使用的 `DISPLAY_ID` 导入、`wayland/session.rs` 一处 `unused mut` 与一处 `unused var`。
-  集中在 3.1 spike，属低成本待办
+- **零警告基线已恢复**（2026-09-28）：`cargo check --workspace --all-targets` 在
+  **Windows 与 Linux 双目标都是 0 条**。踩过的两类坑：
+  ① 3.1 spike 留下的 3 条（未使用的 `DISPLAY_ID` 导入 / `wayland/session.rs` 的 `unused mut` 与 `unused var`）；
+  ② **只在 Linux 出现的 3 条**（全在 `aether-ops`：`std::net::TcpStream` 在 Linux 用不到、
+  `Incident::LogAlert { unit, line }` 的 `line` 在该分支未被使用、
+  `if let` 不可反驳 —— `HealAction` 只有一个变体）。
+  → **`aether-ops` 是 Windows 上整段不编译的，所以它的警告只能在构建机发现。**
+  第 ③ 条顺手改成 `match`：`if let` 在将来加变体时会**静默忽略新动作**，而 `match` 会编译报错 ——
+  对自修复链路来说，静默忽略是最坏的失败方式。
 - `aether-ops` 与 `aetherd` 的部分代码路径是 `cfg(target_os="linux")` 门控的，**Windows 构建会整段屏蔽** ——
   改这些路径必须跑 `--target x86_64-unknown-linux-musl` 交叉检查，否则等于没编译。
   **已验证的实例**：`aether-ops/diagnose.rs` 的测试辅助漏了 `ServiceStatus` 两个字段，
@@ -183,11 +202,13 @@
 
 ### 实机验证覆盖情况（2026-09-28）
 
-已验证（QEMU guest 内 root + hostfwd 到 7311 发真实 IPC）：读白名单拒绝系统区、
-aether 自身配置可读、L2/L3 工具对未注册连接 403、L0 工具免确认执行、
-init 的 socket 建立早于服务启动。
+已验证（QEMU guest 内 root + hostfwd 到 7311 发真实 IPC，或用 QMP 注入键盘）：
+- 读白名单拒绝系统区、aether 自身配置可读、L2/L3 工具对未注册连接 403、L0 工具免确认执行
+- init 的 socket 建立早于服务启动（顺序修复）
+- **compositor 被 kill 后由 init 自动拉起并重新初始化显示/字体/输入**（门禁 1b，见上）
 
-**未验证**：Delete 键与终端拖选（需 QMP 键鼠注入）；W5 的 `SCM_RIGHTS` fd 收包
+**未验证**：Delete 键与终端拖选的交互（QMP 注入可用，但需截图判读，未做）；
+终端内的中文输入（同上，只做过编译与源码级确认）；W5 的 `SCM_RIGHTS` fd 收包
 （需真机 + 一个真实 Wayland 客户端）；写操作白名单的**端到端**路径
 （`file_write` 过闸门后才会走路径校验，需要 UI 通道密钥，即 `/var/log/aether/ui.key`）；
 门禁 1a 的 8 小时长跑。

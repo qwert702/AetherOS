@@ -610,8 +610,9 @@ mod tests {
 
     #[test]
     fn registry_advertises_all_globals() {
-        let mut s = setup_registry();
-        // get_registry 已在上面处理，重新走一遍拿事件
+        // 这个 session 只用来确认 `setup_registry` 能把会话建起来（它的回包在
+        // 上一个测试里断言），下面才重新走一遍拿事件
+        let s = setup_registry();
         let mut s2 = Session::new();
         let out = s2
             .handle(&Message { object_id: DISPLAY_ID, opcode: 1, args: vec![Arg::NewId(REGISTRY)] }
@@ -754,7 +755,8 @@ mod tests {
         assert!(err.message.contains("ack"), "实得: {}", err.message);
 
         // ack 后再 commit → map + 发 configure 事件
-        let out = s
+        // ack 本身不产生需要断言的回包（`.unwrap()` 已经保证它没报错）
+        s
             .handle(&Message { object_id: XDG_SURFACE, opcode: 4, args: vec![Arg::Uint(1)] }.encode("u"))
             .unwrap();
         let out = s

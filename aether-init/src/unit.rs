@@ -174,6 +174,33 @@ pub fn load_dir(dir: &Path) -> Result<(Vec<ServiceSpec>, Vec<String>)> {
 mod tests {
     use super::*;
 
+    /// **随镜像发布**的服务里，`essential: true` 必须同时 `restart: true`。
+    ///
+    /// 为什么值得一条断言：`restart: false` 的语义在 2026-09-19（`a0f1268` 的 P1-3
+    /// "重启策略以服务定义为唯一事实来源"）被改成了**"没人接管"** —— 在那之前
+    /// ops 会给 `restart:false` 的服务兜底。而 `compositor.json` 是 09-12 按旧语义
+    /// （"崩溃由 ops 自愈，监督器不接管"）设的，没人回头核对，于是它同时失去了
+    /// init 监督与 ops 冷拉起：**一次 panic，桌面永久死掉、只能人工重启整机**。
+    ///
+    /// 这类"跨提交的语义漂移"靠读代码很难发现（两处都自洽），但一行断言就能钉死。
+    #[test]
+    fn shipped_essential_services_must_be_restartable() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../platform/overlay/etc/aether/services");
+        let (specs, warnings) = load_dir(&dir).expect("服务定义应可加载");
+        assert!(warnings.is_empty(), "服务定义告警（会被跳过）: {warnings:?}");
+        assert!(!specs.is_empty(), "没加载到服务定义，路径对吗: {}", dir.display());
+        for s in &specs {
+            if s.essential {
+                assert!(
+                    s.restart,
+                    "{} 是 essential 但 restart=false —— 退出后没人拉起，只能人工重启整机",
+                    s.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn parse_and_validate() {
         let s = r#"{

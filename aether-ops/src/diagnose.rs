@@ -31,7 +31,7 @@ pub fn build_report(
         Incident::Crash { unit, exit_code } => {
             (format!("服务「{unit}」异常退出 (code={exit_code})"), unit.clone())
         }
-        Incident::LogAlert { unit, line } => {
+        Incident::LogAlert { unit, .. } => {
             (format!("服务「{unit}」日志异常"), unit.clone())
         }
         Incident::MemPressure => ("内存压力告警".into(), String::new()),

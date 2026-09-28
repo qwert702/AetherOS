@@ -3077,7 +3077,6 @@ mod window_mgmt_tests {
 #[cfg(test)]
 mod wayland_sync_tests {
     use super::*;
-    use wayland::object::DISPLAY_ID;
     use wayland::session::{Role, Session, SurfaceState};
     use wayland::shm::BufferInfo;
 

@@ -132,21 +132,26 @@ fn run() -> anyhow::Result<()> {
         prev_pressure = pressure;
 
         for action in r.actions {
-            if let HealAction::RestartService(unit) = action {
-                let count = attempts.get(&unit).map(|(_, c)| c + 1).unwrap_or(1);
-                match monitor::service_control(&unit, aether_ipc::ServiceAction::Restart) {
-                    Ok(msg) => {
-                        println!("aether-ops: 自修复 → 重启 {unit}（第 {count} 次）: {msg}");
-                        emit_report(
-                            diagnose::Incident::Crash { unit: unit.clone(), exit_code: -1 },
-                            &services, &metrics,
-                            &format!("自修复 → 重启 {unit}（第 {count} 次）: {msg}"),
-                            &unit,
-                        );
+            // 用 match 而不是 `if let`：`HealAction` 目前只有一个变体，`if let` 会因为
+            // "不可反驳"而报警告；更要紧的是 —— **将来加变体时 match 会强制编译报错**，
+            // 而 `if let` 会把新动作静默忽略。对自修复链路来说，静默忽略是最坏的失败方式。
+            match action {
+                HealAction::RestartService(unit) => {
+                    let count = attempts.get(&unit).map(|(_, c)| c + 1).unwrap_or(1);
+                    match monitor::service_control(&unit, aether_ipc::ServiceAction::Restart) {
+                        Ok(msg) => {
+                            println!("aether-ops: 自修复 → 重启 {unit}（第 {count} 次）: {msg}");
+                            emit_report(
+                                diagnose::Incident::Crash { unit: unit.clone(), exit_code: -1 },
+                                &services, &metrics,
+                                &format!("自修复 → 重启 {unit}（第 {count} 次）: {msg}"),
+                                &unit,
+                            );
+                        }
+                        Err(e) => println!("aether-ops: 自修复 → 重启 {unit} 失败: {e}"),
                     }
-                    Err(e) => println!("aether-ops: 自修复 → 重启 {unit} 失败: {e}"),
+                    attempts.insert(unit, (round, count));
                 }
-                attempts.insert(unit, (round, count));
             }
         }
 

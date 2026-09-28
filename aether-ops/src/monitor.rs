@@ -7,6 +7,8 @@
 use aether_ipc::{Request, Response, ServiceAction, ServiceStatus};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+// 只有非 Linux（开发自检走回环 TCP）才用得到：Linux 走 Unix socket
+#[cfg(not(target_os = "linux"))]
 use std::net::TcpStream;
 use std::time::Duration;
 
