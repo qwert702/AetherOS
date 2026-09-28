@@ -13,6 +13,8 @@ mod draw;
 mod fbdev;
 // 输入事件层：事件类型与键位翻译跨平台（可在开发机上单测），仅采集后端限 Linux
 mod input;
+// 中文输入法（2.3）：拼音 → 候选 → 上屏，词表自建
+mod ime;
 #[cfg(target_os = "linux")]
 mod pty;
 mod layout;
@@ -115,6 +117,8 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut ai_input = String::new();
     // 2.4：输入光标 —— 支持在中间插入/删除，不再只能追加（打错一个字要全删重来）
     let mut ai_cursor = textview::TextCursor::default();
+    // 2.3：中文输入法（默认关，Ctrl+Space 切换 —— 见 ime 模块头注释）
+    let mut ime = ime::Ime::default();
     let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let mut open_menu: Option<usize> = None;
     // L2+ 权限确认：待确认请求 + 用户已输入的回显文本
@@ -168,14 +172,40 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Char(c) => {
-                    if let Some((req, echo)) = confirm.as_mut() {
+                    // Ctrl+Space 在 evdev 侧通常落成 NUL —— 用它当中英切换键。
+                    // 换成显式的 UiEvent 变体更好，但那要改 input.rs 的采集层；
+                    // 这里特判的代价小得多，且行为可预期。
+                    if c == '\0' {
+                        ime.toggle();
+                        toast = Some((
+                            if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.into(),
+                            Instant::now(),
+                        ));
+                    } else if let Some((req, echo)) = confirm.as_mut() {
                         // 确认弹窗独占键盘：L3 的回显输入写进弹窗而不是指令条
                         if req.echo_required.is_some() {
                             echo.push(c);
                         }
                     } else if !installer.open {
-                        // 向导打开时键盘让位给向导，字符不进指令条
-                        ai_cursor.insert(&mut ai_input, c);
+                        // 向导打开时键盘让位给向导，字符不进指令条。
+                        // IME 拼字中：数字 1-6 选候选、空格提交首个；其余走正常流程。
+                        let mut committed: Option<String> = None;
+                        if ime.composing() {
+                            if let Some(d) = c.to_digit(10).filter(|d| *d >= 1) {
+                                committed = ime.select_index(d as usize - 1);
+                            } else if c == ' ' {
+                                committed = ime.commit();
+                            }
+                        }
+                        match committed {
+                            Some(text) => push_str(&mut ai_input, &mut ai_cursor, &text),
+                            // 未被 IME 吃掉的字符直接进正文
+                            None => {
+                                if let Some(text) = ime.push(c) {
+                                    push_str(&mut ai_input, &mut ai_cursor, &text);
+                                }
+                            }
+                        }
                     }
                 }
                 input::UiEvent::Backspace => {
@@ -184,7 +214,10 @@ fn run_fbdev() -> anyhow::Result<()> {
                             echo.pop();
                         }
                         None => {
-                            ai_cursor.backspace(&mut ai_input);
+                            // IME 正在拼字时，退格删拼音串而不是正文
+                            if !ime.backspace() {
+                                ai_cursor.backspace(&mut ai_input);
+                            }
                         }
                     }
                 }
@@ -219,7 +252,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 input::UiEvent::Nav(n) => {
                     if let Some(msg) =
-                        dispatch_nav(&mut desktop, n, &mut ai_input, &mut ai_cursor, &ai_tx)
+                        dispatch_nav(&mut desktop, n, &mut ai_input, &mut ai_cursor, &mut ime, &ai_tx)
                     {
                         toast = Some((msg, Instant::now()));
                     }
@@ -557,6 +590,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             ai_input: &ai_input,
             ai_cursor: ai_cursor.pos(),
+            ime: &ime,
             // 确认弹窗打开时指令条同时失焦：键盘已经归弹窗
             ai_focused: confirm.is_none(),
             ai_thinking: thinking,
@@ -1275,6 +1309,17 @@ fn main() -> anyhow::Result<()> {
         let tr = text::TextRenderer::load();
         let mut renderer = draw::Renderer::new(WIDTH, HEIGHT);
         let sample_input = "把窗口排成两列";
+        // `--ime`：走查输入法候选框（预置 "nihao" → 候选「你好」）
+        let shot_ime = if args.iter().any(|a| a == "--ime") {
+            let mut i = ime::Ime::default();
+            i.toggle();
+            for c in "nihao".chars() {
+                i.push(c);
+            }
+            i
+        } else {
+            ime::Ime::default()
+        };
         let sample_reply = "好的，已把窗口排成两列。";
         // `--mouse X Y`：把指针放到指定位置，便于截图覆盖悬停态（红绿灯符号、Dock hover…）
         let mouse = args
@@ -1325,6 +1370,7 @@ fn main() -> anyhow::Result<()> {
             snap: None,
             toast: None,
             ai_input: sample_input,
+            ime: &shot_ime,
             ai_cursor: sample_input.chars().count(),
             ai_focused: true,
             ai_thinking: args.iter().any(|a| a == "--thinking"),
@@ -1350,6 +1396,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(not(target_os = "linux"))]
     if let Some(pos) = args.iter().position(|a| a == "--bench") {
         let n: u32 = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(120);
+        let shot_ime = ime::Ime::default();
         let mut buf = vec![0u32; WIDTH * HEIGHT];
         let mut desktop = demo_desktop();
         desktop.layout = Layout::TwoCol;
@@ -1359,6 +1406,7 @@ fn main() -> anyhow::Result<()> {
             snap: None,
             toast: None,
             ai_input: "把窗口排成两列",
+            ime: &shot_ime,
             ai_cursor: "把窗口排成两列".chars().count(),
             ai_focused: true,
             ai_thinking: false,
@@ -1488,6 +1536,8 @@ fn preview_main() -> anyhow::Result<()> {
     let mut ai_input = String::new();
     // 2.4：输入光标 —— 支持在中间插入/删除，不再只能追加（打错一个字要全删重来）
     let mut ai_cursor = textview::TextCursor::default();
+    // 2.3：中文输入法（默认关，Ctrl+Space 切换 —— 见 ime 模块头注释）
+    let mut ime = ime::Ime::default();
     let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let (tx, rx) = mpsc::channel::<AiEvent>();
     let mut open_menu: Option<usize> = None;
@@ -1540,14 +1590,42 @@ fn preview_main() -> anyhow::Result<()> {
                 continue;
             }
             if let Some(ch) = key_to_char(k) {
-                ai_cursor.insert(&mut ai_input, ch);
+                // 与真机同款 IME 分流
+                let mut committed: Option<String> = None;
+                if ime.composing() {
+                    if let Some(d) = ch.to_digit(10).filter(|d| *d >= 1) {
+                        committed = ime.select_index(d as usize - 1);
+                    } else if ch == ' ' {
+                        committed = ime.commit();
+                    }
+                }
+                match committed {
+                    Some(text) => push_str(&mut ai_input, &mut ai_cursor, &text),
+                    None => {
+                        if let Some(text) = ime.push(ch) {
+                            push_str(&mut ai_input, &mut ai_cursor, &text);
+                        }
+                    }
+                }
             }
         }
         if !ctrl && held.contains(&minifb::Key::Backspace) {
-            ai_cursor.backspace(&mut ai_input);
+            // IME 正在拼字时，退格删拼音串而不是正文
+            if !ime.backspace() {
+                ai_cursor.backspace(&mut ai_input);
+            }
         }
         let keys = window.get_keys_pressed(minifb::KeyRepeat::No);
         for k in &keys {
+            // Ctrl+Space 切中英输入（与真机路径的 NUL 特判对应）
+            if ctrl && *k == minifb::Key::Space {
+                ime.toggle();
+                toast = Some((
+                    if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.into(),
+                    Instant::now(),
+                ));
+                continue;
+            }
             // Ctrl 组合键：Ctrl+W 关窗、Ctrl+Shift+C/V 复制粘贴
             if ctrl {
                 if let Some(ch) = key_to_char(k) {
@@ -1564,7 +1642,7 @@ fn preview_main() -> anyhow::Result<()> {
             // 导航键：三级分流（指令条编辑 → 预览滚动 → 文件列表），与真机同一条实现
             if let Some(nav) = minifb_nav(k) {
                 if let Some(msg) =
-                    dispatch_nav(&mut desktop, nav, &mut ai_input, &mut ai_cursor, &tx)
+                    dispatch_nav(&mut desktop, nav, &mut ai_input, &mut ai_cursor, &mut ime, &tx)
                 {
                     toast = Some((msg, Instant::now()));
                 }
@@ -1896,6 +1974,7 @@ fn preview_main() -> anyhow::Result<()> {
             toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
             ai_input: &ai_input,
             ai_cursor: ai_cursor.pos(),
+            ime: &ime,
             ai_focused: confirm.is_none(),
             ai_thinking: thinking,
             ai_status,
@@ -2244,6 +2323,13 @@ fn active_files_grid(desktop: &Desktop) -> Option<draw::GridLayout> {
     Some(draw::grid_layout(draw::files_grid_rect(win.rect)))
 }
 
+/// 把一段文本插到光标处（逐字符走 `TextCursor`，中文安全）。
+fn push_str(input: &mut String, cursor: &mut textview::TextCursor, s: &str) {
+    for ch in s.chars() {
+        cursor.insert(input, ch);
+    }
+}
+
 /// 活动窗口若是文本预览，返回 (滚动视图, 总行数, 一屏行数)。
 ///
 /// 三个值一起返回是因为它们必须来自**同一个**窗口状态 —— 分两次借用拿不到。
@@ -2272,8 +2358,23 @@ fn dispatch_nav(
     nav: input::NavKey,
     ai_input: &mut String,
     ai_cursor: &mut textview::TextCursor,
+    ime: &mut ime::Ime,
     tx: &mpsc::Sender<AiEvent>,
 ) -> Option<String> {
+    // IME 正在拼字时，上下键选候选 —— 优先于列表导航与预览滚动
+    if ime.composing() {
+        match nav {
+            input::NavKey::Up => {
+                ime.move_selection(-1);
+                return None;
+            }
+            input::NavKey::Down => {
+                ime.move_selection(1);
+                return None;
+            }
+            _ => {}
+        }
+    }
     if !ai_input.is_empty() {
         let len = ai_input.chars().count();
         let handled = match nav {

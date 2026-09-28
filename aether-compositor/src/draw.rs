@@ -1143,6 +1143,8 @@ pub struct UiState<'a> {
     pub ai_input: &'a str,
     /// 输入光标位置（第几个**字符**之前）。2.4：支持在中间编辑，不再只能追加。
     pub ai_cursor: usize,
+    /// 中文输入法状态（2.3）：候选框据此渲染
+    pub ime: &'a crate::ime::Ime,
     /// 指令条是否处于焦点（画青紫渐变环）
     pub ai_focused: bool,
     /// 是否在等待 AI 回复（呼吸动效）
@@ -2657,6 +2659,11 @@ impl Renderer {
 
     // 输入光标：x 由"光标前那一段"的宽度决定
     let caret_x = text_x + tr.measure(prefix, font::BODY) + 4.0;
+
+    // 输入法候选框（2.3）：画在指令条**上方** —— 贴着输入位置，视线不用来回跳
+    if ui.ime.show_candidates() {
+        draw_ime_candidates(buf, w, h, bar, ui.ime, tr);
+    }
     if ui.ai_thinking {
         // 思考中：三点呼吸，明确"在等我"而不是"在等你打字"
         for i in 0..3 {
@@ -2675,6 +2682,78 @@ impl Renderer {
     let key = Rect { x: bar.x + bar.w - hw as i32 - 12, y: bar.y + 15, w: hw as i32, h: 22 };
     rounded_rect(buf, w, h, key, 6.0, color::hairline(), 0.10);
     draw_text(tr, buf, w, h, (key.x + 6) as f32, tr.vcenter(key.y as f32, key.h as f32, font::LABEL), hint, font::LABEL, color::text_dim(), 0.8);
+    }
+}
+
+/// 输入法候选框（2.3）：画在指令条上方。
+///
+/// 每项带数字前缀 —— 数字键选词是最快的路径，界面上要看得见这个可能性。
+fn draw_ime_candidates(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    bar: Rect,
+    ime: &crate::ime::Ime,
+    tr: &TextRenderer,
+) {
+    let cands = ime.candidates();
+    if cands.is_empty() {
+        return;
+    }
+    let pad = 10i32;
+    let gap = 6i32;
+    let widths: Vec<f32> = cands.iter().map(|c| tr.measure(c, font::BODY)).collect();
+    let content: f32 = widths.iter().sum::<f32>()
+        + (pad * 2 * cands.len() as i32) as f32
+        + (gap * (cands.len() as i32 - 1)).max(0) as f32;
+    let box_h = 36i32;
+    let rect = Rect {
+        x: bar.x + 58, // 与指令条里的文字左对齐
+        y: bar.y - box_h - 8,
+        w: content.ceil() as i32,
+        h: box_h,
+    };
+    shadow(buf, w, h, rect, radius::MD, elevation::elev_2());
+    rounded_rect(buf, w, h, rect, radius::MD, color::surface_1(), 0.98);
+    rounded_outline(buf, w, h, rect, radius::MD, color::hairline(), 0.20);
+
+    // 拼音串：用户要知道自己打了什么（打错时才看得出来）
+    draw_text(
+        tr, buf, w, h,
+        rect.x as f32,
+        (rect.y - 18) as f32,
+        ime.buffer(),
+        font::LABEL,
+        color::text_faint(),
+        0.9,
+    );
+
+    let ty = tr.vcenter(rect.y as f32, box_h as f32, font::BODY);
+    let mut x = rect.x + pad;
+    for (i, c) in cands.iter().enumerate() {
+        let cw = widths[i];
+        if i == ime.selected() {
+            rounded_rect(
+                buf, w, h,
+                Rect { x: x - 5, y: rect.y + 5, w: cw as i32 + 10, h: box_h - 10 },
+                6.0,
+                color::accent(),
+                0.85,
+            );
+        }
+        // 序号（数字键选词）
+        draw_text(
+            tr, buf, w, h,
+            x as f32,
+            (rect.y + 2) as f32,
+            &format!("{}", i + 1),
+            font::CAPTION,
+            color::text_faint(),
+            0.75,
+        );
+        let fg = if i == ime.selected() { color::text() } else { color::text_dim() };
+        draw_text(tr, buf, w, h, x as f32, ty, c, font::BODY, fg, 0.95);
+        x += cw as i32 + pad * 2 + gap;
     }
 }
 
