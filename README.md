@@ -45,8 +45,11 @@ Buildroot 的做法是软件在构建期定死，运行期不改系统。
 可行的三条路：
 
 1. 往持久化分区（`/var`，ext4）或 U 盘里拷**静态链接的 x86-64 二进制**，可以直接执行
-2. 想跑动态链接的发行版二进制，基本不行 —— rootfs 用的是 glibc，版本对不上，
-   也没有依赖解析和 `ld.so.cache`
+2. 动态链接的程序要看依赖。镜像里的 glibc 是 2.38 且**向后兼容**，所以"版本对不上"这个说法
+   是不准确的 —— 实测在 Ubuntu 24.04（glibc 2.39）上编的 hello 直接就跑通了，因为它只要求
+   `GLIBC_2.2.5 / 2.3.4 / 2.34` 这些老符号。**真正会挂的是缺共享库**：把宿主的 `/usr/bin/ls`
+   拷进去会报 `libselinux.so.1: cannot open shared object file`。发行版程序通常要拖一串库，
+   所以要么静态链接，要么把依赖一起带上（镜像里没有 `ld.so.cache`，也没有依赖解析）
 3. 要加常驻软件，改 `platform/br2-external/configs/aetheros_defconfig` 加 `BR2_PACKAGE_*`，
    重建 ISO；或者把文件丢进 `platform/overlay/`
 
