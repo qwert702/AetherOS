@@ -32,4 +32,6 @@
 #![allow(dead_code)]
 
 pub mod object;
+pub mod protocol;
+pub mod session;
 pub mod wire;
