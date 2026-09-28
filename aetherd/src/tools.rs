@@ -127,6 +127,38 @@ pub fn registry() -> Vec<Tool> {
             echo_field: None,
             sensitive_output: false,
         },
+        Tool {
+            name: "trash_list",
+            description: "列出回收站内容（条目名、原路径、大小）。删除后想找回东西时先用它。",
+            level: Level::L0,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            run: tool_trash_list,
+            consequence: "",
+            echo_field: None,
+            // 输出含用户文件路径。路径本身不含文件内容，所以不标 sensitive_output ——
+            // 标了会让"看看回收站里有什么"这种纯本地操作也强制走本地模型
+            sensitive_output: false,
+        },
+        Tool {
+            name: "trash_restore",
+            description: "把回收站里的某项恢复到原路径。entry 用 trash_list 给出的条目名。",
+            level: Level::L2,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "entry": {"type": "string", "description": "条目名，形如 1759000000-1"}
+                },
+                "required": ["entry"]
+            }),
+            run: tool_trash_restore,
+            consequence: "把文件搬回原路径；若原路径已被占用则拒绝（不覆盖现有文件）",
+            echo_field: None,
+            sensitive_output: false,
+        },
 
         Tool {
             name: "sys_info",
@@ -557,6 +589,41 @@ fn tool_file_rename(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     Ok(format!("已重命名: {} → {}", src.display(), dst.display()))
 }
 
+/// 列出回收站内容（L0，只读）。
+///
+/// 没有它，`file_delete` 就是"只能进不能出" —— 回收站里的东西看得见恢复不了。
+fn tool_trash_list(_args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let root = crate::trash::default_root();
+    let entries = crate::trash::list(&root);
+    if entries.is_empty() {
+        return Ok("回收站为空".into());
+    }
+    let mut out = format!("回收站共 {} 项（最新在前）：\n", entries.len());
+    for e in entries.iter().take(50) {
+        let kind = if e.is_dir {
+            "目录".to_string()
+        } else {
+            format!("{} 字节", e.bytes)
+        };
+        out.push_str(&format!("- {}（{kind}，条目 {}）\n", e.origin, e.name));
+    }
+    if entries.len() > 50 {
+        out.push_str(&format!("…（另有 {} 项未列出）\n", entries.len() - 50));
+    }
+    out.push_str("\n恢复用 trash_restore，参数 entry 填上表的「条目」值");
+    Ok(out)
+}
+
+/// 从回收站恢复（L2）。`entry` 是 `trash_list` 给出的条目名，不是路径。
+fn tool_trash_restore(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let Some(entry) = args.get("entry").and_then(|v| v.as_str()) else {
+        bail!("缺少 entry 参数（先用 trash_list 查条目名）");
+    };
+    let root = crate::trash::default_root();
+    let path = crate::trash::restore(&root, entry)?;
+    Ok(format!("已恢复到 {}", path.display()))
+}
+
 /// 罐头探针执行体：命令与参数全部为编译期常量。
 fn tool_sys_probe(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let which = args.get("probe").and_then(|v| v.as_str()).unwrap_or("uname");
@@ -658,6 +725,15 @@ fn tool_desktop(args: &Value, ctx: &mut ToolCtx) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回收站是**进程外共享状态**（`%TEMP%/aether-trash`），而测试默认并行 ——
+    /// 两个测试同时 `purge`/`trash` 会互相干扰（实测：偶发的"删除失败"）。
+    /// 这是全局状态 + 并行测试的标准处理方式（与 `server.rs` 的剪贴板锁同款）。
+    static TRASH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn trash_guard() -> std::sync::MutexGuard<'static, ()> {
+        TRASH_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn gate() -> Gate {
         Gate::for_test()
@@ -902,11 +978,11 @@ mod tests {
         assert!(!WRITE_ALLOWED_ROOTS.contains(&"/var/log/aether"), "日志不可写");
     }
 
-    /// 三个写工具都必须是 **L2**（敏感写 → 弹确认卡片）。
+    /// 写工具都必须是 **L2**（敏感写 → 弹确认卡片）；只读的 `trash_list` 是 L0。
     #[test]
     fn write_tools_are_l2_and_not_sensitive_output() {
         let reg = registry();
-        for name in ["file_write", "file_delete", "file_rename"] {
+        for name in ["file_write", "file_delete", "file_rename", "trash_restore"] {
             let t = reg
                 .iter()
                 .find(|t| t.name == name)
@@ -914,6 +990,8 @@ mod tests {
             assert_eq!(t.level, Level::L2, "{name} 必须是 L2（敏感写，需确认）");
             assert!(!t.sensitive_output, "{name} 的输出不含用户数据，不应标敏感");
         }
+        let l = reg.iter().find(|t| t.name == "trash_list").expect("trash_list 应注册");
+        assert_eq!(l.level, Level::L0, "列回收站是只读操作");
     }
 
     /// L2 写操作不带 approval 时必须停在确认上 —— 这是"AI 不能自己动手"的落点。
@@ -974,6 +1052,7 @@ mod tests {
     /// 删除 → 回收站 → 恢复的完整往返（走真实工具入口，不只测 trash 模块）。
     #[test]
     fn delete_then_restore_roundtrip_via_tool() {
+        let _g = trash_guard();
         let dir = std::env::temp_dir().join("aether_write_tool_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建临时目录");
@@ -1029,5 +1108,98 @@ mod tests {
         assert_eq!(std::fs::read(&b).unwrap(), b"b", "目标内容不应被动过");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 删除 → 列表 → 恢复的完整往返（4.1 验收里的「误删可从回收站恢复」）。
+    ///
+    /// 这条测试存在的理由：`trash::restore` 有单测，但**没有入口**时它等于不存在 ——
+    /// 回收站只能进不能出。真正要验的是"走工具链路能把它拿回来"。
+    #[test]
+    fn delete_then_restore_through_tools() {
+        let _g = trash_guard();
+        // 目录名必须与 `trash.rs` 里的 `tmp("roundtrip")`（→ aether_trash_roundtrip）
+        // **不同** —— 重名时本测试开头的 remove_dir_all 会把对方的目录删掉，
+        // 表现为"对方偶发失败"，很难一眼看出是自己造成的
+        let dir = std::env::temp_dir().join("aether_trash_tool_roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let f = dir.join("recover-me.txt");
+        std::fs::write(&f, b"payload").unwrap();
+
+        let mut ctx = ToolCtx::default();
+        // 1. 删（进回收站）
+        let out = execute(
+            &gate(),
+            &mut ctx,
+            "file_delete",
+            &serde_json::json!({"path": f.to_string_lossy()}),
+            true,
+        )
+        .expect("删除应成功");
+        assert!(matches!(out, ExecOutcome::Done(_)));
+        assert!(!f.exists(), "原文件应已被移走");
+
+        // 2. trash_list 应能列出它（用户/AI 靠这个知道回收站里有什么）
+        let listed = execute(&gate(), &mut ctx, "trash_list", &serde_json::json!({}), true)
+            .expect("列表应成功");
+        let ExecOutcome::Done(text) = listed else {
+            panic!("应返回 Done");
+        };
+        assert!(text.contains("recover-me.txt"), "列表应含原路径: {text}");
+        assert!(text.contains("trash_restore"), "应提示如何恢复: {text}");
+
+        // 3. 取条目名（走 trash 模块而不是解析列表文本 —— 后者太脆）
+        let root = crate::trash::default_root();
+        let entry = crate::trash::list(&root)
+            .into_iter()
+            .find(|e| e.origin.ends_with("recover-me.txt"))
+            .map(|e| e.name)
+            .expect("回收站里应有刚删的文件");
+
+        // 4. 恢复
+        let back = execute(
+            &gate(),
+            &mut ctx,
+            "trash_restore",
+            &serde_json::json!({"entry": entry}),
+            true,
+        )
+        .expect("恢复应成功");
+        assert!(matches!(back, ExecOutcome::Done(_)));
+        assert!(f.exists(), "文件应已回到原路径");
+        assert_eq!(std::fs::read(&f).unwrap(), b"payload", "内容应完好");
+
+        // 清理
+        for e in crate::trash::list(&root) {
+            if e.origin.ends_with("recover-me.txt") {
+                let _ = std::fs::remove_dir_all(root.join(&e.name));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `trash_restore` 的 entry 来自外部输入，非法值必须被拒而不是 panic。
+    #[test]
+    fn trash_restore_rejects_bad_entry() {
+        let mut ctx = ToolCtx::default();
+        for bad in ["../etc", "a/b", ""] {
+            let r = execute(
+                &gate(),
+                &mut ctx,
+                "trash_restore",
+                &serde_json::json!({"entry": bad}),
+                true,
+            );
+            assert!(r.is_err(), "{bad:?} 应被拒绝");
+        }
+        // 不存在的条目：报错而不是静默成功
+        let r = execute(
+            &gate(),
+            &mut ctx,
+            "trash_restore",
+            &serde_json::json!({"entry": "9999999999-1"}),
+            true,
+        );
+        assert!(r.is_err(), "不存在的条目应报错");
     }
 }

@@ -230,6 +230,10 @@ impl Ime {
     }
 
     /// 放弃本次输入（Esc）。
+    ///
+    /// 只在真机路径用（`UiEvent::Escape`）；预览路径的 Escape 是**退出程序**键，
+    /// 不是事件，所以开发机构建时这里会显示未使用。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn cancel(&mut self) {
         self.reset();
     }

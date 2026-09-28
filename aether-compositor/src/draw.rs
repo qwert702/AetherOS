@@ -2564,9 +2564,18 @@ fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Opti
         draw_text(tr, buf, w, h, (r.x + GUTTER + 10) as f32, ly, &shown, font::LABEL, color::text(), 0.92);
     }
 
-    if start > 0 || end < total {
+    // 三种情况都要给提示：向上滚过、还有下文、**文件被截断**
+    if start > 0 || end < total || d.truncated {
         let msg = if total == 0 {
             "… 空文件".to_string()
+        } else if d.truncated {
+            // 截断时 "共 N 行" 是**已载入的**行数，不是文件的真实行数 ——
+            // 不加这句，用户会以为文件就这么长（改滚动时差点丢掉这个区分）
+            format!(
+                "… 第 {}-{} 行 / 已载入 {total} 行（文件过长，未全部载入）",
+                start + 1,
+                end
+            )
         } else {
             format!("… 第 {}-{} 行 / 共 {total} 行", start + 1, end)
         };

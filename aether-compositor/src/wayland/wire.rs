@@ -174,50 +174,54 @@ pub fn decode(buf: &[u8], signature: &str) -> Result<(Message, usize), WireError
     let mut args = Vec::new();
     for (idx, ty) in signature.chars().enumerate() {
         // 用宏而不是闭包：闭包会**不可变借用** `pos`，与后面每个分支的
-        // `pos += 4` 冲突（借用一直活到闭包最后一次使用）
+        // `pos += 4` 冲突（借用一直活到闭包最后一次使用）。
+        // 展开成**表达式**（返回 Result）而不是直接 return —— 这样调用处的 `?`
+        // 让分号成为必需的，避免 `unnecessary_trailing_semicolon`。
         macro_rules! need {
             ($n:expr) => {
                 if pos + $n > body.len() {
-                    return Err(WireError::SignatureMismatch {
+                    Err(WireError::SignatureMismatch {
                         signature: signature.to_string(),
                         at: idx,
-                    });
+                    })
+                } else {
+                    Ok(())
                 }
             };
         }
         match ty {
             'i' => {
-                need!(4);;
+                need!(4)?;
                 let v = i32::from_le_bytes(body[pos..pos + 4].try_into().unwrap());
                 pos += 4;
                 args.push(Arg::Int(v));
             }
             'u' => {
-                need!(4);;
+                need!(4)?;
                 let v = u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap());
                 pos += 4;
                 args.push(Arg::Uint(v));
             }
             'o' => {
-                need!(4);;
+                need!(4)?;
                 let v = u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap());
                 pos += 4;
                 args.push(Arg::Object(v));
             }
             'n' => {
-                need!(4);;
+                need!(4)?;
                 let v = u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap());
                 pos += 4;
                 args.push(Arg::NewId(v));
             }
             'f' => {
-                need!(4);;
+                need!(4)?;
                 let raw = i32::from_le_bytes(body[pos..pos + 4].try_into().unwrap());
                 pos += 4;
                 args.push(Arg::Fixed(raw as f32 / FIXED_SCALE));
             }
             's' => {
-                need!(4);;
+                need!(4)?;
                 let len = u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize;
                 pos += 4;
                 if len == 0 {
@@ -225,7 +229,7 @@ pub fn decode(buf: &[u8], signature: &str) -> Result<(Message, usize), WireError
                     args.push(Arg::Str(String::new()));
                     continue;
                 }
-                need!(len);
+                need!(len)?;
                 let raw = &body[pos..pos + len];
                 if *raw.last().unwrap() != 0 {
                     return Err(WireError::UnterminatedString);
@@ -235,10 +239,10 @@ pub fn decode(buf: &[u8], signature: &str) -> Result<(Message, usize), WireError
                 args.push(Arg::Str(s));
             }
             'a' => {
-                need!(4);;
+                need!(4)?;
                 let len = u32::from_le_bytes(body[pos..pos + 4].try_into().unwrap()) as usize;
                 pos += 4;
-                need!(len);
+                need!(len)?;
                 args.push(Arg::Array(body[pos..pos + len].to_vec()));
                 pos += align4(len);
             }

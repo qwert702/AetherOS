@@ -26,5 +26,10 @@
 //! server   ← socket 与生命周期（Linux-only）
 //! ```
 
+//! spike 阶段：接口先落地，接线在 W2–W4（所以现在整体是 dead_code）。
+//! 用 `allow(dead_code)` 而不是删掉未用的项 —— 它们是**协议实现的一部分**，
+//! 删了还得照着协议再写一遍。
+#![allow(dead_code)]
+
 pub mod object;
 pub mod wire;

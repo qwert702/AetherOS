@@ -2440,6 +2440,8 @@ fn dispatch_nav(
         }
     }
     if let Some((scroll, total, visible)) = focused_preview(desktop) {
+        // 窗口尺寸可能变过：先夹取再滚动，否则从越界位置起步会跳一下
+        scroll.clamp(total, visible);
         let handled = match nav {
             input::NavKey::PageUp => {
                 scroll.page(false, total, visible);

@@ -19,9 +19,32 @@ pairs = list(zip(sys.argv[1::2], sys.argv[2::2]))
 if not pairs:
     sys.exit("usage: transfer.py <local> <vm-path> ...")
 
+# 按文本处理的扩展名。**不在白名单里的一律原样传** —— 这是白名单而不是黑名单，
+# 因为"漏判一个文本文件"只是换行符没归一（无害），而"误判一个二进制文件"会
+# 损坏内容（有害）。
+TEXT_EXT = {
+    ".rs", ".toml", ".md", ".json", ".txt", ".sh", ".py", ".yaml", ".yml",
+    ".cfg", ".ini", ".conf", ".service", ".lock", ".desktop", ".gitignore",
+}
+
+
+def is_binary(data: bytes, path: str) -> bool:
+    """扩展名不在白名单，或头部含 NUL → 按二进制处理。"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext and ext not in TEXT_EXT:
+        return True
+    return b"\x00" in data[:8192]
+
 
 def upload(c, local_abs, remote):
-    data = open(local_abs, "rb").read().replace(b"\r\n", b"\n")
+    data = open(local_abs, "rb").read()
+    # 只对**文本**文件做 CRLF 归一（源码上传需要统一换行符）。
+    #
+    # 二进制（.tgz / .iso / 图片）绝不能替换：会破坏压缩流与镜像，而且是
+    # **确定性**损坏 —— 同样的输入每次产生同样的错，表现为 `gzip: crc error`
+    # 或 md5 与本机对不上，很容易误判成"网络丢包"而反复重传。
+    if not is_binary(data, local_abs):
+        data = data.replace(b"\r\n", b"\n")
     s = c.open_sftp()
     try:
         s.putfo(io.BytesIO(data), remote)
