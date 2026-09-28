@@ -9,6 +9,7 @@
 mod intent;
 mod llm;
 mod clipboard;
+mod modelcfg;
 mod perm;
 mod router;
 mod server;
@@ -30,19 +31,40 @@ struct Config {
     local_only: bool,
 }
 
+/// 组装运行时配置。**优先级：环境变量 > 配置文件 > 内置默认**（0.6）。
+///
+/// 环境变量优先是因为它更适合"临时覆盖"（调试、CI），配置文件适合
+/// "装好就不再动"；两者都在时，显式的环境变量意图更强。
 fn config_from_env() -> Config {
-    let local = llm::Endpoint {
-        base_url: std::env::var("AETHER_LOCAL_URL").unwrap_or_else(|_| "http://127.0.0.1:11434/v1".into()),
-        api_key: "ollama".into(),
-        model: std::env::var("AETHER_LOCAL_MODEL").unwrap_or_else(|_| "qwen2.5:7b".into()),
+    let file = modelcfg::ModelConfig::load();
+    // 环境变量 > 文件字段 > 默认值
+    let pick = |env_key: &str, from_file: Option<&String>, default: &str| -> String {
+        std::env::var(env_key)
+            .ok()
+            .or_else(|| from_file.cloned())
+            .unwrap_or_else(|| default.to_string())
     };
-    let cloud = std::env::var("AETHER_API_KEY").ok().map(|key| llm::Endpoint {
-        base_url: std::env::var("AETHER_API_BASE")
-            .unwrap_or_else(|_| "https://open.bigmodel.cn/api/paas/v4".into()),
-        api_key: key,
-        model: std::env::var("AETHER_MODEL").unwrap_or_else(|_| "glm-4-flash".into()),
-    });
-    let local_only = std::env::var("AETHER_LOCAL_ONLY").map(|v| v == "1").unwrap_or(false);
+
+    let local = llm::Endpoint {
+        base_url: pick("AETHER_LOCAL_URL", file.local_url.as_ref(), "http://127.0.0.1:11434/v1"),
+        api_key: "ollama".into(),
+        model: pick("AETHER_LOCAL_MODEL", file.local_model.as_ref(), "qwen2.5:7b"),
+    };
+    let cloud = std::env::var("AETHER_API_KEY")
+        .ok()
+        .or_else(|| file.api_key.clone())
+        .map(|key| llm::Endpoint {
+            base_url: pick(
+                "AETHER_API_BASE",
+                file.cloud_base.as_ref(),
+                "https://open.bigmodel.cn/api/paas/v4",
+            ),
+            api_key: key,
+            model: pick("AETHER_MODEL", file.cloud_model.as_ref(), "glm-4-flash"),
+        });
+    let local_only = std::env::var("AETHER_LOCAL_ONLY")
+        .map(|v| v == "1")
+        .unwrap_or(file.local_only);
     Config { local, cloud, local_only }
 }
 
@@ -243,9 +265,108 @@ fn main() -> Result<()> {
         Some("serve") => {
             server::serve(config_from_env())?;
         }
-        _ => {
-            eprintln!("aetherd — AetherOS AI 中枢\n\n用法:\n  aetherd chat <指令>   单轮 agent 对话\n  aetherd serve         常驻 IPC 服务（127.0.0.1:{}）\n\n环境变量:\n  AETHER_API_KEY        云端 API Key（GLM 等 OpenAI 兼容端点）\n  AETHER_API_BASE       云端 Base URL（默认 GLM）\n  AETHER_MODEL          云端模型（默认 glm-4-flash）\n  AETHER_LOCAL_URL      本地 Ollama 地址（默认 127.0.0.1:11434/v1）\n  AETHER_LOCAL_ONLY     置 1 强制仅本地", aether_ipc::DEFAULT_PORT);
+        Some("config") => {
+            run_config(&args[2..])?;
         }
+        _ => {
+            eprintln!("aetherd — AetherOS AI 中枢\n\n用法:\n  aetherd chat <指令>   单轮 agent 对话\n  aetherd serve         常驻 IPC 服务（127.0.0.1:{}）\n  aetherd config ...    模型配置（0.6，见 aetherd config --help）\n\n环境变量（优先级高于配置文件）:\n  AETHER_API_KEY        云端 API Key（GLM 等 OpenAI 兼容端点）\n  AETHER_API_BASE       云端 Base URL（默认 GLM）\n  AETHER_MODEL          云端模型（默认 glm-4-flash）\n  AETHER_LOCAL_URL      本地 Ollama 地址（默认 127.0.0.1:11434/v1）\n  AETHER_LOCAL_ONLY     置 1 强制仅本地\n\n配置文件: {}", aether_ipc::DEFAULT_PORT, modelcfg::config_path().display());
+        }
+    }
+    Ok(())
+}
+
+fn print_config_help() {
+    println!(
+        "aetherd config —— 模型配置（0.6）\n\n\
+         用法:\n  \
+         aetherd config --show                                       查看配置（Key 脱敏）\n  \
+         aetherd config --local-url URL [--local-model M]            配置本地模型（Ollama）\n  \
+         aetherd config --api-key KEY [--cloud-base URL] [--cloud-model M]   配置云端\n  \
+         aetherd config --local-only 1|0                             强制仅本地 / 取消\n  \
+         aetherd config --clear                                      清空配置\n\n\
+         优先级：环境变量 > 配置文件 > 内置默认。\n\
+         配置文件：{}",
+        modelcfg::config_path().display()
+    );
+}
+
+/// `aetherd config` —— 模型配置的读写（0.6）。
+///
+/// 用**参数式**而不是交互式问答：可脚本化、可测试，且在无 TTY 的环境
+/// （init 脚本、远程管道）里也能用。
+fn run_config(args: &[String]) -> Result<()> {
+    let mut cfg = modelcfg::ModelConfig::load();
+    let mut changed = false;
+    let mut show = args.is_empty();
+
+    let mut i = 0;
+    while i < args.len() {
+        let val = |k: usize| args.get(k + 1).cloned();
+        match args[i].as_str() {
+            "--show" => show = true,
+            "--clear" => {
+                cfg = modelcfg::ModelConfig::default();
+                changed = true;
+            }
+            "--local-url" => {
+                cfg.local_url = val(i);
+                changed = true;
+                i += 1;
+            }
+            "--local-model" => {
+                cfg.local_model = val(i);
+                changed = true;
+                i += 1;
+            }
+            "--cloud-base" => {
+                cfg.cloud_base = val(i);
+                changed = true;
+                i += 1;
+            }
+            "--cloud-model" => {
+                cfg.cloud_model = val(i);
+                changed = true;
+                i += 1;
+            }
+            "--api-key" => {
+                cfg.api_key = val(i);
+                changed = true;
+                i += 1;
+            }
+            "--local-only" => {
+                cfg.local_only = matches!(val(i).as_deref(), Some("1") | Some("true") | Some("yes"));
+                changed = true;
+                i += 1;
+            }
+            "--help" | "-h" => {
+                print_config_help();
+                return Ok(());
+            }
+            other => {
+                eprintln!("未知参数: {other}\n");
+                print_config_help();
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+
+    if changed {
+        let path = cfg.save()?;
+        println!("配置已写入 {}", path.display());
+        #[cfg(unix)]
+        println!("（Unix 下已收紧为 0600 —— 文件含 API Key）");
+    }
+    if show || !changed {
+        println!("{}", serde_json::to_string_pretty(&cfg.summary())?);
+    }
+    if changed {
+        // 不做热替换：让"配置生效"这条路径只有一条 —— 重启后的状态必然与
+        // 配置文件一致，不会出现"改了但只改了一半"。
+        println!(
+            "\n提示：重启 aetherd 后生效。\n\
+             若它正由 aether-init 托管，可在合成器里触发重载，或直接 reboot。"
+        );
     }
     Ok(())
 }

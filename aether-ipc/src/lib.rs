@@ -60,6 +60,12 @@ pub enum Request {
     },
     /// 读取跨进程剪贴板。
     ClipboardGet,
+    /// 重新加载模型配置（0.6）。
+    ///
+    /// **只有已注册的 UI 通道**能发起（改配置等于改 AI 的能力边界）。
+    /// aetherd 收到后会**退出进程**，由 aether-init 带新配置重新拉起 ——
+    /// 不做热替换：让"配置生效"这条路径只有一条，不会出现"改了但只改了一半"。
+    ReloadConfig,
     SysInfo {
         scope: SysInfoScope,
     },
@@ -105,6 +111,8 @@ pub enum Response {
     ClipboardWritten {
         bytes: usize,
     },
+    /// 配置重载已受理（aetherd 即将退出，由 aether-init 用新配置重启它）。
+    ConfigReloading,
     /// 桌面行为指令（aetherd → Shell/合成器）：切换布局、开关通知等。
     /// Shell 收到后执行本地动作，这是"AI 操作桌面"的正道。
     Action {

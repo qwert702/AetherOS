@@ -27,9 +27,12 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
     let bind = std::env::var("AETHER_BIND").unwrap_or_else(|_| "127.0.0.1".into());
     let listener = TcpListener::bind((bind.as_str(), aether_ipc::DEFAULT_PORT))?;
     eprintln!(
-        "[aetherd] IPC 服务已启动: {bind}:{} · 云端: {}",
+        "[aetherd] IPC 服务已启动: {bind}:{} · 本地: {} · 云端: {}",
         aether_ipc::DEFAULT_PORT,
-        cfg.cloud.is_some()
+        cfg.local.base_url,
+        // 显示**实际生效**的端点（而不是"配没配"）—— 否则"配置到底有没有生效"
+        // 只能靠猜，0.6 的向导改完配置后无法自证
+        cfg.cloud.as_ref().map(|c| c.base_url.as_str()).unwrap_or("(未配置)")
     );
     let cfg = Arc::new(cfg);
     let gate = Arc::new(Gate::new(PathBuf::from("/var/log/aether/aether-audit.log")));
@@ -285,6 +288,26 @@ fn handle_request(
             audit_or_warn(gate, "clipboard_get", Level::L1, verdict::ALLOWED);
             vec![Response::ClipboardText { text: crate::clipboard::get() }]
         }
+        Request::ReloadConfig => {
+            // 改配置 = 改 AI 的能力边界，与剪贴板同一门槛：只有已注册 UI 通道能发起
+            if !*is_ui {
+                audit_or_warn(gate, "reload_config", Level::L2, verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝配置重载：本连接未注册为 UI 通道");
+                return vec![Response::Error {
+                    code: 403,
+                    message: "配置重载必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            audit_or_warn(gate, "reload_config", Level::L2, verdict::ALLOWED);
+            eprintln!("[aetherd] 配置重载请求已受理：退出以便 aether-init 用新配置重启");
+            // 延迟退出：先把响应发出去，再终止进程。
+            // 不做热替换是有意的 —— 重启后的状态必然与配置文件一致。
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                std::process::exit(0);
+            });
+            vec![Response::ConfigReloading]
+        }
         Request::SysInfo { .. } => vec![Response::SysInfo(sys_report())],
         Request::ServiceControl { unit, action } => vec![Response::ServiceAck {
             unit,
@@ -376,10 +399,20 @@ fn handle_chat(
             });
             out
         }
-        Err(e) => vec![Response::Error {
-            code: 503,
-            message: format!("AI 通道不可用: {e}"),
-        }],
+        Err(e) => {
+            // 区分"没配模型"与"配了但连不上"：前者要引导用户配置，后者要检查服务。
+            // 这是 0.6 的 UI 侧落点 —— 用户看不到配置状态，只能靠这条提示。
+            let unconfigured = cfg.cloud.is_none() && !crate::llm::local_available(&cfg.local.base_url);
+            let hint = if unconfigured {
+                "（未检测到可用模型：在终端运行 `aetherd config --help` 配置本地 Ollama 或云端 API Key）"
+            } else {
+                ""
+            };
+            vec![Response::Error {
+                code: 503,
+                message: format!("AI 通道不可用: {e}{hint}"),
+            }]
+        }
     }
 }
 
@@ -478,6 +511,7 @@ mod ipc_gating_tests {
         let cases: Vec<(&str, Request)> = vec![
             ("clipboard_get", Request::ClipboardGet),
             ("clipboard_set", Request::ClipboardSet { text: "x".into() }),
+            ("reload_config", Request::ReloadConfig),
             (
                 "tool_call(L3)",
                 Request::ToolCall {
