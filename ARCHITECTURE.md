@@ -2,6 +2,16 @@
 
 状态：M0 定稿。本文档记录系统分层、组件职责与关键设计决策。
 
+> ⚠️ **这是 M0 阶段（2026-09-05）的冻结文档，保留为设计意图记录，不要当作现状读**。
+> 两处已知与现状不符：
+> - 分层图里 compositor 写的是 `Wayland 合成器(smithay)`，实际走的是 **DRM→fbdev→软件光栅化**，
+>   smithay 未接入（见 ADR-003，以及 `docs/roadmap.md` M1 备注）。2026-09-28 起有一个**自研 `wl_display` 子集**
+>   的 spike（`aether-compositor/src/wayland/`），但**未接生产路径**，见 `docs/PHASE3-DECISION-2026-09-28.md`。
+> - 分层图把 `aether-shell` 画在最上层，实际它是**占位骨架（11 行）**，Shell 职责当前由 compositor 承担。
+>
+> **看现状请看**：`INDEX.md`（组件与入口）、`docs/roadmap.md`（里程碑）、
+> `docs/PRODUCTION-PLAN-2026-09-28.md`（生产力化与门禁）。
+
 ## 1. 分层
 
 ```

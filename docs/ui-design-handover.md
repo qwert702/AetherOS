@@ -564,13 +564,16 @@ gen "--shot 2 --menu --theme light"          docs/host-ui-light-menu.png
 
 ### 15.2 归档图工具化：`scripts/archive-ui-shots.py`
 
-一条命令重建全部 8 张归档图，`--check` 作为视觉回归门禁：
+一条命令重建全部归档图，`--check` 作为视觉回归门禁：
 
 ```bash
 cargo build -p aether-compositor --offline   # 脚本直接调二进制，不经过 cargo
 python scripts/archive-ui-shots.py           # 重建 docs/host-ui-*.png
 python scripts/archive-ui-shots.py --check   # 门禁：差异 > 0.02% 即失败（退出码 1）
 ```
+
+> **2026-09-28 更新**：归档图已从 8 张扩到 **10 张**（新增 `host-ui-ime.png` /
+> `host-ui-light-ime.png`，覆盖中文输入法的候选框）。当日复核 `--check`：**10/10 全部 0 差异像素**。
 
 - 直接调用 `target/debug/aether-compositor[.exe]`，**不经过 cargo** —— 见 §11：嵌套调用
   时 PATH 会被改写成 Windows 分号形式，cargo 静默失败。
@@ -583,8 +586,25 @@ python scripts/archive-ui-shots.py --check   # 门禁：差异 > 0.02% 即失败
 `aetherd` 的目录名**没有连字符**，所以 `aether-*` 这个 glob 匹配不到它 —— 此前
 INDEX 里的「7,500 行」「8,600 行」都是这样少算了一个 crate（2,041 行）。
 
-**实测**：7 个 crate 共 **10,684 行 / 25 个 .rs 文件**（compositor 6,021 / aetherd 2,041 /
+**当时的实测**：7 个 crate 共 **10,684 行 / 25 个 .rs 文件**（compositor 6,021 / aetherd 2,041 /
 init 1,119 / ops 703 / install 505 / ipc 284 / shell 11）。INDEX 已改为逐 crate 列表并标注此坑。
+
+> ### ⚠️ 2026-09-28 订正：这个坑**没修干净**，多漏了两层
+>
+> 上面那组数字本身仍是**错的** —— 它只修了"漏一个 crate"，没修"漏二级子目录"，
+> 而且顺手把总额又算错了一次：
+>
+> | 陷阱 | 后果 |
+> |---|---|
+> | `aether-*` 匹配不到 `aetherd`（目录名无连字符） | 漏掉整个 crate（3,842 行） |
+> | `$c/src/*.rs` 匹配不到 `$c/src/wayland/*.rs` 这类**二级子目录** | 漏掉 7 个文件 / 2,192 行 |
+> | 把"逐 crate 之和"与"通配符聚合结果"混用 | 表里写 10,684，而逐 crate 相加是 19,165 → **自相矛盾** |
+>
+> **2026-09-28 实测（工作区，HEAD `d11af11`）：19,426 行 / 40 个 .rs**
+> （compositor 12,719 / aetherd 3,862 / init 1,266 / ops 729 / install 505 / ipc 334 / shell 11）。
+>
+> **正确口径**：统计必须同时包含 `$c/src/*.rs` 与 `$c/src/*/*.rs`，且**逐 crate 相加**，
+> 永远不要用 `aether-*/src/*.rs` 这种聚合通配符。INDEX 已按此重写。
 
 ### 15.4 顺手同步的文档
 

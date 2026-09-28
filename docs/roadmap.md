@@ -3,8 +3,13 @@
 > 状态：M0–M6 **全部完成**（2026-09-21 复核，依据 git 历史 + 代码实测 + docs/HANDOVER.md）。
 > UI 设计系统 Step 1–4 + 视觉质量冲刺（§10）+ 双模主题（§12）完成，Step 5 仅剩实机重拍，见 docs/ui-design-handover.md。
 >
-> **生产力化清单见 `docs/PRODUCTION-PLAN-2026-09-27.md`** —— 五个阶段、每项带验收标准，
-> 以及「生产力」的六个硬门禁（当前 0/6）。
+> **生产力化清单见 `docs/PRODUCTION-PLAN-2026-09-28.md`**（09-27 版保留为决策历史）—— 五个阶段、每项带验收标准。
+> 「生产力」六个硬门禁：**5 / 6**（2026-09-28 复核）。
+> 唯一未达成的是**门禁 1**：1a"连续 8 小时不崩"需实机长跑；1b 靠 0.8 的 panic 审计部分达成，
+> 但 `compositor` 仍是 `essential: true` + `restart: false` —— 一次 panic = 桌面永久死掉。
+>
+> 代码规模（2026-09-28 实测）：**19,426 行 / 40 个 .rs**（7 crate）；测试 **300 项全绿**。
+> ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 和二级子目录。
 
 ## M0 — 开发环境与架构设计 ✅
 - [x] 仓库骨架、Cargo workspace
@@ -24,13 +29,15 @@
 - [x] 布局切换 Toast 反馈 + AI 指令入口
 - [x] 多布局截图自检通过（--shot 1-4）
 - [ ] smithay/Wayland 后端未接入：桌面经 **DRM→fbdev→软件光栅化** 上屏（M3/M4 在 QEMU/VBox/VMware 实测闭环）。ADR-003 的"直写 DRM 后路"未走，未来需要真实 Wayland 客户端支持时再接入
+  - **2026-09-28 进展**：3.1 spike 已自研出 `wl_display` 子集（W1–W4 完成，W5 差 fd 收包），**未接生产路径**。见 `docs/PHASE3-DECISION-2026-09-28.md`
 
 ## M2 — 自研 Shell 雏形 ✅（职责由 compositor 承担）
 - [x] 顶栏（品牌/菜单/AI 状态/搜索/时钟）、Dock（运行指示 + 打开应用）、AI 指令条
 - [x] 拖拽置顶、边缘吸附、布局切换 Toast、AI 回复气泡
 - [x] L2+ 权限确认弹窗（模态卡片）与安装向导共用同一条确认通路
 - [x] 视觉体系 token 化（draw.rs::theme："Essence" 设计令牌，Step 1–4 完成）
-- [ ] aether-shell crate 仍是占位骨架（7 行）：后续可把 compositor 中的 Shell 职责拆出，或明确其归属
+- [ ] aether-shell crate 仍是占位骨架（11 行）：后续可把 compositor 中的 Shell 职责拆出，或明确其归属
+      —— 2026-09-28 复核：compositor 已 12.7k 行，拆分的收益变大了，但代价是引入一层窗管/Shell 的跨进程协议。**仍待决策**
 
 ## M3 — 系统地基 ★（核心里程碑达成！）
 - [x] aether-init：白名单服务模型（编译期字面量命令，杜绝注入）+ 状态机 + 拓扑排序 + 环依赖检测 + 监督退避重启（含测试）
@@ -44,12 +51,12 @@
 - [x] 日志链路：aether-init logtee 把服务 stdout/stderr 落盘 /var/log/aether/<unit>.log（8MB 轮转）+ 控制台 tee
 - [ ] 图形栈走 fbdev（mesa/DRM + smithay 合成器后端未接入，见 M1 备注）
 - 验收：ISO 开机，从内核到桌面整条链路上没有任何现成桌面/发行版组件 ✅
-- 验收：ISO 开机，从内核到桌面整条链路上没有任何现成桌面/发行版组件 ✅
 
 ## M4 — AI 中枢 aetherd ✅（含 L2+ 确认全链路）
 - [x] 权限模型落地：L0–L3 闸门 + 审计日志（perm.rs，带测试）
 - [x] 混合推理路由：隐私强制本地 / 复杂任务上云 / 双侧降级（router.rs，带测试）
-- [x] 工具系统：罐头探针 + read_file + sys_info + desktop + install_disk，闸门→审计→执行管线（tools.rs，带测试）
+- [x] 工具系统：罐头探针 + sys_info + read_file + desktop + install_disk + 剪贴板两件 + 4.1 的写三件 + 回收站两件，
+      **共 12 个工具**，闸门→审计→执行管线（tools.rs，带测试）
 - [x] LLM 客户端：OpenAI 兼容协议（GLM / Ollama /v1 通用）
 - [x] chat CLI：单轮 agent（路由 → LLM → 工具循环 → 回答），探活失败优雅降级
 - [x] `serve` 常驻模式：TCP 127.0.0.1:7311 + aether-ipc NDJSON 协议（端到端烟雾测试通过）
@@ -60,8 +67,10 @@
 - [x] 离线快速意图扩展：整理桌面/铺满 等模糊指令的确定性解释
 - [x] **L2+ 确认卡片 UI 全链路** ✅：一次性确认令牌（服务端签发、绑定 tool+参数、5 分钟、用后即废）→ `Response::NeedsConfirmation` → 模态确认弹窗（L2 黄/L3 红徽章、参数明文、L3 回显输入）→ 带令牌重发；协议层 13 项断言 + UI 像素断言全过（2026-09-21 复核）
 - [x] 推理通道回传：`ChatChunk.channel`（"local"/"cloud"）→ 顶栏 AI 三态（本地青/云端紫/离线灰）实装并像素验证（2026-09-21）
-- [ ] 中文输入支持（预览期受 minifb 限制仅英文，M2 字体子系统解决——待实机键盘验证）
-- [ ] 接入真实 LLM 验证模糊指令全链路（需 Ollama 或 GLM API Key；路由/客户端已就绪）
+- [x] 中文输入支持（2.3，2026-09-28 完成）：指令条内拼音 → 候选 → 上屏，自建词表 ~100 条，
+      `Ctrl+Space` 切换、**默认关**。**终端内未接**；实机键盘验证仍待做
+- [ ] 接入真实 LLM 验证模糊指令全链路：**协议层已完成**（双假端点 21 项断言，见 `docs/LLM-E2E-2026-09-28.md`），**真模型待接**。
+      注：出厂架构是「客户端 → **自有网关** → 各家 AI」，系统里**不需要配直连上游的 Key**
 - 验收：自然语言操作整台"电脑" ✅（离线意图 + Action 端到端实测）
 
 ## M5 — AI 运维自修复 ✅
@@ -113,5 +122,45 @@
       文件管理器侧栏接真实路径 + 可点击面包屑，窗口缩放，init 救援模式，日志运行期轮转
       —— 测试 112 → 172 项；六个"生产力"硬门禁 2.5/6（详见 PRODUCTION-PLAN 进度表）
 - [x] 跨进程剪贴板（2.2）：ClipboardSet/Get 协议 + aetherd 状态 + AI 工具
-      `clipboard_read`（L1，读到即强制本地推理）/ `clipboard_write`（L0），每次读写落审计
+      `clipboard_read` / `clipboard_write`（**均为 L1**，读到即强制本地推理），每次读写落审计
       —— 测试 172 → 185 项
+      ⚠️ 当日随第四轮审查发现**剪贴板 IPC 端点零门槛（P1-1）**，已修（见下）
+
+## 生产力化 Phase 0/1/2 收口 + 安全修复（2026-09-28）
+
+一天内 15 个提交，测试 **185 → 300**。这条线的主轴是"**先堵漏，再铺功能**"。
+
+- [x] 第四轮审查 9 项安全修复（`096dc93`）：剪贴板纳入闸门 + 请求变体逐条门禁测试 + 审计轮转
+      —— 详见 `docs/FIX-REPORT-2026-09-28.md`
+- [x] **0.6 首启模型配置**（`78d8ddc`）：配置持久化 `/etc/aether/model.json`（Unix 0600）+
+      `aetherd config` 参数式 CLI + `ReloadConfig` IPC。优先级 环境变量 > 文件 > 默认。
+      启用条件为「有 Key **或** 有 Base URL」（支持自建网关）。**图形向导未做**（CLI 更适合无 TTY 场景且可测）
+- [x] **0.7 LLM 端到端（协议层）**（`fc55da2`）：双假端点 21 项断言全过，含"本该上云的任务读到文件后被拉回本地"的实证。
+      **真模型未验证** —— 见 M4 的未完成项
+- [x] **0.8 关键路径 panic 审计**（`86af525`）：修 1 个 P2（拖拽索引被其它路径关窗后越界 → 桌面永久死掉）。
+      建议改 `compositor.json` 的 `restart` 或据此宣告门禁 1b
+- [x] **2.3 中文输入法**（`f5d6487`）：**解锁门禁 5**
+- [x] **2.4 统一文本交互**（`5723029`）：`textview.rs` 共享 `TextCursor`（字符级）/`ScrollView`/`nav_action`，
+      输入框支持中间编辑、预览支持翻页
+- [x] **4.1 可写文件操作**（`86af525` + 回收站闭环 `f858bdc`）：**解锁门禁 2 与 6**。
+      三个 L2 工具 + 回收站三重上限 + **写白名单比读窄**（`/etc/aether` 与 `/var/log/aether` 可读不可写，
+      分别防提权与灭证）；e2e 14/14 PASS。详见 `docs/WRITE-OPS-2026-09-28.md`
+- [x] 归档走查图扩到 **10 张**（新增 IME 候选框深/明各一），`--check` 门禁 10/10 逐像素一致
+- [x] **3.1 Wayland spike W1–W4**（`6ad5226` → `9f5fda1`，+56 测试）：自研 `wl_display` 子集
+      —— 线协议/对象表 → 12 接口协议表（索引即 opcode）→ `wl_shm` 像素读取 → surface 接进渲染管线。
+      协议层全部**跨平台可测**（手造字节流跑完整 map 流程），是 spike 最有价值的副产品
+- [ ] **3.1 W5 剩余**：socket 服务端已就绪，但 **fd 的 `SCM_RIGHTS` 收包未做**（需真机验证）；
+      渲染主循环尚未启动服务端，真客户端端到端未跑
+- [ ] 门禁 1a：连续 8 小时不崩（需实机长跑）
+- [ ] 门禁 1b：`compositor` 的 `restart: false` 未动 —— **一次 panic = 桌面永久死掉**
+
+## 已知的工程质量缺口（2026-09-28 复核）
+
+> 这一节记录**已知但未修**的东西，接手时不必重新发现。
+
+- `cargo check --workspace --all-targets` **有 3 条警告**（基线是零警告）：
+  `main.rs` 未使用的 `DISPLAY_ID` 导入、`wayland/session.rs` 一处 `unused mut` 与一处 `unused var`。
+  集中在 3.1 spike，属低成本待办
+- `aether-ops` 与 `aetherd` 的部分代码路径是 `cfg(target_os="linux")` 门控的，**Windows 构建会整段屏蔽** ——
+  改这些路径必须跑 `--target x86_64-unknown-linux-musl` 交叉检查，否则等于没编译
+- `platform/build/` 是空的：ISO 构建依赖构建机，本机无法复现
