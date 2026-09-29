@@ -13,17 +13,23 @@
 
 | VM | 用途 | 连接方式 |
 |----|------|---------|
-| `AetherOS-Build` | **构建机**（Ubuntu 24.04，含 Buildroot/QEMU/字体） | SSH `aether@127.0.0.1:2222`，密码 `aetheros` |
+| `AetherOS-Build` | **构建机**（Ubuntu 24.04，含 Buildroot/QEMU/字体） | SSH `aether@127.0.0.1:2222`；密码取 `$env:AETHER_VM_PASSWORD`（脚本内不再硬编码，账号默认值见 `scripts/setup-vm.ps1`） |
 | `AetherOS-Demo` | **演示/验证机**（跑 ISO） | 无 SSH，用 `VBoxManage controlvm ... screenshotpng` 截图 |
 
 > `scripts/vm.py` 只做远程命令（`sh`）；**文件上传统一走 `scripts/transfer.py`**。
+> ⚠️ 用之前先设凭据：`export AETHER_VM_PASSWORD='…'`（或 `AETHER_VM_KEY` 走公钥）。
+> 首次连接会把构建机主机密钥指纹记进 `scripts/.vm_known_hosts`（已 gitignore），
+> 之后一律**严格校验** —— 密钥变了直接拒连，不会静默接受。
 > `scripts/qmp-verify.py` 可向 QEMU guest 注入键盘/鼠标事件并截图（M4 端到端验证全靠它）。
 
 ### 0.2 改一行代码 → 看到效果（最短路）
 
 ```bash
-# 0) ⚠️ Git Bash 下凡是命令行参数带 /home/... 必须加 MSYS2_ARG_CONV_EXCL="*"，
-#    否则被 MSYS 改写成 C:\Program Files\Git\home\...，SFTP 报 ENOENT（本次最大坑，见 5.5）
+# 0) 凭据（不写在脚本里；每开一个新 shell 都要设一次）
+export AETHER_VM_PASSWORD='<构建机登录密码>'        # 或 export AETHER_VM_KEY=~/.ssh/id_ed25519
+
+# 0b) ⚠️ Git Bash 下凡是命令行参数带 /home/... 必须加 MSYS2_ARG_CONV_EXCL="*"，
+#     否则被 MSYS 改写成 C:\Program Files\Git\home\...，SFTP 报 ENOENT（本次最大坑，见 5.5）
 export MSYS2_ARG_CONV_EXCL="*"
 
 # 1) 改本地代码（本地仓库是唯一真源），同步到构建机
@@ -121,6 +127,7 @@ VMX 要点：`bios.bootOrder = "cdrom"` + **SATA 光驱**（IDE 光驱引导不�
 ### 4.1 构建（构建机内）
 
 ```bash
+export AETHER_VM_PASSWORD='<构建机登录密码>'   # 凭据走环境变量；见 0.1 与 5.7
 export MSYS2_ARG_CONV_EXCL="*"    # 仅 Git Bash 需要；见 5.5
 python scripts/transfer.py <本地相对路径> <VM绝对路径>      # 上传（可多对）
 python scripts/vm.py sh "<命令>" [超时秒]                   # 远程命令
@@ -175,6 +182,15 @@ python scripts/vm.py sh "python3 /home/aether/qmp-verify.py mouse 264 364 click"
 `vm.py` 只留 `sh`。**新增带文件写入的脚本时，优先 stdout / 固定字面量路径，否则 commit 会被拦。**
 门禁提示过"library_source 不可用，覆盖不完整"——建议用户择机跑一次 `/mimosa-scan` 完整审计。
 
+### 5.7 构建机凭据与主机密钥（2026-09-29 改）
+- 密码**不再硬编码**：`scripts/vm.py` 读 `AETHER_VM_PASSWORD`（或 `AETHER_VM_KEY` 走公钥），
+  两者都没设就直接报错退出，并给出要执行的 export。`setup-vm.ps1` 同样优先读环境变量，
+  没设时在当前终端安全提示输入（不回显）。
+- 主机密钥从"无条件接受"改为 **TOFU + 严格校验**：首次连接记录指纹到
+  `scripts/.vm_known_hosts`（已 gitignore），此后密钥不符即拒连。构建机重装过要删掉该文件再连。
+- 残留风险（已知、接受）：`VBoxManage ... --password=` 会把密码放进本机进程命令行，
+  本机其他用户短时可见。这是 VirtualBox CLI 的接口限制，不是本仓库能修的。
+
 ### 5.1 ✅ VBox：vmwgfx 不支持（历史保留）
 默认控制器 `vmsvga` 走 VMware 驱动，在 VBox 上拒绝工作。改 `vboxvga`。
 串口 `--uartmode1 file` 路径必须正斜杠，否则 `Power up failed`。
@@ -189,6 +205,11 @@ wqy-microhei 打进 rootfs；粗体必须同字体（DejaVu 无 CJK）。
 ### 5.4 CRLF 风险
 Windows 写文件带 `\r\n`；`transfer.py`/`vm.py` 上传时自动归一为 `\n`。`/init` shebang 必须第一行。
 
+**`.ps1` 必须带 UTF-8 BOM**：`scripts/setup-vm.ps1` 是仓库里唯一的 PowerShell 脚本，
+Windows PowerShell 5.1 对**无 BOM** 的 .ps1 按 ANSI 解码中文 → 字符串被拆坏、报出
+"缺少右 }"之类的**假语法错误**（2026-09-29 实测：无 BOM 报 1 处、加 BOM 后 0 处）。
+任何编辑器/工具改写该文件后，都要确认首三字节仍是 `EF BB BF`。
+
 ---
 
 ## 六、未完成清单
@@ -201,15 +222,11 @@ Windows 写文件带 `\r\n`；`transfer.py`/`vm.py` 上传时自动归一为 `\n
 > **如何在 QEMU 里做 guest 内实验**（自愈实测的方法，已验证）：QMP `sendkey` 的键会同时到达
 > evdev（compositor AI 条）和 tty 层（tty1 的 getty）。节奏：`ret` → 等 2s → `r o o t` → `ret`
 > → 等 3s → 命令（**空格的 qcode 是 `spc` 不是 `space`**，`-` 是 `minus`）→ `ret`。
-> 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。compositor 已设
-> `restart:false`，其崩溃由 ops 自愈（监督器不接管）——这是刻意设计，让 M5 自愈有真实职责。
+> 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。
+> compositor 现在是 **`restart: true`**（`essential: true` ⇒ 必须可重启，有测试守着）：
+> init 监督拉起是主通道、ops 冷拉起是第二通道。09-19 那版"ops 自愈、监督器不接管"的写法
+> **已作废** —— 它的实际语义是"没人接管"，一次 panic 就会让桌面永久死掉。
 > 触发告警的最快方法：AI 条输入乱串（如 `asdf`+回车）→ aetherd 记 `ERROR LLM 请求失败` → ops 📢。
-
-> **如何在 QEMU 里做 guest 内实验**（自愈实测的方法，已验证）：QMP `sendkey` 的键会同时到达
-> evdev（compositor AI 条）和 tty 层（tty1 的 getty）。节奏：`ret` → 等 2s → `r o o t` → `ret`
-> → 等 3s → 命令（**空格的 qcode 是 `spc` 不是 `space`**，`-` 是 `minus`）→ `ret`。
-> 登录成功的标志是串口出现 `login[121]: root login on 'tty1'`。compositor 已设
-> `restart:false`，其崩溃由 ops 自愈（监督器不接管）——这是刻意设计，让 M5 自愈有真实职责。
 
 ### 6.2 M6 剩余（v0.4+）
 1. **持久化范围扩大**：当前只有 /var 落在磁盘（日志/诊断/审计已持久）；
@@ -289,7 +306,7 @@ Aether/
     ├── qmp-verify.py           # ★ 新增：QMP 注入键鼠 + 截图（stdout）
     ├── rebuild-m4.sh           # ★ 新增：三组件 musl 重建 → ISO
     ├── transfer.py             # ★ 新增：SFTP 上传（putfo+重定根+重试）
-    ├── vm.py                   # 只留 sh；put 指引到 transfer.py
+    ├── vm.py                   # 只留 sh；put 指引到 transfer.py；凭据走 AETHER_VM_PASSWORD（见 5.7）
     ├── qemu-verify.sh / qemu-shot.py / vnc-shot.py / ppm2png.py   # 截图 stdout 化
     └── docs/HANDOVER.md        # 本文件
 ```
