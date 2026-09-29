@@ -1,16 +1,16 @@
-[中文](README.md) | **English**
+[中文](README.md) | **English** · [**Download ISO (33.4 MB)**](https://github.com/qwert702/AetherOS/releases/latest) · [Landing page](https://qwert702.github.io/AetherOS/) · [App packaging guide](docs/APP-PACKAGES.md)
 
 # AetherOS
 
 ![htop 3.3.0 from the Ubuntu 24.04 archive, running inside the AetherOS desktop](docs/screenshot-htop-app.png)
 
-**A desktop operating system whose entire user space is written from scratch in Rust on top of the Linux kernel — no X11, no Wayland, no existing desktop toolkit.** That screenshot is not a mockup: it is htop 3.3.0, taken straight out of the Ubuntu 24.04 archive, running on an AetherOS desktop.
+**A desktop operating system whose entire user space is written from scratch in Rust on top of the Linux kernel — no X11 or Wayland client stack, no off-the-shelf desktop toolkit.** That screenshot is not a mockup: it is htop 3.3.0, taken straight out of the Ubuntu 24.04 archive, running on an AetherOS desktop.
 
 The kernel is deliberately the one piece that is *not* rewritten — Android and ChromeOS use Linux too, and rewriting it buys nothing. All the engineering effort goes above it: **from PID 1 to the window compositor, the terminal, the Chinese input method and the AI hub, there is not a single off-the-shelf desktop component in the tree.**
 
 | | |
 |---|---|
-| **Scale** | 21,471 lines of Rust / 41 source files / 7 crates (measured 2026-09-29) |
+| **Scale** | 21,490 lines of Rust / 41 source files / 7 crates (measured 2026-09-29) |
 | **Verification** | 334 unit tests green · 0 compiler warnings on both targets · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
 | **Artifact** | bootable ISO ≈ 33.4 MB, tested booting in QEMU, VirtualBox and VMware |
 
@@ -23,6 +23,8 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 - **It really installs applications.** On a system with no package manager at all, it ships its own application package format (manifest + dependency preflight). Installed programs are immediately callable from `/usr/local/bin`, **an icon appears in the Dock**, and clicking it opens a terminal and runs the program.
 
 ## Quick start
+
+No build machine at hand? Grab the prebuilt bootable ISO from the [latest release](https://github.com/qwert702/AetherOS/releases/latest) — it boots in QEMU, VirtualBox and VMware.
 
 You do not need a virtual machine to preview the desktop:
 
@@ -112,23 +114,23 @@ Details, rules and boundaries are in [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────┐
+┌────────────────────────────────────────────────┐
 │  aether-compositor + aether-shell (placeholder)│  desktop / top bar / Dock / AI command bar
 │    draw · layout · text · term(vt/pty)         │
 │    ime · textview · input · wayland(spike)     │
-├───────────────────────────────────────────────┤
+├────────────────────────────────────────────────┤
 │  aetherd          AI hub: intent → route → tool│  permission gate L0–L3 · audit
 │  aether-ops       AI ops: patrol → diagnose    │
-├───────────────────────────────────────────────┤
+├────────────────────────────────────────────────┤
 │  aether-ipc       unified IPC (JSON / NDJSON)  │
-├───────────────────────────────────────────────┤
+├────────────────────────────────────────────────┤
 │  aether-init      PID 1 / service management   │  musl static
 │  aether-install   whole-disk installer         │
-├───────────────────────────────────────────────┤
+├────────────────────────────────────────────────┤
 │  glibc · driver stack · firmware               │  mature open source
-├───────────────────────────────────────────────┤
+├────────────────────────────────────────────────┤
 │  Linux kernel                                  │
-└───────────────────────────────────────────────┘
+└────────────────────────────────────────────────┘
 ```
 
 Key paths through the system:
@@ -148,7 +150,7 @@ aether-ops patrol ─▶ init service status + /var/log/aether ─▶ self-heali
 | Directory | Lines | Description | Milestone |
 |---|---|---|---|
 | `aether-compositor/` | 13,020 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
-| `aetherd/` | 5,546 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
+| `aetherd/` | 5,565 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
 | `aether-init/` | 1,319 | PID 1 and service management | M3 |
 | `aether-ops/` | 736 | AI operations and self-healing | M5 |
 | `aether-install/` | 505 | Disk installer | M6 |
@@ -185,13 +187,13 @@ A few invariants hold this together:
 
 | Method | Status |
 |---|---|
-| Unit tests | 334 green on Windows (measured 2026-09-29); the Linux column runs higher because the Linux-only crates are excluded from the Windows build |
+| Unit tests | 334 green on Windows (measured 2026-09-29); the Linux build also compiles and runs the Linux-only test targets, so its total is higher |
 | Compiler warnings | 0 on both targets |
 | Visual regression | 10 archived walkthrough images compared pixel by pixel, currently 10/10 with zero difference |
 | Code review | Four full and incremental review rounds, every finding fixed (zero unresolved); the consolidated report is [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |
 | End-to-end | Permission chain, installer, QEMU QMP keyboard/mouse injection plus screenshots |
 | In-VM self-healing | Killing the compositor inside QEMU makes init restart it and reinitialize display, fonts and input |
-| Stability soak | 12 h 43 m continuous uptime: 3,053 patrol rounds, 0 service exits, 0 automatic restarts, 0 panics, stable memory (raw log `docs/evidence/soak-2026-09-28-12h43m.log.gz`) |
+| Stability soak | 12 h 43 m of continuous uptime in QEMU: 3,053 patrol rounds, 0 service exits, 0 automatic restarts, 0 panics, stable memory (raw log `docs/evidence/soak-2026-09-28-12h43m.log.gz`) |
 | Application installation | Verified on a live image: a static program installed under `/var/apps` runs from the guest terminal by name and shows up in the Dock |
 
 After changing anything under `cfg(target_os = "linux")`, you must also build for `--target x86_64-unknown-linux-musl` or test on a Linux machine — a Windows build excludes those code paths entirely, so errors and warnings in them are invisible on the development host.
