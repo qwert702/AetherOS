@@ -8,13 +8,16 @@
 > **1a = 连续 12 小时 43 分不崩**（2026-09-28 21:46 → 09-29 10:30，要求 8 小时，超出 59%），
 > **1b = compositor 能自愈**（实机 kill 后 init 自动拉起）。长跑原始日志在 `docs/evidence/`。
 >
-> 代码规模（2026-09-28 实测）：**19,556 行 / 40 个 .rs**（7 crate）；
-> 测试 **Windows 302 / Linux 312，均全绿**；`cargo check` **双目标零警告**。
+> 代码规模（2026-09-29 实测）：**21,121 行 / 41 个 .rs**（7 crate）；口径与复核命令见 `scripts/repo-stats.py`。
+> 测试 **Windows 323 全绿（实测）／Linux 333（按 `aetherd` 增量推算，待构建机复核）**；`cargo check` **双目标零警告**（Windows 侧 2026-09-29 复跑确认）。
 > ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 与二级子目录。
 >
 > ⚠️ **两个目标都要测**：`cfg(target_os="linux")` 的代码在 Windows 上整段不编译，
 > Linux 侧的编译错误与警告在开发机**一次都发现不了**（09-28 实测踩到两次：`aether-ops`
 > 的编译失败、以及 3 条只在 Linux 出现的警告）。
+> **2026-09-29 缓解**：`cargo check --target x86_64-unknown-linux-musl --all-targets` 对
+> **除 `aetherd` 外的 6 个 crate 在开发机就能跑**（实测 0 警告 0 错误，含 aether-ops）——
+> 命令见 `INDEX.md` 常用命令。`aetherd` 仍必须上构建机（ring 缺交叉 C 编译器）。
 
 ## M0 — 开发环境与架构设计 ✅
 - [x] 仓库骨架、Cargo workspace
@@ -60,8 +63,9 @@
 ## M4 — AI 中枢 aetherd ✅（含 L2+ 确认全链路）
 - [x] 权限模型落地：L0–L3 闸门 + 审计日志（perm.rs，带测试）
 - [x] 混合推理路由：隐私强制本地 / 复杂任务上云 / 双侧降级（router.rs，带测试）
-- [x] 工具系统：罐头探针 + sys_info + read_file + desktop + install_disk + 剪贴板两件 + 4.1 的写三件 + 回收站两件，
-      **共 12 个工具**，闸门→审计→执行管线（tools.rs，带测试）
+- [x] 工具系统：罐头探针 + sys_info + read_file + desktop + install_disk + 剪贴板两件 + 4.1 的写三件 + 回收站两件
+      + 应用三件（app_list / app_install / app_remove），
+      **共 15 个工具**（`tools.rs::registry` 实测，2026-09-29 复核），闸门→审计→执行管线（tools.rs，带测试）
 - [x] LLM 客户端：OpenAI 兼容协议（GLM / Ollama /v1 通用）
 - [x] chat CLI：单轮 agent（路由 → LLM → 工具循环 → 回答），探活失败优雅降级
 - [x] `serve` 常驻模式：TCP 127.0.0.1:7311 + aether-ipc NDJSON 协议（端到端烟雾测试通过）
@@ -93,7 +97,7 @@
 - [x] 持久化分区：MBR 第 2 分区 ext4（卷标 AETHER）+ 引导记录；失败不阻断引导（回退内存态）
 - [x] 桌面安装向导：Live ISO Dock 图标 → 选盘 → 一键装机（与 AI 共用 L3 确认通路）
 - [x] aetherd `install_disk` 工具：路径白名单 + confirm 回显双确认（L3）
-- [ ] 品牌收尾：Logo / 开机动画 / 壁纸（docs/image-gen-prompts.md 已有提示词，未落地）
+- [ ] 品牌收尾：Logo / 开机动画 / 壁纸（docs/archive/image-gen-prompts.md 已有提示词，未落地）
 - [ ] 实机截图更新：docs/screenshot-*.png 需在真实 VM 重拍（见 ui-design-handover §4.5）
 - 验收：ISO 安装到虚拟硬盘，脱离 ISO 独立运行 ✅（无光驱纯磁盘引导 + 两轮重启实测）
 
@@ -116,11 +120,11 @@
 - [x] 合成器性能优化（handover §14）：稳态 91 → 15.5 ms/帧（-83%）、自适应帧率、脏行上屏、字形缓存；
       新增 `--bench` 与 `AETHER_RENDER_TIMING` 两个观测手段
 - [x] 文件管理器从视觉演示改为真实可用：读真实目录、单击选中/再点打开、文本预览、
-      `← 上级目录`、读失败可见（未实现项清单见 `docs/UNIMPLEMENTED-2026-09-27.md`）
+      `← 上级目录`、读失败可见（未实现项清单见 `docs/archive/UNIMPLEMENTED-2026-09-27.md`）
 - [x] 壁纸分帧生成（handover §15）：交互路径首帧 561 → 30 ms，不再有开机卡顿
 - [x] 归档走查图工具化：`scripts/archive-ui-shots.py`（重建 + `--check` 门禁），
       堵住"归档图落后于 HEAD 导致回归结论失真"这个已犯两次的流程坑
-- [x] 生产力化 Phase 0 首批（见 `docs/PRODUCTION-PLAN-2026-09-27.md`）：窗口关闭/最大化（红绿灯接线）、
+- [x] 生产力化 Phase 0 首批（见 `docs/archive/PRODUCTION-PLAN-2026-09-27.md`）：窗口关闭/最大化（红绿灯接线）、
       修饰键状态机（Ctrl/Shift/Alt）、完整键位映射（方向键/翻页/Home/End/Tab/Delete）、
       文件列表滚动与键盘导航（含如实状态栏与滚动条）、init 挂载 devpts（PTY 前置）
       —— 测试 91 → 112 项，双目标零警告
@@ -137,7 +141,7 @@
 一天内 15 个提交，测试 **185 → 300**。这条线的主轴是"**先堵漏，再铺功能**"。
 
 - [x] 第四轮审查 9 项安全修复（`096dc93`）：剪贴板纳入闸门 + 请求变体逐条门禁测试 + 审计轮转
-      —— 详见 `docs/FIX-REPORT-2026-09-28.md`
+      —— 详见 `docs/archive/CODE-REVIEW-2026-09.md`
 - [x] **0.6 首启模型配置**（`78d8ddc`）：配置持久化 `/etc/aether/model.json`（Unix 0600）+
       `aetherd config` 参数式 CLI + `ReloadConfig` IPC。优先级 环境变量 > 文件 > 默认。
       启用条件为「有 Key **或** 有 Base URL」（支持自建网关）。**图形向导未做**（CLI 更适合无 TTY 场景且可测）

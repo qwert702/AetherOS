@@ -12,7 +12,7 @@ use crate::text::{draw_text, strings, TextRenderer};
 use self::theme::{color, elevation, font, metric, radius, state};
 
 /// "Essence" 设计令牌 —— 全系统视觉的单一事实来源（对应
-/// docs/ui-design-plan.md §3：色板 / 字阶 / 圆角与阴影 / 交互态）。
+/// docs/archive/ui-design-plan.md §3：色板 / 字阶 / 圆角与阴影 / 交互态）。
 ///
 /// 双模：**明亮（默认，产品主视觉）** 与 深空（备选，`--theme dark`）。
 /// 颜色一律走函数取值，调用点形如 `color::surface_1()`；模式在进程启动时定一次。

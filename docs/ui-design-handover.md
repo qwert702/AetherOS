@@ -2,7 +2,7 @@
 
 日期：2026-09-20
 分支：`feat/ui-design-system`（基于 `fix/m3-desktop-render`）
-计划依据：`docs/ui-design-plan.md`
+计划依据：`docs/archive/ui-design-plan.md`
 当前状态：**Step 1–4 的代码已完成并验证；Step 4 收尾项 4.1/4.2/4.3（协议+UI 视觉）已于 2026-09-20 完成（见 §8），4.3 真机点击与 Step 5 未开始**
 
 ---
@@ -176,9 +176,9 @@ let y = tr.vcenter(bar.y as f32, bar.h as f32, font::BODY);
   - 第 60 行「中文输入支持」仍未做（预览期 minifb 限制）
   - 该文件整体落后实际进度约 3 个里程碑（M5/M6 已实测闭环但未反映）
 - `INDEX.md`：计划要求同步更新
-- `docs/ui-design-plan.md`：可在文件头标注各 Step 的完成状态与提交号
+- `docs/archive/ui-design-plan.md`：可在文件头标注各 Step 的完成状态与提交号
 
-### P3 · 继承自代码审查的待办（`docs/CODE-REVIEW-2026-09-19.md` 第 6 节，全部仍有效）
+### P3 · 继承自代码审查的待办（`docs/archive/CODE-REVIEW-2026-09.md` §3，全部仍有效）
 1. **Linux VM 实机回归**：fbdev stride/modeset、init 救援模式、Unix socket 权限、安装全链路
 2. `platform/br2-external/*` 与 ISO 引导链实测
 3. 审计"显式上报"在合成器侧的 UI 呈现（当前只回到 ToolResult 文本；现在的工具气泡是天然落点——`BubbleKind::Tool` 可直接承载审计失败警告）
@@ -442,7 +442,7 @@ VM 实拍：`C:\Users\cbn\Pictures\aether-vm-final.png`。
 
 ## 13. 第三轮代码审查的 UI 修复（2026-09-26）
 
-来源：`docs/CODE-REVIEW-2026-09-26.md`。全部集中在 `draw.rs`，**布局几何/协议/行为零改动**。
+来源：`docs/archive/CODE-REVIEW-2026-09.md`（第三轮 P2-19 / P2-20 / P3-27 / P3-28）。全部集中在 `draw.rs`，**布局几何/协议/行为零改动**。
 
 ### 13.1 修复项
 
@@ -497,7 +497,7 @@ gen "--shot 2 --menu --theme light"          docs/host-ui-light-menu.png
 
 ## 14. 合成器性能优化（2026-09-26）
 
-背景：VM 里鼠标很卡。完整报告见 `docs/PERF-REPORT-2026-09-26.md`。
+背景：VM 里鼠标很卡。完整报告见 `docs/archive/PERF-REPORT-2026-09-26.md`。
 
 **结论**：瓶颈不是 sleep，而是 `draw_window` 每帧要跑 5 层投影 SDF + 逐像素圆角渐变
 （**91ms/帧**），再叠加固定的 100ms sleep，有效帧率只有 ~5fps。
@@ -615,7 +615,7 @@ init 1,119 / ops 703 / install 505 / ipc 284 / shell 11）。INDEX 已改为逐 
 
 ## 16. 生产力化首批：输入层、窗口管理、列表滚动（2026-09-27）
 
-依据 `docs/PRODUCTION-PLAN-2026-09-27.md` 的 Phase 0 首批 + Phase 1 前置。
+依据 `docs/archive/PRODUCTION-PLAN-2026-09-27.md` 的 Phase 0 首批 + Phase 1 前置。
 本轮的共同点：**都是"看着能用、实际不能用"的地方**，改完才是真能用。
 
 ### 16.1 输入层：把纯逻辑从 Linux 限定里拿出来
