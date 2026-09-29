@@ -35,7 +35,9 @@ PID 1、窗口合成器、终端、中文输入、AI 中枢、AI 运维、安装
 - AI 没接过真实模型。协议层用双假端点验证过（21 项断言），真模型待接
 - **没有做过实机按键验证**：文件管理器的 `Delete` 删除、终端拖选复制、终端内的中文输入
   都只到编译与源码确认为止（`Delete` 走的 L2 确认链路在代码上是完整的）
-- 没有连续长跑记录，所有验证都在虚拟机里做的
+- **没有物理机验证**：所有验证都在虚拟机内完成（QEMU / VirtualBox / VMware）。稳定性已经连续
+  跑过 **12 小时 43 分不崩**（3053 轮巡检零退出、零重启、零 panic，原始日志在 `docs/evidence/`），
+  但那是虚拟硬件；真机、真显卡、真外设都还没碰过
 - `aether-shell` 是 11 行的占位，Shell 职责暂时压在 compositor 里
 
 ## 装应用
@@ -170,6 +172,8 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 | 代码审查 | 四轮全量 / 增量审查 + 修复报告 |
 | 端到端 | 权限链路、安装器、QEMU QMP 键鼠注入 + 截图 |
 | 实机自愈 | QEMU 内 kill 掉合成器 → init 自动拉起并重新初始化显示/字体/输入 |
+| 稳定性长跑 | 连续 **12 小时 43 分**不崩：3053 轮巡检，服务退出 0 / 自动重启 0 / panic 0，内存稳定无泄漏（原始日志 `docs/evidence/soak-2026-09-28-12h43m.log.gz`） |
+| 应用安装 | 实机验证：装进 `/var/apps` 的静态程序在 guest 终端里直接敲名字即可运行 |
 
 改 `cfg(target_os = "linux")` 的代码之后必须跑 `--target x86_64-unknown-linux-musl`
 或到 Linux 机器上测。Windows 构建会整段屏蔽那些路径，编译错误和警告在开发机上一点都看不到。
@@ -180,7 +184,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 |---|---|
 | [`INDEX.md`](INDEX.md) | 代码索引：组件与入口、逐文件职责、工具清单、测试分布、键盘、常用命令 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 里程碑 M0–M6，以及已知的工程质量缺口 |
-| [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（当前 5.5/6，缺口是"连续 8 小时不崩"） |
+| [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（**6/6 全部达成**） |
 | [`docs/ui-design-handover.md`](docs/ui-design-handover.md) | 视觉设计的权威依据：设计令牌、双模主题、环境陷阱 |
 | [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.md) | 应用包格式：怎么做、怎么装、预检怎么读、边界在哪 |
 | [`docs/ai-permissions.md`](docs/ai-permissions.md) | AI 权限模型 |
