@@ -1533,6 +1533,11 @@ fn main() -> anyhow::Result<()> {
         let mut buf = vec![0u32; WIDTH * HEIGHT];
         let mut desktop = demo_desktop();
         desktop.layout = lay;
+        // `--settings`：打开设置中心再截图（设置窗口不在默认演示桌面上）。
+        // 走查图用 `AETHER_FAKE_UTC` 固定时钟，否则顶栏与设置页预览每分钟都会变。
+        if args.iter().any(|a| a == "--settings") {
+            let _ = open_app(&mut desktop, 4);
+        }
         snap_now(&mut desktop, lay);
         let tr = text::TextRenderer::load();
         let mut renderer = draw::Renderer::new(WIDTH, HEIGHT);

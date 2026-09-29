@@ -47,7 +47,14 @@ SHOTS: list[tuple[list[str], str]] = [
     # 深浅两套配色都要有基线，否则将来改色板时它会是唯一没被比对到的地方
     (["--shot", "2", "--ime", "--theme", "dark"], "host-ui-ime.png"),
     (["--shot", "2", "--ime", "--theme", "light"], "host-ui-light-ime.png"),
+    # 设置中心（P3）：这是设置窗口**唯一的走查覆盖** —— 否则它只有单测、没有视觉验收
+    (["--shot", "2", "--settings", "--theme", "dark"], "host-ui-settings.png"),
+    (["--shot", "2", "--settings", "--theme", "light"], "host-ui-light-settings.png"),
 ]
+
+#: 固定"当前时间"（对应 `text::now_utc_secs` 的 `AETHER_FAKE_UTC` 钩子）。
+#: 顶栏与设置页都有实时时钟，不固定则逐像素回归每分钟都会失败。1780000000 ≈ 2026-05-28 18:26 (+08)。
+FAKE_UTC = "1780000000"
 
 # 非确定区（相对左上角，右边界用图像宽度推）
 CLOCK_TOP = 32
@@ -161,6 +168,8 @@ def run_shot(binary: Path, args: list[str], out_png: Path, bmp2png) -> None:
         cwd=str(ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        # 固定"当前时间"：顶栏与设置页都有实时时钟，不固定的话逐像素回归每分钟都会失败
+        env={**os.environ, "AETHER_FAKE_UTC": FAKE_UTC},
     )
     if proc.returncode != 0 or not bmp.exists():
         raise SystemExit(

@@ -414,8 +414,28 @@ pub fn clock_fmt(utc_secs: i64, offset_min: i32, h24: bool, show_secs: bool) -> 
     }
 }
 
-/// 当前 UTC 秒（时钟、设置面板与测试共用）。
+/// 解析 `AETHER_FAKE_UTC`（纯函数，便于测试）。
+pub fn parse_fake_utc(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    s.parse::<i64>().ok().filter(|n| *n >= 0)
+}
+
+/// 测试/走查钩子：`AETHER_FAKE_UTC=<秒>` 固定"当前时间"。
+///
+/// 为什么需要：顶栏时钟与设置页的实时预览都取当前时间 —— 走查图做的是**逐像素**回归，
+/// 时间一变图就变、门禁每分钟都会失败。固定时间让截图可复现（也让时钟相关测试不必靠运气）。
+fn fake_utc() -> Option<i64> {
+    std::env::var("AETHER_FAKE_UTC").ok().and_then(|v| parse_fake_utc(&v))
+}
+
+/// 当前 UTC 秒（时钟、设置面板与测试共用；受 `AETHER_FAKE_UTC` 影响）。
 pub fn now_utc_secs() -> i64 {
+    if let Some(t) = fake_utc() {
+        return t;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
