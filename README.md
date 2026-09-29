@@ -1,44 +1,82 @@
 # AetherOS
 
-一个自研操作系统：Linux 内核 + 自己写的 Rust 用户态 + AI 中枢。
+**一个自研的操作系统**：Linux 内核 + 全自研 Rust 用户态 + AI 中枢。
 
-内核不重写。Android、ChromeOS 都用 Linux 内核，重写它没有差异化价值。力气放在内核之上的每一层：
-PID 1、窗口合成器、终端、中文输入、AI 中枢、AI 运维、安装器 —— 用户态没有一行现成的桌面组件。
+内核不重写 —— Android、ChromeOS 都用 Linux 内核，重写它没有差异化价值。力气全放在内核之上：
+**从 PID 1 到窗口合成器、终端、中文输入法、AI 中枢，没有一行现成的桌面组件。**
+
+| | |
+|---|---|
+| **规模** | 合计 21,121 行 Rust / 41 个源文件 / 7 个 crate（2026-09-29 实测） |
+| **验证** | 323 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **产物** | 可引导 ISO 约 30 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](docs/host-ui-light-desktop.png)
 
-## 现在是什么状态
+## 这个项目的几个特别之处
 
-能开机、能跑、大部分功能能用，但还不能当日常系统。
+- **整条用户态都是自己写的。** 窗口合成器走 fbdev 软件光栅化（不依赖 GPU），VT/ANSI 解析器、
+  PTY 胶合层、中文输入法、PID 1、IPC 协议、磁盘安装器全部自研 —— 7 个 crate 里没有一行是
+  拿现成桌面组件拼出来的。
+- **AI 是系统的一等公民，不是聊天窗口。** `aetherd` 常驻，15 个工具能真的操作这台机器；
+  简单指令走离线规则通道（**不调模型**），复杂请求才进 LLM，并按隐私与复杂度在本地/云端混合路由。
+- **权限模型是设计得最细的一块。** L0–L3 分级 + 确认令牌（绑定工具与参数、5 分钟过期、用后即废）
+  + 6 种审计裁决值 + 拒绝冷却。其中 **「敏感输出强制本地」** 尤其关键：`read_file` /
+  `clipboard_read` 的结果一旦进入上下文，后续轮次就被钉在本地、不再上云。这条链不是推断 ——
+  外泄路径是用**两个假 LLM 端点 + canary 文件**端到端证明的（13 字输入、两次读文件，
+  云端端点确实收到了 canary），修复后的行为由 `router` 的两条单测钉住。
+- **可验证，而不是"我觉得没问题"。** 除 323 项单测外，还有 10 张归档走查图的**逐像素回归门禁**
+  （差异 > 0.02% 即失败）、12 小时 43 分的稳定性长跑（3053 轮巡检：服务退出 0 / 自动重启 0 /
+  panic 0，内存无泄漏趋势）、四轮代码审查且**未修项归零**。
+- **真能装应用。** 在没有任何包管理器的系统上做了自己的应用包格式（清单 + 依赖预检），
+  装完 `/usr/local/bin` 里能直接敲，**Dock 里也会多出一个图标**，点一下开终端把它跑起来。
 
-**已经跑通的：**
+## 快速开始
 
-- **桌面**：自研合成器，fbdev 软件光栅化，不依赖 GPU。四种布局（自由/两列/三列/独占）、
-  拖边吸附、窗口缩放、明暗双主题。稳态帧耗时从 91 ms 优化到 15.5 ms
-- **终端**：真 PTY，VT/ANSI 解析器是自己写的，30 项单测，跨平台可测
-- **中文输入**：自研输入法，自建词表约 100 条，`Ctrl+Space` 切换，指令条和终端都已接
-- **AI 中枢**：`aetherd` 常驻。系统指令走离线规则通道（不调模型），复杂请求才进 LLM；
-  本地/云端按隐私和复杂度混合路由；12 个工具；L0–L3 分级授权
+不需要虚拟机就能预览桌面：
+
+```bash
+git clone https://github.com/qwert702/AetherOS.git
+cd AetherOS
+
+cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
+cargo run -p aether-compositor -- --theme dark     # 深空主题
+cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
+cargo test --workspace                             # 单元测试（Windows 323 项，见「测试与验证」）
+```
+
+构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
+在 Windows 开发机上 `cargo` 要加 `--offline`，否则会卡在 registry 访问。
+
+## 现在能做什么
+
+- **桌面**：四种布局（自由 / 两列 / 三列 / 独占）、拖边吸附、窗口缩放、明暗双主题。
+  稳态帧耗时从 91 ms 优化到 **15.5 ms**
+- **终端**：真 PTY，VT/ANSI 解析器自研（29 项单测，纯逻辑、跨平台可测）
+- **中文输入**：自研输入法，自建词表约 100 条（体积可忽略、无许可负担），`Ctrl+Space` 切换，
+  指令条和终端都已接
+- **AI 中枢**：`aetherd` 常驻。意图 → 路由 → 工具（最多 4 轮）→ 权限闸门 → 审计
 - **系统**：`aether-init` 作 PID 1，服务白名单 + 拓扑排序 + 指数退避重启 + 僵尸收割；
   持久化分区；整盘安装器
 - **AI 运维**：`aether-ops` 每 15 秒巡检，异常服务自动重启，故障诊断报告落盘
-- **产物**：可引导 ISO，约 30 MB，QEMU / VirtualBox / VMware 都实测开机过
 
 ![中文输入法](docs/host-ui-light-ime.png)
 
-**没做或不完整的：**
+## 边界在哪
 
-- 还不是日常可用的系统。现在是"每个子系统都真跑通了"的阶段，不是"能替代你桌面"的阶段
-- 没有 GPU 加速，全部软件光栅化。这是刻意的取舍，代价是大面积重绘的余量有限
-- 不支持 Wayland 客户端。桌面走 `DRM → fbdev`。9 月 28 日起有一个自研 `wl_display` 子集的
-  spike，线协议、对象表、`wl_shm` 像素读取、surface 接进渲染管线都做完了，但没接进生产路径
-- AI 没接过真实模型。协议层用双假端点验证过（21 项断言），真模型待接
-- **没有做过实机按键验证**：文件管理器的 `Delete` 删除、终端拖选复制、终端内的中文输入
-  都只到编译与源码确认为止（`Delete` 走的 L2 确认链路在代码上是完整的）
-- **没有物理机验证**：所有验证都在虚拟机内完成（QEMU / VirtualBox / VMware）。稳定性已经连续
-  跑过 **12 小时 43 分不崩**（3053 轮巡检零退出、零重启、零 panic，原始日志在 `docs/evidence/`），
-  但那是虚拟硬件；真机、真显卡、真外设都还没碰过
-- `aether-shell` 是 11 行的占位，Shell 职责暂时压在 compositor 里
+写清楚是为了免得误用，不是自我否定 —— 完整清单见 [`docs/HANDOVER.md`](docs/HANDOVER.md)
+与 [`INDEX.md`](INDEX.md) 的「已知缺口」。
+
+- **阶段定位**：现在是"每个子系统都真跑通了"，还不是"能替代你桌面"。当日常系统用还早
+- **验证环境是虚拟机**：QEMU / VirtualBox / VMware 都实测过，稳定性也跑过 12 小时 43 分，
+  但**物理机、真显卡、真外设还没碰过**
+- **实机交互待补验**：文件管理器 `Delete`、终端拖选复制、终端内中文输入目前到编译与源码确认为止
+  （`Delete` 的 L2 确认链路代码完整）；`--shot` 只能出静态帧，测不了按键与拖拽
+- **没有 GPU 加速**：全部软件光栅化。这是刻意取舍，代价是大面积重绘余量有限
+- **不支持 Wayland 客户端**：桌面走 `DRM → fbdev`。9 月 28 日起有一个自研 `wl_display` 子集 spike
+  （线协议、对象表、`wl_shm` 像素读取、surface 接进渲染管线都做完了），但没接进生产路径
+- **AI 未接真实模型**：协议层已用双假端点验证（21 项断言），真模型待接
+- `aether-shell` 是 11 行占位，Shell 职责暂时压在 compositor 里
 
 ## 装应用
 
@@ -110,9 +148,9 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
-| `aether-compositor/` | 12,720 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
-| `aetherd/` | 3,945 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站） | M4 |
-| `aether-init/` | 1,305 | PID 1 与服务管理 | M3 |
+| `aether-compositor/` | 12,969 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
+| `aetherd/` | 5,247 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
+| `aether-init/` | 1,319 | PID 1 与服务管理 | M3 |
 | `aether-ops/` | 736 | AI 运维与自修复 | M5 |
 | `aether-install/` | 505 | 磁盘安装器 | M6 |
 | `aether-ipc/` | 334 | 全系统 IPC 协议 | M0 |
@@ -121,24 +159,8 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 | `scripts/` | — | 宿主开发、走查图、端到端验证脚本 | 持续 |
 | `docs/` | — | 架构、协议、权限模型、路线图、审查报告 | 持续 |
 
-合计 19,556 行 Rust / 40 个源文件 / 7 个 crate（2026-09-28 实测）。
-
-## 快速开始
-
-不需要虚拟机就能预览桌面：
-
-```bash
-git clone https://github.com/qwert702/AetherOS.git
-cd AetherOS
-
-cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
-cargo run -p aether-compositor -- --theme dark     # 深空主题
-cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试（Windows 302 项）
-```
-
-构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
-在 Windows 开发机上 `cargo` 要加 `--offline`，否则会卡在 registry 访问。
+> 规模数字每次提交都会漂，**不要手抄**：跑 `python scripts/repo-stats.py` 出权威口径
+> （与 `INDEX.md` 的逐文件表同源，`--check` 可当门禁）。
 
 ## 权限模型
 
@@ -147,9 +169,9 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 等级 | 行为 | 工具 |
 |---|---|---|
-| L0 | 免确认 | `sys_info`、`read_file`、`sys_probe`、`trash_list` |
+| L0 | 免确认 | `sys_info`、`read_file`、`sys_probe`、`trash_list`、`app_list` |
 | L1 | 免确认 | `desktop`、`clipboard_read`、`clipboard_write` |
-| L2 | 弹确认卡片 | `file_write`、`file_delete`、`file_rename`、`trash_restore` |
+| L2 | 弹确认卡片 | `file_write`、`file_delete`、`file_rename`、`trash_restore`、`app_install`、`app_remove` |
 | L3 | 确认 + 回显目标 | `install_disk` |
 
 几条不变量：
@@ -157,8 +179,11 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 - 写白名单比读白名单窄。AI 可以读 `/etc/aether` 和 `/var/log/aether`，但不能写 ——
   写前者等于让它改自己的权限规则，写后者等于篡改审计记录。有测试守着这条
 - 危险操作不新增 IPC 变体，一律走 `ToolCall` 过闸门。历史上剪贴板曾经走 `Request` 变体
-  绕过了整套闸门，这个教训现在是一条回归测试
-- 确认令牌绑定工具和参数，5 分钟过期，用后即废；每次裁决都写审计日志
+  绕过了整套闸门，这个教训现在是一条回归测试（`request_variants_are_gated`）
+- 确认令牌绑定工具和参数，5 分钟过期，用后即废；**只有已注册的 UI 通道能兑现**，
+  未注册连接一律 403 并落 `rejected_no_ui` 审计
+- 审计区分 6 种裁决（`allowed` / `failed` / `needs_confirmation` / `denied` /
+  `denied_by_user` / `rejected_no_ui`），超 8 MB 轮转，写失败显式告警而不是静默丢弃
 - `read_file` 和 `clipboard_read` 标记为敏感输出，其结果强制本地推理、不上云
 
 ![L3 权限确认](docs/host-ui-light-confirm.png)
@@ -167,10 +192,10 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 318 / Linux 328，均全绿 |
+| 单元测试 | Windows 323 项全绿（2026-09-29 实测）；Linux 333 为按 `aetherd` 增量推算，待构建机复核 |
 | 编译警告 | 两个目标都是 0 条 |
 | 视觉回归 | 10 张归档走查图逐像素比对，当前 10/10 零差异 |
-| 代码审查 | 四轮全量 / 增量审查 + 修复报告 |
+| 代码审查 | 四轮全量 / 增量审查，问题全部修复（未修项归零）；结论总集见 [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |
 | 端到端 | 权限链路、安装器、QEMU QMP 键鼠注入 + 截图 |
 | 实机自愈 | QEMU 内 kill 掉合成器 → init 自动拉起并重新初始化显示/字体/输入 |
 | 稳定性长跑 | 连续 **12 小时 43 分**不崩：3053 轮巡检，服务退出 0 / 自动重启 0 / panic 0，内存稳定无泄漏（原始日志 `docs/evidence/soak-2026-09-28-12h43m.log.gz`） |
@@ -193,6 +218,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 | [`docs/PHASE3-DECISION-2026-09-28.md`](docs/PHASE3-DECISION-2026-09-28.md) | Wayland 的决策框架与放弃条件 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 分层与 ADR（M0 冻结稿，看现状请用 INDEX） |
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | 交接报告：实测记录 + 构建/验证手册 |
+| [`docs/archive/`](docs/archive/) | 历史快照（决策历史，不作现状依据）：四轮审查总集、性能报告、旧版计划 |
 
 ## 许可证
 
