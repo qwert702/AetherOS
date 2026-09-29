@@ -31,7 +31,11 @@ struct GlyphKey {
 }
 
 const REGULAR_FONTS: &[&str] = &[
-    // Linux：打包进 rootfs 的中文屏显字体（由 platform/build-iso.sh 从宿主拷入）
+    // Aether 自带（2026-09-29 起）：由 platform/build-iso.sh 在构建机上用 fonttools
+    // 子集化「Noto Sans CJK SC」后放进 overlay，含**真粗体**，中英文同一族。
+    "/usr/share/fonts/truetype/aether/NotoSansSC-Regular.otf",
+    "/usr/share/fonts/truetype/aether/NotoSansSC-Regular.ttf",
+    // 兜底：rootfs 里的中文屏显字体（子集生成失败时仍可用）
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     // Windows 预览
@@ -39,15 +43,35 @@ const REGULAR_FONTS: &[&str] = &[
     "C:/Windows/Fonts/msyh.ttf",
     "C:/Windows/Fonts/simsun.ttc",
 ];
-// 注意：wqy-microhei 无独立粗体，Linux 下粗体仍用同一 CJK 字体，
-// 避免粗体回退到无中文字形的 DejaVu-Bold 导致中文标题缺字。
+// 粗体：优先 Aether 自带的真粗体（2026-09-29 起不再"粗体=正文字体"）；
+// 回退顺序里保留 wqy 而不是 DejaVu-Bold —— 后者无中文字形，会让中文标题缺字。
 const BOLD_FONTS: &[&str] = &[
+    "/usr/share/fonts/truetype/aether/NotoSansSC-Bold.otf",
+    "/usr/share/fonts/truetype/aether/NotoSansSC-Bold.ttf",
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     "C:/Windows/Fonts/msyhbd.ttc",
     "C:/Windows/Fonts/msyhbd.ttf",
 ];
 
-fn load_font(paths: &[&str]) -> Option<fontdue::Font> {
+/// 把环境变量指定的字体排到候选表最前（**验证/调参用**，不改变默认行为）：
+///
+/// ```text
+/// AETHER_FONT=./subset.otf AETHER_FONT_BOLD=./subset-bold.otf aether-compositor --fonttest
+/// ```
+///
+/// 变量为空或文件不可读时视为未设置 —— 绝不因为一个坏路径就让系统无字体。
+fn resolve_fonts(env_var: &str, defaults: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(defaults.len() + 1);
+    if let Ok(p) = std::env::var(env_var) {
+        if !p.is_empty() && std::path::Path::new(&p).is_file() {
+            out.push(p);
+        }
+    }
+    out.extend(defaults.iter().map(|s| (*s).to_string()));
+    out
+}
+
+fn load_font(paths: &[String]) -> Option<fontdue::Font> {
     for path in paths {
         let Ok(bytes) = std::fs::read(path) else {
             continue;
@@ -123,9 +147,11 @@ impl TextRenderer {
     }
 
     pub fn load() -> Option<Self> {
-        let regular = load_font(REGULAR_FONTS)?;
-        let bold = load_font(BOLD_FONTS).unwrap_or_else(|| {
-            load_font(REGULAR_FONTS).expect("regular font already loaded once")
+        let regular_list = resolve_fonts("AETHER_FONT", REGULAR_FONTS);
+        let bold_list = resolve_fonts("AETHER_FONT_BOLD", BOLD_FONTS);
+        let regular = load_font(&regular_list)?;
+        let bold = load_font(&bold_list).unwrap_or_else(|| {
+            load_font(&regular_list).expect("regular font already loaded once")
         });
         let base_ascent = regular
             .horizontal_line_metrics(40.0)

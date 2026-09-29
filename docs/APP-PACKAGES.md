@@ -157,7 +157,7 @@ AI 侧的源目录受限：只能从**用户数据区**（`/home`、`/tmp`、`/v
 ### 因此做了三件事
 
 1. **镜像补库**：`ncurses`（含 **terminfo** —— 全屏程序的硬需求）、`zlib`、`openssl`、
-   `libffi`、`expat`。ISO 30.6 MB → **33.4 MB**。顺带按项目安全基线关掉了 OpenSSL 3.x 的
+   `libffi`、`expat`。ISO 30.6 MB → **38.5 MB**。顺带按项目安全基线关掉了 OpenSSL 3.x 的
    legacy 算法与调试机制（逐项说明见 `platform/br2-external/configs/aetheros_defconfig`）。
 2. **打包器 [`scripts/mkapp.py`](../scripts/mkapp.py)**：把宿主上的一个程序打成
    "自带缺的库 + terminfo" 的包。

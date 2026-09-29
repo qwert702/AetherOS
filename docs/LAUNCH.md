@@ -44,7 +44,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 5. **提交 awesome-list**（一条 PR 能带来长期流量）：
    - [`awesome-osdev`](https://github.com/awesome-os/awesome-os) / [`awesome-rust`](https://github.com/rust-unofficial/awesome-rust)（Operating Systems 一节）
    - [`awesome-selfhosted`](https://github.com/awesome-selfhosted/awesome-selfhosted) 不太合适（不是服务类），别硬塞
-   - 提交话术：「A hobby OS with a fully self-written Rust userland (compositor, init, terminal) and an AI hub with per-tool permission gating. Bootable 33 MB ISO.」（事实，不吹）
+   - 提交话术：「A hobby OS with a fully self-written Rust userland (compositor, init, terminal) and an AI hub with per-tool permission gating. Bootable 38 MB ISO.」（事实，不吹）
 6. **中文社区各一篇**：知乎、V2EX（分享创造节点）、掘金、少数派。
    中文社区对"全自研系统 + AI 内建"这类题目接受度很高，且竞争小。
 7. **加徽章**（可选）：build/tests/license 徽章能提升信任度，但没有 CI 之前别放假的 passing 徽章。
@@ -60,7 +60,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 > terminal emulator, font rendering, IME), PID 1 with service supervision, and `aetherd` — an AI hub
 > with 15 tools behind a 4-level permission gate.
 >
-> It boots in QEMU/VirtualBox from a **33 MB ISO**, and it can install real market software:
+> It boots in QEMU/VirtualBox from a **38 MB ISO**, and it can install real market software:
 > there's a packer that resolves ELF dependencies recursively, refuses to bundle anything from the
 > glibc family, verifies symbol versions against the target libc, and ships terminfo when needed.
 > htop 3.3.0 from Ubuntu 24.04 runs on the desktop (screenshot in the repo).
@@ -83,7 +83,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 > `DT_NEEDED` recursively, never bundles glibc (mixing two libcs breaks on GLIBC_PRIVATE symbols),
 > and checks `.gnu.version_r` against the target libc's `.gnu.version_d`. htop works.
 >
-> 33 MB bootable ISO, 334 tests, GPL-3.0. Feedback on the architecture very welcome.
+> 38 MB bootable ISO, 334 tests, GPL-3.0. Feedback on the architecture very welcome.
 
 ### Reddit — r/osdev
 
@@ -93,7 +93,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 > it: my own compositor with 4 tiling layouts, my own init with dependency-ordered services and
 > restart policy, a PTY-based terminal emulator, and an AI hub with per-tool permission gating.
 >
-> Boots in QEMU from a 33 MB ISO. Wrote up the whole build + the bugs I hit (kconfig "is not set"
+> Boots in QEMU from a 38 MB ISO. Wrote up the whole build + the bugs I hit (kconfig "is not set"
 > silently not applying, test artifacts baked into the ISO changing its size, etc.) in the repo docs.
 >
 > Would love criticism on the compositor/terminal side.
@@ -106,7 +106,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 > 终端模拟器、字体渲染、中文输入法）、PID 1 与服务监管、以及 `aetherd`（AI 中枢：15 个工具、
 > L0–L3 四级授权闸门、离线/云端混合路由）。
 >
-> - 可引导 ISO 只有 **33 MB**，QEMU/VirtualBox 直接开
+> - 可引导 ISO 只有 **38 MB**，QEMU/VirtualBox 直接开
 > - **能装市面上的 Linux 软件**：自带打包器递归解析 ELF 依赖、不打包 glibc 家族（混用两套 libc
 >   必撞 GLIBC_PRIVATE）、校验符号版本；实测 htop 3.3.0 装完就能跑
 > - 21,490 行 Rust、334 项测试、双目标 0 警告、连续 12 小时 43 分不崩
@@ -117,22 +117,22 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 
 ### 知乎 / 掘金（标题 + 开头）
 
-> 标题：**我写了一个操作系统：Linux 内核 + 全部自己写的 Rust 用户态，33 MB，能装 htop**
+> 标题：**我写了一个操作系统：Linux 内核 + 全部自己写的 Rust 用户态，38 MB，能装 htop**
 >
 > 开头段落：这不是一个"改主题的发行版"。内核之上——合成器、窗口管理、终端模拟器、字体渲染、
 > PID 1、服务监管、以及带权限闸门的 AI 中枢——一共 21,490 行 Rust，都是我从零写的。
-> 可引导 ISO 33 MB……（正文展开：架构图、怎么装市面上的软件、踩坑、如何验证）
+> 可引导 ISO 38 MB……（正文展开：架构图、怎么装市面上的软件、踩坑、如何验证）
 
 ### Bilibili / YouTube 视频简介
 
 > 从 Linux 内核往上写一个操作系统 ｜ AetherOS 0.1 预览
-> 全自研 Rust 用户态：合成器 / 终端 / PID 1 / AI 权限闸门。33 MB ISO，
+> 全自研 Rust 用户态：合成器 / 终端 / PID 1 / AI 权限闸门。38 MB ISO，
 > 桌面里直接装上并运行 Ubuntu 的 htop。项目开源（GPL-3.0）：（链接）
 
 ### X / 微博（短）
 
 > 写了个操作系统：内核用现成的，内核之上全是自己写的 Rust —— 合成器、终端、PID 1、
-> 带权限闸门的 AI 中枢。ISO 33 MB，能装并运行 Ubuntu 的 htop。334 项测试全绿。GPL-3.0。
+> 带权限闸门的 AI 中枢。ISO 38 MB，能装并运行 Ubuntu 的 htop。334 项测试全绿。GPL-3.0。
 > （链接）#rust #osdev
 
 ## 五、发布纪律（别被当成 spam）
@@ -140,7 +140,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 - **不要同一天群发所有社区**：挑 1–2 个，隔几天再发下一个；管理好自己的回帖精力。
 - **每个社区文案要改**（本清单已按社区分别写好，别复制同一段）。
 - **前 24 小时的评论决定成败**：HN/Reddit 的排名看早期互动，尽量守着回。
-- 标题**说事实不说形容词**（"33 MB ISO，能跑 htop" 优于 "惊艳的操作系统"）。
+- 标题**说事实不说形容词**（"38 MB ISO，能跑 htop" 优于 "惊艳的操作系统"）。
 - 被批评时别急着辩解：osdev/rust 社区吃"我知道它在哪不行"这套，仓库里那些"没修的问题"
   反而是诚信加分项。
 - 不要买 star、不要互刷 —— 会被举报且不可逆。

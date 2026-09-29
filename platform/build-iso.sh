@@ -41,6 +41,16 @@ else
     echo "    !! 未找到 $FONT_SRC —— 请先 apt-get install fonts-wqy-microhei"
 fi
 
+# Aether 自带 UI 字体（Noto Sans CJK SC 子集，**含真粗体**）—— 2026-09-29 起 compositor 优先用它：
+# wqy-microhei 没有粗体（标题"加粗"实际没加粗）且偏点阵屏显风格。子集 = GB2312 全量汉字
+# + ASCII + 常用标点，两个字重合计约 6 MB；fontTools 只是构建机工具，不进镜像。
+# **失败不阻塞构建**：text.rs 的候选表里 wqy 仍在，会自动回退（代价是回到伪粗体）。
+if command -v python3 >/dev/null 2>&1 && python3 "$ROOT/scripts/mkfont.py" --out "$OVERLAY/usr/share/fonts/truetype/aether"; then
+    echo "    NotoSansSC-{Regular,Bold}.otf -> overlay/usr/share/fonts/truetype/aether/"
+else
+    echo "    !! 字体子集生成失败（需 python3 + fontTools + fonts-noto-cjk）—— 退回 wqy-microhei"
+fi
+
 echo "==> [2/3] 获取 Buildroot $BR_VERSION"
 mkdir -p "$BUILD"
 cd "$BUILD"

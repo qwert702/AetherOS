@@ -1,4 +1,4 @@
-[中文](README.md) | **English** · [**Download ISO (33.4 MB)**](https://github.com/qwert702/AetherOS/releases/latest) · [Landing page](https://qwert702.github.io/AetherOS/) · [App packaging guide](docs/APP-PACKAGES.md)
+[中文](README.md) | **English** · [**Download ISO (38.5 MB)**](https://github.com/qwert702/AetherOS/releases/latest) · [Landing page](https://qwert702.github.io/AetherOS/) · [App packaging guide](docs/APP-PACKAGES.md)
 
 # AetherOS
 
@@ -18,7 +18,7 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 |---|---|
 | **Scale** | 21,315 lines of Rust / 41 source files / 7 crates (measured 2026-09-29) |
 | **Verification** | 334 unit tests green · 0 compiler warnings on both targets · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
-| **Artifact** | bootable ISO ≈ 33.4 MB, tested booting in QEMU, VirtualBox and VMware |
+| **Artifact** | bootable ISO ≈ 38.5 MB, tested booting in QEMU, VirtualBox and VMware |
 
 ## What makes it unusual
 
