@@ -8,8 +8,8 @@
 > **1a = 连续 12 小时 43 分不崩**（2026-09-28 21:46 → 09-29 10:30，要求 8 小时，超出 59%），
 > **1b = compositor 能自愈**（实机 kill 后 init 自动拉起）。长跑原始日志在 `docs/evidence/`。
 >
-> 代码规模（2026-09-29 实测）：**21,121 行 / 41 个 .rs**（7 crate）；口径与复核命令见 `scripts/repo-stats.py`。
-> 测试 **Windows 323 全绿（实测）／Linux 333（按 `aetherd` 增量推算，待构建机复核）**；`cargo check` **双目标零警告**（Windows 侧 2026-09-29 复跑确认）。
+> 代码规模（2026-09-29 实测）：**21,420 行 / 41 个 .rs**（7 crate）；口径与复核命令见 `scripts/repo-stats.py`。
+> 测试 **Windows 331 全绿（实测）／Linux 341（按 `aetherd` 增量推算，待构建机复核）**；`cargo check` **双目标零警告**（Windows 侧 2026-09-29 复跑确认）。
 > ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 与二级子目录。
 >
 > ⚠️ **两个目标都要测**：`cfg(target_os="linux")` 的代码在 Windows 上整段不编译，

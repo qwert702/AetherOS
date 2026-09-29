@@ -122,9 +122,105 @@ AI 侧的源目录受限：只能从**用户数据区**（`/home`、`/tmp`、`/v
 
 ## 明确的边界
 
-- **没有依赖解析**，没有仓库，装不了"从网上随便下的发行版软件"
+- **目标端不做依赖解析**（刻意的）：镜像里没有仓库、也没有 `ld.so.cache`，`aetherd` 只回答
+  "这个包在当前机器上跑不跑得起来"（递归查缺库 + 查 terminfo + 看包内 `lib/`）。
+  依赖收集发生在**打包时**（宿主/构建机上，那边才有完整的系统库），见下节。
 - **没有沙箱**：装进来的程序以你的权限运行，能读写你的一切。预检只回答"能不能跑"，
   不回答"是不是安全"
 - **没有版本/升级机制**：更新就是卸载（进回收站）再装
-- 现在只支持**目录形式**的包，不支持单文件压缩包（要加 tar 支持得引入新依赖，
-  或者自己写一个 ustar 读取器 —— 还没做）
+- **`.aep` 是未压缩 tar**，在 guest 里用 BusyBox 的 `tar xf` 解开再 `app install`。
+  刻意不让目标端实现 tar/gzip 解析器：少一个解析器就少一片攻击面。
+
+---
+
+## 能装市面上的 Linux 软件吗（2026-09-29 实测）
+
+**结论：静态链接与常见动态依赖的程序能装能跑；GUI 程序与解释型还没戏。**
+
+### 改造前的实测事实
+
+| 项 | 原来 |
+|---|---|
+| 包管理器 | 全无（apt/dpkg/rpm/apk/opkg/pacman） |
+| 解释器 / 编译器 | 全无（python/perl/node/gcc/make） |
+| 共享库 | 只有 glibc 家族 + libgcc_s + e2fsprogs 的库 |
+| terminfo | **没有** —— 而 PTY 设的 `TERM` 是 `xterm-256color` |
+
+三类二进制 chroot 进镜像实跑的结果：
+
+| 类型 | 结果 |
+|---|---|
+| `gcc -static`（静态） | ✅ 能跑 |
+| 动态、只依赖 glibc | ✅ 能跑（镜像 glibc 2.38 向后兼容） |
+| 动态、依赖别的东西（libstdc++ / libnl…） | ❌ `error while loading shared libraries` |
+
+### 因此做了三件事
+
+1. **镜像补库**：`ncurses`（含 **terminfo** —— 全屏程序的硬需求）、`zlib`、`openssl`、
+   `libffi`、`expat`。ISO 30.6 MB → **33.4 MB**。顺带按项目安全基线关掉了 OpenSSL 3.x 的
+   legacy 算法与调试机制（逐项说明见 `platform/br2-external/configs/aetheros_defconfig`）。
+2. **打包器 [`scripts/mkapp.py`](../scripts/mkapp.py)**：把宿主上的一个程序打成
+   "自带缺的库 + terminfo" 的包。
+3. **分发 [`scripts/serve-apps.py`](../scripts/serve-apps.py)**：宿主起只读 HTTP，guest 用
+   BusyBox `wget` 拉包（QEMU 用户态网络里宿主就是 `10.0.2.2`）。
+
+### 打包器的三条规则（每条都有实测教训）
+
+- **glibc 家族永不打包**。实测：把宿主 `libc.so.6` 打进包、再让 `LD_LIBRARY_PATH` 指过去，
+  加载器会用**外来 libc** → `undefined symbol: __tunable_is_initialized, version GLIBC_PRIVATE`。
+- **只收镜像里没有的库，而且要递归**。`--image-lib-dir` 指向镜像 rootfs 逐个比对；
+  libA 依赖 libB、libB 又依赖 libC —— 少收一层，装上去照样挂。
+- **镜像里"有"不等于"能用"**：版本符号（ELF 的 `.gnu.version_r` / `.gnu.version_d`）要对得上。
+  实测 htop 需要 `libncursesw.so.6` 的 `NCURSESW6_*`，而 Buildroot 编的 ncurses **没有版本符号表**
+  → 每次运行都打印 `no version information available (required by htop)`。
+  打包器会识别这种情况，改带宿主那份。
+
+### 用法
+
+```bash
+# 宿主/构建机：打包（--image-lib-dir 是镜像的 rootfs 目录）
+python3 scripts/mkapp.py /usr/bin/htop --id htop --name htop \
+    --image-lib-dir /home/aether/platform/build/output/target \
+    --out dist/apps --tar
+
+# 只想问"这个程序在镜像上能跑吗"（不产出任何文件）
+python3 scripts/mkapp.py /usr/bin/htop --check --image-lib-dir <镜像 rootfs>
+
+# 宿主：把包服务出去
+python3 scripts/serve-apps.py --dir dist/apps
+
+# 解析器自测（不需要 Linux、不联网）
+python3 scripts/mkapp.py --selftest
+```
+
+guest 里：
+
+```sh
+wget http://10.0.2.2:8765/htop.aep -O /var/tmp/htop.aep
+mkdir -p /var/tmp/pkg && tar xf /var/tmp/htop.aep -C /var/tmp/pkg
+aetherd app install /var/tmp/pkg/htop
+htop
+```
+
+### 实测战果
+
+**htop 3.3.0（Ubuntu 24.04 官方包）在 AetherOS 里跑起来了。** 打包器的判断：
+
+```
+跳过（glibc 家族，镜像自带，绝不打包）：libc.so.6, libm.so.6
+镜像里的 libncursesw.so.6 版本符号对不上（缺 NCURSESW6_5.7.20081102, …）→ 改带宿主那份
+需要随包携带（4 个）：libncursesw.so.6、libnl-3.so.200、libnl-genl-3.so.200、libtinfo.so.6
+要求 glibc ≥ 2.38；镜像提供 2.38          → 结论：可以跑 ✅
+```
+
+包约 1 MB；装完终端里直接敲 `htop` 就能用（包装脚本会设好 `LD_LIBRARY_PATH` 与
+`TERMINFO_DIRS`）。
+
+### 还不能跑的
+
+| 类型 | 为什么 |
+|---|---|
+| GUI 程序（GTK / Qt / X11） | 桌面走 `DRM → fbdev`，没有 X11/Wayland 客户端库（Phase 3 的事） |
+| 解释型（`.py` / `.pl` / npm 包） | 镜像里没有解释器，也**不打算**塞（会让 ISO 涨到 100 MB+） |
+| 发行版包（`.deb` / `.rpm`） | 没有包管理器；就算解开，依赖也不会自己出现 —— 用打包器代替 |
+| 要求 glibc 比 2.38 更新的程序 | 打包器会直接拒（这条现在有自动化检查，不再靠人肉判断） |

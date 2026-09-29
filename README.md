@@ -7,8 +7,8 @@
 
 | | |
 |---|---|
-| **规模** | 合计 21,121 行 Rust / 41 个源文件 / 7 个 crate（2026-09-29 实测） |
-| **验证** | 323 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **规模** | 合计 21,420 行 Rust / 41 个源文件 / 7 个 crate（2026-09-29 实测） |
+| **验证** | 331 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 30 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](docs/host-ui-light-desktop.png)
@@ -25,7 +25,7 @@
   `clipboard_read` 的结果一旦进入上下文，后续轮次就被钉在本地、不再上云。这条链不是推断 ——
   外泄路径是用**两个假 LLM 端点 + canary 文件**端到端证明的（13 字输入、两次读文件，
   云端端点确实收到了 canary），修复后的行为由 `router` 的两条单测钉住。
-- **可验证，而不是"我觉得没问题"。** 除 323 项单测外，还有 10 张归档走查图的**逐像素回归门禁**
+- **可验证，而不是"我觉得没问题"。** 除 331 项单测外，还有 10 张归档走查图的**逐像素回归门禁**
   （差异 > 0.02% 即失败）、12 小时 43 分的稳定性长跑（3053 轮巡检：服务退出 0 / 自动重启 0 /
   panic 0，内存无泄漏趋势）、四轮代码审查且**未修项归零**。
 - **真能装应用。** 在没有任何包管理器的系统上做了自己的应用包格式（清单 + 依赖预检），
@@ -42,7 +42,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
 cargo run -p aether-compositor -- --theme dark     # 深空主题
 cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试（Windows 323 项，见「测试与验证」）
+cargo test --workspace                             # 单元测试（Windows 331 项，见「测试与验证」）
 ```
 
 构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
@@ -110,6 +110,41 @@ aetherd app remove hello          # 卸载（进回收站，不是直接删）
 
 **是 Linux 软件吗**：是。内核是 Linux，用户态是 glibc 的 x86-64，能跑的就是 Linux 的 ELF 二进制。
 
+## 能装市面上的软件吗
+
+**能装，但不是 `apt install` 那种装法。** 实测结论（2026-09-29）：
+
+| 类型 | 结果 |
+|---|---|
+| 静态链接（Go / Rust **musl** / `gcc -static`） | ✅ 直接能跑 |
+| 动态链接、依赖的库镜像里已有 | ✅ 能跑（镜像已补 ncurses+terminfo / zlib / openssl / libffi / expat） |
+| 动态链接、依赖别的东西（libnl / libstdc++…） | ✅ **带上就行** —— `scripts/mkapp.py` 自动把缺的库收进包里 |
+| GUI 程序（GTK / Qt / X11） | ❌ 还没有 X11 / Wayland 客户端库（Phase 3） |
+| 解释型（`.py` / `.pl` / npm 包） | ❌ 镜像里没有解释器，也**不打算**塞（会让 ISO 涨到 100 MB+） |
+
+拿到一个市面上的程序，打包 + 装进系统三步：
+
+```bash
+# ① 宿主：打包（自动收集缺的库与 terminfo，并校验 glibc 符号版本）
+python3 scripts/mkapp.py /usr/bin/htop --id htop --image-lib-dir <镜像 rootfs> --out dist/apps --tar
+# ② 宿主：把包服务出去（QEMU 用户态网络里，guest 访问宿主就是 10.0.2.2）
+python3 scripts/serve-apps.py --dir dist/apps
+```
+
+```sh
+# ③ guest：拉下来装上就能敲
+wget http://10.0.2.2:8765/htop.aep -O /var/tmp/htop.aep
+mkdir -p /var/tmp/pkg && tar xf /var/tmp/htop.aep -C /var/tmp/pkg
+aetherd app install /var/tmp/pkg/htop
+htop
+```
+
+**实测战果**：**htop 3.3.0（Ubuntu 24.04 官方包）装进 AetherOS 后正常运行**（`htop 3.3.0`）。
+打包器跳过 glibc 家族、发现镜像那份 `libncursesw` 缺 `NCURSESW6_*` 版本符号于是改带宿主副本、
+另带 libnl×2 与 libtinfo，包约 1 MB；装完终端里直接敲 `htop` 即可。
+
+细节、规则与边界见 [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.md)。
+
 ## 架构
 
 ```
@@ -149,7 +184,7 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
 | `aether-compositor/` | 12,969 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
-| `aetherd/` | 5,247 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
+| `aetherd/` | 5,546 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
 | `aether-init/` | 1,319 | PID 1 与服务管理 | M3 |
 | `aether-ops/` | 736 | AI 运维与自修复 | M5 |
 | `aether-install/` | 505 | 磁盘安装器 | M6 |
@@ -192,7 +227,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 323 项全绿（2026-09-29 实测）；Linux 333 为按 `aetherd` 增量推算，待构建机复核 |
+| 单元测试 | Windows 331 项全绿（2026-09-29 实测）；Linux 341 为按 `aetherd` 增量推算，待构建机复核 |
 | 编译警告 | 两个目标都是 0 条 |
 | 视觉回归 | 10 张归档走查图逐像素比对，当前 10/10 零差异 |
 | 代码审查 | 四轮全量 / 增量审查，问题全部修复（未修项归零）；结论总集见 [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |

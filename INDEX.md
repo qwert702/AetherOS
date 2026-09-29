@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **21,121 行**
+生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **21,420 行**
 （7 个 crate，41 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
@@ -11,13 +11,13 @@
 | crate | 行数 | 文件 | 职责 |
 |---|---|---|---|
 | `aether-compositor` | 12,969 | 18 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 3,796 视觉层 / `main.rs` 3,420 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
-| `aetherd` | 5,247 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
+| `aetherd` | 5,546 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
 | `aether-init` | 1,319 | 6 | PID 1 与服务管理 |
 | `aether-ops` | 736 | 3 | AI 运维：日志监控 + 故障诊断 |
 | `aether-install` | 505 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 334 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **21,121** | **41** | |
+| **合计** | **21,420** | **41** | |
 
 > 口径：2026-09-29 12:20 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -93,11 +93,11 @@ Aether/
 - 与 aetherd 交互：`query_aether`（后台线程连接 7311，发 `Request::Chat`，收 ChatChunk[含 channel]/Action/NeedsConfirmation）
 - 顶栏 AI 三态：`AiStatus::{Local,Cloud,Offline}`（本地青/云端紫/离线灰），由 ChatChunk.channel 驱动
 
-### aetherd（AI 中枢，5,247 行 / 11 文件）
+### aetherd（AI 中枢，5,546 行 / 11 文件）
 | 文件 | 内容 |
 |---|---|
 | `src/tools.rs` (1,409) | 工具系统：`registry`（**15 个工具**，见下）、`execute` 管线（闸门→审计→执行）、罐头探针（命令全为编译期常量）、写白名单 **写 ⊆ 读**（有测试守着） |
-| `src/apps.rs` (893) | **应用安装**（2026-09-28 新增）：清单校验、目录安装、卸载（进回收站）、**安装前依赖预检**（自己解析 ELF 的 `PT_INTERP` 与 `DT_NEEDED`，缺哪个 `.so` 直接列出来）、生成终端包装脚本。包格式与边界见 `docs/APP-PACKAGES.md` |
+| `src/apps.rs` (1,192) | **应用安装**：清单校验、目录安装、卸载（进回收站）、**安装前预检**。2026-09-29 增强：预检改为**递归依赖闭包**（只查第一层会漏「libA→libB 缺 libB」）、新增 **terminfo 检查**（curses 程序缺终端条目会直接报 `Error opening terminal`）、新增**拦截包内 glibc 家族**（混用两套 libc 必撞 `GLIBC_PRIVATE`）；包装脚本同时设 `LD_LIBRARY_PATH` 与 `TERMINFO_DIRS`。包格式、打包器与边界见 `docs/APP-PACKAGES.md` |
 | `src/main.rs` (636) | 入口：`chat` / `serve` / `config` / **`app`** 四组子命令；`serve` 启动时把已装应用挂进 `/usr/local/bin` |
 | `src/server.rs` (572) | `serve`：TCP 127.0.0.1:7311 每连接一线程（连接数/行长上限）；`handle_chat` 先快速意图后 LLM，Action/确认必须先于 done 发送；`ipc_gating_tests` 把"每个 `Request` 变体都过闸门"固化成回归测试 |
 | `src/perm.rs` (412) | 权限闸门 `Gate`：`Level::{L0..L3}`、`judge` 裁决、`audit` 审计日志（**带轮转**）；`Approvals` 一次性确认令牌表（128 位、绑定 tool+参数、5 分钟、用后即废） |
@@ -243,7 +243,8 @@ Buildroot 的模型是构建期定死、运行期不改系统，所以 opkg/apt/
 | `scripts/png-crop.py` | 走查图裁剪 + 整数倍放大（1:1 检查边框/字重/图标比例） |
 | `scripts/archive-ui-shots.py` | **归档走查图工具**：重建 `docs/host-ui-*.png` 全部 **10 张**；`--check` 为视觉回归门禁（屏蔽时钟/AI 光标非确定区，差异 > 0.02% 即失败） |
 | `scripts/repo-stats.py` | **规模口径唯一来源**：逐 crate / 逐文件行数与文件数（口径 = `Cargo.toml` 的 workspace 成员 + `wc -l` 语义）。`--per-file` 出逐文件表，`--check` 比对 README/INDEX/roadmap 里声明的合计，不一致即非零退出（**可当门禁**） |
-| `docs/PRODUCTION-PLAN-2026-09-28.md` | **生产力化清单（最新）**：五阶段、每项带验收标准与依赖、六个硬门禁。**要动手先读这份**；09-27 版已移入 `docs/archive/`（决策历史） |
+| `scripts/mkapp.py` | **应用打包器**（2026-09-29 新增）：把市面上的 Linux 程序打成 AetherOS 能装的包 —— 递归解析 ELF 依赖、**跳过 glibc 家族**、只收镜像里没有的库、按 `.gnu.version_r`/`.gnu.version_d` **校验符号版本**（含"镜像里的库版本符号对不上"这种坑）、按需带上 terminfo，产出包目录 + `.aep`（未压缩 tar）。`--check` 只回答"能不能跑"，`--selftest` 是解析器自测（17 项，跨平台可跑） |
+| `scripts/serve-apps.py` | **只读分发服务**（2026-09-29 新增）：宿主起 HTTP 把 `dist/apps/*.aep` 喂给 guest（QEMU 用户态网络里宿主就是 `10.0.2.2`）。只实现 GET/HEAD、路径规范化防穿越、默认只绑回环、打印 sha256 供核对 |
 | `docs/PHASE3-DECISION-2026-09-28.md` | Phase 3（Wayland）决策框架：本轮不做的理由与条件、**放弃条件** |
 | `docs/WRITE-OPS-2026-09-28.md` | 4.1 可写文件操作：写白名单比读窄、回收站三重上限、权限模型约束 |
 | `docs/PANIC-AUDIT-2026-09-28.md` | 0.8 关键路径 panic 审计（修 1 个 P2 越界） |
@@ -298,7 +299,7 @@ cargo run -p aetherd -- config --show                           # 模型配置�
 cargo run -p aetherd -- config --api-key K --cloud-base URL      # 配置云端（也支持自建网关）
 cargo run -p aether-init -- --dry-run ./platform/overlay/etc/aether/services  # 服务监督自检
 python scripts/e2e-permission-confirm.py                        # 权限链路端到端（先起 aetherd serve）
-cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 323 项，分布见「测试分布」）
+cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 331 项，分布见「测试分布」）
 
 # ⚠️ 改了 cfg(target_os="linux") 的代码后必须交叉检查：Windows 构建会整段屏蔽那些路径
 cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether-compositor -p aether-init -p aether-ops -p aether-install -p aether-ipc -p aether-shell
@@ -340,7 +341,7 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
   空格提交 / 退格删拼音，**未被 IME 吃掉的字符才送 PTY**（`3a34f49`）；Esc 取消拼字同轮接上
 - ⚠️ 终端里的中文输入**只做过编译与源码级确认，没有实机键盘交互验证**（`--shot` 出静态帧，测不了输入）
 
-## 测试分布（2026-09-29 实测：**Windows 323 全绿；双目标零警告**；Linux 333 为推算，见下）
+## 测试分布（2026-09-29 实测：**Windows 331 全绿；双目标零警告**；Linux 341 为推算，见下）
 
 > Linux 列的 333 是**按 `aetherd` 增量推算**的（`llm.rs` 新增 5 项，该文件无平台门控：
 > 328 + 5 = 333），**不是构建机实测值** —— 引用前先上构建机跑一遍。
@@ -354,12 +355,12 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
 |---|---|---|---|
 | `aether-compositor` | 189 | 185 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
 | `aether-ops` | 0 | **13** | 整个 crate 是 Linux 专属，Windows 不参与 |
-| `aetherd` | 101 | 102 | 含 `apps.rs` 的 13 项（清单校验/目录穿越/符号链接拒绝/ELF 解析/预检/包装脚本）+ `llm.rs` 的 5 项（错误路径必须带出服务器正文；本地假端点，不联网） |
+| `aetherd` | 109 | 110 | 含 `apps.rs` 的 21 项（清单校验/目录穿越/符号链接拒绝/ELF 解析/**递归依赖闭包**/**terminfo 判定**/**glibc 家族拦截**/包装脚本）+ `llm.rs` 的 5 项（错误路径必须带出服务器正文；本地假端点，不联网） |
 | `aether-init` | 17 | 17 | 含 `shipped_essential_services_must_be_restartable`（见下） |
 | `aether-install` | 9 | 9 | |
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **323** | **333** | |
+| **合计** | **331** | **341** | |
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。
