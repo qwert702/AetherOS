@@ -669,7 +669,13 @@ pub fn bundled_glibc_family(pkg: &Path) -> Vec<String> {
 }
 
 /// 在「包内 lib/ + 系统库目录」里找这个共享库。找不到返回 `None`。
+///
+/// 库名来自 ELF 的 `DT_NEEDED`（外部输入）：**只允许是文件名**，含路径分隔符的一律不认，
+/// 否则 `../../etc/passwd` 这种名字会让预检跑去查包外的路径。
 pub fn find_lib(lib: &str, app_lib: &Path) -> Option<PathBuf> {
+    if lib.is_empty() || lib.contains('/') || lib.contains('\\') {
+        return None;
+    }
     let local = app_lib.join(lib);
     if local.is_file() {
         return Some(local);
@@ -1079,6 +1085,19 @@ mod tests {
         let (missing, _) = walk_dependencies(&pkg, &pkg.join("bin/x"));
         assert!(missing.is_empty(), "包内自带的库应算已满足，实得缺失 {missing:?}");
         assert!(find_lib("libA.so.1", &pkg.join("lib")).is_some());
+    }
+
+    #[test]
+    fn lib_names_with_path_separators_are_rejected() {
+        // 库名来自 ELF 的 DT_NEEDED（外部输入）：不能借它去查包外路径
+        let d = tmp("lib-name-traversal");
+        let pkg = d.join("pkg");
+        std::fs::create_dir_all(pkg.join("lib")).unwrap();
+        std::fs::write(pkg.join("lib/libok.so"), b"x").unwrap();
+        assert!(find_lib("libok.so", &pkg.join("lib")).is_some(), "正常库名要能找到");
+        for bad in ["../libok.so", "../../etc/shadow", "/etc/passwd", "a/b.so", "", "x\\y.so"] {
+            assert!(find_lib(bad, &pkg.join("lib")).is_none(), "{bad:?} 不该被接受");
+        }
     }
 
     #[test]

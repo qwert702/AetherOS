@@ -311,6 +311,20 @@ def is_glibc_family(soname: str) -> bool:
     return soname in GLIBC_FAMILY
 
 
+def safe_soname(name: str) -> bool:
+    """soname 会被**当成文件名**落到包里，必须挡住路径穿越。
+
+    审计发现（2026-09-29）：`DT_SONAME` / `DT_NEEDED` 来自我们打包的那个 ELF ——
+    它是外部输入。构造一个 `../../etc/x` 的 soname，就会让打包器往包外写文件。
+    合法 soname 只是一段文件名：不含分隔符、不是 `.`/`..`、不是绝对路径。
+    """
+    if not name or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name or "\0" in name:
+        return False
+    return not Path(name).is_absolute()
+
+
 # ── 依赖收集 ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -404,6 +418,9 @@ def collect(entry: Path, search_dirs: list[Path], image_lib_dir: Path | None,
         if soname in seen or soname in VDSO:
             continue
         seen.add(soname)
+        if not safe_soname(soname):
+            res.notes.append(f"忽略可疑的库名（含路径分隔符，会写到包外）：{soname!r}")
+            continue
         if is_glibc_family(soname):
             res.skipped_glibc.append(soname)
             continue
@@ -647,6 +664,11 @@ def main(argv: list[str]) -> int:
                                      encoding="utf-8")
 
     print(f"\n[mkapp] 已产出 {pkg}")
+    for name in res.bundled:
+        if not safe_soname(name):  # 兜底：绝不该发生，但宁可不产出也不写包外
+            print(f"[mkapp] 拒绝产出：库名不安全 {name!r}", file=sys.stderr)
+            shutil.rmtree(pkg, ignore_errors=True)
+            return 1
     if args.tar:
         tar_path = Path(args.out) / f"{app_id}.aep"
         write_tar(pkg, tar_path)
@@ -780,6 +802,13 @@ def selftest() -> int:
           and is_glibc_family("libpthread.so.0"), "glibc 家族识别")
     check(not is_glibc_family("libstdc++.so.6") and not is_glibc_family("libnl-3.so.200"),
           "非 glibc 家族不该被排除")
+
+    # 路径穿越防护：soname 会被当成文件名落到包里
+    check(safe_soname("libc.so.6") and safe_soname("libnl-3.so.200"), "正常 soname 应通过")
+    bad_names = ["../evil", "../../etc/passwd", "/abs/lib.so", "a/b.so", "..", ""]
+    check(all(not safe_soname(b) for b in bad_names),
+          "含路径分隔符/空名字的 soname 必须被拒：" + repr(bad_names))
+    check(not safe_soname("x" + chr(92) + "y.so"), "反斜杠 soname 必须被拒")
 
     # verneed 按库分组：这是"镜像里有同名库 ≠ 它能满足要求"的判断依据
     e4 = parse_elf(_synth_elf("/lib64/ld-linux-x86-64.so.2", ["libncursesw.so.6"],
