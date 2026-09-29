@@ -410,9 +410,9 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 | 终端在真机（Linux VM）上的行为 | `pty.rs` 在 Windows 上无法运行；本轮只做到编译检查 + 源码审读 |
 | 终端拖选复制 / `Ctrl+Shift+C` / `Ctrl+Shift+V` 的实际交互 | `--shot` 只能出静态帧，**测不了点击与拖拽**；需 QEMU/VMware 实机 |
 | 归档图与 HEAD 的像素一致性 | ~~未跑比对~~ → **17:55 复核：已跑 `archive-ui-shots.py --check`，10/10 全部 0 差异像素** |
-| 编译警告 | **新增**：`cargo check --workspace --all-targets` 现有 **3 条**警告（`main.rs` 未使用的 `DISPLAY_ID` 导入、`wayland/session.rs` 一处 `unused mut` + 一处 `unused var`），来自 3.1 spike。**零警告基线已破**，属低成本待办 |
+| 编译警告 | ~~**新增**：现有 3 条警告（`DISPLAY_ID` 未使用导入、`wayland/session.rs` 的 `unused mut` + `unused var`），零警告基线已破~~ → **✅ 2026-09-29 已清零，且 Windows 与 Linux 双目标都是 0 条**。另外发现 `aether-ops` 还有 3 条**只在 Linux 出现**的警告（该 crate 在 Windows 上整段不编译） |
 | `input.rs`(+306) / `draw.rs`(+1038) / `main.rs`(+1173) | 未逐行审；只做了 panic 扫描（未发现可被外部输入触发的 `unwrap`/越界） |
-| 门禁 1（8 小时不崩） | 需实机长跑 |
+| 门禁 1（8 小时不崩） | ✅ **2026-09-29 达成：连续 12 小时 43 分不崩**（3053 轮巡检零退出/零重启/零 panic），证据 `docs/evidence/soak-2026-09-28-12h43m.log.gz` |
 | 上轮 P1-9 拒绝通路 | 本轮未复测 |
 | 主按钮对比度 | 本轮未复测 |
 | 帧耗时真实值 | 未跑 `--bench`；`TARGET_FRAME_MS = 33` 是主动限帧，非能力上限 |
