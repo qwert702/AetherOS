@@ -11,6 +11,15 @@ preview.png
 .mimosa/
 .zcode/
 
+# 构建期生成（build-iso.sh 拷入的自研二进制与中文字体），不是源文件
+/platform/overlay/usr/
+
+# 构建机 SSH 主机密钥记录（TOFU，每台机器不同）
+scripts/.vm_known_hosts
+
+# AI 助手本地权限配置（各人环境不同，靠全局 ignore 不可靠）
+.claude/settings.local.json
+
 # 工作区数据（AI 助手记忆/会话缓存），不纳入版本控制
 .workbuddy/
 .workbuddy-ai/
