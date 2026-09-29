@@ -10,6 +10,10 @@
 #   3. 下载/解压 Buildroot，应用 defconfig，构建
 set -euo pipefail
 
+# Rust 不在非交互式 SSH 的 PATH 里（2026-09-29 实测：无人值守跑本脚本会
+# `rustup: command not found` 而立刻失败）。显式补上，让脚本在 CI/ssh 下也能跑。
+export PATH="$HOME/.cargo/bin:$PATH"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BR_VERSION="2024.02.1"
 BUILD="$ROOT/platform/build"
