@@ -216,6 +216,26 @@ htop
 包约 1 MB；装完终端里直接敲 `htop` 就能用（包装脚本会设好 `LD_LIBRARY_PATH` 与
 `TERMINFO_DIRS`）。
 
+**真机实拍**（QEMU 里的 AetherOS 桌面，完整链路一次跑通）：
+
+![htop 在 AetherOS 桌面里运行](screenshot-htop-app.png)
+
+guest 里只敲了一行：`wget -O- http://10.0.2.2/i|sh`（脚本内容就是 `wget` 包 → `tar xf` →
+`aetherd app install` → `aetherd app link`），终端原始输出：
+
+```
+Connecting to 10.0.2.2 (10.0.2.2:80)
+已装「htop」（htop）→ /var/apps/htop
+大小 971 KB
+预检：动态链接，需要的共享库都在（系统里或包内 lib/），terminfo 也找得到
+已挂载 2 个应用到 /usr/local/bin：hello htop
+INSTALL-OK
+```
+
+⚠️ 这条路同时是**发现产品缺陷**的方式：第一次真机注入按键时命令被敲成了 `10.0.../i`，
+顺藤摸到"**裸数字 1–4 被布局快捷键吞掉**"这个高影响 bug（任何输入框里都打不出 1–4，
+终端里连 IP 都敲不了）。已修：布局切换改为 **Alt+1–4**（见 `aether-compositor/src/input.rs`）。
+
 ### 还不能跑的
 
 | 类型 | 为什么 |
