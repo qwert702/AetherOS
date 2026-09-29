@@ -332,16 +332,66 @@ pub mod strings {
     pub const NOW_PLAYING: &str = "正在播放";
 }
 
-/// 从 UTC 时间戳推算北京时间字符串 HH:MM（预览期简化处理，系统化后走本地化时钟服务）
+/// 无 `TZ` 时的默认时区偏移（分钟）。产品默认面向中文用户，所以是 +8。
+///
+/// 2026-09-29 P2：此前时钟**硬编码 UTC+8** —— 对中文用户"看着对"，但任何其它时区
+/// 都是错的、而且改不了。现在按 `TZ` 解析，设置中心（P3）会把用户选择写进偏好。
+pub const DEFAULT_TZ_OFFSET_MIN: i32 = 8 * 60;
+
+/// 解析 POSIX 风格的 `TZ` 偏移（`CST-8`、`UTC0`、`GMT+5:30`）。
+///
+/// **POSIX 的符号是反的**：`CST-8` 表示 UTC+8；`GMT+5:30` 表示 UTC-5:30。
+/// IANA 名（`Asia/Shanghai`）需要时区数据库才能换算，这里返回 `None`（调用方回落到
+/// 默认偏移）——不做半吊子猜测，也绝不 panic。
+pub fn parse_tz_offset(tz: &str) -> Option<i32> {
+    let tz = tz.trim();
+    if tz.is_empty() || tz.contains('/') {
+        return None;
+    }
+    let start = tz.find(|c: char| c == '+' || c == '-' || c.is_ascii_digit())?;
+    let (sign, body) = match tz.as_bytes()[start] {
+        b'-' => (1, &tz[start + 1..]),
+        b'+' => (-1, &tz[start + 1..]),
+        _ => (1, &tz[start..]),
+    };
+    let (h, m) = match body.split_once(':') {
+        Some((h, m)) => (h, m),
+        None => (body, "0"),
+    };
+    let h: i32 = h.trim().parse().ok()?;
+    let m: i32 = m.trim().parse().ok()?;
+    if !(0..=24).contains(&h) || !(0..60).contains(&m) {
+        return None;
+    }
+    Some(sign * (h * 60 + m))
+}
+
+/// 当前生效的时区偏移（分钟）：读 `TZ`，读不到/解析不了就用默认值。
+pub fn tz_offset_min() -> i32 {
+    std::env::var("TZ")
+        .ok()
+        .and_then(|t| parse_tz_offset(&t))
+        .unwrap_or(DEFAULT_TZ_OFFSET_MIN)
+}
+
+/// 由 UTC 秒 + 时区偏移算 `HH:MM`（纯函数，便于测跨日与负偏移）。
+pub fn clock_at(utc_secs: i64, offset_min: i32) -> String {
+    // 先归到"分钟"再取模：Rust 的整数除法**向零截断**，直接对秒做 rem_euclid
+    // 在负偏移下会算错小时（-5.5h 会截成 -5h → 19:30 而不是 18:30）。
+    // div_euclid 才是向下取整，跨日与负时刻都正确。
+    let total_min = (utc_secs + offset_min as i64 * 60).div_euclid(60);
+    let h = total_min.div_euclid(60).rem_euclid(24);
+    let m = total_min.rem_euclid(60);
+    format!("{h:02}:{m:02}")
+}
+
+/// 顶栏时钟：按本地时区（`TZ` → 默认偏移）。
 pub fn clock_str() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-        + 8 * 3600;
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    format!("{h:02}:{m:02}")
+        .unwrap_or(0);
+    clock_at(secs, tz_offset_min())
 }
 
 /// 供 draw 模块调用的便捷封装（常规字重）。
@@ -399,5 +449,37 @@ mod tests {
         let a = tr.glyph(false, '中', 11.0);
         let b = tr.glyph(false, '中', 20.0);
         assert_ne!(a.1.len(), b.1.len(), "不同字号的位图尺寸应当不同");
+    }
+
+    /// 时钟：解析 POSIX `TZ` 偏移。**符号是反的**，这是最容易写错的地方。
+    #[test]
+    fn tz_offset_parses_posix_sign() {
+        assert_eq!(parse_tz_offset("CST-8"), Some(480), "POSIX 的 CST-8 = UTC+8");
+        assert_eq!(parse_tz_offset("GMT+5:30"), Some(-330), "GMT+5:30 = UTC-5:30");
+        assert_eq!(parse_tz_offset("UTC0"), Some(0));
+        assert_eq!(parse_tz_offset("EST5"), Some(300), "无符号时按数值取小时");
+        assert_eq!(parse_tz_offset("  CST-8  "), Some(480), "两侧空白要容忍");
+        // 解析不了就返回 None（调用方回落默认偏移），绝不猜、绝不 panic
+        assert_eq!(parse_tz_offset("Asia/Shanghai"), None, "IANA 名需要时区库，不做猜测");
+        assert_eq!(parse_tz_offset(""), None);
+        assert_eq!(parse_tz_offset("CST-99"), None, "越界小时应拒绝");
+        assert_eq!(parse_tz_offset("CST-8:99"), None, "越界分钟应拒绝");
+    }
+
+    /// 时钟：UTC 秒 + 偏移 → `HH:MM`，含跨日与负偏移（此前硬编码 UTC+8，
+    /// 任何其它时区都是错的）。
+    #[test]
+    fn clock_handles_day_wrap_and_negative_offsets() {
+        assert_eq!(clock_at(0, 0), "00:00");
+        assert_eq!(clock_at(0, 480), "08:00");
+        assert_eq!(clock_at(0, -330), "18:30", "负偏移要回到前一天，不能出现负数时刻");
+        assert_eq!(clock_at(23 * 3600, 480), "07:00", "跨日进位");
+        assert_eq!(clock_at(1800, -60), "23:30");
+        assert_eq!(clock_at(3661, 0), "01:01");
+        assert_eq!(
+            clock_at(0, DEFAULT_TZ_OFFSET_MIN),
+            "08:00",
+            "默认偏移就是 +8（无 TZ 时的产品默认）"
+        );
     }
 }

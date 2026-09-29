@@ -493,9 +493,6 @@ fn run_fbdev() -> anyhow::Result<()> {
                     .position(|r| r.contains(mouse.0, mouse.1));
                 if let Some(mi) = hit_menu {
                     open_menu = if open_menu == Some(mi) { None } else { Some(mi) };
-                } else if renderer.search_pill.contains(mouse.0, mouse.1) {
-                    toast = Some(("搜索：先试试下面的 AI 指令条".into(), Instant::now()));
-                    open_menu = None;
                 } else if open_menu.is_some() {
                     open_menu = None;
                 }
@@ -2024,9 +2021,6 @@ fn preview_main() -> anyhow::Result<()> {
                     .position(|r| r.contains(mx, my));
                 if let Some(mi) = hit_menu {
                     open_menu = if open_menu == Some(mi) { None } else { Some(mi) };
-                } else if renderer.search_pill.contains(mx, my) {
-                    toast = Some(("搜索：M2 应用启动器，先试试下面的 AI 指令条".into(), Instant::now()));
-                    open_menu = None;
                 } else if open_menu.is_some() {
                     open_menu = None;
                 }

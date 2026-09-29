@@ -8,8 +8,8 @@
 > **1a = 连续 12 小时 43 分不崩**（2026-09-28 21:46 → 09-29 10:30，要求 8 小时，超出 59%），
 > **1b = compositor 能自愈**（实机 kill 后 init 自动拉起）。长跑原始日志在 `docs/evidence/`。
 >
-> 代码规模（2026-09-29 实测）：**21,968 行 / 42 个 .rs**（7 crate）；口径与复核命令见 `scripts/repo-stats.py`。
-> 测试 **Windows 342 全绿（实测）／Linux 352（按 `aetherd` 增量推算，待构建机复核）**；`cargo check` **双目标零警告**（Windows 侧 2026-09-29 复跑确认）。
+> 代码规模（2026-09-29 实测）：**22,044 行 / 42 个 .rs**（7 crate）；口径与复核命令见 `scripts/repo-stats.py`。
+> 测试 **Windows 344 全绿（实测）／Linux 354（按 `aetherd` 增量推算，待构建机复核）**；`cargo check` **双目标零警告**（Windows 侧 2026-09-29 复跑确认）。
 > ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 与二级子目录。
 >
 > ⚠️ **两个目标都要测**：`cfg(target_os="linux")` 的代码在 Windows 上整段不编译，
@@ -40,7 +40,7 @@
   - **2026-09-28 进展**：3.1 spike 已自研出 `wl_display` 子集（W1–W4 完成，W5 差 fd 收包），**未接生产路径**。见 `docs/PHASE3-DECISION-2026-09-28.md`
 
 ## M2 — 自研 Shell 雏形 ✅（职责由 compositor 承担）
-- [x] 顶栏（品牌/菜单/AI 状态/搜索/时钟）、Dock（运行指示 + 打开应用）、AI 指令条
+- [x] 顶栏（品牌/菜单/AI 状态/时钟）、Dock（运行指示 + 打开应用）、AI 指令条
 - [x] 拖拽置顶、边缘吸附、布局切换 Toast、AI 回复气泡
 - [x] L2+ 权限确认弹窗（模态卡片）与安装向导共用同一条确认通路
 - [x] 视觉体系 token 化（draw.rs::theme："Essence" 设计令牌，Step 1–4 完成）

@@ -1218,8 +1218,6 @@ pub struct Renderer {
     shadow_key: u64,
     /// 菜单栏各菜单标签的命中区（每帧更新）
     pub menubar_menus: Vec<Rect>,
-    /// 搜索胶囊命中区
-    pub search_pill: Rect,
     /// Dock 图标命中区
     pub dock_icons: Vec<Rect>,
     /// 已装应用（`(id, 显示名)`），按 id 排序。由 main 扫描 `/var/apps` 后填进来。
@@ -1263,7 +1261,6 @@ impl Renderer {
             shadow_layer: Vec::new(),
             shadow_key: 0,
             menubar_menus: Vec::new(),
-            search_pill: Rect { x: 0, y: 0, w: 0, h: 0 },
             dock_icons: Vec::new(),
             installed_apps: Vec::new(),
             dropdown: None,
@@ -1565,28 +1562,21 @@ impl Renderer {
         let clock_x = w as f32 - 16.0 - clock_w;
         tr.draw_bold(buf, w, h, clock_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), &clock, font::BODY, color::text(), 0.95);
 
-        let pill = Rect { x: clock_x as i32 - 208, y: 5, w: 192, h: 22 };
-        let pill_hover = pill.contains(ui.mouse.0, ui.mouse.1);
-        rounded_rect(buf, w, h, pill, 11.0, color::hairline(), if pill_hover { state::hover_strong() } else { 0.08 });
-        rounded_outline(buf, w, h, pill, 11.0, color::hairline(), if pill_hover { 0.22 } else { 0.14 });
-        draw_text(tr, buf, w, h, (pill.x + 12) as f32, tr.vcenter(pill.y as f32, pill.h as f32, font::CAPTION), "搜索", font::CAPTION, color::text_dim(), if pill_hover { 0.95 } else { 0.8 });
-        let key = Rect { x: pill.x + pill.w - 22, y: 8, w: 16, h: 16 };
-        rounded_rect(buf, w, h, key, 4.0, color::hairline(), 0.12);
-        draw_text(tr, buf, w, h, (key.x + 4) as f32, tr.vcenter(key.y as f32, key.h as f32, font::LABEL), "K", font::LABEL, color::text_dim(), 0.85);
-        self.search_pill = pill;
+        // 2026-09-29 P2：**删掉"搜索"胶囊**。它只显示"搜索 K"，点下去弹一句 toast ——
+        // 一个纯粹的假控件（真正的启动器/搜索是 P4 控制中心的活）。顶栏宁缺毋滥：
+        // 现在右侧只剩 AI 状态与时钟，两个都是真实信息。
+        // 命令栏（下方）本来就恒聚焦，不需要"点搜索再输入"这一层假仪式。
 
         // AI 状态指示（§4 三态：本地青 / 云端紫 / 离线灰）
         let ai_label = ui.ai_status.label();
         let ai_w = tr.measure(ai_label, font::CAPTION);
-        let ai_x = pill.x as f32 - 16.0 - ai_w;
+        let ai_x = clock_x as f32 - 20.0 - ai_w;
         rounded_rect(buf, w, h, Rect { x: ai_x as i32 - 12, y: 13, w: 6, h: 6 }, 3.0, ui.ai_status.color(), 0.95);
         draw_text(tr, buf, w, h, ai_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::CAPTION), ai_label, font::CAPTION, color::text_dim(), 0.85);
 
-        // 电池：状态用中性色（在线/电量语义留给文字，避免与强调色抢注意力）
-        let batt = Rect { x: ai_x as i32 - 56, y: 10, w: 26, h: 12 };
-        rounded_outline(buf, w, h, batt, 3.5, color::text_dim(), 0.5);
-        fill_rect(buf, w, h, Rect { x: batt.x + batt.w, y: 13, w: 2, h: 6 }, color::text_dim(), 0.5);
-        fill_rect(buf, w, h, Rect { x: batt.x + 2, y: batt.y + 2, w: 16, h: 8 }, color::text(), 0.5);
+        // 2026-09-29 P2：**删掉假电量图标**。它是画上去的固定 50% 填充，既没有
+        // /sys/class/power_supply 数据源也不代表任何状态 —— 桌面上的假信息比没有更糟。
+        // 真有电池节点时再按真实读数画（P3/P4 接 ACPI）。
     }
 
     /// 展开中的下拉菜单（登记各项命中区，悬停高亮）。
@@ -1665,7 +1655,9 @@ fn draw_window(
     let body = color::surface_1();
     // 不透明度定得高：合成器没有模糊（backdrop-filter），窗口一旦半透明，
     // 后面窗口的文字就会"透"上来变成鬼影——那比没有玻璃感难看得多。
-    let body_alpha = if active { 0.955 } else { 0.90 };
+    // 2026-09-29 P2：活动/非活动对比拉开（0.955/0.90 → 0.97/0.94）——
+    // 多窗口叠放时要一眼看出焦点在哪。
+    let body_alpha = if active { 0.97 } else { 0.94 };
     // 标题栏比主体亮一档——窗口必须有"头"，否则整窗是一块没有层次的灰
     let title_rgb = mix(body, color::hairline(), if active { 0.075 } else { 0.035 });
     let t_stop = metric::TITLE_H as f32 / r.h.max(1) as f32;
@@ -1684,7 +1676,8 @@ fn draw_window(
     fill_rect(buf, w, h, Rect { x: r.x + 10, y: r.y + 1, w: r.w - 20, h: 1 }, color::HIGHLIGHT, 0.10);
     // 标题栏底部发丝线
     fill_rect(buf, w, h, Rect { x: r.x + 1, y: r.y + metric::TITLE_H, w: r.w - 2, h: 1 }, color::hairline(), 0.10);
-    rounded_outline(buf, w, h, r, radius::LG, color::hairline(), if active { 0.22 } else { 0.12 });
+    // 描边：1px 承担层次（P0 把大软影撤了，边必须更清楚；P2 由 0.22/0.12 提到 0.30/0.16）
+    rounded_outline(buf, w, h, r, radius::LG, color::hairline(), if active { 0.30 } else { 0.16 });
 
     // 红绿灯（左）：直径 10px、间距 7px，悬停时整组显示符号
     let lights = [color::close(), color::min(), color::zoom()];
@@ -2534,14 +2527,21 @@ impl Renderer {
     let bar_w = 560i32;
     let bar = Rect { x: w as i32 / 2 - bar_w / 2, y: h as i32 - metric::BOTTOM_DOCK - 52 - 16, w: bar_w, h: 52 };
     let hovered = bar.contains(mouse.0, mouse.1);
-    shadow(buf, w, h, bar, radius::MD, elevation::elev_2());
-    rounded_rect(buf, w, h, bar, 26.0, color::glass(), color::glass_alpha(hovered));
+    shadow(buf, w, h, bar, radius::LG, elevation::elev_2());
+    // 2026-09-29 P2：从"26px 大胶囊"改成**命令栏形态**（radius::LG = 8px，
+    // 与 Windows 11 搜索框/输入框同一规范）。胶囊 + 渐变环是最典型的 AI 产品观感。
+    rounded_rect(buf, w, h, bar, radius::LG, color::glass(), color::glass_alpha(hovered));
     if ui.ai_focused {
-        // 焦点态：青紫渐变环（AI 元素的极光配额）；思考中叠一层呼吸脉动
-        let breath = if ui.ai_thinking { 0.55 + 0.45 * (t * 3.0).sin() } else { 1.0 };
-        gradient_outline(buf, w, h, bar, 26.0, color::accent(), color::accent(), 0.75 * breath);
+        // 焦点环：**只在思考中脉动**（那是真实状态），空闲时是静态环 —— 此前无条件呼吸，
+        // 属于纯装饰动效。
+        let ring = if ui.ai_thinking {
+            0.45 + 0.25 * (t * 3.0).sin()
+        } else {
+            0.65
+        };
+        gradient_outline(buf, w, h, bar, radius::LG, color::accent(), color::accent(), ring);
     } else {
-        rounded_outline(buf, w, h, bar, 26.0, color::hairline(), if hovered { 0.22 } else { 0.14 });
+        rounded_outline(buf, w, h, bar, radius::LG, color::hairline(), if hovered { 0.22 } else { 0.14 });
     }
 
     let Some(tr) = tr else { return };
