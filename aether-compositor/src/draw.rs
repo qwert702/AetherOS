@@ -60,11 +60,11 @@ pub mod theme {
         // —— 中性层级 ——
         /// 壁纸渐变顶
         pub fn bg_top() -> [u8; 3] {
-            pick([244, 247, 253], [22, 24, 34])
+            pick([243, 244, 246], [27, 29, 33])
         }
         /// 壁纸渐变底
         pub fn bg_bottom() -> [u8; 3] {
-            pick([218, 228, 246], [46, 52, 68])
+            pick([233, 236, 240], [23, 24, 28])
         }
         /// 底座（菜单栏、侧栏、终端底、状态条、音乐面板）。
         /// 浅色下**必须比窗口体暗**，否则底座与窗口同色，所有区域糊成一片。
@@ -124,18 +124,18 @@ pub mod theme {
             pick([255, 255, 255], [30, 32, 41])
         }
 
-        /// 悬浮玻璃层不透明度（明亮模式要提高，否则粉彩壁纸透上来发脏）
+        /// 悬浮玻璃层不透明度（P0：整体提纯——面板不透明化，浮层保留玻璃）
         pub fn glass_alpha(hovered: bool) -> f32 {
             if is_light() {
                 if hovered {
-                    0.98
+                    0.99
                 } else {
-                    0.95
+                    0.98
                 }
             } else if hovered {
-                0.82
+                0.95
             } else {
-                0.75
+                0.92
             }
         }
 
@@ -144,10 +144,8 @@ pub mod theme {
         pub fn accent() -> [u8; 3] {
             pick([11, 132, 150], [64, 190, 205])
         }
-        /// 辅紫：AI 相关元素
-        pub fn accent_violet() -> [u8; 3] {
-            pick([110, 90, 205], [150, 130, 220])
-        }
+        /// 辅紫（AI 相关元素）—— 2026-09-29 P0 移除：强调色收敛为单一 `accent()`，
+        /// 所有渐变组合（AI 状态点/焦点环/徽标/气泡环/品牌徽标）改为单色 accent。
         /// 完成、在线
         pub fn success() -> [u8; 3] {
             pick([22, 142, 90], [52, 199, 123])
@@ -200,36 +198,7 @@ pub mod theme {
             [39, 201, 63]
         }
 
-        // —— 极光带（壁纸）：明亮模式是低饱和粉彩，深空模式是发光带 ——
-        pub fn aurora_cyan() -> [u8; 3] {
-            pick([120, 206, 234], [72, 200, 218])
-        }
-        pub fn aurora_violet() -> [u8; 3] {
-            pick([166, 152, 238], [152, 130, 224])
-        }
-        pub fn aurora_blue() -> [u8; 3] {
-            pick([150, 174, 240], [136, 126, 226])
-        }
-        /// 极光带强度系数（明亮模式下带需要更"淡"才不脏）
-        pub fn aurora_gain() -> f32 {
-            if is_light() {
-                0.95
-            } else {
-                1.0
-            }
-        }
-        /// 粉彩点缀（仅明亮壁纸使用）
-        pub fn aurora_pink() -> [u8; 3] {
-            pick([246, 198, 226], [216, 106, 176])
-        }
-        /// 暗角系数（明亮模式只留极轻的一圈，避免发灰）
-        pub fn vignette() -> f32 {
-            if is_light() {
-                0.03
-            } else {
-                0.20
-            }
-        }
+        // —— 2026-09-29 P0：极光/粉彩壁纸（aurora_* 与 vignette）移除，静态壁纸见 draw_background_rows ——
     }
 
     /// 字阶 §3.2：5 档（+ 图标字形档）。11px 是可读下限，不得更小。
@@ -244,18 +213,27 @@ pub mod theme {
         pub const BODY: f32 = 14.0;
         /// 弹窗标题、面板大标题
         pub const TITLE: f32 = 20.0;
+        /// 列表项高亮标题 / 设置项标题（P0 新增；P3 设置中心接入后移除 allow）
+        #[allow(dead_code)]
+        pub const FLOAT: f32 = 16.0;
+        /// 设置页大标题（P0 新增；P3 设置中心接入后移除 allow）
+        #[allow(dead_code)]
+        pub const PAGE_TITLE: f32 = 24.0;
+        /// 特大标题（关于页，P0 新增；P3 设置中心接入后移除 allow）
+        #[allow(dead_code)]
+        pub const HERO: f32 = 28.0;
         /// 图标内字形（Dock glyph、AI 徽标字母；非文字层级，不占字阶）
         pub const GLYPH: f32 = 16.0;
     }
 
-    /// 圆角 §3.3：三档
+    /// 圆角 §3.3：三档（2026-09-29 P0：整体收小，去"圆润玩具感"）
     pub mod radius {
         /// 按钮、输入框、小控件
-        pub const SM: f32 = 8.0;
-        /// 卡片、面板
-        pub const MD: f32 = 12.0;
+        pub const SM: f32 = 4.0;
+        /// 卡片、面板、列表容器
+        pub const MD: f32 = 6.0;
         /// 窗口、弹窗
-        pub const LG: f32 = 16.0;
+        pub const LG: f32 = 8.0;
     }
 
     /// 阴影档位 §3.3（值即影子强度；`shadow()` 按档解释）。
@@ -274,21 +252,21 @@ pub mod theme {
             }
         }
 
-        /// 窗口浮起
+        /// 窗口浮起（P0：调轻，配合单层阴影；层次主要由 1px 描边承担）
         pub fn elev_1() -> f32 {
-            pick(0.17, 0.25)
+            pick(0.10, 0.16)
         }
         /// 非活动窗口
         pub fn elev_1_dim() -> f32 {
-            pick(0.11, 0.14)
+            pick(0.05, 0.08)
         }
         /// 弹窗、浮层（下拉、AI 指令条、Toast、Dock）
         pub fn elev_2() -> f32 {
-            pick(0.21, 0.4)
+            pick(0.14, 0.22)
         }
         /// 模态（安装向导、权限确认）
         pub fn elev_3() -> f32 {
-            pick(0.27, 0.55)
+            pick(0.20, 0.30)
         }
     }
 
@@ -713,16 +691,18 @@ pub fn gradient_outline(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f3
 /// 大而柔的多层投影（近似大半径高斯）。
 /// 层数与半径是性能关键：每层都是一次全区域 SDF 扫描。
 /// `strength` 取 theme::elevation 的档位值（值即影子总强度）。
+/// 轻阴影（两层近似软影）：偏移 y+2、小扩散，强弱由 `theme::elevation` 档位缩放。
+/// 2026-09-29 P0：从 5 层大软影改为两层小影 —— "发光卡片"观的来源，层次感交给描边。
 pub fn shadow(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, strength: f32) {
-    for i in 0..5 {
-        let grow = i as f32 * 5.0;
+    for i in 0..2 {
+        let grow = i as f32 * 6.0;
         let s = Rect {
-            x: r.x - grow as i32,
-            y: r.y - grow as i32 + 6,
+            x: r.x - grow as i32 + 1,
+            y: r.y - grow as i32 + 2,
             w: r.w + grow as i32 * 2,
             h: r.h + grow as i32 * 2,
         };
-        let a0 = strength * (1.0 - i as f32 / 5.0) * 0.80;
+        let a0 = strength * (0.30 - i as f32 * 0.14);
         let rad = radius + grow;
         let x0 = (s.x as f32 - 1.0).max(0.0) as usize;
         let y0 = (s.y as f32 - 1.0).max(0.0) as usize;
@@ -732,7 +712,6 @@ pub fn shadow(buf: &mut [u32], w: usize, h: usize, r: Rect, radius: f32, strengt
             let row = y * w;
             for x in x0..x1 {
                 let d = sdf_round_rect(s, rad, x as f32 + 0.5, y as f32 + 0.5);
-                // 完全在内部（d < -1）就是满强度，跳过 clamp
                 let a = if d < -1.0 { a0 } else { a0 * (0.5 - d).clamp(0.0, 1.0) };
                 darken_pixel(buf, row + x, a);
             }
@@ -1110,7 +1089,7 @@ impl AiStatus {
     pub fn color(self) -> [u8; 3] {
         match self {
             AiStatus::Local => color::accent(),
-            AiStatus::Cloud => color::accent_violet(),
+            AiStatus::Cloud => color::accent(),
             AiStatus::Offline => color::text_faint(),
         }
     }
@@ -1486,49 +1465,8 @@ impl Renderer {
 
 /// 极光带的横截面：Lorentzian 平方（廉价除法，形态与高斯接近，
 /// 但尾部更宽——正是极光边缘自然消散的样子）。
-#[inline]
-fn band_profile(d: f32) -> f32 {
-    let q = 1.0 / (1.0 + d * d);
-    q * q
-}
-
-/// 确定性颗粒噪点（±2/255 量级）。
-/// 作用不是"做旧"，而是消除软件光栅渐变必然出现的色带断层——
-/// 没有它，极光在深色底上会出现一圈圈等高线，质感立刻崩。
-#[inline]
-fn grain(x: usize, y: usize) -> f32 {
-    let mut n = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
-    n ^= n >> 15;
-    n = n.wrapping_mul(0x2545_F491);
-    n ^= n >> 13;
-    ((n & 0x3ff) as f32 / 1023.0 - 0.5) * 4.2
-}
-
-/// 一条极光带：翘曲中心线 + 窄横截面 + 沿 x 的柔和包络。
-struct AuroraBand {
-    rgb: [u8; 3],
-    /// 基准中心（屏高比例）
-    my: f32,
-    /// 翘曲振幅（屏高比例）
-    amp: f32,
-    /// 沿 x 的波长（单位：屏宽）
-    wave: f32,
-    phase: f32,
-    /// 横截面半宽（屏高比例）——越小带越锐
-    sigma: f32,
-    inten: f32,
-    /// 包络重心与宽度（屏宽比例）
-    ex: f32,
-    ew: f32,
-}
-
-/// 柔光团衰减（1 - 归一化距离）²：明亮壁纸用。
-#[inline]
-fn wash(x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32) -> f32 {
-    let dx = (x - cx) / rx;
-    let dy = (y - cy) / ry;
-    (1.0 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0).powi(2)
-}
+// 2026-09-29 P0：band_profile / grain / AuroraBand / wash 随"极光壁纸"一并移除，
+// 静态壁纸见 draw_background_rows。
 
 /// 壁纸分帧生成时每帧生成的行数。
 ///
@@ -1542,15 +1480,26 @@ pub const BG_ROWS_PER_FRAME: usize = 32;
 /// **分帧生成的基础**：整屏逐像素生成要 0.4–0.6 秒，压在一帧里就是开机后
 /// 一次肉眼可见的卡死（实测首帧 561ms）。切成行带后每帧只付 1/N 的成本，
 /// 而且因为绘制目标是与屏幕分离的 `bg` 缓冲，未完成前屏幕上不会出现横向接缝。
-pub fn draw_background_rows(buf: &mut [u32], w: usize, h: usize, t: f32, y0: usize, y1: usize) {
+pub fn draw_background_rows(buf: &mut [u32], w: usize, h: usize, _t: f32, y0: usize, y1: usize) {
     let y1 = y1.min(h);
     if y0 >= y1 || buf.len() < w * h {
         return;
     }
-    if color::is_light() {
-        light_wallpaper_rows(buf, w, h, t, y0, y1);
-    } else {
-        aurora_rows(buf, w, h, t, y0, y1);
+    // 2026-09-29 P0：壁纸改为**静态**——低饱和中性 + 极浅的垂直层次。
+    // 逐像素的极光/柔光团/颗粒/暗角移除；每行一次 lerp、整行同色，成本大幅下降。
+    let (top, bottom) = (color::bg_top(), color::bg_bottom());
+    for y in y0..y1 {
+        let t = y as f32 / h.max(1) as f32;
+        let rgb = [
+            lerp(top[0] as f32, bottom[0] as f32, t) as u32,
+            lerp(top[1] as f32, bottom[1] as f32, t) as u32,
+            lerp(top[2] as f32, bottom[2] as f32, t) as u32,
+        ];
+        let px = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+        let row = y * w;
+        for x in 0..w {
+            buf[row + x] = px;
+        }
     }
 }
 
@@ -1560,128 +1509,9 @@ pub fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
     draw_background_rows(buf, w, h, t, 0, h);
 }
 
-/// 明亮壁纸：近白底 + 四角粉彩柔光团。
-///
-/// 为什么不用极光带：光带结构在深色底上才读得出来；浅色底上宽光带只会糊成
-/// 一片"奶雾"，窄光带又会变成脏色块。浅色的高级感来自**近白底 + 角落极淡的
-/// 多色柔光**（Apple 的浅色壁纸正是这套语言）。
-fn light_wallpaper_rows(buf: &mut [u32], w: usize, h: usize, t: f32, y0: usize, y1: usize) {
-    let (wf, hf) = (w as f32, h as f32);
-    let drift = t * 0.02;
-    // (色, 中心 x/y 比例, 半径 x/y 比例, 强度)
-    let blobs: [([u8; 3], f32, f32, f32, f32, f32); 4] = [
-        (color::aurora_cyan(), 0.16, 0.86, 0.60, 0.60, 0.60),
-        (color::aurora_violet(), 0.86, 0.84, 0.55, 0.55, 0.55),
-        (color::aurora_blue(), 0.06, 0.10, 0.45, 0.45, 0.40),
-        (color::aurora_pink(), 0.70, 0.99, 0.45, 0.40, 0.30),
-    ];
-    let (top, bottom) = (color::bg_top(), color::bg_bottom());
-    let vig_k = color::vignette();
+// 2026-09-29 P0：light_wallpaper_rows 移除（静态壁纸见 draw_background_rows）。
 
-    for y in y0..y1 {
-        let vgrad = y as f32 / hf;
-        let base = [
-            lerp(top[0] as f32, bottom[0] as f32, vgrad),
-            lerp(top[1] as f32, bottom[1] as f32, vgrad),
-            lerp(top[2] as f32, bottom[2] as f32, vgrad),
-        ];
-        for x in 0..w {
-            let mut acc = base;
-            for (rgb, cx, cy, rx, ry, s) in &blobs {
-                // 极缓漂移：分钟级呼吸，肉眼几乎察觉不到
-                let cx = wf * (cx + 0.008 * (drift + cy * 6.0).sin());
-                let cy = hf * (cy + 0.006 * (drift * 0.8 + rx * 9.0).cos());
-                let g = wash(x as f32, y as f32, cx, cy, wf * rx, hf * ry) * s;
-                if g > 0.002 {
-                    for c in 0..3 {
-                        acc[c] += (rgb[c] as f32 - acc[c]) * g;
-                    }
-                }
-            }
-            let nx = x as f32 / wf - 0.5;
-            let ny = y as f32 / hf - 0.5;
-            let vig = 1.0 - (nx * nx + ny * ny) * vig_k;
-            let n = grain(x, y);
-            let px = [
-                (acc[0] * vig + n).clamp(0.0, 255.0) as u32,
-                (acc[1] * vig + n).clamp(0.0, 255.0) as u32,
-                (acc[2] * vig + n).clamp(0.0, 255.0) as u32,
-            ];
-            buf[y * w + x] = (px[0] << 16) | (px[1] << 8) | px[2];
-        }
-    }
-}
-
-/// 深空壁纸：深空底 + 结构化极光带 + 颗粒。
-///
-/// 与"几个大半径柔光平摊"的区别：柔光平摊出来是一块发灰的脏渐变，
-/// 而极光必须是**有走向的光带**——中心线随 x 缓慢翘曲、横截面很窄、
-/// 沿 x 有强弱包络。三条带共用同一套漂移时钟，整体像缓慢流动。
-fn aurora_rows(buf: &mut [u32], w: usize, h: usize, t: f32, y0: usize, y1: usize) {
-    let (wf, hf) = (w as f32, h as f32);
-    // 漂移放缓（§3.4 动效克制）：分钟级呼吸
-    let drift = t * 0.03;
-
-    // 青（上，多数被窗口遮住，只在边缘透出）/ 紫（中）/ 蓝紫（下，窗口下沿之外
-    // 的主要可见区——壁纸的构图重心必须放在"真正露出来的地方"）。
-    // 不在边缘放窄带：屏幕上只露出一窄条时，窄带会读成"色块"而不是极光。
-    // 色相与强度随模式（明亮模式是低饱和粉彩，深空模式是发光带）。
-    let gain = color::aurora_gain();
-    let bands = [
-        AuroraBand { rgb: color::aurora_cyan(), my: 0.20, amp: 0.075, wave: 1.30, phase: 0.4, sigma: 0.046, inten: 0.70 * gain, ex: 0.42, ew: 0.44 },
-        AuroraBand { rgb: color::aurora_violet(), my: 0.42, amp: 0.100, wave: 0.92, phase: 2.3, sigma: 0.064, inten: 0.55 * gain, ex: 0.60, ew: 0.56 },
-        AuroraBand { rgb: color::aurora_blue(), my: 0.78, amp: 0.050, wave: 1.15, phase: 4.1, sigma: 0.062, inten: 0.44 * gain, ex: 0.52, ew: 0.70 },
-    ];
-    let nb = bands.len();
-
-    // 逐 x 预计算中心线与包络（每像素只剩一次除法的横截面求值）
-    let mut centers = vec![0f32; w * nb];
-    let mut envelopes = vec![0f32; w * nb];
-    for x in 0..w {
-        let xn = x as f32 / wf;
-        for (k, b) in bands.iter().enumerate() {
-            // 双谐波翘曲：主波 + 约 1/3 振幅的次谐波，避免"标准正弦"的机械感
-            let ang = (xn * b.wave + b.phase + drift * (1.0 + k as f32 * 0.35)) * std::f32::consts::TAU;
-            let warp = ang.sin() + 0.34 * (ang * 2.13 + 1.7).sin();
-            centers[k * w + x] = (b.my + b.amp * warp) * hf;
-            let u = (xn - b.ex) / b.ew;
-            envelopes[k * w + x] = (-u * u).clamp(-9.0, 0.0).exp();
-        }
-    }
-
-    for y in y0..y1 {
-        let vgrad = y as f32 / hf;
-        let ny = vgrad - 0.5;
-        let base = [
-            lerp(color::bg_top()[0] as f32, color::bg_bottom()[0] as f32, vgrad),
-            lerp(color::bg_top()[1] as f32, color::bg_bottom()[1] as f32, vgrad),
-            lerp(color::bg_top()[2] as f32, color::bg_bottom()[2] as f32, vgrad),
-        ];
-        for x in 0..w {
-            let mut acc = base;
-            for k in 0..nb {
-                let b = &bands[k];
-                let d = (y as f32 - centers[k * w + x]) / (b.sigma * hf);
-                let g = band_profile(d) * envelopes[k * w + x] * b.inten;
-                if g > 0.002 {
-                    for c in 0..3 {
-                        acc[c] += (b.rgb[c] as f32 - acc[c]) * g;
-                    }
-                }
-            }
-            // 暗角：留住氛围（明亮模式只留极轻的一圈，重了立刻发灰）
-            let nx = x as f32 / wf - 0.5;
-            let vig = 1.0 - (nx * nx + ny * ny) * color::vignette();
-            let n = grain(x, y);
-            let px = [
-                (acc[0] * vig + n).clamp(0.0, 255.0) as u32,
-                (acc[1] * vig + n).clamp(0.0, 255.0) as u32,
-                (acc[2] * vig + n).clamp(0.0, 255.0) as u32,
-            ];
-            buf[y * w + x] = (px[0] << 16) | (px[1] << 8) | px[2];
-        }
-    }
-}
+// 2026-09-29 P0：aurora_rows 移除（静态壁纸见 draw_background_rows）。
 
 // ---------------------------------------------------------------------------
 // 菜单栏：发丝底 + 品牌 + 菜单（可点击）+ 搜索胶囊 + 电池 + 时钟
@@ -1695,16 +1525,12 @@ impl Renderer {
 
         let Some(tr) = tr else { return };
 
-        // 品牌：三角徽标（青→紫极光渐变，品牌标识是极光的三个容许出口之一）
+        // 品牌：三角徽标（P0：单色 accent，去"青→紫"渐变）
         let (bx, by) = (12i32, 8i32);
+        let accent = color::accent();
         for row in 0..16 {
             let half = row / 2;
-            let t = row as f32 / 15.0;
-            let rgb = [
-                lerp(color::accent()[0] as f32, color::accent_violet()[0] as f32, t) as u8,
-                lerp(color::accent()[1] as f32, color::accent_violet()[1] as f32, t) as u8,
-                lerp(color::accent()[2] as f32, color::accent_violet()[2] as f32, t) as u8,
-            ];
+            let rgb = accent;
             for col in 0..(half + 1) {
                 let px = bx + half - col;
                 let py = by + 15 - row;
@@ -2713,7 +2539,7 @@ impl Renderer {
     if ui.ai_focused {
         // 焦点态：青紫渐变环（AI 元素的极光配额）；思考中叠一层呼吸脉动
         let breath = if ui.ai_thinking { 0.55 + 0.45 * (t * 3.0).sin() } else { 1.0 };
-        gradient_outline(buf, w, h, bar, 26.0, color::accent(), color::accent_violet(), 0.75 * breath);
+        gradient_outline(buf, w, h, bar, 26.0, color::accent(), color::accent(), 0.75 * breath);
     } else {
         rounded_outline(buf, w, h, bar, 26.0, color::hairline(), if hovered { 0.22 } else { 0.14 });
     }
@@ -2722,7 +2548,7 @@ impl Renderer {
 
     // 渐变圆形徽标（AI 元素：极光的容许出口之一）
     let av = Rect { x: bar.x + 12, y: bar.y + 10, w: 32, h: 32 };
-    gradient_tile(buf, w, av, 16.0, color::accent(), color::accent_violet(), 0.95);
+    rounded_rect(buf, w, h, av, radius::MD, color::accent(), 0.95);
     let aw = tr.measure_bold("A", font::GLYPH);
     tr.draw_bold(buf, w, h, av.x as f32 + (av.w as f32 - aw) / 2.0, tr.vcenter(av.y as f32, av.h as f32, font::GLYPH), "A", font::GLYPH, color::text(), 0.98);
 
@@ -2893,7 +2719,7 @@ fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, kind: BubbleKind,
     rounded_rect(buf, w, h, r, 18.0, bg, alpha * 0.94);
     match kind {
         // AI 回复：青紫渐变环（AI 元素）
-        BubbleKind::Ai => gradient_outline(buf, w, h, r, 18.0, color::accent(), color::accent_violet(), alpha * 0.55),
+        BubbleKind::Ai => gradient_outline(buf, w, h, r, 18.0, color::accent(), color::accent(), alpha * 0.55),
         BubbleKind::User => rounded_outline(buf, w, h, r, 18.0, color::hairline(), alpha * 0.16),
         // 工具调用：左侧状态条（成功绿/失败红），由文案前缀决定
         BubbleKind::Tool => {
@@ -2969,26 +2795,25 @@ impl Renderer {
             let running = open_titles.contains(name);
 
             if *name == strings::INSTALLER {
-                // 安装是 Live ISO 里唯一需要被一眼找到的动作：琥珀警示色
-                gradient_tile(buf, w, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, [236, 180, 90], [156, 104, 44], if hovered { 1.0 } else { 0.92 });
+                // 安装是 Live ISO 里唯一需要被一眼找到的动作：琥珀警示色（P0：纯色去渐变）
+                rounded_rect(buf, w, h, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, [196, 142, 67], if hovered { 1.0 } else { 0.92 });
             } else {
-                // 图标底座：上亮下暗（"自上方受光"），与文件夹图标同一光照语言。
-                // 上暗下亮会读成"压扁的按钮"，上亮下暗才读成"立体的图标"。
-                // 已装应用用青绿底座，与内建图标一眼可分（"这是你自己装的"）
-                let base = if i >= DOCK_BUILTINS {
-                    ([92, 190, 186], [30, 108, 112])
+                // 图标底座（P0：纯色，去"上亮下暗"渐变与紫色系——
+                // "彩色渐变底座"正是 AI 产品味的来源之一）
+                let base: [u8; 3] = if i >= DOCK_BUILTINS {
+                    [61, 149, 149] // 已装应用：青绿，与内建一眼可分
                 } else {
                     match i {
-                        0 => ([126, 200, 232], [52, 116, 172]), // 文件：青蓝
-                        1 => ([96, 142, 196], [42, 66, 110]),   // 终端：钢青
-                        2 => ([100, 172, 244], [44, 98, 192]),  // 浏览器：蓝
-                        3 => ([180, 136, 234], [108, 70, 178]), // 音乐：紫
-                        _ => ([150, 160, 182], [82, 90, 112]),  // 设置：蓝灰
+                        0 => [99, 164, 206],  // 文件：青蓝
+                        1 => [82, 118, 168],  // 终端：钢青
+                        2 => [88, 148, 224],  // 浏览器：蓝
+                        3 => [108, 122, 148], // 音乐：雾灰蓝（P0：由紫色改）
+                        _ => [116, 125, 147], // 设置：蓝灰
                     }
                 };
-                gradient_tile(buf, w, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, base.0, base.1, 0.97);
-                // 顶部内高光（与窗口同一手法）
-                fill_rect(buf, w, h, Rect { x: ix + 4, y: iy + 1, w: metric::DOCK_ICON - 8, h: 1 }, color::HIGHLIGHT, 0.24);
+                rounded_rect(buf, w, h, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, base, 0.97);
+                // 顶部内高光（P0：0.24 → 0.08，去"玻璃高光"感）
+                fill_rect(buf, w, h, Rect { x: ix + 4, y: iy + 1, w: metric::DOCK_ICON - 8, h: 1 }, color::HIGHLIGHT, 0.08);
                 if hovered {
                     rounded_rect(buf, w, h, tile, radius::MD, color::hairline(), 0.14);
                 }

@@ -9,7 +9,7 @@
 
 | | |
 |---|---|
-| **规模** | 合计 21,490 行 Rust / 41 个源文件 / 7 个 crate（2026-09-29 实测） |
+| **规模** | 合计 21,315 行 Rust / 41 个源文件 / 7 个 crate（2026-09-29 实测） |
 | **验证** | 334 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 33.4 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
@@ -195,7 +195,7 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
-| `aether-compositor/` | 13,020 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
+| `aether-compositor/` | 12,845 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
 | `aetherd/` | 5,565 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
 | `aether-init/` | 1,319 | PID 1 与服务管理 | M3 |
 | `aether-ops/` | 736 | AI 运维与自修复 | M5 |
