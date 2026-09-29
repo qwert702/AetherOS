@@ -3809,6 +3809,69 @@ mod blit_tests {
     /// 这条不是凑数：壁纸改成分帧生成后，交互路径与 `--shot` 截图走了不同代码路径
     /// （前者分帧、后者 [`Renderer::prepare_background`] 整屏）。两者只要有差异，
     /// 就会出现"截图和真机不一样"这种最难查的 bug。
+    /// 设置中心：**渲染一次并直接断言**（走查图的 diff 只能证明"场景变了"，
+    /// 证明不了窗口内部结构画对了 —— 两栏布局、控件命中区、不可用页）。
+    #[test]
+    fn settings_content_renders_two_columns_and_registers_controls() {
+        // 本测试所在的模块只导入了几何相关的名字，这里显式引入所需的类型
+        use crate::draw::{draw_settings_content, Rect};
+        use crate::text::TextRenderer;
+        let Some(tr) = TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        let (w, h) = (820usize, 620usize);
+        let mut buf = vec![0u32; w * h];
+        // 铺白底：这样才能用"谁更暗"判断左栏（inset 底）与右侧页面
+        for p in buf.iter_mut() {
+            *p = 0x00FF_FFFF;
+        }
+        let r = Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+        let mut hits = Vec::new();
+        let page = crate::settings::first_enabled_page();
+        draw_settings_content(
+            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
+            crate::settings::Settings::default(), page, &mut hits,
+        );
+
+        // 1) 命中区要齐：页面行 + 本页的真控件
+        use crate::settings::SettingsHit as H;
+        assert!(
+            hits.iter().any(|(_, x)| matches!(x, H::Page(_))),
+            "左栏必须登记可切换的页面"
+        );
+        assert!(hits.iter().any(|(_, x)| matches!(x, H::Clock24h)), "24 小时制开关缺失");
+        assert!(hits.iter().any(|(_, x)| matches!(x, H::ClockSeconds)), "显示秒开关缺失");
+        assert!(hits.iter().any(|(_, x)| matches!(x, H::TzShift(30))), "时区 +1 缺失");
+        assert!(hits.iter().any(|(_, x)| matches!(x, H::TzShift(-30))), "时区 -1 缺失");
+
+        // 2) 命中区必须都在窗口内：越界会让点击落到别的控件上
+        for (rr, id) in &hits {
+            assert!(
+                rr.x >= r.x && rr.y >= r.y && rr.x + rr.w <= r.x + r.w && rr.y + rr.h <= r.y + r.h,
+                "命中区越界：{id:?} {rr:?}"
+            );
+            assert!(rr.w > 0 && rr.h > 0, "命中区不能为空：{id:?}");
+        }
+
+        // 3) 不可用的页不能出现在命中区里（点了不该有反应）
+        let disabled = crate::settings::PAGES.iter().position(|p| !p.enabled).unwrap();
+        assert!(
+            !hits.iter().any(|(_, x)| matches!(x, H::Page(i) if *i == disabled)),
+            "不可用页不该登记命中区"
+        );
+
+        // 4) 两栏结构：左栏底（inset 0.55）应比右侧页面（保持底色）暗
+        let lum = |p: u32| ((p >> 16) & 0xFF) + ((p >> 8) & 0xFF) + (p & 0xFF);
+        let y = 590; // 左栏页行在 ~390 之前结束，取靠下的空白处更稳
+        let left = lum(buf[y * w + 80]);
+        let right = lum(buf[y * w + 700]);
+        assert!(
+            left < right,
+            "左栏应比右侧页面暗（两栏结构）：left={left} right={right}"
+        );
+    }
+
     #[test]
     fn background_rows_match_full_generation() {
         let (w, h) = (37usize, 53usize); // 非 64 整数倍，逼出末段不足一次行数的边界
