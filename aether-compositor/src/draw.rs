@@ -1211,6 +1211,12 @@ pub enum ConfirmButton {
     Deny,
 }
 
+/// Dock 里**内建**图标的数量（文件/终端/浏览器/音乐/设置）。
+///
+/// 已装应用排在这之后、安装向导之前。命中测试要靠它算区间，所以必须是常量而不是
+/// 各处写字面量 —— `main.rs` 里有一条断言把 `APP_TITLES.len()` 钉在这个值上。
+pub const DOCK_BUILTINS: usize = 5;
+
 /// 帧渲染器：持有跨帧缓存（背景层等）与可点击区域登记（供命中测试）。
 pub struct Renderer {
     bg: Vec<u32>,
@@ -1237,6 +1243,11 @@ pub struct Renderer {
     pub search_pill: Rect,
     /// Dock 图标命中区
     pub dock_icons: Vec<Rect>,
+    /// 已装应用（`(id, 显示名)`），按 id 排序。由 main 扫描 `/var/apps` 后填进来。
+    ///
+    /// 为什么放在 Renderer 上而不是当参数传：`draw_dock` 的调用链已经很深，
+    /// 而且这份数据是"每帧画一次"的稳定状态，不是逐帧变化的参数。
+    pub installed_apps: Vec<(String, String)>,
     /// 当前展开的下拉菜单：(各项命中区, 文案)
     pub dropdown: Option<(Vec<Rect>, Vec<&'static str>)>,
     /// 安装向导磁盘行的命中区 (矩形, 设备名, 容量MB)
@@ -1275,6 +1286,7 @@ impl Renderer {
             menubar_menus: Vec::new(),
             search_pill: Rect { x: 0, y: 0, w: 0, h: 0 },
             dock_icons: Vec::new(),
+            installed_apps: Vec::new(),
             dropdown: None,
             installer_rows: Vec::new(),
             file_cells: Vec::new(),
@@ -2920,6 +2932,10 @@ impl Renderer {
             strings::WIN_MUSIC,
             strings::WIN_SETTINGS,
         ];
+        // 已装应用插在**内建图标与"安装向导"之间** —— 安装向导必须留在最后，
+        // 因为 Live ISO 里它是唯一需要被一眼找到的动作。
+        // 数据来自 main.rs::load_installed_apps（扫 /var/apps）。
+        apps.extend(self.installed_apps.iter().map(|(_, name)| name.as_str()));
         if ui.show_installer {
             apps.push(strings::INSTALLER);
         }
@@ -2958,12 +2974,17 @@ impl Renderer {
             } else {
                 // 图标底座：上亮下暗（"自上方受光"），与文件夹图标同一光照语言。
                 // 上暗下亮会读成"压扁的按钮"，上亮下暗才读成"立体的图标"。
-                let base = match i {
-                    0 => ([126, 200, 232], [52, 116, 172]), // 文件：青蓝
-                    1 => ([96, 142, 196], [42, 66, 110]),   // 终端：钢青
-                    2 => ([100, 172, 244], [44, 98, 192]),  // 浏览器：蓝
-                    3 => ([180, 136, 234], [108, 70, 178]), // 音乐：紫
-                    _ => ([150, 160, 182], [82, 90, 112]),  // 设置：蓝灰
+                // 已装应用用青绿底座，与内建图标一眼可分（"这是你自己装的"）
+                let base = if i >= DOCK_BUILTINS {
+                    ([92, 190, 186], [30, 108, 112])
+                } else {
+                    match i {
+                        0 => ([126, 200, 232], [52, 116, 172]), // 文件：青蓝
+                        1 => ([96, 142, 196], [42, 66, 110]),   // 终端：钢青
+                        2 => ([100, 172, 244], [44, 98, 192]),  // 浏览器：蓝
+                        3 => ([180, 136, 234], [108, 70, 178]), // 音乐：紫
+                        _ => ([150, 160, 182], [82, 90, 112]),  // 设置：蓝灰
+                    }
                 };
                 gradient_tile(buf, w, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, base.0, base.1, 0.97);
                 // 顶部内高光（与窗口同一手法）

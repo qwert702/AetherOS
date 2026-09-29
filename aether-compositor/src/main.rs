@@ -96,6 +96,11 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut desktop = demo_desktop_sized(w, h);
     let tr = text::TextRenderer::load();
     let mut renderer = draw::Renderer::new(w, h);
+    // Dock 里要显示"已装应用"（见 load_installed_apps）。开机扫一次，
+    // 之后由 refresh_apps_throttled 每 ~3 秒重扫 —— 这样"让 AI 装一个应用"之后，
+    // Dock 上会自己冒出来，不必重启合成器。
+    renderer.installed_apps = load_installed_apps(&apps_root());
+    let mut last_apps_scan = Instant::now();
     let (input_tx, input_rx) = mpsc::channel();
     input::spawn(input_tx);
     let (ai_tx, ai_rx) = mpsc::channel::<AiEvent>();
@@ -478,11 +483,20 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 open_menu = None;
             } else if let Some(icon) = renderer.dock_icons.iter().position(|r| r.contains(mouse.0, mouse.1)) {
-                // Live ISO 时第 6 个图标是"安装"向导
-                if live_installer && icon == APP_TITLES.len() {
-                    installer.open();
-                } else if let Some(msg) = open_app(&mut desktop, icon) {
-                    toast = Some((msg, Instant::now()));
+                // 图标区间：内建 0..DOCK_BUILTINS → 已装应用 → 最后是"安装"向导（仅 Live ISO）
+                match dock_action(icon, &renderer.installed_apps, live_installer) {
+                    DockAction::Builtin(i) => {
+                        if let Some(msg) = open_app(&mut desktop, i) {
+                            toast = Some((msg, Instant::now()));
+                        }
+                    }
+                    DockAction::Installed(id, name) => {
+                        if let Some(msg) = open_installed_app(&mut desktop, id, name) {
+                            toast = Some((msg, Instant::now()));
+                        }
+                    }
+                    DockAction::Installer => installer.open(),
+                    DockAction::Nothing => {}
                 }
             } else if let Some((_, i)) = renderer
                 .sidebar_hits
@@ -613,6 +627,7 @@ fn run_fbdev() -> anyhow::Result<()> {
         };
 
         // ---- 5. 渲染 + 软件光标 + 上屏 ----
+        refresh_apps_throttled(&mut renderer, &mut last_apps_scan);
         renderer.render_frame(&mut buf, w, h, t, &desktop, &ui, tr.as_ref());
         draw::draw_cursor(&mut buf, w, h, mouse.0, mouse.1);
         fb.blit_dirty(&buf, w, h);
@@ -1119,7 +1134,11 @@ const APP_TITLES: [&str; 5] = [
     text::strings::WIN_SETTINGS,
 ];
 
-fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {    if icon >= APP_TITLES.len() {
+/// 命中测试要靠 `DOCK_BUILTINS` 算"已装应用"的图标区间，两边必须一致。
+const _: () = assert!(APP_TITLES.len() == draw::DOCK_BUILTINS);
+
+fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
+    if icon >= APP_TITLES.len() {
         return Some("未知应用".into());
     }
     if desktop.wins.len() >= 8 {
@@ -1151,6 +1170,147 @@ fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {    if icon >
     desktop.wins.push(win);
     desktop.active = desktop.wins.len() - 1;
     None
+}
+
+/// 已装应用的根目录。与 `aetherd/src/apps.rs` 同一约定（`AETHER_APPS_DIR` 可覆盖）。
+fn apps_root() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("AETHER_APPS_DIR") {
+        if !p.is_empty() {
+            return std::path::PathBuf::from(p);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::path::PathBuf::from("/var/apps")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::temp_dir().join("aether-apps")
+    }
+}
+
+/// 扫描已装应用，供 Dock 显示。返回 `(id, 显示名)`，按 id 排序。
+///
+/// 为什么合成器自己读、而不问 aetherd：Dock 在**启动第一帧**就要画出来，
+/// 不该依赖另一个服务在线（aetherd 挂了也该先看见桌面）。只读 `id`/`name`，
+/// 与 `aetherd/src/apps.rs` 的清单是同一份约定，但这里**不做校验** ——
+/// 装的时候已经校验过，这里只负责"显示得出来"，读不出的目录跳过就行。
+fn load_installed_apps(root: &std::path::Path) -> Vec<(String, String)> {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let reserved = [
+        text::strings::WIN_FILES,
+        text::strings::WIN_TERM,
+        text::strings::WIN_BROWSER,
+        text::strings::WIN_MUSIC,
+        text::strings::WIN_SETTINGS,
+        text::strings::INSTALLER,
+    ];
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let dir = e.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(txt) = std::fs::read_to_string(dir.join("app.json")) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+            continue;
+        };
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or_default();
+        // 这几个名字在 Dock 里有保留含义（内建图标 + 安装向导）：撞名会让图标被读成
+        // 别的功能，所以不显示。应用本身照常能在终端里用。
+        if id.is_empty() || name.is_empty() || reserved.contains(&name) {
+            continue;
+        }
+        out.push((id.to_string(), name.to_string()));
+    }
+    out.sort();
+    out
+}
+
+/// 从 Dock 启动一个已装应用：**开一个终端窗口，让它在里面跑**。
+///
+/// 为什么是终端窗口而不是独立窗口：这系统上的应用现在都是终端程序 ——
+/// 没有 Wayland 客户端支持，别的程序也没法往这块 framebuffer 上画。
+/// 所以"启动应用"＝"开个终端把它跑起来"，这也正好复用已经审过的 PTY 通路
+/// （而不是新开一条"让合成器 fork 任意程序"的路径 —— 那会是个新的逃逸面）。
+fn open_installed_app(desktop: &mut Desktop, id: &str, name: &str) -> Option<String> {
+    if desktop.wins.len() >= 8 {
+        return Some("窗口数量已达上限（8）".into());
+    }
+    let idx = desktop.wins.len();
+    let mut term = term::Terminal::spawn(80, 24, None);
+    // 把 `exec <id>` 写进 PTY：shell 起来后立刻执行。
+    // 早写不会丢 —— 行规程会缓冲，shell 读到就读（真实终端也是这个行为）。
+    term.write(format!("exec {id}\r").as_bytes());
+    desktop.wins.push(Win {
+        rect: Rect { x: 200 + (idx % 4) as i32 * 40, y: 90 + (idx % 3) as i32 * 30, w: 500, h: 380 },
+        target: None,
+        title: name.to_string(),
+        kind: draw::WinKind::Terminal,
+        floating: true,
+        restore: None,
+        preview: None,
+        term: Some(term),
+        wayland: None,
+    });
+    desktop.active = desktop.wins.len() - 1;
+    Some(format!("启动应用：{name}"))
+}
+
+/// 每 ~3 秒重扫一次已装应用。
+///
+/// 为什么不每帧扫：`read_dir` + 几个小文件读，每帧做是浪费（60fps 下就是每秒 60 次）。
+/// 为什么不只在启动时扫：装应用最常见的路径是"跟 AI 说一句"，那时合成器已经在跑了，
+/// 不重扫就得重启才能看见 —— 那不像一个能用的系统。
+fn refresh_apps_throttled(renderer: &mut draw::Renderer, last: &mut Instant) {
+    if last.elapsed() < std::time::Duration::from_secs(3) {
+        return;
+    }
+    *last = Instant::now();
+    let found = load_installed_apps(&apps_root());
+    if found != renderer.installed_apps {
+        renderer.installed_apps = found;
+    }
+}
+
+/// Dock 图标被点击后该做什么。
+///
+/// 抽成纯函数是为了**能测**：这里的区间算术（内建 5 个 → 已装应用 → 安装向导）
+/// 一旦错位，症状是"点了 A 打开 B"或"点安装却启动了个应用"，而且只有真的点过才发现。
+/// 单测能挡住它，也省得每次都靠 QEMU 里挪光标去撞。
+#[derive(Debug, PartialEq, Eq)]
+enum DockAction<'a> {
+    /// 内建应用（文件/终端/浏览器/音乐/设置），索引进 `APP_TITLES`
+    Builtin(usize),
+    /// 已装应用：`(id, 显示名)`
+    Installed(&'a str, &'a str),
+    /// 安装向导（仅 Live ISO 显示）
+    Installer,
+    /// 空处：安装向导没显示，或者越界
+    Nothing,
+}
+
+fn dock_action<'a>(
+    icon: usize,
+    installed: &'a [(String, String)],
+    live_installer: bool,
+) -> DockAction<'a> {
+    if icon < APP_TITLES.len() {
+        return DockAction::Builtin(icon);
+    }
+    let i = icon - APP_TITLES.len();
+    if i < installed.len() {
+        return DockAction::Installed(&installed[i].0, &installed[i].1);
+    }
+    if live_installer && i == installed.len() {
+        return DockAction::Installer;
+    }
+    DockAction::Nothing
 }
 
 /// 返回上级目录。已在根目录或读不到时返回提示。
@@ -1526,6 +1686,10 @@ fn main() -> anyhow::Result<()> {
 fn preview_main() -> anyhow::Result<()> {
     let tr = text::TextRenderer::load();
     let mut renderer = draw::Renderer::new(WIDTH, HEIGHT);
+    // 开发机预览也显示已装应用（Windows 上是 `%TEMP%\aether-apps`）：
+    // 这条路径是唯一能在不用起 QEMU 的情况下看到 Dock 长什么样的地方。
+    renderer.installed_apps = load_installed_apps(&apps_root());
+    let mut last_apps_scan = Instant::now();
     let mut desktop = demo_desktop();
     let mut buffer = vec![0u32; WIDTH * HEIGHT];
     let mut window = minifb::Window::new(
@@ -1853,8 +2017,19 @@ fn preview_main() -> anyhow::Result<()> {
             }
             // 3. Dock 图标 → 启动应用窗口
             else if let Some(icon) = renderer.dock_icons.iter().position(|r| r.contains(mx, my)) {
-                if let Some(msg) = open_app(&mut desktop, icon) {
-                    toast = Some((msg, Instant::now()));
+                // 这条路径是开发机预览（minifb），不是 Live ISO，所以没有安装向导
+                match dock_action(icon, &renderer.installed_apps, false) {
+                    DockAction::Builtin(i) => {
+                        if let Some(msg) = open_app(&mut desktop, i) {
+                            toast = Some((msg, Instant::now()));
+                        }
+                    }
+                    DockAction::Installed(id, name) => {
+                        if let Some(msg) = open_installed_app(&mut desktop, id, name) {
+                            toast = Some((msg, Instant::now()));
+                        }
+                    }
+                    DockAction::Installer | DockAction::Nothing => {}
                 }
             }
             // 3.4 侧栏"上级目录"
@@ -2007,11 +2182,13 @@ fn preview_main() -> anyhow::Result<()> {
             std::thread::sleep(Duration::from_millis(10));
         }
 
+        refresh_apps_throttled(&mut renderer, &mut last_apps_scan);
         renderer.render_frame(&mut buffer, WIDTH, HEIGHT, t, &desktop, &ui, tr.as_ref());
         window.update_with_buffer(&buffer, WIDTH, HEIGHT)?;
     }
     Ok(())
 }
+
 
 /// 按键 → 字符（预览期英文输入；数字键 1-4 保留给布局）。
 #[cfg(not(target_os = "linux"))]
@@ -2890,6 +3067,49 @@ mod window_mgmt_tests {
         assert!(apply_nav(&mut d, input::NavKey::Delete).is_none());
         assert_eq!(d.entries.len(), 3, "Delete 不得改动任何条目");
         assert_eq!(d.selected, Some(1));
+    }
+
+    /// Dock 的图标区间：内建 5 个 → 已装应用 → 安装向导。
+    ///
+    /// 为什么值得测：错位的症状是"点了 A 打开 B"，而且**只有真的用鼠标点过**才会发现；
+    /// 在 QEMU 里靠相对坐标挪光标去撞图标非常不可靠（PS/2 相对事件 + 加速），
+    /// 所以这段算术必须能在开发机上确定性验证。
+    #[test]
+    fn dock_action_maps_icon_ranges() {
+        let inst = vec![("hello".to_string(), "Hello".to_string())];
+
+        // 内建区间
+        assert_eq!(dock_action(0, &inst, true), DockAction::Builtin(0));
+        assert_eq!(dock_action(4, &inst, false), DockAction::Builtin(4));
+        assert_eq!(dock_action(4, &inst, true), DockAction::Builtin(4));
+
+        // 已装应用紧接在内建之后
+        assert_eq!(dock_action(5, &inst, true), DockAction::Installed("hello", "Hello"));
+        assert_eq!(dock_action(5, &inst, false), DockAction::Installed("hello", "Hello"));
+
+        // 安装向导在**最后**；没有已装应用时它前移到第 6 个（不能串位）
+        assert_eq!(dock_action(6, &inst, true), DockAction::Installer);
+        assert_eq!(dock_action(5, &[], true), DockAction::Installer);
+
+        // 边界：Live ISO 关了就没有安装向导；越界落空
+        assert_eq!(dock_action(6, &inst, false), DockAction::Nothing);
+        assert_eq!(dock_action(5, &[], false), DockAction::Nothing);
+        assert_eq!(dock_action(99, &inst, true), DockAction::Nothing);
+
+        // 多个已装应用时逐个对应，不能都指到同一个
+        let two = vec![
+            ("a".to_string(), "甲".to_string()),
+            ("b".to_string(), "乙".to_string()),
+        ];
+        assert_eq!(dock_action(5, &two, true), DockAction::Installed("a", "甲"));
+        assert_eq!(dock_action(6, &two, true), DockAction::Installed("b", "乙"));
+        assert_eq!(dock_action(7, &two, true), DockAction::Installer);
+    }
+
+    /// `APP_TITLES` 与 `draw::DOCK_BUILTINS` 必须一致 —— 命中测试靠后者算区间。
+    #[test]
+    fn app_titles_match_dock_builtins() {
+        assert_eq!(APP_TITLES.len(), draw::DOCK_BUILTINS);
     }
 
     fn term_desk() -> Desktop {
