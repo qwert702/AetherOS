@@ -1679,6 +1679,29 @@ fn draw_window(
     // 描边：1px 承担层次（P0 把大软影撤了，边必须更清楚；P2 由 0.22/0.12 提到 0.30/0.16）
     rounded_outline(buf, w, h, r, radius::LG, color::hairline(), if active { 0.30 } else { 0.16 });
 
+    // 2026-09-29 P2：**边缘缩放提示**。缩放逻辑一直有（main.rs::topmost_edge 的 6px 抓取带），
+    // 但屏幕上没有任何反馈、光标也不变 —— 用户根本不知道窗口边缘能拖。
+    // 判定带与命中逻辑同宽（6px），刻意不门控 `active`：非活动窗口边缘同样可拖（命中逻辑如此），
+    // 提示必须与行为一致。被上层窗口盖住的部分由绘制顺序自然裁剪。
+    {
+        const GRAB: i32 = 6;
+        let (mx, my) = (mouse.0 as i32, mouse.1 as i32);
+        let (l, rr) = (r.x, r.x + r.w);
+        let (t, b) = (r.y, r.y + r.h);
+        let in_y = my >= t && my <= b;
+        let in_x = mx >= l && mx <= rr;
+        let round = radius::LG as i32;
+        if in_y && (mx - l).abs() <= GRAB {
+            fill_rect(buf, w, h, Rect { x: l, y: t + round, w: 2, h: (r.h - 2 * round).max(0) }, color::accent(), 0.55);
+        } else if in_y && (mx - rr).abs() <= GRAB {
+            fill_rect(buf, w, h, Rect { x: rr - 2, y: t + round, w: 2, h: (r.h - 2 * round).max(0) }, color::accent(), 0.55);
+        } else if in_x && (my - t).abs() <= GRAB {
+            fill_rect(buf, w, h, Rect { x: l + round, y: t, w: (r.w - 2 * round).max(0), h: 2 }, color::accent(), 0.55);
+        } else if in_x && (my - b).abs() <= GRAB {
+            fill_rect(buf, w, h, Rect { x: l + round, y: b - 2, w: (r.w - 2 * round).max(0), h: 2 }, color::accent(), 0.55);
+        }
+    }
+
     // 红绿灯（左）：直径 10px、间距 7px，悬停时整组显示符号
     let lights = [color::close(), color::min(), color::zoom()];
     let ly = r.y + (metric::TITLE_H - metric::LIGHT_D) / 2;
