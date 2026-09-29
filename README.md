@@ -1,5 +1,7 @@
 # AetherOS
 
+[**English**](README.en.md) · 中文 ｜ [**下载 ISO（33.4 MB）**](https://github.com/qwert702/AetherOS/releases/latest) ｜ [落地页](https://qwert702.github.io/AetherOS/) ｜ [装软件指南](docs/APP-PACKAGES.md)
+
 **一个自研的操作系统**：Linux 内核 + 全自研 Rust 用户态 + AI 中枢。
 
 内核不重写 —— Android、ChromeOS 都用 Linux 内核，重写它没有差异化价值。力气全放在内核之上：
@@ -8,8 +10,8 @@
 | | |
 |---|---|
 | **规模** | 合计 21,471 行 Rust / 41 个源文件 / 7 个 crate（2026-09-29 实测） |
-| **验证** | 333 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
-| **产物** | 可引导 ISO 约 30 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
+| **验证** | 334 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **产物** | 可引导 ISO 约 33.4 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](docs/host-ui-light-desktop.png)
 
