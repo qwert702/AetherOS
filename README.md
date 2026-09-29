@@ -15,6 +15,11 @@
 
 ![桌面（明亮主题）](docs/host-ui-light-desktop.png)
 
+![演示：从宿主拉包 → 安装 htop → 在桌面里运行](docs/demo-htop.gif)
+
+*上面这段是**真机录屏**（QEMU 逐帧抓取，未剪辑）：在终端敲一行
+`wget -O- http://10.0.2.2/i|sh`，从宿主拉下应用包，`aetherd` 装好 htop，再敲 `htop` 就在桌面里跑起来了。*
+
 ## 这个项目的几个特别之处
 
 - **整条用户态都是自己写的。** 窗口合成器走 fbdev 软件光栅化（不依赖 GPU），VT/ANSI 解析器、

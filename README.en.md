@@ -4,6 +4,12 @@
 
 ![htop 3.3.0 from the Ubuntu 24.04 archive, running inside the AetherOS desktop](docs/screenshot-htop-app.png)
 
+![Demo: pulling a package from the host, installing htop, and running it on the desktop](docs/demo-htop.gif)
+
+*The clip above is a real screen capture (frames grabbed straight from QEMU, nothing edited):
+one line in the terminal — `wget -O- http://10.0.2.2/i|sh` — pulls a package from the host,
+`aetherd` installs htop, and typing `htop` runs it on the desktop.*
+
 **A desktop operating system whose entire user space is written from scratch in Rust on top of the Linux kernel — no X11 or Wayland client stack, no off-the-shelf desktop toolkit.** That screenshot is not a mockup: it is htop 3.3.0, taken straight out of the Ubuntu 24.04 archive, running on an AetherOS desktop.
 
 The kernel is deliberately the one piece that is *not* rewritten — Android and ChromeOS use Linux too, and rewriting it buys nothing. All the engineering effort goes above it: **from PID 1 to the window compositor, the terminal, the Chinese input method and the AI hub, there is not a single off-the-shelf desktop component in the tree.**
