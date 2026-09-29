@@ -25,6 +25,12 @@ mod term;
 mod textview;
 // VT/ANSI 解析器：纯逻辑跨平台（终端正确性靠它的单测保证）
 mod vt;
+
+/// 控件原语（P1）：按钮/开关/滑杆/分段/列表行/滚动条/徽标 + 共享命中表。
+///
+/// 2026-09-29 新增。设置中心（P3）接入前，大部分控件还没有调用点，
+/// 因此模块内暂时允许 dead_code —— **P3 完成后必须移除那条 allow**。
+mod widgets;
 // Wayland 协议实现（3.1 spike）：wire/object 是纯逻辑，跨平台可测
 mod wayland;
 
@@ -160,6 +166,28 @@ fn run_fbdev() -> anyhow::Result<()> {
                     mouse.1 = (mouse.1 + dy as f32 * 2.0).clamp(0.0, (h - 1) as f32);
                 }
                 input::UiEvent::MouseDown => mouse_down = true,
+                input::UiEvent::Wheel { dy } => {
+                    // P1：滚轮此前**完全没有映射**（长列表只能一页页翻）。
+                    // 归"当前活动窗口"的内容：文件网格滚动。
+                    //
+                    // `visible = 1`：滚轮可以一路滚到列表末尾，真实可见区间由状态条显示
+                    // （"1–8 / 76"）。这里刻意**不复制一份网格页大小的算法**——那会与
+                    // draw.rs 的布局常量各算一套、迟早漂移。
+                    let active_is_files = desktop
+                        .wins
+                        .get(desktop.active)
+                        .map(|x| matches!(&x.kind, crate::draw::WinKind::Files))
+                        .unwrap_or(false);
+                    if active_is_files {
+                        desktop.scroll = widgets::scroll_apply(
+                            desktop.scroll,
+                            dy,
+                            desktop.entries.len(),
+                            1,
+                            widgets::WHEEL_LINES,
+                        );
+                    }
+                }
                 input::UiEvent::MouseUp => {
                     mouse_down = false;
                 let was_drag = drag.is_some();

@@ -74,6 +74,11 @@ pub enum UiEvent {
     MouseMove { dx: i32, dy: i32 },
     MouseDown,
     MouseUp,
+    /// 滚轮（evdev REL_WHEEL）：**正数向上、负数向下**（linux/input.h 约定）。
+    ///
+    /// 2026-09-29 P1 新增：此前**完全没有滚轮映射**，任何超出可视区的列表都只能靠
+    /// 翻页键。设置中心那种长面板必须有滚轮，否则只能一页页翻。
+    Wheel { dy: i32 },
 }
 
 /// linux/input.h 的 input_event（x86_64 布局：timeval 16B + type/code/value 8B = 24B）
@@ -88,6 +93,8 @@ const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
+/// 纵向滚轮（一格 = value 1；正值向上）
+const REL_WHEEL: u16 = 0x08;
 const BTN_LEFT: u16 = 0x110;
 const KEY_ESC: u16 = 1;
 const KEY_BACKSPACE: u16 = 14;
@@ -259,6 +266,7 @@ fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
         EV_REL => match raw.code {
             REL_X => vec![UiEvent::MouseMove { dx: raw.value, dy: 0 }],
             REL_Y => vec![UiEvent::MouseMove { dx: 0, dy: raw.value }],
+            REL_WHEEL => vec![UiEvent::Wheel { dy: raw.value }],
             _ => vec![],
         },
         _ => vec![],
@@ -435,8 +443,29 @@ mod tests {
             translate(&ev(EV_REL, REL_X, 7), &mut Mods::default()),
             vec![UiEvent::MouseMove { dx: 7, dy: 0 }]
         );
+        assert_eq!(
+            translate(&ev(EV_REL, REL_Y, -3), &mut Mods::default()),
+            vec![UiEvent::MouseMove { dx: 0, dy: -3 }]
+        );
         assert!(matches!(t(BTN_LEFT, 1)[0], UiEvent::MouseDown));
         assert!(matches!(t(BTN_LEFT, 0)[0], UiEvent::MouseUp));
+    }
+
+    #[test]
+    fn wheel_is_translated_with_sign() {
+        // P1：滚轮此前**完全没有映射**，长列表/设置面板只能翻页
+        assert_eq!(
+            translate(&ev(EV_REL, REL_WHEEL, 1), &mut Mods::default()),
+            vec![UiEvent::Wheel { dy: 1 }]
+        );
+        assert_eq!(
+            translate(&ev(EV_REL, REL_WHEEL, -1), &mut Mods::default()),
+            vec![UiEvent::Wheel { dy: -1 }]
+        );
+        assert_eq!(
+            translate(&ev(EV_REL, REL_WHEEL, 3), &mut Mods::default()),
+            vec![UiEvent::Wheel { dy: 3 }]
+        );
     }
 
     #[test]
