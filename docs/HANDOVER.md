@@ -114,7 +114,9 @@ VMX 要点：`bios.bootOrder = "cdrom"` + **SATA 光驱**（IDE 光驱引导不�
 输入通路（M4 新增）：**QEMU PS/2(i8042) / VBox → 内核 evdev（`CONFIG_INPUT_EVDEV=y`，内核已内置无需重编）→ `/dev/input/event*` → `input.rs` 后台线程 → mpsc 通道 → 渲染主循环 drain**。
 
 - `aether-compositor/src/input.rs`：evdev 解析（EV_KEY/EV_REL；EV_ABS 不支持）。
-  键盘：字母/符号进 AI 指令条，Enter 发送，退格删除，**数字 1–4 保留为布局快捷键**；
+  键盘：字母/符号进 AI 指令条，Enter 发送，退格删除，**Alt+1–4 切换布局**；
+  ⚠️ 2026-09-29 修复：布局快捷键**曾经是裸数字 1–4**，那会让这几个数字在任何输入框里都打不出来
+  （终端里连 `wget http://10.0.2.2/...` 都敲不了）。全局吞键只能占用带修饰键的组合。
   鼠标：REL 位移累积（2x 手感倍率，不受渲染帧率影响）、左键按下/抬起。
 - `run_fbdev()`：预览路径的完整交互逻辑（菜单/下拉/Dock 命中、拖拽+吸附、缓动动画、toast/回复气泡）已整体移植，另加 `draw::draw_cursor` 软件光标（fbdev 无硬件指针）。
 - AI 通路：Enter → `query_aether`（**connect 3s / read 15s 超时**，每步打串口日志）→ aetherd:7311 → 离线意图（"three"/"两列"/"tidy"/"status"等，无需云端）→ Action（done 之前）→ `apply_action`。

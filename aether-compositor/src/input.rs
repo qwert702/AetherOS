@@ -228,8 +228,11 @@ fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
                 KEY_ENTER => return vec![UiEvent::Enter],
                 KEY_BACKSPACE => return vec![UiEvent::Backspace],
                 KEY_ESC => return vec![UiEvent::Escape],
-                // 数字 1–4 是布局快捷键，但**按住 Shift 时让位给上档符号**
-                KEY_1..=KEY_0 if !mods.shift && !mods.ctrl => {
+                // 布局快捷键 = **Alt + 1..4**。
+                // 2026-09-29 实测修复：原来用**裸数字 1–4**，于是这几个数字在**任何输入框里都
+                // 打不出来** —— 终端里连 `wget http://10.0.2.2/...` 都敲不了（`2` 被当成
+                // "切两列布局"直接吞掉），AI 输入框同理。全局吞键绝不能占用裸字母数字。
+                KEY_1..=KEY_0 if mods.alt && !mods.shift && !mods.ctrl => {
                     if raw.code <= KEY_1 + 3 {
                         return vec![UiEvent::LayoutKey((raw.code - KEY_1 + 1) as usize)];
                     }
@@ -374,6 +377,12 @@ mod tests {
         translate(&ev(EV_KEY, code, value), &mut m)
     }
 
+    /// 指定修饰键状态翻译单个事件
+    fn tm(code: u16, value: i32, mods: Mods) -> Vec<UiEvent> {
+        let mut m = mods;
+        translate(&ev(EV_KEY, code, value), &mut m)
+    }
+
     #[test]
     fn enter_and_backspace() {
         assert!(matches!(t(KEY_ENTER, 1)[0], UiEvent::Enter));
@@ -389,11 +398,35 @@ mod tests {
     }
 
     #[test]
-    fn digits_one_to_four_are_layout_keys() {
-        assert!(matches!(t(2, 1)[0], UiEvent::LayoutKey(1)));
-        assert!(matches!(t(5, 1)[0], UiEvent::LayoutKey(4)));
+    fn plain_digits_type_characters() {
+        // 2026-09-29 回归：裸数字曾经被布局快捷键吞掉，1–4 在任何输入框里都打不出来。
+        // 证据：终端里 `wget http://10.0.2.2/i` 被敲成 `10.0.../i`（两个 `2` 都丢了）。
+        assert_eq!(t(2, 1), vec![UiEvent::Char('1')]);
+        assert_eq!(t(3, 1), vec![UiEvent::Char('2')]);
+        assert_eq!(t(4, 1), vec![UiEvent::Char('3')]);
+        assert_eq!(t(5, 1), vec![UiEvent::Char('4')]);
         assert_eq!(t(6, 1), vec![UiEvent::Char('5')]);
         assert_eq!(t(11, 1), vec![UiEvent::Char('0')]);
+        // 一条真实命令要能敲出来（曾经 `2` 打不出来）
+        for (code, ch) in [(3u16, '2'), (4, '3'), (5, '4'), (2, '1')] {
+            assert_eq!(t(code, 1), vec![UiEvent::Char(ch)], "键码 {code} 应打出 {ch}");
+        }
+    }
+
+    #[test]
+    fn shift_digits_still_produce_symbols() {
+        let sh = Mods { shift: true, ..Default::default() };
+        assert_eq!(tm(3, 1, sh.clone()), vec![UiEvent::Char('@')]);
+        assert_eq!(tm(2, 1, sh), vec![UiEvent::Char('!')]);
+    }
+
+    #[test]
+    fn alt_digits_switch_layout() {
+        let alt = Mods { alt: true, ..Default::default() };
+        assert!(matches!(tm(2, 1, alt.clone())[0], UiEvent::LayoutKey(1)));
+        assert!(matches!(tm(5, 1, alt.clone())[0], UiEvent::LayoutKey(4)));
+        // Alt+5 不是布局键，也不能漏成普通字符（否则 Alt 组合会往终端灌字）
+        assert!(tm(6, 1, alt).is_empty(), "Alt+5 不该产生字符");
     }
 
     #[test]

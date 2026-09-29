@@ -1730,10 +1730,12 @@ fn preview_main() -> anyhow::Result<()> {
         maintain_terminals(&mut desktop, tr.as_ref());
 
         // ---- 键盘：AI 指令输入 + 布局切换 + 窗口/文件导航 ----
-        // minifb 无字符级输入 API，预览期用按键映射（字母/空格/常用符号）；
-        // 数字键 1-4 保留给布局切换，中文指令可用 aetherd chat CLI
+        // minifb 无字符级输入 API，预览期用按键映射（字母/数字/常用符号）。
+        // 布局切换 = **Alt+1..4**：裸数字必须留给输入框（2026-09-29 修复，见 input.rs 同一处）。
         let ctrl = window.is_key_down(minifb::Key::LeftCtrl)
             || window.is_key_down(minifb::Key::RightCtrl);
+        let alt = window.is_key_down(minifb::Key::LeftAlt)
+            || window.is_key_down(minifb::Key::RightAlt);
         // 终端拿到焦点时按键归 shell（与真机路径同一条规则）
         let term_owns_keys = confirm.is_none() && focused_terminal(&desktop);
         if term_owns_keys {
@@ -1835,22 +1837,22 @@ fn preview_main() -> anyhow::Result<()> {
                         std::thread::spawn(move || query_aether(text, 130, tx));
                     }
                 }
-                minifb::Key::Key1 => {
+                minifb::Key::Key1 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::Float) {
                         toast = Some((msg, Instant::now()));
                     }
                 }
-                minifb::Key::Key2 => {
+                minifb::Key::Key2 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::TwoCol) {
                         toast = Some((msg, Instant::now()));
                     }
                 }
-                minifb::Key::Key3 => {
+                minifb::Key::Key3 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::ThreeCol) {
                         toast = Some((msg, Instant::now()));
                     }
                 }
-                minifb::Key::Key4 => {
+                minifb::Key::Key4 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::Monocle) {
                         toast = Some((msg, Instant::now()));
                     }
@@ -2225,6 +2227,22 @@ fn key_to_char(k: &minifb::Key) -> Option<char> {
         Comma => ',',
         Period => '.',
         Minus => '-',
+        // 数字与常用符号：曾经整段缺失，导致预览里**连数字都打不出来**（2026-09-29 修复）
+        Key0 => '0',
+        Key1 => '1',
+        Key2 => '2',
+        Key3 => '3',
+        Key4 => '4',
+        Key5 => '5',
+        Key6 => '6',
+        Key7 => '7',
+        Key8 => '8',
+        Key9 => '9',
+        Semicolon => ';',
+        Apostrophe => '\'',
+        Slash => '/',
+        Backslash => '\\',
+        Equal => '=',
         _ => return None,
     };
     Some(c)
