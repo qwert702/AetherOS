@@ -30,3 +30,50 @@ BR2_TARGET_SYSLINUX=y
 BR2_TARGET_SYSLINUX_ISOLINUX=y
 BR2_TARGET_ROOTFS_ISO9660_ISOLINUX=y
 
+# ── 运行期库底座（2026-09-29 追加）────────────────────────────────────────
+# 为什么加：实测镜像里只有 glibc 家族 + libgcc_s + e2fsprogs 的库，所以"市面上的
+# Linux 程序"几乎必然缺共享库而跑不起来（例：htop 需要 libncursesw/libtinfo/libnl）。
+# 这一节把最常被依赖的几个运行期库放进镜像，让"缺库"这半边问题消失；剩下的靠
+# 打包器自带（见 docs/APP-PACKAGES.md 与 scripts/mkapp.py）。
+BR2_PACKAGE_ZLIB=y
+BR2_PACKAGE_LIBZLIB=y
+BR2_PACKAGE_OPENSSL=y
+BR2_PACKAGE_LIBOPENSSL=y
+BR2_PACKAGE_LIBFFI=y
+BR2_PACKAGE_EXPAT=y
+
+# OpenSSL 安全基线：Buildroot 默认把 OpenSSL 3.x 的 legacy 算法与调试机制全部打开
+# （RC2/RC4/MD2/MD4/MDC2/IDEA/SEED/DES/RMD160/Whirlpool/Blowfish/CAST/SSL3/WEAK_SSL + mdebug）。
+# 本项目安全基线要求"不得使用已废弃的加密算法"，所以逐项关掉。
+# 保留 CHACHA / BLAKE2（现代）、PSK、以及 TLS 本体（ENABLE_SSL 不动 —— no-ssl 有影响 TLS 的风险）。
+# ⚠️ 下面这些行必须逐字是 "# BR2_FOO is not set"，不能加行尾注释，否则 kconfig 不认、静默失效。
+# 映射关系见 buildroot 的 package/libopenssl/libopenssl.mk（关掉 = 传 no-xxx 给 configure）。
+#
+# BR2_PACKAGE_LIBOPENSSL_UNSECURE is not set
+# BR2_PACKAGE_LIBOPENSSL_DYNAMIC_ENGINE is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_COMP is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_SSL3 is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_WEAK_SSL is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_RC2 is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_RC4 is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_MD2 is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_MD4 is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_MDC2 is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_IDEA is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_SEED is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_DES is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_RMD160 is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_WHIRLPOOL is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_BLOWFISH is not set
+# BR2_PACKAGE_LIBOPENSSL_ENABLE_CAST is not set
+
+# ncurses 一箭双雕：libncursesw（全屏程序的库）+ terminfo 条目数据库。
+# ⚠️ terminfo 是硬需求：compositor 给 PTY 设的 TERM 是 xterm-256color
+# （aether-compositor/src/pty.rs），镜像里没有对应条目时 ncurses 程序会直接报
+# "Error opening terminal: xterm-256color" 而跑不起来。
+# Buildroot 默认只装"少数关键条目"，所以额外显式声明我们实际会用的几个。
+BR2_PACKAGE_NCURSES=y
+BR2_PACKAGE_NCURSES_WCHAR=y
+BR2_PACKAGE_NCURSES_TARGET_PROGS=y
+BR2_PACKAGE_NCURSES_ADDITIONAL_TERMINFO="x/xterm-256color x/xterm l/linux v/vt100"
+
