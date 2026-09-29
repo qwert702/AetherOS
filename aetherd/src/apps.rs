@@ -190,7 +190,7 @@ pub fn install(root: &Path, src: &Path) -> Result<(Installed, Preflight)> {
     let entry = resolve_entry(&src, &manifest.entry)?;
 
     // **预检在复制之前做**：别先装进去再说跑不起来。
-    let pre = preflight(&entry, &src.join("lib"));
+    let pre = preflight(&src, &entry);
     if let PreflightKind::Unusable = pre.kind {
         bail!("这个包不能用：{}\n（没有改动系统）", pre.detail);
     }
@@ -286,8 +286,8 @@ pub fn remove_into(root: &Path, id: &str, trash_root: &Path) -> Result<PathBuf> 
 
 /// 生成的包装脚本内容（终端里敲 `<id>` 就能用）。
 ///
-/// 为什么要包装脚本而不是直接软链：应用可能自带 `lib/`，需要 `LD_LIBRARY_PATH`
-/// 才能跑起来；软链没法带环境变量。
+/// 为什么要包装脚本而不是直接软链：应用可能自带 `lib/` 与 `share/terminfo`，
+/// 需要 `LD_LIBRARY_PATH` / `TERMINFO_DIRS` 才能跑起来；软链没法带环境变量。
 ///
 /// ⚠️ 这个脚本是给**目标系统**（Linux）执行的，所以路径分隔符和换行都必须固定成
 /// POSIX 形式 —— 开发机是 Windows，`Path::join` 会给出反斜杠。测试
@@ -295,6 +295,13 @@ pub fn remove_into(root: &Path, id: &str, trash_root: &Path) -> Result<PathBuf> 
 pub fn wrapper_script(app: &Installed) -> String {
     let entry = posix(&app.dir.join(&app.manifest.entry));
     let lib = posix(&app.dir.join("lib"));
+    // 包内自带的终端条目优先，后面接系统目录：全屏程序（htop/vim/less）找不到 terminfo
+    // 会直接报 "Error opening terminal"。见 SYSTEM_TERMINFO_DIRS 的说明。
+    let terminfo = format!(
+        "{}:{}",
+        posix(&app.dir.join("share/terminfo")),
+        SYSTEM_TERMINFO_DIRS.join(":")
+    );
     let mut fixed_args = String::new();
     for a in &app.manifest.args {
         fixed_args.push_str(&shell_quote(a));
@@ -306,8 +313,11 @@ pub fn wrapper_script(app: &Installed) -> String {
          # 系统区在内存盘里，重启会还原 —— 每次开机重新生成。\n\
          LD_LIBRARY_PATH={lib}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\n\
          export LD_LIBRARY_PATH\n\
+         TERMINFO_DIRS={ti}${{TERMINFO_DIRS:+:$TERMINFO_DIRS}}\n\
+         export TERMINFO_DIRS\n\
          exec {entry} {fixed_args}\"$@\"\n",
         lib = shell_quote(&lib),
+        ti = shell_quote(&terminfo),
         entry = shell_quote(&entry),
         fixed_args = fixed_args,
     )
@@ -499,8 +509,8 @@ pub fn parse_elf(bytes: &[u8]) -> Option<ElfInfo> {
     Some(ElfInfo { interp, needed })
 }
 
-/// 读文件并预检。`app_lib` 是应用自带的 `lib/` 目录（可为不存在的路径）。
-pub fn preflight(entry: &Path, app_lib: &Path) -> Preflight {
+/// 读文件并预检。`pkg` 是包根（用来找 `lib/` 与 `share/terminfo`）。
+pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
     let head = match read_head(entry) {
         Ok(b) => b,
         Err(e) => {
@@ -553,21 +563,27 @@ pub fn preflight(entry: &Path, app_lib: &Path) -> Preflight {
         };
     }
 
-    let missing: Vec<String> = elf
-        .needed
-        .iter()
-        .filter(|l| !lib_exists(l, app_lib))
-        .cloned()
-        .collect();
-    if missing.is_empty() {
-        let how = if elf.needed.is_empty() {
-            "依赖都在系统里"
-        } else {
-            "需要的共享库都在（系统里或包内 lib/）"
+    // 包里带了 glibc 家族 → 必然起不来，而且比"缺库"更糟（缺库是缺，这个是有害）。
+    // 放在依赖闭包之前判：这种包根本不该被放行。
+    let bad_glibc = bundled_glibc_family(pkg);
+    if !bad_glibc.is_empty() {
+        return Preflight {
+            kind: PreflightKind::Risky,
+            detail: format!(
+                "包里带了 **glibc 家族**的库（{}）—— 不能这么做：加载器会去用包里那份 libc，\
+                 与系统那份撞 GLIBC_PRIVATE 私有符号，程序直接起不来\
+                 （实测报 `undefined symbol: __tunable_is_initialized, version GLIBC_PRIVATE`）。\
+                 把这些文件从包的 lib/ 里删掉即可；用 scripts/mkapp.py 打包不会出现这种情况。",
+                bad_glibc.join("、")
+            ),
         };
-        Preflight { kind: PreflightKind::Runnable, detail: format!("动态链接，{how}") }
-    } else {
-        Preflight {
+    }
+
+    // 依赖闭包：动态程序真正会挂的地方不是"第一层缺库"，而是"链上某一环缺库"。
+    // 例：htop → libncursesw → libtinfo；只查第一层会把"装了还是跑不起来"判成"能跑"。
+    let (missing, needs_curses) = walk_dependencies(pkg, entry);
+    if !missing.is_empty() {
+        return Preflight {
             kind: PreflightKind::Risky,
             detail: format!(
                 "动态链接，**缺 {} 个共享库**：{}。装上也跑不起来 —— \
@@ -575,8 +591,33 @@ pub fn preflight(entry: &Path, app_lib: &Path) -> Preflight {
                 missing.len(),
                 missing.join("、")
             ),
-        }
+        };
     }
+
+    // curses 程序还必须有 terminfo 条目。缺了会直接报 "Error opening terminal: <TERM>"，
+    // 而且比缺库更难查：库都在、进程能启动、就是起不来。2026-09-29 实测：镜像原本
+    // 没有 terminfo，而 compositor 给 PTY 设的 TERM 是 xterm-256color（pty.rs），
+    // 于是所有全屏程序都跑不起来。
+    if needs_curses && !terminfo_available(pkg, &SYSTEM_TERMINFO_DIRS) {
+        return Preflight {
+            kind: PreflightKind::Risky,
+            detail: "动态链接，共享库都齐了，但**没有该程序需要的终端条目（terminfo）**：\
+                     全屏程序（htop / vim / less 这类）启动时会直接报 \
+                     \"Error opening terminal\"。系统 terminfo 目录为空、包里也没有 \
+                     share/terminfo —— 用打包器（scripts/mkapp.py）加 --terminfo 重新打一个，\
+                     它会把条目放进包的 share/terminfo。"
+                .into(),
+        };
+    }
+
+    let how = if elf.needed.is_empty() {
+        "依赖都在系统里"
+    } else if needs_curses {
+        "需要的共享库都在（系统里或包内 lib/），terminfo 也找得到"
+    } else {
+        "需要的共享库都在（系统里或包内 lib/）"
+    };
+    Preflight { kind: PreflightKind::Runnable, detail: format!("动态链接，{how}") }
 }
 
 fn read_head(p: &Path) -> Result<Vec<u8>> {
@@ -587,12 +628,117 @@ fn read_head(p: &Path) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// 某个共享库在当前系统里找不找得到（系统目录 + 应用自带的 lib/）。
-pub fn lib_exists(lib: &str, app_lib: &Path) -> bool {
-    if app_lib.join(lib).is_file() {
+/// 系统 terminfo 目录。curses 程序靠它把 `TERM` 映射成终端能力表。
+pub const SYSTEM_TERMINFO_DIRS: [&str; 2] = ["/usr/share/terminfo", "/etc/terminfo"];
+
+/// 依赖闭包最多遍历多少个文件（防病态递归把预检拖死）。
+const MAX_DEP_FILES: usize = 64;
+
+/// 这个名字是不是 curses 类库（用它们的程序需要 terminfo）。
+fn is_curses_lib(name: &str) -> bool {
+    name.starts_with("libncurses")
+        || name.starts_with("libtinfo")
+        || name.starts_with("libtermcap")
+        || name.starts_with("libcurses")
+}
+
+/// 包里带了 glibc 家族的库吗？返回文件名列表。
+///
+/// 为什么必须拦：这套库**只能**让程序起不来。加载器一旦通过 `LD_LIBRARY_PATH` 用到包里
+/// 那份 libc，就会与系统那份撞 GLIBC_PRIVATE 私有符号。2026-09-29 实测报错：
+/// `undefined symbol: __tunable_is_initialized, version GLIBC_PRIVATE`。
+/// 打包器（scripts/mkapp.py）本来就不会收它们，但包可能是手搓的 —— 对照实验证实
+/// 没有这道检查时预检会放行一个注定崩掉的包。
+pub fn bundled_glibc_family(pkg: &Path) -> Vec<String> {
+    const FAMILY_PREFIX: [&str; 8] = [
+        "libc.so", "libm.so", "libpthread.so", "libdl.so", "librt.so",
+        "libutil.so", "libcrypt.so", "ld-linux",
+    ];
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(pkg.join("lib")) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if FAMILY_PREFIX.iter().any(|p| name.starts_with(p)) {
+            out.push(name);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// 在「包内 lib/ + 系统库目录」里找这个共享库。找不到返回 `None`。
+pub fn find_lib(lib: &str, app_lib: &Path) -> Option<PathBuf> {
+    let local = app_lib.join(lib);
+    if local.is_file() {
+        return Some(local);
+    }
+    LIB_DIRS
+        .iter()
+        .map(|d| Path::new(d).join(lib))
+        .find(|p| p.is_file())
+}
+
+/// 递归走依赖闭包，返回（缺失的库名，是否依赖 curses 库）。
+///
+/// 每一层都往下读：系统库自己也可能依赖别的库，只看入口那一层会漏。
+fn walk_dependencies(pkg: &Path, entry: &Path) -> (Vec<String>, bool) {
+    let app_lib = pkg.join("lib");
+    let mut queue = vec![entry.to_path_buf()];
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    let mut curses = false;
+
+    while let Some(path) = queue.pop() {
+        if seen.len() >= MAX_DEP_FILES {
+            break;
+        }
+        let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let Ok(head) = read_head(&path) else { continue };
+        let Some(elf) = parse_elf(&head) else { continue };
+        for name in &elf.needed {
+            if is_curses_lib(name) {
+                curses = true;
+            }
+            match find_lib(name, &app_lib) {
+                Some(found) => {
+                    let k = std::fs::canonicalize(&found).unwrap_or(found);
+                    if !seen.contains(&k) {
+                        queue.push(k);
+                    }
+                }
+                None => {
+                    if !missing.contains(name) {
+                        missing.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
+    (missing, curses)
+}
+
+/// curses 程序的 terminfo 找不找得到：包内 `share/terminfo` 或任一系统目录有内容即可。
+///
+/// `system_dirs` 做成参数是为了能在开发机上测（Windows 没有 `/usr/share/terminfo`）。
+pub fn terminfo_available(pkg: &Path, system_dirs: &[&str]) -> bool {
+    fn has_entries(d: &Path) -> bool {
+        std::fs::read_dir(d)
+            .map(|rd| rd.flatten().any(|e| e.path().exists()))
+            .unwrap_or(false)
+    }
+    let local = pkg.join("share").join("terminfo");
+    if local.is_dir() && has_entries(&local) {
         return true;
     }
-    LIB_DIRS.iter().any(|d| Path::new(d).join(lib).is_file())
+    system_dirs
+        .iter()
+        .any(|d| Path::new(d).is_dir() && has_entries(Path::new(d)))
 }
 
 #[cfg(test)]
@@ -841,7 +987,7 @@ mod tests {
     fn preflight_reports_missing_libs_for_a_package_without_them() {
         let d = tmp("preflight");
         let pkg = write_pkg(&d, "dyn", &synth_elf(Some("/lib64/ld-linux-x86-64.so.2"), &["libdefinitely-not-here.so"]));
-        let pre = preflight(&pkg.join("bin/hello"), &pkg.join("lib"));
+        let pre = preflight(&pkg, &pkg.join("bin/hello"));
         assert_eq!(pre.kind, PreflightKind::Risky);
         assert!(pre.detail.contains("libdefinitely-not-here.so"), "实得: {}", pre.detail);
     }
@@ -852,7 +998,7 @@ mod tests {
         let pkg = write_pkg(&d, "dyn", &synth_elf(Some("/lib64/ld-linux-x86-64.so.2"), &["libmine.so"]));
         std::fs::create_dir_all(pkg.join("lib")).unwrap();
         std::fs::write(pkg.join("lib/libmine.so"), b"fake").unwrap();
-        let pre = preflight(&pkg.join("bin/hello"), &pkg.join("lib"));
+        let pre = preflight(&pkg, &pkg.join("bin/hello"));
         assert_eq!(pre.kind, PreflightKind::Runnable, "{}", pre.detail);
     }
 
@@ -860,7 +1006,7 @@ mod tests {
     fn preflight_rejects_a_non_executable_file() {
         let d = tmp("preflight-bad");
         let pkg = write_pkg(&d, "data", b"this is just text, not a program");
-        let pre = preflight(&pkg.join("bin/hello"), &pkg.join("lib"));
+        let pre = preflight(&pkg, &pkg.join("bin/hello"));
         assert_eq!(pre.kind, PreflightKind::Unusable);
         assert!(pre.detail.contains("不是 ELF"), "实得: {}", pre.detail);
     }
@@ -869,7 +1015,7 @@ mod tests {
     fn preflight_recognizes_shebang_scripts() {
         let d = tmp("preflight-sh");
         let pkg = write_pkg(&d, "sh", b"#!/bin/sh\necho hi\n");
-        let pre = preflight(&pkg.join("bin/hello"), &pkg.join("lib"));
+        let pre = preflight(&pkg, &pkg.join("bin/hello"));
         #[cfg(unix)]
         assert_eq!(pre.kind, PreflightKind::Runnable, "{}", pre.detail);
         #[cfg(not(unix))]
@@ -889,5 +1035,158 @@ mod tests {
         assert!(load_manifest(&d).is_err(), "缺 entry 必须被拒");
         std::fs::write(&p, "{ not json").unwrap();
         assert!(load_manifest(&d).is_err(), "坏 JSON 必须被拒");
+    }
+
+    // ---- 依赖闭包与 terminfo（2026-09-29 新增：为"能跑市面软件"服务）----
+
+    /// 造一个包：entry 是合成 ELF（动态，依赖 `entry_needs`），`lib/` 里放若干合成库。
+    fn write_elf_pkg(
+        dir: &Path,
+        id: &str,
+        entry_needs: &[&str],
+        libs: &[(&str, &[&str])],
+    ) -> PathBuf {
+        let interp = Some("/lib64/ld-linux-x86-64.so.2");
+        let pkg = dir.join("pkg");
+        std::fs::create_dir_all(pkg.join("bin")).unwrap();
+        std::fs::create_dir_all(pkg.join("lib")).unwrap();
+        std::fs::write(
+            pkg.join(MANIFEST_NAME),
+            format!(r#"{{"id":"{id}","name":"示例","version":"1","entry":"bin/x"}}"#),
+        )
+        .unwrap();
+        std::fs::write(pkg.join("bin/x"), synth_elf(interp, entry_needs)).unwrap();
+        for (name, needs) in libs {
+            std::fs::write(pkg.join("lib").join(name), synth_elf(interp, needs)).unwrap();
+        }
+        pkg
+    }
+
+    #[test]
+    fn dependency_closure_is_recursive() {
+        let d = tmp("dep-closure");
+        // entry → libA → libB，而 libB 既不在包里也不在系统路径里。
+        // 只查第一层会得出"能跑"（libA 在包里），实际上装上去一定挂。
+        let pkg = write_elf_pkg(&d, "deep", &["libA.so.1"], &[("libA.so.1", &["libB.so.1"])]);
+        let (missing, _) = walk_dependencies(&pkg, &pkg.join("bin/x"));
+        assert_eq!(missing, vec!["libB.so.1"], "递归一层才发现的缺失库必须被报出来");
+    }
+
+    #[test]
+    fn package_local_lib_satisfies_dependency() {
+        let d = tmp("dep-local");
+        let pkg = write_elf_pkg(&d, "local", &["libA.so.1"], &[("libA.so.1", &[])]);
+        let (missing, _) = walk_dependencies(&pkg, &pkg.join("bin/x"));
+        assert!(missing.is_empty(), "包内自带的库应算已满足，实得缺失 {missing:?}");
+        assert!(find_lib("libA.so.1", &pkg.join("lib")).is_some());
+    }
+
+    #[test]
+    fn curses_dependency_is_detected() {
+        let d = tmp("dep-curses");
+        // libncursesw 在包里（不缺库），但程序是 curses 类 → 需要 terminfo
+        let pkg = write_elf_pkg(
+            &d,
+            "curses",
+            &["libncursesw.so.6"],
+            &[("libncursesw.so.6", &["libtinfo.so.6"]), ("libtinfo.so.6", &[])],
+        );
+        let (missing, curses) = walk_dependencies(&pkg, &pkg.join("bin/x"));
+        assert!(missing.is_empty(), "实得缺失 {missing:?}");
+        assert!(curses, "依赖 libncursesw + libtinfo 应被认作 curses 程序");
+    }
+
+    #[test]
+    fn curses_lib_names_are_classified() {
+        for n in ["libncursesw.so.6", "libncurses.so.5", "libtinfo.so.6", "libtermcap.so.2"] {
+            assert!(is_curses_lib(n), "{n} 应被认作 curses 库");
+        }
+        for n in ["libc.so.6", "libz.so.1", "libssl.so.3", "libm.so.6"] {
+            assert!(!is_curses_lib(n), "{n} 不该被认作 curses 库");
+        }
+    }
+
+    #[test]
+    fn terminfo_lookup_prefers_package_then_system() {
+        let d = tmp("terminfo");
+        let pkg = d.join("pkg");
+        let sysdir = d.join("sys-term");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::create_dir_all(sysdir.join("x")).unwrap();
+        std::fs::write(sysdir.join("x").join("xterm-256color"), b"x").unwrap();
+        let none = d.join("does-not-exist");
+        let none_s = [none.to_str().unwrap()];
+
+        // 包内没有 → 用系统目录
+        assert!(terminfo_available(&pkg, &[sysdir.to_str().unwrap()]));
+        // 系统目录也没有 → 判缺
+        assert!(!terminfo_available(&pkg, &none_s));
+        // 包内 share/terminfo 有内容 → 即使系统没有也算有（这正是打包器要带的东西）
+        std::fs::create_dir_all(pkg.join("share/terminfo/x")).unwrap();
+        std::fs::write(pkg.join("share/terminfo/x/xterm-256color"), b"x").unwrap();
+        assert!(terminfo_available(&pkg, &none_s), "包内条目应被认到");
+    }
+
+    #[test]
+    fn preflight_handles_curses_program_without_terminfo() {
+        let d = tmp("pf-terminfo");
+        // 库都在包里，唯一可能的问题是 terminfo。而系统上有没有 terminfo 取决于平台：
+        // 开发机（Windows）没有，镜像里现在有了 —— 所以断言随平台分流，别写死。
+        let pkg = write_elf_pkg(
+            &d,
+            "curses2",
+            &["libncursesw.so.6"],
+            &[("libncursesw.so.6", &[])],
+        );
+        let sys_has = SYSTEM_TERMINFO_DIRS.iter().any(|p| Path::new(p).is_dir());
+
+        let pre = preflight(&pkg, &pkg.join("bin/x"));
+        if sys_has {
+            assert_eq!(pre.kind, PreflightKind::Runnable, "{}", pre.detail);
+        } else {
+            assert_eq!(pre.kind, PreflightKind::Risky, "{}", pre.detail);
+            assert!(pre.detail.contains("terminfo"), "应指出是 terminfo 的问题: {}", pre.detail);
+        }
+
+        // 包里带上 terminfo 之后，任何平台都必须是 Runnable
+        std::fs::create_dir_all(pkg.join("share/terminfo/x")).unwrap();
+        std::fs::write(pkg.join("share/terminfo/x/xterm-256color"), b"x").unwrap();
+        let pre = preflight(&pkg, &pkg.join("bin/x"));
+        assert_eq!(pre.kind, PreflightKind::Runnable, "{}", pre.detail);
+    }
+
+    #[test]
+    fn preflight_flags_bundled_glibc_family() {
+        // 对照实验发现的缺口：手搓一个带宿主 libc.so.6 的包，旧预检会放行（而它必然崩）
+        let d = tmp("pf-glibc-in-pkg");
+        let pkg = write_elf_pkg(&d, "bad", &["libc.so.6"], &[("libc.so.6", &[])]);
+        assert_eq!(bundled_glibc_family(&pkg), vec!["libc.so.6"], "包内 libc 必须被认出来");
+        let pre = preflight(&pkg, &pkg.join("bin/x"));
+        assert_eq!(pre.kind, PreflightKind::Risky, "{}", pre.detail);
+        assert!(pre.detail.contains("GLIBC_PRIVATE"), "要说清为什么不行: {}", pre.detail);
+    }
+
+    #[test]
+    fn wrapper_sets_terminfo_dirs_too() {
+        // 全屏程序靠它找到终端条目；包内优先，后面接系统目录
+        let app = Installed {
+            manifest: Manifest {
+                id: "htop".into(),
+                name: "htop".into(),
+                version: "1".into(),
+                entry: "bin/htop".into(),
+                args: vec![],
+                desc: String::new(),
+            },
+            dir: PathBuf::from("/var/apps/htop"),
+            bytes: 0,
+        };
+        let s = wrapper_script(&app);
+        assert!(
+            s.contains("TERMINFO_DIRS='/var/apps/htop/share/terminfo:/usr/share/terminfo"),
+            "包装脚本要带上 terminfo 搜索路径:\n{s}"
+        );
+        assert!(s.contains("export TERMINFO_DIRS"), "必须 export 出去:\n{s}");
+        assert!(!s.contains('\r') && !s.contains('\\'), "仍是给 Linux 跑的脚本:\n{s}");
     }
 }
