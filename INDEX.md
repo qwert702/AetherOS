@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **21,315 行**
+生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **21,341 行**
 （7 个 crate，41 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
@@ -17,7 +17,7 @@
 | `aether-install` | 505 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 334 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **21,315** | **41** | |
+| **合计** | **21,341** | **41** | |
 
 > 口径：2026-09-29 12:20 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -67,7 +67,7 @@ Aether/
 - 函数：`encode`（JSON+换行）/ `decode`（NDJSON 帧）
 - ⚠️ 新增 `Request` 变体是**权限模型的敏感动作**：剪贴板这条路（P1-1）就曾因走变体而绕过 `Gate`。新变体必须有对应的门槛测试（见 `server.rs::ipc_gating_tests`）
 
-### aether-compositor（合成器，12,845 行 / 18 文件）
+### aether-compositor（合成器，12,871 行 / 18 文件）
 | 文件 | 内容 |
 |---|---|
 | `src/main.rs` (3,438) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
