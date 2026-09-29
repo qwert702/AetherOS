@@ -31,6 +31,9 @@ mod vt;
 /// 2026-09-29 新增。设置中心（P3）接入前，大部分控件还没有调用点，
 /// 因此模块内暂时允许 dead_code —— **P3 完成后必须移除那条 allow**。
 mod widgets;
+
+/// 用户设置的持久化与声明（P3 设置中心）：`/var/lib/aether/settings.json`。
+mod settings;
 // Wayland 协议实现（3.1 spike）：wire/object 是纯逻辑，跨平台可测
 mod wayland;
 
@@ -102,6 +105,10 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut desktop = demo_desktop_sized(w, h);
     let tr = text::TextRenderer::load();
     let mut renderer = draw::Renderer::new(w, h);
+    // 用户设置（P3）：从唯一持久分区读入；文件缺失/损坏会回落默认值（见 settings.rs）
+    // 用户设置（P3）：从唯一持久分区读入；文件缺失/损坏会回落默认值（见 settings.rs）。
+    // 没有设置文件时，默认时区取 `TZ`（镜像可按发行配置定），而不是写死 +8。
+    renderer.settings = settings::Settings::load(settings::SETTINGS_PATH, text::tz_offset_min());
     // Dock 里要显示"已装应用"（见 load_installed_apps）。开机扫一次，
     // 之后由 refresh_apps_throttled 每 ~3 秒重扫 —— 这样"让 AI 装一个应用"之后，
     // Dock 上会自己冒出来，不必重启合成器。
@@ -132,6 +139,10 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut ai_cursor = textview::TextCursor::default();
     // 2.3：中文输入法（默认关，Ctrl+Space 切换 —— 见 ime 模块头注释）
     let mut ime = ime::Ime::default();
+    // P3 设置项「默认启用中文输入法」：启动时按用户偏好打开（否则这个开关就是"点了没用"）
+    if renderer.settings.ime_default && !ime.enabled() {
+        ime.toggle();
+    }
     let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let mut open_menu: Option<usize> = None;
     // L2+ 权限确认：待确认请求 + 用户已输入的回显文本
@@ -430,6 +441,26 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 } else {
                     resize = None; // 松手结束
+                }
+            } else if let Some(hit) = renderer
+                .settings_hits
+                .iter()
+                .find(|(rr, _)| rr.contains(mouse.0, mouse.1))
+                .map(|(_, id)| *id)
+            {
+                // 设置中心（P3）：绘制期登记命中，这里改状态并**立即落盘**。
+                // 只对"当前活动窗口是设置"生效 —— 否则背后那个设置窗口会被隔空点中。
+                let is_settings = desktop
+                    .wins
+                    .get(desktop.active)
+                    .map(|x| matches!(&x.kind, draw::WinKind::Settings))
+                    .unwrap_or(false);
+                if is_settings {
+                    settings::apply_hit(&mut renderer.settings, &mut renderer.settings_page, hit);
+                    if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
+                        // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
+                        toast = Some((format!("设置未能写入磁盘：{e}"), Instant::now()));
+                    }
                 }
             } else if focused_terminal(&desktop) && mouse_down {
                 // 按住并移动 = 继续拖选
@@ -1170,10 +1201,12 @@ fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
         return Some("窗口数量已达上限（8）".into());
     }
     let idx = desktop.wins.len();
-    // 浏览器/设置暂无专门内容，先按文件管理器的纸面渲染（视觉上仍是窗口）
+    // 2026-09-29 P3：**设置有了专门内容**（设置中心），不再复用文件管理器的纸面；
+    // 浏览器仍暂用文件管理器纸面渲染。
     let kind = match icon {
         1 => draw::WinKind::Terminal,
         3 => draw::WinKind::Music,
+        4 => draw::WinKind::Settings,
         _ => draw::WinKind::Files,
     };
     let win = Win {
@@ -1737,6 +1770,10 @@ fn preview_main() -> anyhow::Result<()> {
     let mut ai_cursor = textview::TextCursor::default();
     // 2.3：中文输入法（默认关，Ctrl+Space 切换 —— 见 ime 模块头注释）
     let mut ime = ime::Ime::default();
+    // P3 设置项「默认启用中文输入法」：启动时按用户偏好打开（否则这个开关就是"点了没用"）
+    if renderer.settings.ime_default && !ime.enabled() {
+        ime.toggle();
+    }
     let mut ai_reply: Option<(String, draw::BubbleKind, Instant)> = None;
     let (tx, rx) = mpsc::channel::<AiEvent>();
     let mut open_menu: Option<usize> = None;

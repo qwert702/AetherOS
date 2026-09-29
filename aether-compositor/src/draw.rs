@@ -1017,6 +1017,9 @@ pub enum WinKind {
     Preview,
     /// Wayland 客户端窗口（3.1 spike）：内容由客户端经 wl_shm 提供
     Wayland,
+    /// **设置中心**（2026-09-29 P3）：左侧分组导航 + 右侧页面内容。
+    /// 在此之前点 Dock 的"设置"打开的是文件管理器（标题写着"设置"的假窗口）。
+    Settings,
 }
 
 pub struct Win {
@@ -1225,6 +1228,12 @@ pub struct Renderer {
     /// 为什么放在 Renderer 上而不是当参数传：`draw_dock` 的调用链已经很深，
     /// 而且这份数据是"每帧画一次"的稳定状态，不是逐帧变化的参数。
     pub installed_apps: Vec<(String, String)>,
+    /// 用户设置（P3）：启动时从 `/var/lib/aether/settings.json` 读入，改动即写回
+    pub settings: crate::settings::Settings,
+    /// 设置窗口当前页（左栏选中项）
+    pub settings_page: usize,
+    /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
+    pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 当前展开的下拉菜单：(各项命中区, 文案)
     pub dropdown: Option<(Vec<Rect>, Vec<&'static str>)>,
     /// 安装向导磁盘行的命中区 (矩形, 设备名, 容量MB)
@@ -1263,6 +1272,9 @@ impl Renderer {
             menubar_menus: Vec::new(),
             dock_icons: Vec::new(),
             installed_apps: Vec::new(),
+            settings: crate::settings::Settings::default(),
+            settings_page: crate::settings::first_enabled_page(),
+            settings_hits: Vec::new(),
             dropdown: None,
             installer_rows: Vec::new(),
             file_cells: Vec::new(),
@@ -1407,11 +1419,13 @@ impl Renderer {
         self.window_lights.clear();
         self.sidebar_hits.clear();
         self.crumb_hits.clear();
+        self.settings_hits.clear();
         for (i, win) in desktop.wins.iter().enumerate() {
             draw_window(
                 buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
                 &mut self.sidebar_hits, &mut self.crumb_hits,
+                self.settings, self.settings_page, &mut self.settings_hits,
             );
         }
         mark!("windows");
@@ -1557,7 +1571,14 @@ impl Renderer {
         }
 
         // 右侧：电池、AI 状态、搜索胶囊、时钟
-        let clock = crate::text::clock_str();
+        // 2026-09-29 P3：时钟改由用户设置驱动（时区偏移 / 24 或 12 小时制 / 是否显示秒），
+        // 不再只有"硬编码 +8"一种可能。
+        let clock = crate::text::clock_fmt(
+            crate::text::now_utc_secs(),
+            self.settings.tz_offset_min,
+            self.settings.clock_24h,
+            self.settings.clock_seconds,
+        );
         let clock_w = tr.measure_bold(&clock, font::BODY);
         let clock_x = w as f32 - 16.0 - clock_w;
         tr.draw_bold(buf, w, h, clock_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::BODY), &clock, font::BODY, color::text(), 0.95);
@@ -1648,6 +1669,9 @@ fn draw_window(
     lights_out: &mut Vec<(usize, Rect, Rect)>,
     sidebar_hits: &mut Vec<(Rect, usize)>,
     crumb_hits: &mut Vec<(Rect, String)>,
+    settings: crate::settings::Settings,
+    settings_page: usize,
+    settings_hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
     let r = win.rect;
     let title = win.title.as_str();
@@ -1759,6 +1783,178 @@ fn draw_window(
         ),
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
         WinKind::Wayland => draw_wayland_content(buf, w, h, content, win.wayland.as_ref()),
+        WinKind::Settings => draw_settings_content(
+            buf, w, h, content, mouse, tr, settings, settings_page, settings_hits,
+        ),
+    }
+}
+
+/// 设置中心的内容（P3）：左侧分组导航 + 右侧页面。
+///
+/// 结构对齐 Windows 11 / macOS 的设置（左分组、右页面），但**只用真实能力**：
+/// 能用的页给真控件，不能用的页在左栏置灰并标「待接入」—— 本项目对"点了没用的假控件"
+/// 是零容忍（P2 刚删掉假电量与假搜索胶囊），所以宁可少画。
+///
+/// 绘制期**只登记命中区**（`hits`），不改任何状态：状态变更由事件循环按命中结果执行。
+fn draw_settings_content(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    r: Rect,
+    mouse: (f32, f32),
+    tr: Option<&TextRenderer>,
+    s: crate::settings::Settings,
+    page: usize,
+    hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
+) {
+    use crate::settings::{SettingsHit, PAGES};
+    use crate::widgets;
+    const SIDEBAR_W: i32 = 168;
+
+    // 左栏底：用 inset 与右侧页面区分（设置窗口是"两栏"，不是一整块纸）
+    let side = Rect { x: r.x, y: r.y, w: SIDEBAR_W, h: r.h };
+    fill_rect(buf, w, h, side, color::inset(), 0.55);
+    fill_rect(buf, w, h, Rect { x: side.x + side.w - 1, y: side.y, w: 1, h: side.h }, color::hairline(), 0.08);
+
+    let Some(tr) = tr else { return };
+
+    // ---- 左栏：分组标题 + 页行 ----
+    let mut y = r.y + 12;
+    let mut group = "";
+    for (i, p) in PAGES.iter().enumerate() {
+        if p.group != group {
+            if !group.is_empty() {
+                y += 10;
+            }
+            widgets::group_header(buf, w, h, r.x + 16, y, p.group, Some(tr));
+            y += 20;
+            group = p.group;
+        }
+        let row = Rect { x: r.x + 8, y, w: SIDEBAR_W - 16, h: 30 };
+        let st = widgets::States {
+            hover: p.enabled && row.contains(mouse.0, mouse.1),
+            selected: i == page,
+            disabled: !p.enabled,
+            ..Default::default()
+        };
+        widgets::row(buf, w, h, row, p.title, None, st, Some(tr));
+        if p.enabled {
+            hits.push((row, SettingsHit::Page(i)));
+        } else {
+            // 不可用的页如实标注，而不是让用户点进去发现是空壳
+            let tag = tr.measure("待接入", font::LABEL);
+            tr.draw(
+                buf, w, h,
+                (row.x + row.w - 8) as f32 - tag,
+                tr.vcenter(row.y as f32, row.h as f32, font::LABEL),
+                "待接入", font::LABEL, color::text_dim(), 0.5,
+            );
+        }
+        y += 32;
+        if y > r.y + r.h - 40 {
+            break; // 窗口再矮也不越界
+        }
+    }
+
+    // ---- 右侧页面 ----
+    let content = Rect { x: r.x + SIDEBAR_W, y: r.y, w: r.w - SIDEBAR_W, h: r.h };
+    let title = PAGES.get(page).map(|p| p.title).unwrap_or("设置");
+    tr.draw_bold(buf, w, h, (content.x + 24) as f32, (content.y + 18) as f32, title, font::PAGE_TITLE, color::text(), 0.98);
+    widgets::divider(buf, w, h, Rect { x: content.x + 24, y: content.y + 54, w: (content.w - 48).max(0), h: 1 });
+
+    let row_w = (content.w - 48).max(120);
+    let mut ry = content.y + 70;
+
+    /// 一行「标题 + 副标题 + 右侧开关」。**只登记开关本身**：
+    /// 整行与开关都登记会让一次点击命中两个目标（判定打架）。
+    fn toggle_row(
+        buf: &mut [u32], w: usize, h: usize, mouse: (f32, f32), tr: &TextRenderer,
+        row: Rect, label: &str, sub: Option<&str>, on: bool,
+        id: SettingsHit, hits: &mut Vec<(Rect, SettingsHit)>,
+    ) {
+        let st = widgets::States { hover: row.contains(mouse.0, mouse.1), ..Default::default() };
+        widgets::row(buf, w, h, row, label, sub, st, Some(tr));
+        let sw = Rect { x: row.x + row.w - 58, y: row.y + 12, w: 46, h: 20 };
+        widgets::switch(buf, w, h, sw, on, widgets::States::at(sw, mouse));
+        hits.push((sw, id));
+    }
+
+    match title {
+        "时钟与时区" => {
+            // 实时预览：改任何一项都能立刻看到结果（不用重启、不用"应用"按钮）
+            let now = crate::text::now_utc_secs();
+            let preview = crate::text::clock_fmt(now, s.tz_offset_min, s.clock_24h, s.clock_seconds);
+            tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, &preview, font::HERO, color::text(), 0.98);
+            let tz = format!("{}　·　每次微调 30 分钟", s.tz_label());
+            tr.draw(buf, w, h, (content.x + 24) as f32, (ry + 42) as f32, &tz, font::CAPTION, color::text_dim(), 0.9);
+            ry += 78;
+
+            let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
+            toggle_row(buf, w, h, mouse, tr, r1, "24 小时制", Some("关闭后显示为「下午 9:10」"), s.clock_24h, SettingsHit::Clock24h, hits);
+            ry += 48;
+            let r2 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
+            toggle_row(buf, w, h, mouse, tr, r2, "显示秒", Some("顶栏时钟精确到秒"), s.clock_seconds, SettingsHit::ClockSeconds, hits);
+            ry += 54;
+
+            // 时区微调：用两个按钮而不是滑杆 —— 时区是离散值、且要能精确到半小时
+            let back = Rect { x: content.x + 24, y: ry + 6, w: 40, h: 30 };
+            let fwd = Rect { x: content.x + 72, y: ry + 6, w: 40, h: 30 };
+            widgets::button(buf, w, h, back, "-1", widgets::BtnKind::Secondary, widgets::States::at(back, mouse), Some(tr));
+            widgets::button(buf, w, h, fwd, "+1", widgets::BtnKind::Secondary, widgets::States::at(fwd, mouse), Some(tr));
+            tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, 42.0, font::CAPTION), "时区（半小时制）", font::CAPTION, color::text_dim(), 0.9);
+            hits.push((back, SettingsHit::TzShift(-30)));
+            hits.push((fwd, SettingsHit::TzShift(30)));
+        }
+        "输入" => {
+            let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
+            toggle_row(buf, w, h, mouse, tr, r1, "默认启用中文输入法", Some("开机即生效，Ctrl+空格 可随时切换"), s.ime_default, SettingsHit::ImeDefault, hits);
+            ry += 58;
+            widgets::group_header(buf, w, h, content.x + 24, ry, "键盘快捷键", Some(tr));
+            ry += 22;
+            for (k, v) in [
+                ("Alt+1 … Alt+4", "切换窗口布局"),
+                ("Ctrl+空格", "中英文切换"),
+                ("Ctrl+Shift+C / V", "复制 / 粘贴"),
+                ("Enter", "命令栏发送"),
+                ("Esc", "关闭菜单或命令栏"),
+            ] {
+                tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
+                tr.draw(buf, w, h, (content.x + 190) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                ry += 24;
+            }
+        }
+        "AI" => {
+            widgets::group_header(buf, w, h, content.x + 24, ry, "推理通道", Some(tr));
+            ry += 24;
+            for (k, v) in [
+                ("aetherd", "本地服务（socket / TCP 7311）"),
+                ("离线意图", "内置规则，断网可用"),
+                ("动作执行", "布局 / 开应用 / 关窗口"),
+                ("权限闸门", "危险动作需确认卡片"),
+            ] {
+                tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
+                tr.draw(buf, w, h, (content.x + 140) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                ry += 24;
+            }
+            ry += 10;
+            tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32, "模型与密钥由 aetherd 管理，不经过合成器进程。", font::CAPTION, color::text_dim(), 0.8);
+        }
+        "关于" => {
+            tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, "AetherOS", font::TITLE, color::text(), 0.98);
+            ry += 36;
+            for (k, v) in [
+                ("版本", env!("CARGO_PKG_VERSION")),
+                ("许可证", "GPL-3.0-only"),
+                ("架构", std::env::consts::ARCH),
+                ("内核", "Linux（Buildroot 2024.02.1）"),
+                ("设置文件", crate::settings::SETTINGS_PATH),
+            ] {
+                tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
+                tr.draw(buf, w, h, (content.x + 130) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                ry += 24;
+            }
+        }
+        _ => {}
     }
 }
 

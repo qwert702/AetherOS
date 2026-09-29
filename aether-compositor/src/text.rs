@@ -367,6 +367,10 @@ pub fn parse_tz_offset(tz: &str) -> Option<i32> {
 }
 
 /// 当前生效的时区偏移（分钟）：读 `TZ`，读不到/解析不了就用默认值。
+///
+/// 目前只有 Linux 的 fbdev 启动路径用它（作为"没有设置文件时的默认时区"）；
+/// Windows 预览路径尚未接设置，故在非 Linux 目标上允许未使用。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn tz_offset_min() -> i32 {
     std::env::var("TZ")
         .ok()
@@ -375,23 +379,47 @@ pub fn tz_offset_min() -> i32 {
 }
 
 /// 由 UTC 秒 + 时区偏移算 `HH:MM`（纯函数，便于测跨日与负偏移）。
+/// 由 UTC 秒 + 时区偏移算 `HH:MM`（24 小时制）。`clock_fmt` 的简写，**测试用**：
+/// 生产路径（顶栏）走 `clock_fmt`，因为用户设置可能要求 12 小时制或显示秒。
+#[cfg(test)]
 pub fn clock_at(utc_secs: i64, offset_min: i32) -> String {
-    // 先归到"分钟"再取模：Rust 的整数除法**向零截断**，直接对秒做 rem_euclid
-    // 在负偏移下会算错小时（-5.5h 会截成 -5h → 19:30 而不是 18:30）。
-    // div_euclid 才是向下取整，跨日与负时刻都正确。
-    let total_min = (utc_secs + offset_min as i64 * 60).div_euclid(60);
-    let h = total_min.div_euclid(60).rem_euclid(24);
-    let m = total_min.rem_euclid(60);
-    format!("{h:02}:{m:02}")
+    clock_fmt(utc_secs, offset_min, true, false)
 }
 
-/// 顶栏时钟：按本地时区（`TZ` → 默认偏移）。
-pub fn clock_str() -> String {
-    let secs = std::time::SystemTime::now()
+/// 按用户设置格式化时钟：24/12 小时制 + 可选秒。
+///
+/// 12 小时制用 `上午/下午`（不用 AM/PM：界面语言是中文，混排像半成品）。
+/// 先归到"分钟"再取模：Rust 整数除法**向零截断**，直接对秒取模在负偏移下会算错
+/// （-5.5h 截成 -5h → 19:30 而不是 18:30）；`div_euclid` 才是向下取整。
+pub fn clock_fmt(utc_secs: i64, offset_min: i32, h24: bool, show_secs: bool) -> String {
+    let local = utc_secs + offset_min as i64 * 60;
+    let total_min = local.div_euclid(60);
+    let h = total_min.div_euclid(60).rem_euclid(24);
+    let m = total_min.rem_euclid(60);
+    let tail = if show_secs {
+        format!(":{:02}", local.rem_euclid(60))
+    } else {
+        String::new()
+    };
+    if h24 {
+        format!("{h:02}:{m:02}{tail}")
+    } else {
+        let (h12, ap) = match h {
+            0 => (12, "上午"),
+            1..=11 => (h, "上午"),
+            12 => (12, "下午"),
+            _ => (h - 12, "下午"),
+        };
+        format!("{h12}:{m:02}{tail} {ap}")
+    }
+}
+
+/// 当前 UTC 秒（时钟、设置面板与测试共用）。
+pub fn now_utc_secs() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    clock_at(secs, tz_offset_min())
+        .unwrap_or(0)
 }
 
 /// 供 draw 模块调用的便捷封装（常规字重）。
