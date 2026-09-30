@@ -101,11 +101,11 @@ impl Settings {
         match std::fs::read_to_string(path) {
             Ok(text) => {
                 let s = Settings::from_json_with(&text, fallback_tz_min);
-                log::info!("设置已加载 {path}");
+                eprintln!("aether-compositor: 设置已加载 {path}");
                 s
             }
             Err(e) => {
-                log::info!("设置文件不可读（{path}: {e}），使用默认值");
+                eprintln!("aether-compositor: 设置文件不可读（{path}: {e}），使用默认值");
                 Settings {
                     tz_offset_min: fallback_tz_min.clamp(TZ_MIN, TZ_MAX),
                     ..Settings::default()
@@ -124,7 +124,7 @@ impl Settings {
         let tmp = format!("{path}.tmp");
         std::fs::write(&tmp, self.to_json())?;
         std::fs::rename(&tmp, path)?;
-        log::info!("设置已保存 {path}");
+        eprintln!("aether-compositor: 设置已保存 {path}");
         Ok(())
     }
 
