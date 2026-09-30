@@ -3130,10 +3130,57 @@ pub fn draw_cursor(buf: &mut [u32], w: usize, h: usize, mx: f32, my: f32) {
     }
 }
 
+/// 缩放光标（双头箭头）。`horizontal = true` → 左右拉伸（↔），否则上下（↕）。
+///
+/// 为什么需要：窗口边缘早就能拖拽缩放（`main.rs::topmost_edge` 的 6px 抓取带），
+/// 但光标恒为箭头 —— 用户不可能知道边缘能拖。与 `draw_cursor` 同一手法：
+/// 像素谓词 + 白填充 + 黑描边，不依赖字体字形。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn draw_resize_cursor(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    mx: f32,
+    my: f32,
+    horizontal: bool,
+) {
+    let (cx, cy) = (mx.round() as i32, my.round() as i32);
+    // 以光标为中心的双头箭头：中轴杆 + 两端三角头。
+    // 垂直箭头 = 把坐标对调（同一套谓词，避免两份形状定义走样）。
+    let inside = |dx: i32, dy: i32| -> bool {
+        let (dx, dy) = if horizontal { (dx, dy) } else { (dy, dx) };
+        let head = dx.abs();
+        if dy.abs() <= 1 && head <= 6 {
+            return true; // 杆
+        }
+        if (5..=8).contains(&head) {
+            return dy.abs() <= 9 - head; // 三角头：越靠外越窄
+        }
+        false
+    };
+    for dy in -10..=10 {
+        for dx in -10..=10 {
+            let (x, y) = (cx + dx, cy + dy);
+            if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
+                continue;
+            }
+            let idx = y as usize * w + x as usize;
+            if inside(dx, dy) {
+                blend_pixel(buf, idx, [255, 255, 255], 0.95);
+            } else if inside(dx - 1, dy)
+                || inside(dx + 1, dy)
+                || inside(dx, dy - 1)
+                || inside(dx, dy + 1)
+            {
+                blend_pixel(buf, idx, [10, 10, 14], 0.9);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 安装向导窗口（Live ISO → Dock"安装"图标打开）
 // ---------------------------------------------------------------------------
-
 impl Renderer {
     fn draw_installer(&mut self, buf: &mut [u32], w: usize, h: usize, inst: &InstallerUi, mouse: (f32, f32), mouse_down: bool, tr: Option<&TextRenderer>) {
         let win_w = 640i32;
@@ -3872,6 +3919,26 @@ mod blit_tests {
             left < right,
             "左栏应比右侧页面暗（两栏结构）：left={left} right={right}"
         );
+    }
+
+    /// 缩放光标：两种朝向都要画出像素，且在屏幕边缘（含 0,0 与右下角）不越界、不 panic。
+    #[test]
+    fn resize_cursor_draws_and_clamps_at_edges() {
+        use crate::draw::{draw_cursor, draw_resize_cursor};
+        let (w, h) = (64usize, 48usize);
+        for (mx, my) in [(32.0, 24.0), (0.0, 0.0), (63.0, 47.0)] {
+            for horizontal in [true, false] {
+                let mut buf = vec![0u32; w * h];
+                draw_resize_cursor(&mut buf, w, h, mx, my, horizontal);
+                assert!(
+                    buf.iter().any(|p| *p != 0),
+                    "缩放光标应画出像素（{mx},{my} horizontal={horizontal}）"
+                );
+            }
+            let mut b2 = vec![0u32; w * h];
+            draw_cursor(&mut b2, w, h, mx, my);
+            assert!(b2.iter().any(|p| *p != 0), "普通箭头应画出像素（{mx},{my}）");
+        }
     }
 
     #[test]

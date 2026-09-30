@@ -685,7 +685,16 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 5. 渲染 + 软件光标 + 上屏 ----
         refresh_apps_throttled(&mut renderer, &mut last_apps_scan);
         renderer.render_frame(&mut buf, w, h, t, &desktop, &ui, tr.as_ref());
-        draw::draw_cursor(&mut buf, w, h, mouse.0, mouse.1);
+        // 光标形态（P2 遗留补齐）：悬停在窗口边缘时给缩放双头箭头 —— 此前光标恒为箭头，
+        // 用户不可能知道边缘能拖。判定复用与缩放**同一份** topmost_edge（6px 抓取带），
+        // 提示与实际行为必须一致。
+        match topmost_edge(&desktop, mouse.0, mouse.1) {
+            Some((_, Edge::Left | Edge::Right)) => {
+                draw::draw_resize_cursor(&mut buf, w, h, mouse.0, mouse.1, true)
+            }
+            Some((_, _)) => draw::draw_resize_cursor(&mut buf, w, h, mouse.0, mouse.1, false),
+            None => draw::draw_cursor(&mut buf, w, h, mouse.0, mouse.1),
+        }
         fb.blit_dirty(&buf, w, h);
         // 点击锁存只对本帧有效
         click_pending = false;
