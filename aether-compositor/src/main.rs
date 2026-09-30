@@ -268,6 +268,8 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Escape => {
+                    // 控制中心（P4）：Esc 一律先关它（浮层的常规语义）
+                    renderer.control_open = false;
                     // IME 拼字中：Esc 先取消拼字（与主流输入法一致），
                     // 而不是顺手把确认弹窗也拒了
                     if ime.composing() {
@@ -431,6 +433,8 @@ fn run_fbdev() -> anyhow::Result<()> {
                     tty_log("安装向导 → 开始安装（按钮确认）");
                 }
             }
+        } else if control_center_click(&mut renderer, &mut desktop, &mut ime, mouse.0, mouse.1, press) {
+            // 控制中心是浮层：展开时它优先消费点击（含"点别处关闭"）
         } else if mouse_down || click_pending {
             if let Some((idx, edge, orig)) = resize {
                 if mouse_down {
@@ -684,6 +688,8 @@ fn run_fbdev() -> anyhow::Result<()> {
 
         // ---- 5. 渲染 + 软件光标 + 上屏 ----
         refresh_apps_throttled(&mut renderer, &mut last_apps_scan);
+        // 把真实的输入法状态同步给渲染器：控制中心的开关要显示它（真值在 `ime` 里）
+        renderer.ime_on = ime.enabled();
         renderer.render_frame(&mut buf, w, h, t, &desktop, &ui, tr.as_ref());
         // 光标形态（P2 遗留补齐）：悬停在窗口边缘时给缩放双头箭头 —— 此前光标恒为箭头，
         // 用户不可能知道边缘能拖。判定复用与缩放**同一份** topmost_edge（6px 抓取带），
@@ -1202,6 +1208,67 @@ const APP_TITLES: [&str; 5] = [
 /// 命中测试要靠 `DOCK_BUILTINS` 算"已装应用"的图标区间，两边必须一致。
 const _: () = assert!(APP_TITLES.len() == draw::DOCK_BUILTINS);
 
+/// 控制中心（P4）的点击处理。返回 `true` = 这次点击已被浮层消费。
+///
+/// 抽成函数的原因：主循环那段 `if/else` 链已经很长，插进去会让缩进与所有权更难读；
+/// 而且这段逻辑能单独测（见 `control_center_tests`）。
+///
+/// 三条规则：① 点状态簇 → 开关面板；② 面板内的命中项 → 执行真实动作并消费点击；
+/// ③ 点面板以外 → 关闭；**点面板内空白只消费、不关闭**（否则误触会让人烦）。
+///
+/// 调用点在 Linux 的 fbdev 循环里（Windows 预览尚未接控制中心），故非 Linux 目标允许未使用；
+/// 逻辑本身由 `control_center_tests` 覆盖（Windows 上也会跑）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn control_center_click(
+    renderer: &mut draw::Renderer,
+    desktop: &mut Desktop,
+    ime: &mut ime::Ime,
+    mx: f32,
+    my: f32,
+    pressed: bool,
+) -> bool {
+    use draw::ControlHit;
+    if !pressed {
+        return false;
+    }
+    if renderer.status_cluster.contains(mx, my) {
+        renderer.control_open = !renderer.control_open;
+        return true;
+    }
+    if !renderer.control_open {
+        return false;
+    }
+    if let Some(hit) = renderer
+        .control_hits
+        .iter()
+        .find(|(r, _)| r.contains(mx, my))
+        .map(|(_, h)| *h)
+    {
+        match hit {
+            ControlHit::ToggleIme => ime.toggle(),
+            ControlHit::ToggleClock24h => {
+                renderer.settings.clock_24h = !renderer.settings.clock_24h;
+                if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
+                    // 与设置中心同一处理：写不进去要让用户知道，不静默失败
+                    eprintln!("aether-compositor: 设置未能写入磁盘: {e}");
+                }
+            }
+            ControlHit::OpenSettings => {
+                let _ = open_app(desktop, 4);
+            }
+            ControlHit::OpenTerminal => {
+                let _ = open_app(desktop, 1);
+            }
+        }
+        return true;
+    }
+    if renderer.control_panel.contains(mx, my) {
+        return true; // 面板内空白
+    }
+    renderer.control_open = false;
+    true
+}
+
 fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
     if icon >= APP_TITLES.len() {
         return Some("未知应用".into());
@@ -1547,9 +1614,15 @@ fn main() -> anyhow::Result<()> {
         if args.iter().any(|a| a == "--settings") {
             let _ = open_app(&mut desktop, 4);
         }
+        // `--control-center`：展开控制中心再截图（状态簇面板的视觉走查）
         snap_now(&mut desktop, lay);
         let tr = text::TextRenderer::load();
         let mut renderer = draw::Renderer::new(WIDTH, HEIGHT);
+        // `--control-center`：展开控制中心再截图（状态簇面板的视觉走查）。
+        // **必须在 renderer 建好之后**设置（它在 Renderer 上，不在 Desktop 上）。
+        if args.iter().any(|a| a == "--control-center") {
+            renderer.control_open = true;
+        }
         let sample_input = "把窗口排成两列";
         // `--ime`：走查输入法候选框（预置 "nihao" → 候选「你好」）
         let shot_ime = if args.iter().any(|a| a == "--ime") {
@@ -2973,6 +3046,68 @@ fn snap_now(desktop: &mut Desktop, lay: Layout) {
 }
 
 #[cfg(test)]
+#[cfg(test)]
+mod control_center_tests {
+    use super::*;
+
+    /// 控制中心的点击规则（三条）。刻意只测**不落盘**的动作（输入法切换、打开窗口），
+    /// 避免单测去写 `/var/lib/aether`。
+    #[test]
+    fn click_rules() {
+        let mut r = draw::Renderer::new(1280, 760);
+        let mut d = demo_desktop();
+        let mut i = ime::Ime::default();
+        r.status_cluster = Rect { x: 1100, y: 2, w: 60, h: 22 };
+
+        // ① 状态簇：第一次点开、再点收起
+        assert!(
+            control_center_click(&mut r, &mut d, &mut i, 1120.0, 10.0, true),
+            "状态簇点击应被消费"
+        );
+        assert!(r.control_open, "第一次点状态簇应展开");
+        assert!(control_center_click(&mut r, &mut d, &mut i, 1120.0, 10.0, true));
+        assert!(!r.control_open, "再点应收起");
+
+        // 未展开时其它位置**不**消费点击（要留给窗口内容）
+        assert!(!control_center_click(&mut r, &mut d, &mut i, 400.0, 400.0, true));
+
+        // ② 展开后命中开关 → 执行真实动作并消费
+        r.control_open = true;
+        r.control_panel = Rect { x: 1000, y: 40, w: 264, h: 244 };
+        let ime_before = i.enabled();
+        r.control_hits = vec![(
+            Rect { x: 1200, y: 100, w: 46, h: 20 },
+            draw::ControlHit::ToggleIme,
+        )];
+        assert!(control_center_click(&mut r, &mut d, &mut i, 1210.0, 110.0, true));
+        assert_ne!(i.enabled(), ime_before, "点输入法开关应真的切换输入法");
+
+        // 打开设置：窗口数 +1（复用 open_app 那条真实路径）
+        let wins_before = d.wins.len();
+        r.control_hits = vec![(
+            Rect { x: 1004, y: 200, w: 256, h: 34 },
+            draw::ControlHit::OpenSettings,
+        )];
+        assert!(control_center_click(&mut r, &mut d, &mut i, 1100.0, 210.0, true));
+        assert_eq!(d.wins.len(), wins_before + 1, "点快捷跳转应真的开窗口");
+        assert_eq!(
+            d.wins.last().map(|w| w.kind),
+            Some(draw::WinKind::Settings),
+            "打开设置应得到设置窗口（而不是文件管理器）"
+        );
+
+        // ③ 面板内空白：消费但不关闭
+        assert!(control_center_click(&mut r, &mut d, &mut i, 1050.0, 240.0, true));
+        assert!(r.control_open, "点面板内空白不该关闭面板");
+        // 面板以外：关闭
+        assert!(control_center_click(&mut r, &mut d, &mut i, 100.0, 400.0, true));
+        assert!(!r.control_open, "点面板以外应关闭");
+
+        // 未按下（松开）不消费
+        assert!(!control_center_click(&mut r, &mut d, &mut i, 1120.0, 10.0, false));
+    }
+}
+
 mod window_mgmt_tests {
     use super::*;
     use draw::{FsEntry, WinKind};

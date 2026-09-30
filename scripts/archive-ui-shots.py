@@ -50,6 +50,9 @@ SHOTS: list[tuple[list[str], str]] = [
     # 设置中心（P3）：这是设置窗口**唯一的走查覆盖** —— 否则它只有单测、没有视觉验收
     (["--shot", "2", "--settings", "--theme", "dark"], "host-ui-settings.png"),
     (["--shot", "2", "--settings", "--theme", "light"], "host-ui-light-settings.png"),
+    # 控制中心（P4）：顶栏状态簇弹出的面板
+    (["--shot", "2", "--control-center", "--theme", "dark"], "host-ui-control-center.png"),
+    (["--shot", "2", "--control-center", "--theme", "light"], "host-ui-light-control-center.png"),
 ]
 
 #: 固定"当前时间"（对应 `text::now_utc_secs` 的 `AETHER_FAKE_UTC` 钩子）。

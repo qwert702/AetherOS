@@ -1202,6 +1202,21 @@ pub enum ConfirmButton {
 pub const DOCK_BUILTINS: usize = 5;
 
 /// 帧渲染器：持有跨帧缓存（背景层等）与可点击区域登记（供命中测试）。
+/// 控制中心里可交互项的标识（绘制期登记、事件循环消费）。
+///
+/// 与 `settings::SettingsHit` 同一思路：绘制不修改状态，判定只有一份。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ControlHit {
+    /// 切换中文输入法（真实动作：`ime.toggle()`，由主循环执行）
+    ToggleIme,
+    /// 切换 24 小时制（写 `settings` 并落盘）
+    ToggleClock24h,
+    /// 打开设置中心
+    OpenSettings,
+    /// 打开终端
+    OpenTerminal,
+}
+
 pub struct Renderer {
     bg: Vec<u32>,
     frames_since_bg: u32,
@@ -1236,6 +1251,17 @@ pub struct Renderer {
     pub settings_page: usize,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
+    /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
+    /// （它有 3 个构造点，为一个小面板改结构体不划算）。
+    pub control_open: bool,
+    /// 顶栏"状态簇"命中区（= 现有 AI 状态区，不额外加视觉元素）
+    pub status_cluster: Rect,
+    /// 控制中心面板矩形（用于区分"点面板内空白"与"点别处关闭"）
+    pub control_panel: Rect,
+    /// 控制中心本帧登记的可交互项
+    pub control_hits: Vec<(Rect, ControlHit)>,
+    /// 中文输入法当前状态（面板要显示开关；真值在事件循环的 `ime` 里，主循环负责同步）
+    pub ime_on: bool,
     /// 当前展开的下拉菜单：(各项命中区, 文案)
     pub dropdown: Option<(Vec<Rect>, Vec<&'static str>)>,
     /// 安装向导磁盘行的命中区 (矩形, 设备名, 容量MB)
@@ -1277,6 +1303,11 @@ impl Renderer {
             settings: crate::settings::Settings::default(),
             settings_page: crate::settings::first_enabled_page(),
             settings_hits: Vec::new(),
+            control_open: false,
+            status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
+            control_panel: Rect { x: 0, y: 0, w: 0, h: 0 },
+            control_hits: Vec::new(),
+            ime_on: false,
             dropdown: None,
             installer_rows: Vec::new(),
             file_cells: Vec::new(),
@@ -1434,6 +1465,11 @@ impl Renderer {
 
         self.draw_menubar(buf, w, h, ui, tr);
         mark!("menubar");
+        // 控制中心（P4）：画在顶栏之上、其它窗口之下 —— 弹出面板的常规层级
+        if self.control_open {
+            self.draw_control_center(buf, w, h, ui, tr);
+            mark!("control");
+        }
         if ui.open_menu.is_some() {
             self.draw_dropdown(buf, w, h, ui, tr);
         }
@@ -1591,15 +1627,127 @@ impl Renderer {
         // 命令栏（下方）本来就恒聚焦，不需要"点搜索再输入"这一层假仪式。
 
         // AI 状态指示（§4 三态：本地青 / 云端紫 / 离线灰）
+        //
+        // 2026-09-30 P4：**这块同时是控制中心的入口**（状态簇）。刻意不额外塞一个图标按钮 ——
+        // "状态"与"操作"放同一处正是 Win11/macOS 状态簇的语义，也少一个视觉元素。
         let ai_label = ui.ai_status.label();
         let ai_w = tr.measure(ai_label, font::CAPTION);
         let ai_x = clock_x as f32 - 20.0 - ai_w;
+        let cluster = Rect {
+            x: ai_x as i32 - 18,
+            y: 2,
+            w: ai_w as i32 + 32,
+            h: metric::MENUBAR_H - 4,
+        };
+        if cluster.contains(ui.mouse.0, ui.mouse.1) || self.control_open {
+            // 悬停/展开时给一层底，用户才知道这里能点
+            rounded_rect(buf, w, h, cluster, radius::SM, color::hairline(), state::hover());
+        }
         rounded_rect(buf, w, h, Rect { x: ai_x as i32 - 12, y: 13, w: 6, h: 6 }, 3.0, ui.ai_status.color(), 0.95);
-        draw_text(tr, buf, w, h, ai_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::CAPTION), ai_label, font::CAPTION, color::text_dim(), 0.85);
+        draw_text(tr, buf, w, h, ai_x, tr.vcenter(0.0, metric::MENUBAR_H as f32, font::CAPTION), ai_label, font::CAPTION, if self.control_open { color::text() } else { color::text_dim() }, 0.9);
+        self.status_cluster = cluster;
 
         // 2026-09-29 P2：**删掉假电量图标**。它是画上去的固定 50% 填充，既没有
         // /sys/class/power_supply 数据源也不代表任何状态 —— 桌面上的假信息比没有更糟。
         // 真有电池节点时再按真实读数画（P3/P4 接 ACPI）。
+    }
+
+    /// 控制中心（P4）：顶栏状态簇点开的面板。
+    ///
+    /// **只放真实能用的东西**（本项目对假控件零容忍，P2 已删掉假电量与假搜索胶囊）：
+    /// - AI 三态只读展示（数据来自 `ui.ai_status`）
+    /// - 中文输入法开关 → `ime.toggle()`（主循环执行，`ime_on` 只负责显示同步）
+    /// - 24 小时制开关 → 写 `settings` 并落盘，与设置中心**同一份数据**
+    /// - 快捷跳转：设置 / 终端（复用 `open_app` 那条真实路径）
+    ///
+    /// **故意不做的**：音量与亮度。系统没有音频栈、也没有背光节点 —— 放两个拖不动的滑块
+    /// 就是纯装饰。等真有 `aetherd`/`/sys/class/backlight` 能力再加。
+    fn draw_control_center(
+        &mut self,
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        ui: &UiState,
+        tr: Option<&TextRenderer>,
+    ) {
+        use crate::widgets;
+        const PANEL_W: i32 = 264;
+        const PANEL_H: i32 = 244;
+        // 右对齐到状态簇（并保证不出屏）
+        let x = (self.status_cluster.x + self.status_cluster.w - PANEL_W).max(8);
+        let panel = Rect {
+            x,
+            y: metric::MENUBAR_H as i32 + 6,
+            w: PANEL_W,
+            h: PANEL_H,
+        };
+        shadow(buf, w, h, panel, radius::MD, elevation::elev_2());
+        rounded_rect(buf, w, h, panel, radius::MD, color::glass(), color::glass_alpha(true));
+        rounded_outline(buf, w, h, panel, radius::MD, color::hairline(), 0.22);
+        self.control_hits.clear();
+        self.control_panel = panel;
+        let Some(tr) = tr else { return };
+
+        let row = |y: i32| Rect {
+            x: panel.x + 4,
+            y,
+            w: panel.w - 8,
+            h: 34,
+        };
+        // 与设置中心同一手法：**只登记开关本身**，整行与开关都登记会让一次点击命中两个目标
+        let knob = |r: Rect| Rect {
+            x: r.x + r.w - 54,
+            y: r.y + 7,
+            w: 46,
+            h: 20,
+        };
+
+        let mut y = panel.y + 12;
+        // ① AI 三态（只读）
+        rounded_rect(buf, w, h, Rect { x: panel.x + 16, y: y + 6, w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
+        tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), "AI 中枢", font::CAPTION, color::text(), 0.9);
+        tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), ui.ai_status.label(), font::CAPTION, color::text_dim(), 0.9);
+        y += 26;
+        widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
+        y += 8;
+
+        // ② 中文输入法
+        let r1 = row(y);
+        widgets::row(buf, w, h, r1, "中文输入法", None, widgets::States::at(r1, ui.mouse), Some(tr));
+        let s1 = knob(r1);
+        widgets::switch(buf, w, h, s1, self.ime_on, widgets::States::at(s1, ui.mouse));
+        self.control_hits.push((s1, ControlHit::ToggleIme));
+        y += 36;
+
+        // ③ 24 小时制
+        let r2 = row(y);
+        widgets::row(buf, w, h, r2, "24 小时制", None, widgets::States::at(r2, ui.mouse), Some(tr));
+        let s2 = knob(r2);
+        widgets::switch(buf, w, h, s2, self.settings.clock_24h, widgets::States::at(s2, ui.mouse));
+        self.control_hits.push((s2, ControlHit::ToggleClock24h));
+        y += 40;
+
+        // ④ 快捷跳转
+        widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
+        y += 8;
+        widgets::group_header(buf, w, h, panel.x + 16, y, "快捷跳转", Some(tr));
+        y += 20;
+        for (label, hit) in [
+            ("打开设置", ControlHit::OpenSettings),
+            ("打开终端", ControlHit::OpenTerminal),
+        ] {
+            let r = row(y);
+            widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
+            self.control_hits.push((r, hit));
+            y += 32;
+        }
+        tr.draw(
+            buf, w, h,
+            (panel.x + 16) as f32,
+            (panel.y + panel.h - 22) as f32,
+            "Esc 或点击别处关闭",
+            font::LABEL, color::text_dim(), 0.7,
+        );
     }
 
     /// 展开中的下拉菜单（登记各项命中区，悬停高亮）。
