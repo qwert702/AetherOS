@@ -9,7 +9,7 @@
 > **1b = compositor 能自愈**（实机 kill 后 init 自动拉起）。长跑原始日志在 `docs/evidence/`。
 >
 > 代码规模（2026-09-29 实测）：**23,252 行 / 43 个 .rs**（7 crate）；口径与复核命令见 `scripts/repo-stats.py`。
-> 测试 **Windows 351 全绿（实测）／Linux 361（按 `aetherd` 增量推算，待构建机复核）**；`cargo check` **双目标零警告**（Windows 侧 2026-09-29 复跑确认）。
+> 测试 **Windows 353 全绿（实测）／Linux 355（按 `aetherd` 增量推算，待构建机复核）**；`cargo check` **双目标零警告**（Windows 侧 2026-09-29 复跑确认）。
 > ⚠️ 引用规模前先看 `INDEX.md` 的**统计陷阱**说明 —— 通配符会漏掉 `aetherd` 与二级子目录。
 >
 > ⚠️ **两个目标都要测**：`cfg(target_os="linux")` 的代码在 Windows 上整段不编译，

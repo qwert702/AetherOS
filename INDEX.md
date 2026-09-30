@@ -301,7 +301,7 @@ cargo run -p aetherd -- config --show                           # 模型配置�
 cargo run -p aetherd -- config --api-key K --cloud-base URL      # 配置云端（也支持自建网关）
 cargo run -p aether-init -- --dry-run ./platform/overlay/etc/aether/services  # 服务监督自检
 python scripts/e2e-permission-confirm.py                        # 权限链路端到端（先起 aetherd serve）
-cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 351 项，分布见「测试分布」）
+cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 353 项，分布见「测试分布」）
 
 # ⚠️ 改了 cfg(target_os="linux") 的代码后必须交叉检查：Windows 构建会整段屏蔽那些路径
 cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether-compositor -p aether-init -p aether-ops -p aether-install -p aether-ipc -p aether-shell
@@ -343,7 +343,7 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
   空格提交 / 退格删拼音，**未被 IME 吃掉的字符才送 PTY**（`3a34f49`）；Esc 取消拼字同轮接上
 - ⚠️ 终端里的中文输入**只做过编译与源码级确认，没有实机键盘交互验证**（`--shot` 出静态帧，测不了输入）
 
-## 测试分布（2026-09-29 实测：**Windows 351 全绿；双目标零警告**；Linux 361 为推算，见下）
+## 测试分布（2026-09-29 实测：**Windows 353 全绿；双目标零警告**；Linux 355 为推算，见下）
 
 > Linux 列的 333 是**按 `aetherd` 增量推算**的（`llm.rs` 新增 5 项，该文件无平台门控：
 > 328 + 5 = 333），**不是构建机实测值** —— 引用前先上构建机跑一遍。
@@ -355,14 +355,14 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
 
 | crate | Windows | Linux | 备注 |
 |---|---|---|---|
-| `aether-compositor` | 208 | 204 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
+| `aether-compositor` | 210 | 206 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
 | `aether-ops` | 0 | **13** | 整个 crate 是 Linux 专属，Windows 不参与 |
 | `aetherd` | 110 | 111 | 含 `apps.rs` 的 22 项（清单校验/目录穿越/符号链接拒绝/ELF 解析/**递归依赖闭包**/**terminfo 判定**/**glibc 家族拦截**/**库名穿越防护**/包装脚本）+ `llm.rs` 的 5 项（错误路径必须带出服务器正文；本地假端点，不联网） |
 | `aether-init` | 17 | 17 | 含 `shipped_essential_services_must_be_restartable`（见下） |
 | `aether-install` | 9 | 9 | |
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **351** | **361** | |
+| **合计** | **353** | **355** | |
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。

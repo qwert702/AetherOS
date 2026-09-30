@@ -8,7 +8,7 @@
 <meta name="keywords" content="AetherOS, Rust 操作系统, osdev, 自研用户态, Linux 发行版, 合成器, compositor, init system, AI agent, 权限闸门, Buildroot, 开源操作系统">
 <meta property="og:type" content="website">
 <meta property="og:title" content="AetherOS — 用户态全部自研的操作系统">
-<meta property="og:description" content="Linux 内核 + 全自研 Rust 用户态（合成器 / PID 1 / 终端 / AI 中枢）。ISO 38.5 MB，351 项测试全绿。">
+<meta property="og:description" content="Linux 内核 + 全自研 Rust 用户态（合成器 / PID 1 / 终端 / AI 中枢）。ISO 38.5 MB，353 项测试全绿。">
 <meta property="og:image" content="screenshot-htop-app.png">
 <style>
   :root{
@@ -73,7 +73,7 @@
     </div>
     <p class="meta">
       GPL-3.0-only · 23,252 行 Rust / 43 个源文件 / 7 个 crate ·
-      <strong style="color:var(--ok)">351 项测试全绿</strong> · 两个编译目标 0 警告 ·
+      <strong style="color:var(--ok)">353 项测试全绿</strong> · 两个编译目标 0 警告 ·
       连续 12 小时 43 分不崩
     </p>
     <p style="margin-top:14px">
@@ -87,6 +87,14 @@
 <section>
   <div class="wrap">
     <figure>
+      <img class="shot" src="host-ui-light-desktop.png"
+           alt="AetherOS 桌面（明亮主题，系统默认）：顶栏、Dock、文件管理器与终端窗口">
+      <figcaption>
+        <strong>桌面（明亮主题，系统默认）</strong>：顶栏、Dock、窗口、终端、中文字体全部自研 ——
+        从 PID 1 到窗口合成器没有一行现成的桌面组件。
+      </figcaption>
+    </figure>
+    <figure style="margin-top:22px">
       <img class="shot" src="demo-htop.gif"
            alt="AetherOS 真机演示：从宿主拉包、安装 htop、在桌面里运行">
       <figcaption>
@@ -124,7 +132,7 @@
       </div>
       <div class="card">
         <h3>可验证，而不是"我觉得没问题"</h3>
-        <p>351 项单元测试、双目标零警告、规模声明有门禁脚本可复算，还有逐像素的 UI 回归门禁。</p>
+        <p>353 项单元测试、双目标零警告、规模声明有门禁脚本可复算，还有逐像素的 UI 回归门禁。</p>
       </div>
       <div class="card">
         <h3>小到能塞进一张旧 U 盘</h3>
@@ -163,7 +171,7 @@ python scripts/repo-stats.py     # 代码规模门禁</code></pre>
     <table>
       <tr><th>项</th><th>数值</th></tr>
       <tr><td>代码规模</td><td>23,252 行 Rust / 43 个源文件 / 7 个 crate</td></tr>
-      <tr><td>单元测试</td><td>351 项全绿（Windows 实测；Linux 为推算，构建机复核中）</td></tr>
+      <tr><td>单元测试</td><td>353 项全绿（Windows 实测；Linux 为推算，构建机复核中）</td></tr>
       <tr><td>编译警告</td><td>两个目标 0 条</td></tr>
       <tr><td>稳定性</td><td>连续 12 小时 43 分不崩（3053 轮巡检：0 退出 / 0 重启 / 0 panic）</td></tr>
       <tr><td>ISO 体积</td><td>40,327,168 字节</td></tr>
