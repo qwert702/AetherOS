@@ -1729,6 +1729,12 @@ fn draw_window(
     }
 
     // 红绿灯（左）：直径 10px、间距 7px，悬停时整组显示符号
+    //
+    // 2026-09-30：**中间那颗（最小化）没有接线** —— 没有"最小化到哪去"的语义。
+    // 所以把它画成**禁用态**（暗一档、不显示悬停符号）：画一颗看起来能点、点了没反应的灯，
+    // 比不放这颗灯更糟（本项目对假控件零容忍，P2 已删掉假电量与假搜索胶囊）。
+    // 接线时要一并改：`Win` 加 `minimized`、渲染/命中/tab 循环跳过、Dock 图标负责恢复。
+    const MINIMIZE_WIRED: bool = false;
     let lights = [color::close(), color::min(), color::zoom()];
     let ly = r.y + (metric::TITLE_H - metric::LIGHT_D) / 2;
     let group = Rect {
@@ -1744,8 +1750,16 @@ fn draw_window(
     for (i, c) in lights.iter().enumerate() {
         let lx = r.x + 14 + (i as i32) * (metric::LIGHT_D + metric::LIGHT_GAP);
         let dot = Rect { x: lx, y: ly, w: metric::LIGHT_D, h: metric::LIGHT_D };
-        rounded_rect(buf, w, h, dot, metric::LIGHT_D as f32 / 2.0, *c, if active { 0.95 } else { 0.6 });
-        if hovered {
+        let disabled = i == 1 && !MINIMIZE_WIRED;
+        let alpha = if disabled {
+            0.28
+        } else if active {
+            0.95
+        } else {
+            0.6
+        };
+        rounded_rect(buf, w, h, dot, metric::LIGHT_D as f32 / 2.0, *c, alpha);
+        if hovered && !disabled {
             light_symbol(buf, w, h, lx + metric::LIGHT_D / 2, ly + metric::LIGHT_D / 2, i);
         }
         // 命中区扩到 24×24 且垂直居中于标题栏：10px 的圆点在真机上不好点
@@ -1758,7 +1772,8 @@ fn draw_window(
         match i {
             0 => close_rect = hit,
             2 => zoom_rect = hit,
-            _ => {} // 中间那颗（最小化）暂不接线：没有最小化到哪去的语义
+            // 中间那颗不登记命中区：未接线就不该响应（与上面的禁用态一致）
+            _ => {}
         }
     }
     lights_out.push((win_idx, close_rect, zoom_rect));
