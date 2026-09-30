@@ -12,6 +12,11 @@
 //! 这里刻意**不用 serde derive**（构件的 `serde` 特征不在合成器依赖里），
 //! 直接走 `serde_json::Value` 手读字段 —— 字段少，且能对每个字段单独容错。
 
+// P3 的设置 UI（点击处理）目前只接在 **Linux 的 fbdev 循环**里，Windows 预览路径只用它的"绘制"半边，
+// 所以「读设置 / 写设置 / 夹取」这些函数在非 Linux 目标上没有调用点。这里按目标收敛，避免 dead_code 噪音。
+// **等预览路径也接上设置 UI 后应当删掉这行**（那时两边都有调用点）。
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use serde_json::{json, Value};
 
 /// 设置文件路径（`/var` 是唯一持久分区）。

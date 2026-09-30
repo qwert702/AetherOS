@@ -3046,7 +3046,6 @@ fn snap_now(desktop: &mut Desktop, lay: Layout) {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod control_center_tests {
     use super::*;
 
@@ -3108,6 +3107,9 @@ mod control_center_tests {
     }
 }
 
+/// 窗口管理测试：插控制中心的测试时**不要动这个属性** —— 少了它整个模块会被编进正式二进制，
+/// 里面的测试辅助函数（`desk`/`files_desk`/`term_desk`）就会成为 dead_code 警告。
+#[cfg(test)]
 mod window_mgmt_tests {
     use super::*;
     use draw::{FsEntry, WinKind};
