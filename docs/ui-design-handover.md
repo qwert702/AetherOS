@@ -1,5 +1,29 @@
 # AetherOS UI 设计系统 · 交接文档
 
+> ## ⚠️ 本文档描述的是 **2026-09-29 之前**的视觉语言（保留作历史参考）
+>
+> 2026-09-29 起 UI 经过 P0–P2 三轮改造，下面这些内容**已经过时**，**不要再照抄其中的色值/渐变/圆角/动效**：
+>
+> | 主题 | 本文档的说法（旧） | 现状（2026-09-30） |
+> |---|---|---|
+> | 壁纸 | 极光带 / 粉彩柔光团 + 颗粒 + 暗角 | **静态中性**：浅色纯白 `#FFFFFF → #F4F5F7`，深色 `#1B1D21 → #17181C` |
+> | 强调色 | 青→紫双色渐变（`ai_gradient`） | **单一 teal**；AI 相关元素（状态点/焦点环/徽标/气泡环/品牌标）全部去渐变 |
+> | 圆角 | 8 / 12 / 16 | **4 / 6 / 8** |
+> | 阴影 | 5 层大软影 | **两层轻影**；层次改由 1px 描边承担（活动 0.30 / 非活动 0.16） |
+> | 字体 | wqy-microhei（**无粗体**，粗体 = 正文字体） | **自带 Noto Sans CJK SC 子集**（GB2312 + 拉丁，含**真粗体**），构建期由 `scripts/mkfont.py` 生成 |
+> | AI 指令条 | 26px 胶囊 + 青紫渐变焦点环 + 常驻呼吸动效 | **命令栏形态**（`radius::LG` = 8px）；焦点环**只在思考中**脉动（真实状态） |
+> | 控件 | 无（各处手画矩形） | 新增 `widgets.rs`：**六态**（normal/hover/pressed/focus/disabled/selected）+ 按钮/开关/滑杆/分段/列表行/滚动条/徽标 + `HitTable` 共享命中表 |
+> | 设置 | 无设置应用（Dock 齿轮打开的是文件管理器） | **设置中心**（`WinKind::Settings`）：左分组导航 + 真实设置 + `/var/lib/aether/settings.json` 持久化 |
+> | 顶栏 | 含电池图标与"搜索"胶囊 | 两者**已删除**（都是假控件）；时钟改由用户设置驱动（时区/24 或 12 小时制/秒） |
+>
+> **当前权威来源**：
+> - 令牌：`aether-compositor/src/draw.rs` 的 `theme` 模块（color/font/radius/elevation/state/metric）
+> - 控件：`aether-compositor/src/widgets.rs`
+> - 逐像素门禁：`docs/host-ui-*.png`（12 张，`python scripts/archive-ui-shots.py --check`）
+> - 项目记忆（发展/踩坑/约定）：仓库外的 `项目的记忆/系统/aether/`
+>
+> 本文档 §3 的组件规格与 §8 的协议部分仍有参考价值；**视觉描述一律以现状表为准**。
+
 日期：2026-09-20
 分支：`feat/ui-design-system`（基于 `fix/m3-desktop-render`）
 计划依据：`docs/archive/ui-design-plan.md`
