@@ -40,6 +40,8 @@ pub struct Settings {
     pub clock_seconds: bool,
     /// 中文输入法是否默认开启。
     pub ime_default: bool,
+    /// 深色模式（**默认 false = 明亮/纯白**，与产品主视觉一致）。用户可在设置中心或控制中心切换。
+    pub dark_mode: bool,
 }
 
 impl Default for Settings {
@@ -49,6 +51,7 @@ impl Default for Settings {
             clock_24h: true,
             clock_seconds: false,
             ime_default: false,
+            dark_mode: false,
         }
     }
 }
@@ -83,6 +86,9 @@ impl Settings {
         if let Some(b) = v.get("ime_default").and_then(Value::as_bool) {
             s.ime_default = b;
         }
+        if let Some(b) = v.get("dark_mode").and_then(Value::as_bool) {
+            s.dark_mode = b;
+        }
         s
     }
 
@@ -94,6 +100,7 @@ impl Settings {
             "clock_24h": self.clock_24h,
             "clock_seconds": self.clock_seconds,
             "ime_default": self.ime_default,
+            "dark_mode": self.dark_mode,
         });
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
@@ -162,6 +169,8 @@ pub enum SettingsHit {
     TzShift(i32),
     /// 中文输入法默认开关
     ImeDefault,
+    /// 深色模式开关（默认关 = 白色）
+    ToggleDark,
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -178,7 +187,7 @@ pub struct PageDef {
 ///
 /// **不可用的页如实标出**：本项目不允许"点进去发现是空壳"的假页面。
 pub const PAGES: &[PageDef] = &[
-    PageDef { title: "外观", group: "个性化", enabled: false },
+    PageDef { title: "外观", group: "个性化", enabled: true },
     PageDef { title: "时钟与时区", group: "系统", enabled: true },
     PageDef { title: "输入", group: "设备", enabled: true },
     PageDef { title: "AI", group: "智能", enabled: true },
@@ -211,6 +220,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::ClockSeconds => s.clock_seconds = !s.clock_seconds,
         SettingsHit::TzShift(d) => s.shift_tz(d),
         SettingsHit::ImeDefault => s.ime_default = !s.ime_default,
+        SettingsHit::ToggleDark => s.dark_mode = !s.dark_mode,
     }
 }
 
@@ -235,6 +245,7 @@ mod tests {
             clock_24h: false,
             clock_seconds: true,
             ime_default: true,
+            dark_mode: true,
         };
         assert_eq!(Settings::from_json(&s.to_json()), s);
     }
@@ -266,6 +277,7 @@ mod tests {
             clock_24h: false,
             clock_seconds: true,
             ime_default: false,
+            dark_mode: true,
         };
         s.save(path).expect("写设置应当成功（父目录会自动建）");
         assert_eq!(Settings::load(path, 8 * 60), s, "写进去什么，读出来就该是什么");
@@ -312,6 +324,13 @@ mod tests {
         assert!(s.clock_seconds);
         apply_hit(&mut s, &mut page, SettingsHit::ImeDefault);
         assert!(s.ime_default);
+
+        // 主题开关：默认必须是**关**（= 白色/明亮，产品主视觉），点一下才变深色
+        assert!(!Settings::default().dark_mode, "默认必须是明亮主题");
+        apply_hit(&mut s, &mut page, SettingsHit::ToggleDark);
+        assert!(s.dark_mode, "第一次点击应切到深色");
+        apply_hit(&mut s, &mut page, SettingsHit::ToggleDark);
+        assert!(!s.dark_mode, "再点一次应回到明亮");
 
         apply_hit(&mut s, &mut page, SettingsHit::TzShift(-30));
         assert_eq!(s.tz_offset_min, 8 * 60 - 30);

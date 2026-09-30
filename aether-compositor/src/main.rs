@@ -461,6 +461,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     .unwrap_or(false);
                 if is_settings {
                     settings::apply_hit(&mut renderer.settings, &mut renderer.settings_page, hit);
+                    // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
+                    if matches!(hit, settings::SettingsHit::ToggleDark) {
+                        let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer
+                        apply_theme(&mut renderer, dark);
+                    }
                     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                         // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
                         toast = Some((format!("设置未能写入磁盘：{e}"), Instant::now()));
@@ -1208,6 +1213,19 @@ const APP_TITLES: [&str; 5] = [
 /// 命中测试要靠 `DOCK_BUILTINS` 算"已装应用"的图标区间，两边必须一致。
 const _: () = assert!(APP_TITLES.len() == draw::DOCK_BUILTINS);
 
+/// 切换主题：改全局 `MODE`（色板只读、每帧生效）+ 标记背景缓存作废。
+///
+/// 两个入口共用：设置中心「外观」页与控制中心的深色开关。
+/// **不改 `settings.dark_mode`** —— 那是调用方的事（设置中心走 `apply_hit`，控制中心自己翻）。
+fn apply_theme(renderer: &mut draw::Renderer, dark: bool) {
+    draw::theme::color::set_mode(if dark {
+        draw::theme::color::Mode::Dark
+    } else {
+        draw::theme::color::Mode::Light
+    });
+    renderer.bg_dirty = true; // 壁纸与投影合成层都依赖主题，必须重建
+}
+
 /// 控制中心（P4）的点击处理。返回 `true` = 这次点击已被浮层消费。
 ///
 /// 抽成函数的原因：主循环那段 `if/else` 链已经很长，插进去会让缩进与所有权更难读；
@@ -1250,6 +1268,14 @@ fn control_center_click(
                 renderer.settings.clock_24h = !renderer.settings.clock_24h;
                 if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                     // 与设置中心同一处理：写不进去要让用户知道，不静默失败
+                    eprintln!("aether-compositor: 设置未能写入磁盘: {e}");
+                }
+            }
+            ControlHit::ToggleDark => {
+                renderer.settings.dark_mode = !renderer.settings.dark_mode;
+                let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer
+                apply_theme(renderer, dark);
+                if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                     eprintln!("aether-compositor: 设置未能写入磁盘: {e}");
                 }
             }
@@ -1580,15 +1606,25 @@ fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<Str
 }
 
 fn main() -> anyhow::Result<()> {
-    // 主题：明亮为默认（产品主视觉），`--theme dark` 切回深空备选。
+    // 主题：**明亮（纯白）为产品默认**，用户可在设置中心「外观」或控制中心切换。
     // 必须在任何绘制之前定好——色板在绘制期只读。
+    // 优先级：显式 `--theme`（走查/调试用）> 用户设置 > 默认明亮。
     let argv: Vec<String> = std::env::args().collect();
     let theme = argv.iter().position(|a| a == "--theme").and_then(|i| argv.get(i + 1));
-    draw::theme::color::set_mode(if theme.map(|s| s.as_str()) == Some("dark") {
-        draw::theme::color::Mode::Dark
-    } else {
-        draw::theme::color::Mode::Light
-    });
+    let mode = match theme.map(|s| s.as_str()) {
+        Some("dark") => draw::theme::color::Mode::Dark,
+        Some("light") => draw::theme::color::Mode::Light,
+        _ => {
+            // 读用户设置（读不到就是默认值 = 明亮）
+            let saved = settings::Settings::load(settings::SETTINGS_PATH, text::tz_offset_min());
+            if saved.dark_mode {
+                draw::theme::color::Mode::Dark
+            } else {
+                draw::theme::color::Mode::Light
+            }
+        }
+    };
+    draw::theme::color::set_mode(mode);
 
     // AetherOS 系统内：直接绘制到 Linux framebuffer（无输入，演示桌面）
     #[cfg(target_os = "linux")]

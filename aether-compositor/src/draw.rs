@@ -1215,6 +1215,8 @@ pub enum ControlHit {
     OpenSettings,
     /// 打开终端
     OpenTerminal,
+    /// 深色模式开关（默认关 = 白色；最常用的一项，所以在面板里排第一）
+    ToggleDark,
 }
 
 pub struct Renderer {
@@ -1258,6 +1260,9 @@ pub struct Renderer {
     pub status_cluster: Rect,
     /// 控制中心面板矩形（用于区分"点面板内空白"与"点别处关闭"）
     pub control_panel: Rect,
+    /// 背景缓存需要重建（主题切换等）。惰性标记：下一帧 `prepare_background` 自动处理，
+    /// 免得为切个主题把 `w/h` 传遍所有调用点。
+    pub bg_dirty: bool,
     /// 控制中心本帧登记的可交互项
     pub control_hits: Vec<(Rect, ControlHit)>,
     /// 中文输入法当前状态（面板要显示开关；真值在事件循环的 `ime` 里，主循环负责同步）
@@ -1306,6 +1311,7 @@ impl Renderer {
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
             control_panel: Rect { x: 0, y: 0, w: 0, h: 0 },
+            bg_dirty: false,
             control_hits: Vec::new(),
             ime_on: false,
             dropdown: None,
@@ -1332,7 +1338,28 @@ impl Renderer {
     /// 交互路径靠分帧逐步生成，而 `--shot` 只渲染一帧 —— 必须先补全，
     /// 否则截出来的图只有顶上若干行是壁纸，其余是空白。
     #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅 --shot/--bench 走查路径使用
+    /// 主题切换后**必须**调用：重建背景缓存并作废"背景+投影"合成层。
+    ///
+    /// 不重建的后果是壁纸停留在旧主题（缓存按行分帧生成，最多要 1800 帧才刷完）。
+    /// P0 把壁纸改成静态后，整屏只是一次 lerp/行 —— 直接一次填满比拼帧快得多。
+    pub fn invalidate_background(&mut self, w: usize, h: usize, t: f32) {
+        if self.bg.len() < w * h {
+            self.bg = vec![0u32; w * h];
+        }
+        draw_background(&mut self.bg, w, h, t);
+        self.bg_row = h; // 背景已完整
+        self.shadow_key = 0; // 合成层作废 → 下一帧重新烘焙（与 prepare_background 同一手法）
+    }
+
+    /// 整屏烘焙背景 + 投影（**走查/预览路径专用**；Linux 的 fbdev 循环在 `render_frame` 里
+    /// 按 `BG_ROWS_PER_FRAME` 分帧生成，不走这里）。
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub fn prepare_background(&mut self, w: usize, h: usize, t: f32) {
+        // 主题切换等让缓存作废的改动：这里统一补一次（调用方只需置 `bg_dirty`）
+        if self.bg_dirty {
+            self.invalidate_background(w, h, t);
+            self.bg_dirty = false;
+        }
         if self.bg.len() != w * h {
             self.bg = vec![0; w * h];
         }
@@ -1384,6 +1411,12 @@ impl Renderer {
         // "优化帧率"反而让周期性卡顿变密。1800 帧 @30fps ≈ 60 秒。
         const BG_REFRESH_FRAMES: u32 = 1800;
         let size_changed = self.bg_w != w || self.bg_h != h || self.bg.len() != w * h;
+        // 主题切换：**整屏重建**，不分帧。P0 后壁纸是静态的，整屏只是一次 lerp/行；
+        // 而分帧会在半秒里露出"上半新主题、下半旧主题"的横向接缝。
+        if self.bg_dirty {
+            self.invalidate_background(w, h, t);
+            self.bg_dirty = false;
+        }
         if size_changed || self.frames_since_bg > BG_REFRESH_FRAMES {
             if self.bg.len() != w * h {
                 self.bg = vec![0; w * h];
@@ -1672,7 +1705,7 @@ impl Renderer {
     ) {
         use crate::widgets;
         const PANEL_W: i32 = 264;
-        const PANEL_H: i32 = 244;
+        const PANEL_H: i32 = 282; // 4 行内容 + 两次分隔 + 底部提示（加一行就要同步这里）
         // 右对齐到状态簇（并保证不出屏）
         let x = (self.status_cluster.x + self.status_cluster.w - PANEL_W).max(8);
         let panel = Rect {
@@ -1711,7 +1744,15 @@ impl Renderer {
         widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
         y += 8;
 
-        // ② 中文输入法
+        // ② 深色模式（默认关 = 白色；用户最常切的一项放最前）
+        let r0 = row(y);
+        widgets::row(buf, w, h, r0, "深色模式", None, widgets::States::at(r0, ui.mouse), Some(tr));
+        let s0 = knob(r0);
+        widgets::switch(buf, w, h, s0, self.settings.dark_mode, widgets::States::at(s0, ui.mouse));
+        self.control_hits.push((s0, ControlHit::ToggleDark));
+        y += 36;
+
+        // ③ 中文输入法
         let r1 = row(y);
         widgets::row(buf, w, h, r1, "中文输入法", None, widgets::States::at(r1, ui.mouse), Some(tr));
         let s1 = knob(r1);
@@ -2045,6 +2086,25 @@ fn draw_settings_content(
     }
 
     match title {
+        "外观" => {
+            // 主题开关：**默认明亮（纯白）**，切换立即生效 —— 改全局 MODE 并重建背景缓存，
+            // 由事件循环执行（绘制期不改状态）。
+            let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
+            toggle_row(buf, w, h, mouse, tr, r1, "深色模式", Some("默认关闭（明亮/纯白）；切换立即生效"), s.dark_mode, SettingsHit::ToggleDark, hits);
+            ry += 58;
+            widgets::group_header(buf, w, h, content.x + 24, ry, "当前配色", Some(tr));
+            ry += 22;
+            for (k, v) in [
+                ("主色", "teal（单一强调色，AI 元素同色）"),
+                ("壁纸", "静态中性：浅色纯白 → #F4F5F7"),
+                ("圆角", "4 / 6 / 8"),
+                ("层次", "两层轻影 + 1px 描边"),
+            ] {
+                tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
+                tr.draw(buf, w, h, (content.x + 120) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                ry += 24;
+            }
+        }
         "时钟与时区" => {
             // 实时预览：改任何一项都能立刻看到结果（不用重启、不用"应用"按钮）
             let now = crate::text::now_utc_secs();
@@ -4040,7 +4100,12 @@ mod blit_tests {
         }
         let r = Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
         let mut hits = Vec::new();
-        let page = crate::settings::first_enabled_page();
+        // 按标题定位「时钟与时区」——**不要用 `first_enabled_page()`**：外观页启用后它已是第一页，
+        // 而本测试要验的是时钟页那几个控件。
+        let page = crate::settings::PAGES
+            .iter()
+            .position(|p| p.title == "时钟与时区")
+            .expect("时钟与时区页必须存在");
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(), page, &mut hits,
@@ -4081,6 +4146,25 @@ mod blit_tests {
         assert!(
             left < right,
             "左栏应比右侧页面暗（两栏结构）：left={left} right={right}"
+        );
+
+        // 「外观」页必须登记深色模式开关 —— 这是"默认白、用户可切换"的界面入口
+        let appear = crate::settings::PAGES
+            .iter()
+            .position(|p| p.title == "外观")
+            .expect("外观页必须存在");
+        let mut hits2 = Vec::new();
+        draw_settings_content(
+            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
+            crate::settings::Settings::default(), appear, &mut hits2,
+        );
+        assert!(
+            hits2.iter().any(|(_, x)| matches!(x, H::ToggleDark)),
+            "外观页缺少深色模式开关"
+        );
+        assert!(
+            hits2.iter().all(|(rr, _)| rr.w > 0 && rr.h > 0),
+            "外观页的命中区不能为空"
         );
     }
 
