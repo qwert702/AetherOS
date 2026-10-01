@@ -2134,6 +2134,28 @@ fn draw_settings_content(
             let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
             toggle_row(buf, w, h, mouse, tr, r1, "默认启用中文输入法", Some("开机即生效，Ctrl+空格 可随时切换"), s.ime_default, SettingsHit::ImeDefault, hits);
             ry += 58;
+            // 鼠标速度：合成器原先对相对位移**硬编码 ×2**，用户反馈在 VMware/真机上太快。
+            // 默认 100（1:1），这里给三档；数值走 `SettingsHit::MouseSpeed`（真实写盘）。
+            widgets::group_header(buf, w, h, content.x + 24, ry, "鼠标速度", Some(tr));
+            ry += 24;
+            let seg = Rect { x: content.x + 24, y: ry, w: 300, h: 30 };
+            let active = match s.mouse_speed_pct {
+                p if p < 80 => 0,
+                p if p > 120 => 2,
+                _ => 1,
+            };
+            let rects = widgets::segmented(buf, w, h, seg, &["慢", "标准", "快"], active, mouse, Some(tr));
+            for (i, rr) in rects.iter().enumerate() {
+                hits.push((*rr, SettingsHit::MouseSpeed([60, 100, 150][i])));
+            }
+            tr.draw(
+                buf, w, h,
+                (content.x + 340) as f32,
+                (ry + 7) as f32,
+                &format!("{}%", s.mouse_speed_pct),
+                font::CAPTION, color::text_dim(), 0.85,
+            );
+            ry += 46;
             widgets::group_header(buf, w, h, content.x + 24, ry, "键盘快捷键", Some(tr));
             ry += 22;
             for (k, v) in [

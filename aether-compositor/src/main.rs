@@ -171,10 +171,14 @@ fn run_fbdev() -> anyhow::Result<()> {
             }
             match ev {
                 input::UiEvent::MouseMove { dx, dy } => {
-                    // 位移在事件流里累积，不受 10fps 渲染帧率影响；
-                    // 倍率只是手感（PS/2 相对计数偏小）
-                    mouse.0 = (mouse.0 + dx as f32 * 2.0).clamp(0.0, (w - 1) as f32);
-                    mouse.1 = (mouse.1 + dy as f32 * 2.0).clamp(0.0, (h - 1) as f32);
+                    // 位移在事件流里累积，不受渲染帧率影响。
+                    //
+                    // 倍率原来是**硬编码 ×2**（早期在 QEMU 里嫌 PS/2 相对计数偏小加的），
+                    // 结果在 VMware 与真机上灵敏度过高（用户实测反馈）。现改为 **1:1 默认**，
+                    // 倍数交给用户设置（设置中心 → 输入 → 鼠标速度）。
+                    let spd = renderer.settings.mouse_speed_pct as f32 / 100.0;
+                    mouse.0 = (mouse.0 + dx as f32 * spd).clamp(0.0, (w - 1) as f32);
+                    mouse.1 = (mouse.1 + dy as f32 * spd).clamp(0.0, (h - 1) as f32);
                 }
                 input::UiEvent::MouseDown => mouse_down = true,
                 input::UiEvent::Wheel { dy } => {

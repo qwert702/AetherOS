@@ -42,7 +42,16 @@ pub struct Settings {
     pub ime_default: bool,
     /// 深色模式（**默认 false = 明亮/纯白**，与产品主视觉一致）。用户可在设置中心或控制中心切换。
     pub dark_mode: bool,
+    /// 鼠标速度（百分比，100 = 1:1）。
+    ///
+    /// 合成器原先对相对位移**硬编码 ×2**，在 VMware/真机上太快（用户实测反馈）；
+    /// 默认改为 100（1:1），用户可在设置中心「输入」页调。
+    pub mouse_speed_pct: i32,
 }
+
+/// 鼠标速度允许范围。防止设置文件被改成 0（指针彻底不动）或天文数字。
+pub const MOUSE_SPEED_MIN: i32 = 25;
+pub const MOUSE_SPEED_MAX: i32 = 300;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -52,6 +61,7 @@ impl Default for Settings {
             clock_seconds: false,
             ime_default: false,
             dark_mode: false,
+            mouse_speed_pct: 100,
         }
     }
 }
@@ -89,6 +99,9 @@ impl Settings {
         if let Some(b) = v.get("dark_mode").and_then(Value::as_bool) {
             s.dark_mode = b;
         }
+        if let Some(n) = v.get("mouse_speed_pct").and_then(Value::as_i64) {
+            s.mouse_speed_pct = (n as i32).clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX);
+        }
         s
     }
 
@@ -101,6 +114,7 @@ impl Settings {
             "clock_seconds": self.clock_seconds,
             "ime_default": self.ime_default,
             "dark_mode": self.dark_mode,
+            "mouse_speed_pct": self.mouse_speed_pct,
         });
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
@@ -171,6 +185,8 @@ pub enum SettingsHit {
     ImeDefault,
     /// 深色模式开关（默认关 = 白色）
     ToggleDark,
+    /// 鼠标速度（百分比，由分段控件给值；越界由 `apply_hit` 夹取）
+    MouseSpeed(i32),
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -221,6 +237,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::TzShift(d) => s.shift_tz(d),
         SettingsHit::ImeDefault => s.ime_default = !s.ime_default,
         SettingsHit::ToggleDark => s.dark_mode = !s.dark_mode,
+        SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
     }
 }
 
@@ -246,6 +263,7 @@ mod tests {
             clock_seconds: true,
             ime_default: true,
             dark_mode: true,
+            mouse_speed_pct: 150,
         };
         assert_eq!(Settings::from_json(&s.to_json()), s);
     }
@@ -265,6 +283,13 @@ mod tests {
         assert_eq!(s.tz_offset_min, TZ_MAX);
         let s = Settings::from_json(r#"{"tz_offset_min": -99999}"#);
         assert_eq!(s.tz_offset_min, TZ_MIN);
+        // 鼠标速度：类型不对回落默认，越界夹取（写成 0 会让指针彻底不动）
+        assert_eq!(Settings::from_json(r#"{"mouse_speed_pct": "快"}"#).mouse_speed_pct, 100);
+        assert_eq!(Settings::from_json(r#"{"mouse_speed_pct": 0}"#).mouse_speed_pct, MOUSE_SPEED_MIN);
+        assert_eq!(
+            Settings::from_json(r#"{"mouse_speed_pct": 99999}"#).mouse_speed_pct,
+            MOUSE_SPEED_MAX
+        );
     }
 
     #[test]
@@ -278,6 +303,7 @@ mod tests {
             clock_seconds: true,
             ime_default: false,
             dark_mode: true,
+            mouse_speed_pct: 60,
         };
         s.save(path).expect("写设置应当成功（父目录会自动建）");
         assert_eq!(Settings::load(path, 8 * 60), s, "写进去什么，读出来就该是什么");
@@ -332,9 +358,17 @@ mod tests {
         apply_hit(&mut s, &mut page, SettingsHit::ToggleDark);
         assert!(!s.dark_mode, "再点一次应回到明亮");
 
+        // 鼠标速度：默认必须是 1:1，越界值要夹取
+        assert_eq!(Settings::default().mouse_speed_pct, 100, "默认必须是 1:1（原来是 ×2）");
+        apply_hit(&mut s, &mut page, SettingsHit::MouseSpeed(60));
+        assert_eq!(s.mouse_speed_pct, 60);
+        apply_hit(&mut s, &mut page, SettingsHit::MouseSpeed(0));
+        assert_eq!(s.mouse_speed_pct, MOUSE_SPEED_MIN, "过小的速度要夹到下限");
+        apply_hit(&mut s, &mut page, SettingsHit::MouseSpeed(9999));
+        assert_eq!(s.mouse_speed_pct, MOUSE_SPEED_MAX, "过大的速度要夹到上限");
+
         apply_hit(&mut s, &mut page, SettingsHit::TzShift(-30));
-        assert_eq!(s.tz_offset_min, 8 * 60 - 30);
-        for _ in 0..100 {
+        assert_eq!(s.tz_offset_min, 8 * 60 - 30);        for _ in 0..100 {
             apply_hit(&mut s, &mut page, SettingsHit::TzShift(-30));
         }
         assert_eq!(s.tz_offset_min, TZ_MIN, "时区必须夹在 -14:00");
