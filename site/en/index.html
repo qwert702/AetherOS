@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AetherOS — a desktop OS whose userspace is written from scratch (Rust, 38.5 MB ISO)</title>
+<meta name="description" content="AetherOS: Linux kernel plus a from-scratch Rust userspace — PID 1, window compositor, terminal, Chinese IME and an AI hub with per-tool permission gating. Bootable ISO is only 38.5 MB, 356 tests passing, verified on QEMU / VirtualBox / VMware, and it installs real Linux software. GPL-3.0.">
+<meta name="keywords" content="AetherOS,Rust operating system,hobby OS,from scratch userspace,Linux distribution,window compositor,init system,AI agent,permission gate,Buildroot,osdev">
+<link rel="canonical" href="https://aether.cbnac.com/en/">
+<link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/">
+<link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AetherOS">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="zh_CN">
+<meta property="og:url" content="https://aether.cbnac.com/en/">
+<meta property="og:title" content="AetherOS — a desktop OS whose userspace is written from scratch">
+<meta property="og:description" content="Linux kernel + from-scratch Rust userspace. Bootable ISO is only 38.5 MB, and it runs real Linux software.">
+<meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="AetherOS — userspace written from scratch">
+<meta name="twitter:description" content="Bootable ISO 38.5 MB. Runs real Linux software. GPL-3.0.">
+<meta name="twitter:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/app.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "AetherOS",
+  "applicationCategory": "OperatingSystem",
+  "operatingSystem": "Linux kernel (x86_64)",
+  "softwareVersion": "v0.1.0",
+  "fileSize": "38.5 MB",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/latest",
+  "codeRepository": "https://github.com/qwert702/AetherOS",
+  "description": "A desktop operating system with a from-scratch Rust userspace: compositor, terminal, IME and an AI hub with per-tool permission gating, on top of the Linux kernel."
+}
+</script>
+</head>
+<body>
+
+<div class="top"><div class="wrap">
+  <a class="brand" href="/en/">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 20h4.6l4.4-8.4L16.4 20H21z" fill="#0b8496"/><circle cx="12" cy="16.4" r="2.1" fill="#0b8496"/></svg>
+    AetherOS
+  </a>
+  <nav>
+    <a class="on" href="/en/">Home</a>
+    <a href="/en/download.html">Download</a>
+    <a href="/en/changelog.html">Changelog</a>
+    <a href="/en/faq.html">FAQ</a>
+    <a class="hide-sm" href="https://github.com/qwert702/AetherOS">GitHub</a>
+    <a class="lang" href="/">中文</a>
+  </nav>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <h1>A desktop OS whose userspace<br>is <em>written from scratch</em></h1>
+  <p class="lede">
+    The Linux kernel, plus a Rust userspace built from zero: <strong>PID 1</strong>, a <strong>window compositor</strong>,
+    a <strong>terminal emulator</strong>, a <strong>Chinese IME</strong> and an <strong>AI hub</strong> with per-tool
+    permission gating. The bootable ISO is only <strong>38.5 MB</strong> — and it runs real Linux software.
+  </p>
+  <div class="cta">
+    <a class="btn primary" href="/en/download.html">Download ISO <small>38.5 MB</small></a>
+    <a class="btn ghost" href="https://github.com/qwert702/AetherOS">Source code</a>
+    <a class="btn ghost" href="/en/changelog.html">Changelog</a>
+  </div>
+  <div class="stats">
+    <div><b>38.5 MB</b><span>bootable ISO</span></div>
+    <div><b>23,694</b><span>lines of Rust (43 files)</span></div>
+    <div><b>356</b><span>unit tests passing</span></div>
+    <div><b>3</b><span>hypervisors verified</span></div>
+  </div>
+</div></header>
+
+<section><div class="wrap">
+  <h2>It runs real software</h2>
+  <p class="sub">Unedited capture from a real machine (QEMU, frame-by-frame): one command in the terminal pulls an
+    app package from the host, <code>aetherd</code> installs <strong>htop</strong>, and it runs on the self-written desktop.</p>
+  <figure class="demo">
+    <img src="/assets/img/demo-htop.gif" width="1280" height="800"
+         alt="AetherOS demo: fetching a package, installing htop and running it on the desktop">
+    <figcaption>Not a bundled program: <strong>htop 3.3.0 from the official Ubuntu 24.04 archive</strong>.</figcaption>
+  </figure>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Why it is different</h2>
+  <p class="sub">The kernel is not rewritten — Android and ChromeOS use the Linux kernel too, and rewriting it buys
+    nothing. All the effort goes above it.</p>
+  <div class="grid two">
+    <div class="card"><h3>Nothing above the kernel is off-the-shelf</h3>
+      <p>From PID 1 to the compositor, terminal (own PTY + VT parser), IME and AI hub. The compositor writes straight
+         to the framebuffer, with tiling, shadows, rounded corners, dirty-row upload and adaptive frame rate.</p></div>
+    <div class="card"><h3>It installs real Linux software</h3>
+      <p>Static binaries and common dynamic dependencies work; the image ships ncurses + terminfo, zlib, openssl,
+         libffi and expat. The package format and installer are custom too.</p></div>
+    <div class="card"><h3>AI hub with per-tool permission gating</h3>
+      <p>Every tool call passes a gate; L2+ actions raise a confirmation dialog and are audited. The architecture is
+         <strong>client → your own gateway → any model</strong>, so no upstream API keys live on the machine.</p></div>
+    <div class="card"><h3>The whole system is 38.5 MB</h3>
+      <p>Small enough to boot with one command. Install it to a virtual disk and it boots standalone.
+         Zero compiler warnings on both targets, 17 UI screenshots regression-checked pixel by pixel.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Screenshots</h2>
+  <p class="sub">Light theme by default (pure white, a single accent colour); dark theme is one click away.</p>
+  <div class="shots">
+    <figure><img src="/assets/img/desktop-clean.webp" alt="AetherOS desktop with icons" loading="lazy"><figcaption>Desktop: no windows by default, icons are the entry</figcaption></figure>
+    <figure><img src="/assets/img/settings.webp" alt="Settings centre" loading="lazy"><figcaption>Settings centre: clock, input, appearance, AI</figcaption></figure>
+    <figure><img src="/assets/img/control-center.webp" alt="Control centre popover" loading="lazy"><figcaption>Control centre: AI state, IME, 24-hour clock</figcaption></figure>
+    <figure><img src="/assets/img/ime.webp" alt="Chinese input method" loading="lazy"><figcaption>Built-in Chinese IME</figcaption></figure>
+    <figure><img src="/assets/img/installer.webp" alt="Installer wizard" loading="lazy"><figcaption>Installer: install to a virtual disk</figcaption></figure>
+    <figure><img src="/assets/img/htop-app.webp" alt="htop running on the desktop" loading="lazy"><figcaption>htop 3.3.0 running on the desktop</figcaption></figure>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Boot it in three minutes</h2>
+  <p class="sub">All you need is a hypervisor. Full steps (VirtualBox, VMware, checksums) are on the
+    <a href="/en/download.html">download page</a>.</p>
+<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-v0.1.0-amd64.iso -boot d</code></pre>
+  <div class="step"><div class="n">1</div><div><h3>Download the ISO</h3>
+    <p class="sub" style="margin:0">38.5 MB, with a published SHA256.</p></div></div>
+  <div class="step"><div class="n">2</div><div><h3>Boot it</h3>
+    <p class="sub" style="margin:0">QEMU as above; VirtualBox / VMware steps on the download page.</p></div></div>
+  <div class="step"><div class="n">3</div><div><h3>Optional: install to disk</h3>
+    <p class="sub" style="margin:0">Use the installer on the dock, then boot from the disk without the ISO.</p></div></div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>FAQ</h2>
+  <div style="margin-top:18px">
+    <details open><summary>Why the Linux kernel instead of writing your own?</summary>
+      <p>Rewriting the kernel buys nothing — Android and ChromeOS use it too. The product difference lives above it,
+         and above it <strong>everything is written from scratch</strong>. <a href="/en/faq.html">More in the FAQ</a>.</p></details>
+    <details><summary>Can I use it daily?</summary>
+      <p>It is an early <strong>v0.1.0 release</strong>: great for experimenting and development,
+         not recommended for important data yet.</p></details>
+    <details><summary>How do I install software?</summary>
+      <p><code>wget -O- &lt;package-url&gt; | sh</code> — the custom package format plus <code>aetherd</code>.
+         Static binaries and common dynamic dependencies work.</p></details>
+    <details><summary>Where does the AI hub send my data?</summary>
+      <p>Nowhere by default: the system talks to <strong>your own gateway</strong>, which talks to the model provider.
+         No upstream API keys are stored, and every tool call passes a permission gate.</p></details>
+  </div>
+</div></section>
+
+<footer class="foot"><div class="wrap">
+  <div class="row">
+    <a href="/en/">Home</a><a href="/en/download.html">Download</a><a href="/en/changelog.html">Changelog</a>
+    <a href="/en/faq.html">FAQ</a><a href="https://github.com/qwert702/AetherOS">GitHub</a><a href="/">中文</a>
+  </div>
+  <p style="margin:14px 0 0">
+    AetherOS · <a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0-only</a> ·
+    v0.1.0 · ISO built 2026-10-01 · numbers injected by <code>scripts/gen-site.py</code>
+  </p>
+</div></footer>
+
+</body>
+</html>

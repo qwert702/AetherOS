@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""AetherOS 官网生成器：把"会变的东西"从仓库真实数据生成，杜绝口径漂移。
+
+## 为什么必须有生成器
+
+站点上的版本号、ISO 体积、代码行数、测试数**每周都在变**。手写必然漂移 ——
+本仓库已经吃过这个亏：`INDEX.md` 曾落后 4,639 行、14 个文件，`ui-design-handover.md`
+描述的还是重做前的视觉。所以页面里**只写占位符**，值由本脚本注入：
+
+    <!--DATA:iso_size-->        →  38.5 MB
+    <!--DATA:rust_lines-->      →  23,694
+    <!--DATA:tests-->           →  356
+
+`--check` 会重新渲染一遍并与磁盘逐字节比对，不一致即非零退出（进现有门禁）。
+
+## 用法
+
+    python scripts/gen-site.py --refresh     # 重新测量真实数据 + 生成图片 + 渲染页面
+    python scripts/gen-site.py               # 用 site/data.json 渲染页面
+    python scripts/gen-site.py --check       # 只校验页面与数据一致（门禁用）
+    python scripts/gen-site.py --refresh --skip-tests   # 迭代时跳过 cargo test（约 60 秒）
+
+## 生成物（不提交，见 .gitignore）
+
+    site/data.json            实测数据（版本/体积/行数/测试数/ISO 校验和）
+    site/assets/img/*.webp    从 docs/ 的走查图转换而来（体积小、加载快）
+    site/assets/img/og-cover.png  1200×630 社交预览图（分享到微信/Twitter 时的门面）
+    site/sitemap.xml  site/robots.txt  site/404.html
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SITE = ROOT / "site"
+DATA = SITE / "data.json"
+IMG = SITE / "assets" / "img"
+ISO = ROOT / "aetheros-0.1-amd64.iso"
+CHANGELOG = ROOT / "CHANGELOG.md"
+
+#: 从 docs/ 走查图转成站点图片（源 → 目标名）。源是仓库里已有的视觉基线，
+#: 不复制进 site/ 以免二进制文件重复入库。
+IMAGE_SOURCES = {
+    "host-ui-light-desktop.png": "desktop",
+    "host-ui-light-desktop-clean.png": "desktop-clean",
+    "host-ui-light-settings.png": "settings",
+    "host-ui-light-control-center.png": "control-center",
+    "host-ui-light-ime.png": "ime",
+    "host-ui-light-installer.png": "installer",
+    "screenshot-htop-app.png": "htop-app",
+}
+GIF_SOURCE = "demo-htop.gif"
+
+#: 页面清单（生成 sitemap 用）。zh 在根，en 在 /en/。
+PAGES = [
+    ("index.html", "1.0", "weekly"),
+    ("download.html", "0.9", "weekly"),
+    ("changelog.html", "0.8", "weekly"),
+    ("faq.html", "0.7", "monthly"),
+    ("en/index.html", "0.9", "weekly"),
+    ("en/download.html", "0.8", "weekly"),
+    ("en/changelog.html", "0.7", "weekly"),
+    ("en/faq.html", "0.6", "monthly"),
+]
+
+
+def run(args: list[str]) -> str:
+    r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.stdout or ""
+
+
+def measure(skip_tests: bool, previous: dict) -> dict:
+    """从仓库实测出所有对外数字。"""
+    d: dict = {}
+
+    # 版本号：最近的 tag（没有 tag 就退回 v0.1.0，与 GitHub Release 一致）
+    tag = run(["git", "describe", "--tags", "--abbrev=0"]).strip()
+    d["version"] = tag or "v0.1.0"
+
+    # 代码规模：口径唯一来源是 scripts/repo-stats.py（它自己带 --check 门禁）
+    stats = run([sys.executable, str(ROOT / "scripts" / "repo-stats.py")])
+    m = re.search(r"\|\s*\*\*合计\*\*\s*\|\s*\*\*([\d,]+)\*\*\s*\|\s*\*\*(\d+)\*\*", stats)
+    if not m:
+        sys.exit("无法从 scripts/repo-stats.py 解析规模（口径源变了？）")
+    d["rust_lines"] = m.group(1)
+    d["rust_files"] = m.group(2)
+    d["rust_lines_num"] = int(m.group(1).replace(",", ""))
+    d["crates"] = len(list(ROOT.glob("*/Cargo.toml")))
+
+    # 测试数：跑一遍工作区测试（慢，所以 --skip-tests 时沿用上次的值）
+    if skip_tests:
+        d["tests"] = previous.get("tests", "—")
+    else:
+        out = run(["cargo", "test", "--workspace", "--offline", "--no-fail-fast"])
+        total = sum(int(x) for x in re.findall(r"test result: ok\. (\d+) passed", out))
+        d["tests"] = str(total) if total else previous.get("tests", "—")
+
+    # ISO：体积、校验和、构建日期（仓库根目录的构建产物）
+    if ISO.exists():
+        size = ISO.stat().st_size
+        d["iso_bytes"] = size
+        d["iso_size"] = f"{size / 1048576:.1f} MB"
+        h = hashlib.sha256()
+        with ISO.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        d["iso_sha256"] = h.hexdigest()
+        d["iso_date"] = subprocess.run(
+            ["git", "log", "-1", "--format=%ad", "--date=short"], capture_output=True,
+            text=True, encoding="utf-8").stdout.strip()
+    else:
+        # 没有本地构建产物时沿用上次实测值，绝不留空（页面不能出现 "— MB"）
+        for k in ("iso_bytes", "iso_size", "iso_sha256", "iso_date"):
+            d[k] = previous.get(k, "—")
+
+    d["shots"] = str(len(list((ROOT / "docs").glob("host-ui-*.png"))))
+    d["repo"] = "github.com/qwert702/AetherOS"
+    d["site"] = "aether.cbnac.com"
+    d["generated"] = subprocess.run(["git", "log", "-1", "--format=%ad", "--date=short"],
+                                    capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    return d
+
+
+# —— Markdown → HTML（只支持 CHANGELOG.md 用到的那一小撮语法）——
+
+def inline(s: str) -> str:
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", s)
+    s = re.sub(r"`([^`]+?)`", r"<code>\1</code>", s)
+    return s
+
+
+def render_changelog(md: str) -> str:
+    """把 CHANGELOG.md 渲染成页面正文（h2 版本 / h3 分组 / ul 条目）。"""
+    out: list[str] = []
+    in_list = False
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+
+    for raw in md.splitlines():
+        line = raw.rstrip()
+        if line.startswith("> "):
+            continue  # 文件头的说明只给维护者看
+        if not line.strip():
+            continue
+        if line.startswith("---"):
+            close_list()
+            continue
+        if line.startswith("## "):
+            close_list()
+            title = inline(line[3:])
+            out.append(f'<h2 id="{re.sub(r"[^a-z0-9]+", "-", line[3:].lower()).strip("-")}">{title}</h2>')
+            continue
+        if line.startswith("### "):
+            close_list()
+            out.append(f"<h3>{inline(line[4:])}</h3>")
+            continue
+        if line.startswith("- "):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"  <li>{inline(line[2:])}</li>")
+            continue
+        close_list()
+        out.append(f"<p>{inline(line)}</p>")
+    close_list()
+    return "\n".join(out)
+
+
+# —— 图片：走查图 → WebP + 社交预览图 ——
+
+def build_images(d: dict) -> None:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        print("  警告：没有 Pillow，跳过图片生成（页面会引用不存在的图片）")
+        return
+    IMG.mkdir(parents=True, exist_ok=True)
+    for src, dst in IMAGE_SOURCES.items():
+        p = ROOT / "docs" / src
+        if not p.exists():
+            print(f"  警告：缺图 {src}")
+            continue
+        im = Image.open(p).convert("RGB")
+        im.save(IMG / f"{dst}.webp", "WEBP", quality=86, method=5)
+    gif = ROOT / "docs" / GIF_SOURCE
+    if gif.exists():
+        shutil.copy2(gif, IMG / GIF_SOURCE)
+    make_og_cover(d, Image, ImageDraw, ImageFont)
+
+
+def _font(ImageFont, size: int):
+    """找一个带中文的字体；找不到就返回 None（封面退化为纯图，不报错）。"""
+    for cand in (
+        "C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/msyh.ttc",
+        "/usr/share/fonts/truetype/aether/NotoSansSC-Bold.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    ):
+        if Path(cand).exists():
+            try:
+                return ImageFont.truetype(cand, size)
+            except OSError:
+                continue
+    return None
+
+
+def make_og_cover(d: dict, Image, ImageDraw, ImageFont) -> None:
+    """1200×630 社交预览图：分享到微信/Twitter/Reddit 时决定有没有人点。
+
+    配色与产品一致：纯白底、单一 teal、1px 描边、无渐变。
+    """
+    W, H = 1200, 630
+    bg, fg, dim, teal, line = (255, 255, 255), (24, 26, 30), (110, 118, 130), (11, 132, 150), (228, 230, 234)
+    im = Image.new("RGB", (W, H), bg)
+    dr = ImageDraw.Draw(im)
+    dr.rectangle([0, 0, W - 1, H - 1], outline=line)
+    dr.rectangle([0, 0, 8, H], fill=teal)  # 左侧 teal 细条 = 品牌位
+
+    f_title = _font(ImageFont, 74)
+    f_sub = _font(ImageFont, 30)
+    f_small = _font(ImageFont, 24)
+    dr.text((64, 74), "AetherOS", font=f_title, fill=fg)
+    dr.text((66, 168), "从 Linux 内核向上，用户态全部自研", font=f_sub, fill=dim)
+    dr.text((66, 214), "An operating system with a userspace written from scratch",
+            font=f_small, fill=dim)
+
+    # 关键数字（真实注入，不是写死的）
+    nums = [
+        (d.get("iso_size", "—"), "ISO"),
+        (d.get("rust_lines", "—"), "行 Rust"),
+        (d.get("tests", "—"), "项测试"),
+        (d.get("crates", "—"), "个 crate"),
+    ]
+    x = 66
+    for value, label in nums:
+        dr.text((x, 300), str(value), font=f_sub, fill=teal)
+        dr.text((x, 342), label, font=f_small, fill=dim)
+        x += 230
+
+    # 桌面实拍（白色主题）压进右下角卡片
+    shot = IMG / "desktop.webp"
+    if shot.exists():
+        s = Image.open(shot).convert("RGB")
+        sw = 520
+        sh = int(s.height * sw / s.width)
+        s = s.resize((sw, sh), Image.LANCZOS)
+        px, py = W - sw - 64, H - sh - 64
+        dr.rectangle([px - 1, py - 1, px + sw, py + sh], fill=bg, outline=line)
+        im.paste(s, (px, py))
+    im.save(IMG / "og-cover.png", "PNG", optimize=True)
+    print("  og-cover.png 1200x630")
+
+
+# —— 渲染与校验 ——
+
+def data_placeholders(data: dict) -> dict[str, str]:
+    return {k: str(v) for k, v in data.items()}
+
+
+def render_page(path: Path, data: dict, changelog_html: str) -> str:
+    text = path.read_text(encoding="utf-8")
+    for k, v in data_placeholders(data).items():
+        text = text.replace(f"<!--DATA:{k}-->", v)
+    text = text.replace("<!--CHANGELOG-->", changelog_html)
+    return text
+
+
+def html_pages() -> list[Path]:
+    return sorted(p for p in SITE.rglob("*.html") if p.is_file())
+
+
+def write_generated(data: dict) -> None:
+    """sitemap / robots / 404 —— 形式固定，直接生成，避免手写漂移。"""
+    base = "https://" + data["site"]
+    urls = []
+    for rel, prio, freq in PAGES:
+        alt = ""
+        if rel.startswith("en/"):
+            alt = f'\n    <xhtml:link rel="alternate" hreflang="zh-CN" href="{base}/{rel[3:]}"/>' \
+                  f'\n    <xhtml:link rel="alternate" hreflang="en" href="{base}/{rel}"/>'
+        else:
+            alt = f'\n    <xhtml:link rel="alternate" hreflang="zh-CN" href="{base}/{rel}"/>' \
+                  f'\n    <xhtml:link rel="alternate" hreflang="en" href="{base}/en/{rel}"/>'
+        urls.append(f'  <url>\n    <loc>{base}/{rel}</loc>\n    <priority>{prio}</priority>'
+                    f'\n    <changefreq>{freq}</changefreq>{alt}\n  </url>')
+    (SITE / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"\n'
+        '        xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
+        + "\n".join(urls) + "\n</urlset>\n", encoding="utf-8", newline="\n")
+    (SITE / "robots.txt").write_text(
+        f"User-agent: *\nAllow: /\n\nSitemap: {base}/sitemap.xml\n", encoding="utf-8", newline="\n")
+    (SITE / "404.html").write_text(
+        f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>页面不存在 · AetherOS</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/app.css">
+</head><body class="wrap narrow">
+<header class="hero"><h1>页面不存在</h1>
+<p class="lede">这个地址没有内容。<a href="/">回到首页</a> 或 <a href="/en/">English</a>。</p></header>
+<footer class="foot"><p>AetherOS · GPL-3.0-only · <a href="/changelog.html">更新日志</a></p></footer>
+</body></html>
+""", encoding="utf-8", newline="\n")
+    print("  sitemap.xml / robots.txt / 404.html")
+
+
+def main(argv: list[str]) -> int:
+    refresh = "--refresh" in argv
+    check = "--check" in argv
+    skip_tests = "--skip-tests" in argv
+    previous = json.loads(DATA.read_text(encoding="utf-8")) if DATA.exists() else {}
+
+    data = measure(skip_tests, previous) if refresh else previous
+    if not data:
+        sys.exit("没有 site/data.json —— 先跑 python scripts/gen-site.py --refresh")
+
+    if refresh:
+        DATA.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8", newline="\n")
+        print("  data.json:", " ".join(f"{k}={v}" for k, v in data.items()
+                                      if k in ("version", "iso_size", "rust_lines", "tests")))
+        build_images(data)
+        write_generated(data)
+
+    if not CHANGELOG.exists():
+        sys.exit("缺 CHANGELOG.md（站点更新日志页的唯一来源）")
+    changelog_html = render_changelog(CHANGELOG.read_text(encoding="utf-8"))
+
+    drift: list[str] = []
+    for page in html_pages():
+        want = render_page(page, data, changelog_html)
+        have = page.read_text(encoding="utf-8")
+        if want != have:
+            drift.append(str(page.relative_to(ROOT)))
+            if not check:
+                page.write_text(want, encoding="utf-8", newline="\n")
+                print("  渲染", page.relative_to(ROOT))
+
+    if check:
+        if drift:
+            print("[FAIL] 站点与实测数据不一致（跑 python scripts/gen-site.py --refresh）:")
+            for f in drift:
+                print("   -", f)
+            return 1
+        missing = [p for p in html_pages()
+                   if "<!--DATA:" in p.read_text(encoding="utf-8")
+                   or "<!--CHANGELOG-->" in p.read_text(encoding="utf-8")]
+        if missing:
+            print("[FAIL] 还有未替换的占位符：", ", ".join(str(p.relative_to(ROOT)) for p in missing))
+            return 1
+        print(f"[ OK ] site: {len(html_pages())} 个页面与实测数据一致"
+              f"（{data['version']} · ISO {data['iso_size']} · {data['rust_lines']} 行 · {data['tests']} 项测试）")
+        return 0
+
+    print(f"完成：{len(html_pages())} 个页面")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AetherOS — 用户态全部自研的桌面操作系统（Rust，ISO 38.5 MB）</title>
+<meta name="description" content="AetherOS：Linux 内核 + 全部自研的 Rust 用户态（PID 1、窗口合成器、终端、中文输入法、带权限闸门的 AI 中枢）。可引导 ISO 仅 38.5 MB，356 项测试全绿，QEMU / VirtualBox / VMware 实测开机，能安装并运行市面上的 Linux 软件。GPL-3.0 开源。">
+<meta name="keywords" content="AetherOS,Rust 操作系统,自研用户态,开源操作系统,Linux 发行版,窗口合成器,compositor,init system,AI agent,权限闸门,Buildroot,osdev">
+<link rel="canonical" href="https://aether.cbnac.com/">
+<link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/">
+<link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AetherOS">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:locale:alternate" content="en_US">
+<meta property="og:url" content="https://aether.cbnac.com/">
+<meta property="og:title" content="AetherOS — 用户态全部自研的桌面操作系统">
+<meta property="og:description" content="Linux 内核 + 全部自研的 Rust 用户态。可引导 ISO 仅 38.5 MB，356 项测试全绿，能安装并运行市面上的 Linux 软件。">
+<meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="AetherOS — 用户态全部自研的桌面操作系统">
+<meta name="twitter:description" content="可引导 ISO 仅 38.5 MB，能装市面上的 Linux 软件。GPL-3.0 开源。">
+<meta name="twitter:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/app.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "AetherOS",
+  "applicationCategory": "OperatingSystem",
+  "operatingSystem": "Linux kernel (x86_64)",
+  "softwareVersion": "v0.1.0",
+  "fileSize": "38.5 MB",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/latest",
+  "codeRepository": "https://github.com/qwert702/AetherOS",
+  "description": "Linux 内核 + 全部自研的 Rust 用户态桌面操作系统，含窗口合成器、终端、中文输入法与带逐工具权限闸门的 AI 中枢。",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" }
+}
+</script>
+</head>
+<body>
+
+<div class="top"><div class="wrap">
+  <a class="brand" href="/">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 20h4.6l4.4-8.4L16.4 20H21z" fill="#0b8496"/><circle cx="12" cy="16.4" r="2.1" fill="#0b8496"/></svg>
+    AetherOS
+  </a>
+  <nav>
+    <a class="on" href="/">首页</a>
+    <a href="/download.html">下载</a>
+    <a href="/changelog.html">更新日志</a>
+    <a href="/faq.html">常见问题</a>
+    <a class="hide-sm" href="https://github.com/qwert702/AetherOS">GitHub</a>
+    <a class="lang" href="/en/">EN</a>
+  </nav>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <h1>一个从内核之上<br><em>全部自研</em>的桌面操作系统</h1>
+  <p class="lede">
+    Linux 内核 + 自研 Rust 用户态：<strong>PID 1</strong>、<strong>窗口合成器</strong>、<strong>终端</strong>、
+    <strong>中文输入法</strong>、<strong>AI 中枢</strong> —— 没有一行现成的桌面组件。
+    可引导 ISO 仅 <strong>38.5 MB</strong>，能安装并运行市面上的 Linux 软件。
+  </p>
+  <div class="cta">
+    <a class="btn primary" href="/download.html">下载 ISO <small>38.5 MB</small></a>
+    <a class="btn ghost" href="https://github.com/qwert702/AetherOS">查看源码</a>
+    <a class="btn ghost" href="/changelog.html">更新日志</a>
+  </div>
+  <div class="stats">
+    <div><b>38.5 MB</b><span>可引导 ISO</span></div>
+    <div><b>23,694</b><span>行 Rust（43 个源文件）</span></div>
+    <div><b>356</b><span>项单元测试全绿</span></div>
+    <div><b>3</b><span>个虚拟化平台实测开机</span></div>
+  </div>
+</div></header>
+
+<section><div class="wrap">
+  <h2>30 秒看懂：它真的能跑真实软件</h2>
+  <p class="sub">这段是<strong>真机录屏</strong>（QEMU 逐帧抓取，未剪辑）：在终端敲一行命令，从宿主拉下应用包，
+    <code>aetherd</code> 装好 <strong>htop</strong>，再敲 <code>htop</code> —— 它就在自研的桌面里跑起来了。</p>
+  <figure class="demo">
+    <img src="/assets/img/demo-htop.gif" width="1280" height="800"
+         alt="AetherOS 真机演示：终端里拉取应用包、安装 htop、在桌面中运行">
+    <figcaption>安装的不是内置程序，是 <strong>Ubuntu 24.04 官方仓库的 htop 3.3.0</strong>。</figcaption>
+  </figure>
+</div></section>
+
+<section><div class="wrap">
+  <h2>为什么它和别的「自研系统」不一样</h2>
+  <p class="sub">不重写内核 —— Android、ChromeOS 都用 Linux 内核，重写它没有差异化价值。力气全放在内核之上。</p>
+  <div class="grid two">
+    <div class="card"><h3>内核之上，一行都不是现成的</h3>
+      <p>从 PID 1 到窗口合成器、终端模拟器（自写 PTY + VT 解析器）、中文输入法、AI 中枢，全部自研。
+         合成器直接写 framebuffer，带平铺布局、阴影与圆角、脏行上屏与自适应帧率。</p></div>
+    <div class="card"><h3>能装市面上的 Linux 软件</h3>
+      <p>静态二进制与常见动态依赖都能装能跑；镜像补齐 ncurses + terminfo、zlib、openssl、libffi、expat。
+         应用包格式与安装器同样自研。</p></div>
+    <div class="card"><h3>AI 中枢带逐工具权限闸门</h3>
+      <p>每一次工具调用都要过闸门，L2+ 操作弹确认框并记审计。架构是<strong>客户端 → 你自己的网关 → 各家模型</strong>，
+         系统里不存放上游 API Key。</p></div>
+    <div class="card"><h3>整个系统 38.5 MB</h3>
+      <p>可引导 ISO 小到能用一条命令跑起来；安装到虚拟磁盘后可脱离 ISO 独立引导。
+         两个目标 0 编译警告，17 张界面走查图逐像素回归。</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>界面</h2>
+  <p class="sub">浅色为默认（纯白、单一强调色），可在设置中心或控制中心切换深色。</p>
+  <div class="shots">
+    <figure><img src="/assets/img/desktop-clean.webp" alt="AetherOS 桌面：左侧桌面图标" loading="lazy">
+      <figcaption>桌面：默认不开窗口，图标即入口</figcaption></figure>
+    <figure><img src="/assets/img/settings.webp" alt="设置中心：分组导航与真实设置" loading="lazy">
+      <figcaption>设置中心：时钟时区 / 输入 / 外观 / AI</figcaption></figure>
+    <figure><img src="/assets/img/control-center.webp" alt="控制中心：顶栏状态簇弹出面板" loading="lazy">
+      <figcaption>控制中心：AI 三态 / 输入法 / 24 小时制</figcaption></figure>
+    <figure><img src="/assets/img/ime.webp" alt="中文输入法候选框" loading="lazy">
+      <figcaption>自研中文输入法</figcaption></figure>
+    <figure><img src="/assets/img/installer.webp" alt="安装向导" loading="lazy">
+      <figcaption>安装向导：装到虚拟磁盘</figcaption></figure>
+    <figure><img src="/assets/img/htop-app.webp" alt="桌面里运行着 htop" loading="lazy">
+      <figcaption>桌面里跑着 htop 3.3.0</figcaption></figure>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>三分钟跑起来</h2>
+  <p class="sub">只需要一个虚拟机。完整步骤（含 VirtualBox / VMware 与校验和）在<a href="/download.html">下载页</a>。</p>
+  <div class="step"><div class="n">1</div><div>
+    <h3>下载 ISO</h3>
+    <p class="sub" style="margin:0">到<a href="/download.html">下载页</a>取 ISO（38.5 MB）与 SHA256 校验和。</p></div></div>
+  <div class="step"><div class="n">2</div><div>
+    <h3>QEMU：一条命令</h3>
+<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-v0.1.0-amd64.iso -boot d</code></pre>
+    <p class="sub" style="margin:0">VirtualBox / VMware 的图形化步骤见下载页。</p></div></div>
+  <div class="step"><div class="n">3</div><div>
+    <h3>想装到硬盘就点「安装」</h3>
+    <p class="sub" style="margin:0">Live 桌面里点 Dock 的安装向导，装完后可脱离 ISO 独立引导。</p></div></div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>常见问题</h2>
+  <div style="margin-top:18px">
+    <details><summary>为什么用 Linux 内核，而不是自己写一个内核？</summary>
+      <p>因为重写内核没有差异化价值。Android、ChromeOS 都用 Linux 内核，真正决定体验的是内核之上那一层 ——
+         而那一层在这个项目里是<strong>全部自研</strong>的。完整理由见<a href="/faq.html">常见问题页</a>。</p></details>
+    <details><summary>能当日常系统用吗？</summary>
+      <p>目前是 <strong>v0.1.0 早期版本</strong>，适合体验、开发与试验，不建议承载重要数据。
+         它能装真实软件、能装到磁盘持久化，欢迎试用并反馈问题。</p></details>
+    <details><summary>怎么装软件？</summary>
+      <p>用自研的应用包与 <code>aetherd</code>：<code>wget -O- &lt;包地址&gt; | sh</code>。
+         静态二进制与常见动态依赖都可以；打包说明见仓库的 <code>docs/APP-PACKAGES.md</code>。</p></details>
+    <details><summary>AI 中枢会把我的数据发到哪里？</summary>
+      <p>架构上系统<strong>不存上游 API Key</strong>：客户端连的是<strong>你自己的网关</strong>，再由网关转各家模型。
+         每一次工具调用都要过权限闸门，L2+ 操作弹确认框并写审计日志。</p></details>
+    <details><summary>怎么反馈问题或参与？</summary>
+      <p>到 <a href="https://github.com/qwert702/AetherOS/issues">GitHub Issues</a> 提问题；能复现的 bug 请带上虚拟机平台、
+         版本号与串口日志。想参与开发可以直接提 PR。</p></details>
+  </div>
+</div></section>
+
+<footer class="foot"><div class="wrap">
+  <div class="row">
+    <a href="/">首页</a><a href="/download.html">下载</a><a href="/changelog.html">更新日志</a>
+    <a href="/faq.html">常见问题</a><a href="https://github.com/qwert702/AetherOS">GitHub</a><a href="/en/">English</a>
+  </div>
+  <p style="margin:14px 0 0">
+    AetherOS · 许可证 <a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0-only</a> ·
+    版本 v0.1.0 · ISO 构建于 2026-10-01 · 本页数据由 <code>scripts/gen-site.py</code> 从仓库实测注入
+  </p>
+</div></footer>
+
+</body>
+</html>

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>下载 AetherOS — 可引导 ISO（38.5 MB，含 SHA256 校验）</title>
+<meta name="description" content="下载 AetherOS 可引导 ISO：38.5 MB，QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和与常见问题排错。">
+<link rel="canonical" href="https://aether.cbnac.com/download.html">
+<link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/download.html">
+<link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/download.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AetherOS">
+<meta property="og:url" content="https://aether.cbnac.com/download.html">
+<meta property="og:title" content="下载 AetherOS — 可引导 ISO（38.5 MB）">
+<meta property="og:description" content="QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和。">
+<meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<div class="top"><div class="wrap">
+  <a class="brand" href="/">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 20h4.6l4.4-8.4L16.4 20H21z" fill="#0b8496"/><circle cx="12" cy="16.4" r="2.1" fill="#0b8496"/></svg>
+    AetherOS
+  </a>
+  <nav>
+    <a href="/">首页</a><a class="on" href="/download.html">下载</a>
+    <a href="/changelog.html">更新日志</a><a href="/faq.html">常见问题</a>
+    <a class="hide-sm" href="https://github.com/qwert702/AetherOS">GitHub</a>
+    <a class="lang" href="/en/download.html">EN</a>
+  </nav>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <h1>下载 AetherOS</h1>
+  <p class="lede">可引导 ISO，<strong>38.5 MB</strong>。选一个虚拟机，三分钟就能进桌面。</p>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/qwert702/AetherOS/releases/latest">下载 ISO <small>38.5 MB</small></a>
+    <a class="btn ghost" href="#qemu">看安装步骤</a>
+  </div>
+</div></header>
+
+<section><div class="wrap">
+  <h2>文件信息</h2>
+  <table>
+    <tbody>
+      <tr><th style="width:180px">版本</th><td>v0.1.0</td></tr>
+      <tr><th>文件名</th><td><code>aetheros-v0.1.0-amd64.iso</code></td></tr>
+      <tr><th>体积</th><td>38.5 MB（40331264 字节）</td></tr>
+      <tr><th>构建日期</th><td>2026-10-01</td></tr>
+      <tr><th>架构</th><td>x86_64（需要支持 64 位虚拟化）</td></tr>
+      <tr><th>SHA256</th><td><code style="word-break:break-all">558ef6e40574e43e0fe0413d6a9a7f2e874552008d828a3261d9d2120a716a12</code></td></tr>
+      <tr><th>许可证</th><td>GPL-3.0-only</td></tr>
+    </tbody>
+  </table>
+  <p class="sub" style="margin-top:16px">
+    下载完成后建议校验一次（Windows 用 <code>certutil -hashfile 文件名 SHA256</code>，
+    Linux / macOS 用 <code>sha256sum 文件名</code>）。
+  </p>
+</div></section>
+
+<section id="qemu"><div class="wrap">
+  <h2>QEMU：一条命令</h2>
+  <p class="sub">最省事的路径。装好 QEMU 后直接跑（把文件名换成你下载的那个）：</p>
+<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-v0.1.0-amd64.iso -boot d</code></pre>
+  <p class="sub">想装到虚拟磁盘（装完可脱离 ISO 独立引导）：</p>
+<pre><code>qemu-img create -f qcow2 aether.qcow2 4G
+qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-v0.1.0-amd64.iso -boot d</code></pre>
+  <div class="note">进桌面后点 Dock 上的<strong>安装向导</strong>，把系统装到虚拟磁盘；重启时把 <code>-boot d</code> 去掉即从磁盘引导。</div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>VirtualBox</h2>
+  <div class="step"><div class="n">1</div><div><h3>新建虚拟机</h3>
+    <p class="sub" style="margin:0">类型选 <code>Other Linux (64-bit)</code>，内存 1024 MB 以上，先不建硬盘（Live 体验）。</p></div></div>
+  <div class="step"><div class="n">2</div><div><h3>挂载 ISO</h3>
+    <p class="sub" style="margin:0">设置 → 存储 → 光驱 → 选择下载的 <code>aetheros-v0.1.0-amd64.iso</code>。</p></div></div>
+  <div class="step"><div class="n">3</div><div><h3>启动</h3>
+    <p class="sub" style="margin:0">开机即进桌面。想在磁盘上持久化，就在虚拟机里加一块虚拟硬盘后再用安装向导。</p></div></div>
+  <div class="note">如果卡在 <code>buildroot login:</code> 而不是桌面，多半是 ISO 没挂上或虚拟光驱未连接 —— 检查上一步的挂载。</div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>VMware</h2>
+  <div class="step"><div class="n">1</div><div><h3>新建虚拟机</h3>
+    <p class="sub" style="margin:0">「稍后安装操作系统」→ 客户机类型 <code>其他 Linux 5.x 内核 64 位</code>，内存 1024 MB 以上。</p></div></div>
+  <div class="step"><div class="n">2</div><div><h3>挂载 ISO 并启动</h3>
+    <p class="sub" style="margin:0">虚拟机设置 → CD/DVD → 使用 ISO 映像文件 → 选择下载的 ISO，勾选「启动时连接」。</p></div></div>
+  <div class="step"><div class="n">3</div><div><h3>强制从光盘启动</h3>
+    <p class="sub" style="margin:0">若虚拟机里已有别的系统，BIOS 会优先从硬盘启动 —— 在 <code>.vmx</code> 里加一行
+      <code>bios.bootOrder = "cdrom"</code>，或开机时按 <code>F2</code> 调整启动顺序。</p></div></div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>系统要求</h2>
+  <div class="grid two">
+    <div class="card"><h3>最低</h3><p>64 位 x86 虚拟化 · 1 GB 内存 · 支持 1024×768 的显示适配器 · 一个光驱（或虚拟光驱）</p></div>
+    <div class="card"><h3>建议</h3><p>2 GB 内存 · 1280×800 显示 · 网络（NAT 即可，用于装软件与 AI 网关）</p></div>
+  </div>
+  <p class="sub" style="margin-top:18px">已在 <strong>QEMU / VirtualBox / VMware</strong> 三个平台实测开机；
+    真实硬件上通常可用，但本项目当前以虚拟机为主要验证环境。</p>
+</div></section>
+
+<section><div class="wrap">
+  <h2>装不上？先看这几条</h2>
+  <details><summary>开机进了 <code>buildroot login:</code> 而不是桌面</summary>
+    <p>说明 ISO 没被正确挂载/引导（常见于虚拟光驱未连接，或虚拟机从硬盘启动了）。检查 ISO 挂载，并强制从光盘启动。</p></details>
+  <details><summary>屏幕分辨率不对 / 花屏</summary>
+    <p>合成器按 framebuffer 实际模式绘制，并把探测结果写进串口日志。把虚拟机显示适配器设为标准 VGA/SVGA 通常即可；
+       分辨率以 <code>1280×800</code> 效果最好。</p></details>
+  <details><summary>想看到内核与合成器日志</summary>
+    <p>把串口重定向到文件即可（VirtualBox：串口 → 端口模式「主机管道/文件」；VMware：<code>serial0.fileName</code>）。
+       日志里能看到字体加载、framebuffer 模式与每帧渲染计数。</p></details>
+  <details><summary>鼠标太灵敏 / 太慢</summary>
+    <p>设置中心 →「输入」→ 鼠标速度（慢 / 标准 / 快），默认是 1:1，改完立即生效并持久化。</p></details>
+</div></section>
+
+<footer class="foot"><div class="wrap">
+  <div class="row">
+    <a href="/">首页</a><a href="/download.html">下载</a><a href="/changelog.html">更新日志</a>
+    <a href="/faq.html">常见问题</a><a href="https://github.com/qwert702/AetherOS">GitHub</a><a href="/en/download.html">English</a>
+  </div>
+  <p style="margin:14px 0 0">AetherOS · GPL-3.0-only · 版本 v0.1.0 · 本页数据由 <code>scripts/gen-site.py</code> 从仓库实测注入</p>
+</div></footer>
+
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAQ · AetherOS — why the Linux kernel, daily use, installing software</title>
+<meta name="description" content="AetherOS FAQ: why the Linux kernel instead of a custom one, whether it is usable daily, how to install real Linux software, where the AI hub sends data, requirements and how to contribute.">
+<link rel="canonical" href="https://aether.cbnac.com/en/faq.html">
+<link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/faq.html">
+<link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/faq.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AetherOS">
+<meta property="og:url" content="https://aether.cbnac.com/en/faq.html">
+<meta property="og:title" content="FAQ · AetherOS">
+<meta property="og:description" content="Why the Linux kernel, daily use, installing software, AI data flow.">
+<meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<div class="top"><div class="wrap">
+  <a class="brand" href="/en/">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 20h4.6l4.4-8.4L16.4 20H21z" fill="#0b8496"/><circle cx="12" cy="16.4" r="2.1" fill="#0b8496"/></svg>
+    AetherOS
+  </a>
+  <nav>
+    <a href="/en/">Home</a><a href="/en/download.html">Download</a>
+    <a href="/en/changelog.html">Changelog</a><a class="on" href="/en/faq.html">FAQ</a>
+    <a class="hide-sm" href="https://github.com/qwert702/AetherOS">GitHub</a>
+    <a class="lang" href="/faq.html">中文</a>
+  </nav>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <h1>FAQ</h1>
+  <p class="lede">Positioning, capabilities and limits. If your question is missing, open an
+    <a href="https://github.com/qwert702/AetherOS/issues">issue</a>.</p>
+</div></header>
+
+<section><div class="wrap">
+  <details open><summary>Why the Linux kernel instead of writing your own?</summary>
+    <p>Because rewriting the kernel <strong>buys no differentiation</strong>. Android and ChromeOS use the Linux kernel;
+       their product difference is entirely in userspace. A hobby kernel that cannot run real software only earns the
+       sentence “the kernel is mine” — the effort here went above the kernel, which is why the result
+       <strong>installs and runs real software</strong> with a complete desktop.</p>
+    <p>Nothing above the kernel is off-the-shelf: PID 1, window compositor, terminal (own PTY + VT parser),
+       Chinese IME, AI hub and the IPC protocol.</p></details>
+
+  <details><summary>What exactly is written from scratch?</summary>
+    <p>The Linux kernel and Buildroot's toolchain/rootfs infrastructure are not. Everything else is, across
+       7 Rust crates and 23,694 lines of code (43 source files):
+       <code>aether-init</code> (PID 1), <code>aether-compositor</code>, <code>aether-shell</code>,
+       <code>aetherd</code> + <code>aether-ipc</code>, <code>aether-install</code>, <code>aether-ops</code>,
+       plus the terminal, IME, trash and package format.</p></details>
+
+  <details><summary>Can I use it daily?</summary>
+    <p>It is an early <strong>v0.1.0 release</strong>: good for experimenting, development and
+       tinkering — <strong>not</strong> recommended for important data or as your only machine yet.</p></details>
+
+  <details><summary>How do I install real Linux software?</summary>
+<pre><code>wget -O- &lt;package-url&gt; | sh</code></pre>
+    <p>Static binaries and common dynamic dependencies work; the image ships ncurses + <strong>terminfo</strong>,
+       zlib, openssl, libffi and expat. Verified with <strong>htop 3.3.0</strong> from the official Ubuntu 24.04 archive.</p></details>
+
+  <details><summary>Where does the AI hub send my data?</summary>
+    <p>The architecture is <strong>client → your own gateway → model providers</strong>. No upstream API keys are
+       stored on the system, and every tool call passes a <strong>permission gate</strong>: L2+ actions raise a
+       confirmation dialog and are written to an audit log.</p></details>
+
+  <details><summary>How is this different from a Linux distribution?</summary>
+    <p>A distribution assembles existing components — existing init, existing desktop, existing terminal.
+       This project <strong>writes them from PID 1 upward</strong> while keeping the “installs real software” property.
+       Few projects do both.</p></details>
+
+  <details><summary>Why is the ISO only 38.5 MB?</summary>
+    <p>Because there is no giant desktop environment inside: the compositor, terminal and IME are written here and
+       their size is under our control. Fonts are subset at build time (GB2312 + Latin, ~5.7 MB).</p></details>
+
+  <details><summary>How do I report a bug or contribute?</summary>
+    <p>Open an <a href="https://github.com/qwert702/AetherOS/issues">issue</a>. For reproducible bugs include the hypervisor and
+       version, the AetherOS version, and the serial log (see the download page). Pull requests are welcome.</p></details>
+</div></section>
+
+<footer class="foot"><div class="wrap">
+  <div class="row">
+    <a href="/en/">Home</a><a href="/en/download.html">Download</a><a href="/en/changelog.html">Changelog</a>
+    <a href="/en/faq.html">FAQ</a><a href="https://github.com/qwert702/AetherOS">GitHub</a><a href="/faq.html">中文</a>
+  </div>
+  <p style="margin:14px 0 0">AetherOS · GPL-3.0-only · v0.1.0 · numbers injected by <code>scripts/gen-site.py</code></p>
+</div></footer>
+
+</body>
+</html>

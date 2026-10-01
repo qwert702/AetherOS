@@ -1,0 +1,192 @@
+/* AetherOS 官网样式 —— 与产品同源
+ *
+ * 令牌直接取自 aether-compositor/src/draw.rs 的 theme 模块（浅色）：
+ * 纯白底 #FFFFFF → #F4F5F7、单一 teal 强调色、圆角 4/6/8、1px 描边、两层轻影。
+ *
+ * 刻意不做的事（都是"AI 味"与廉价感的来源）：
+ *   - 不用渐变（产品里已全部删除，站点保持一致）
+ *   - 不用紫色系（同上）
+ *   - 不引任何外部字体/CDN（国内可达性 + 隐私 + 速度）
+ *   - 核心内容不依赖 JS（禁用 JS 也能完整阅读与下载）
+ */
+
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f4f5f7;
+  --surface: #ffffff;
+  --surface-3: #f1f3f6;
+  --text: #17191d;
+  --text-dim: #5f6672;
+  --line: #e4e6ea;
+  --line-strong: #d3d6db;
+  --accent: #0b8496;
+  --accent-ink: #ffffff;
+  --accent-soft: #e7f4f6;
+  --ok: #1f8a4c;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --shadow-1: 0 1px 2px rgba(16, 20, 28, .05), 0 1px 3px rgba(16, 20, 28, .04);
+  --shadow-2: 0 6px 16px rgba(16, 20, 28, .07), 0 2px 6px rgba(16, 20, 28, .05);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --wrap: 1080px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181c;
+    --bg-soft: #1b1d21;
+    --surface: #1f2126;
+    --surface-3: #24262c;
+    --text: #e9ebef;
+    --text-dim: #9aa2b1;
+    --line: #2c2f36;
+    --line-strong: #3a3e47;
+    --accent: #40becd;
+    --accent-ink: #0d1a1d;
+    --accent-soft: #163036;
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+    --shadow-2: 0 8px 20px rgba(0, 0, 0, .45);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.75 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
+.narrow { max-width: 720px; }
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+a:hover { border-bottom-color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+/* —— 顶栏 —— */
+.top {
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.top .wrap { display: flex; align-items: center; gap: 20px; height: 56px; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; color: var(--text); border: 0; letter-spacing: -.01em; }
+.brand svg { display: block; }
+.top nav { margin-left: auto; display: flex; align-items: center; gap: 18px; font-size: 14.5px; }
+.top nav a { color: var(--text-dim); border: 0; }
+.top nav a:hover { color: var(--text); }
+.top nav a.on { color: var(--text); font-weight: 600; }
+.lang { padding: 3px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 13px; }
+
+/* —— 首屏 —— */
+.hero { padding: 78px 0 34px; }
+.hero h1 { font-size: clamp(32px, 5.2vw, 54px); line-height: 1.12; margin: 0 0 16px; letter-spacing: -.025em; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: clamp(17px, 2.1vw, 20px); color: var(--text-dim); margin: 0 0 26px; max-width: 62ch; }
+
+.cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 22px; border-radius: var(--radius-md); border: 1px solid transparent;
+  font-weight: 600; font-size: 15.5px; cursor: pointer; box-shadow: var(--shadow-1);
+}
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { background: var(--surface); color: var(--text); border-color: var(--line-strong); }
+.btn.ghost:hover { background: var(--bg-soft); }
+.btn small { font-weight: 400; opacity: .8; }
+
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 40px 0 0;
+         background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.stats div { background: var(--surface); padding: 18px 20px; }
+.stats b { display: block; font-size: 24px; letter-spacing: -.02em; }
+.stats span { color: var(--text-dim); font-size: 13.5px; }
+
+/* —— 通用区块 —— */
+section { padding: 54px 0; border-top: 1px solid var(--line); }
+section > .wrap > h2 { font-size: clamp(22px, 3vw, 30px); margin: 0 0 10px; letter-spacing: -.02em; }
+section > .wrap > p.sub { color: var(--text-dim); margin: 0 0 26px; max-width: 68ch; }
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-1); padding: 22px; }
+.grid { display: grid; gap: 16px; }
+.grid.two { grid-template-columns: repeat(2, 1fr); }
+.grid.three { grid-template-columns: repeat(3, 1fr); }
+.card h3 { margin: 0 0 8px; font-size: 17px; letter-spacing: -.01em; }
+.card p { margin: 0; color: var(--text-dim); font-size: 15px; }
+
+/* —— 演示（最强说服力：真机录屏）—— */
+.demo { border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden;
+        box-shadow: var(--shadow-2); background: var(--surface); }
+.demo img { display: block; width: 100%; height: auto; }
+.demo figcaption { padding: 14px 18px; border-top: 1px solid var(--line); color: var(--text-dim); font-size: 14.5px; }
+
+/* —— 截图墙 —— */
+.shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.shots figure { margin: 0; }
+.shots img { display: block; width: 100%; height: auto; border: 1px solid var(--line);
+             border-radius: var(--radius-md); box-shadow: var(--shadow-1); background: var(--surface); }
+.shots figcaption { margin-top: 7px; color: var(--text-dim); font-size: 13.5px; }
+
+/* —— 代码 / 步骤 —— */
+pre { background: var(--surface-3); border: 1px solid var(--line); border-radius: var(--radius-md);
+      padding: 14px 16px; overflow-x: auto; font: 13.5px/1.7 var(--mono); margin: 0 0 12px; }
+code { font-family: var(--mono); font-size: .92em; background: var(--surface-3);
+       padding: .1em .38em; border-radius: var(--radius-sm); }
+pre code { background: none; padding: 0; font-size: inherit; }
+.step { display: grid; grid-template-columns: 26px 1fr; gap: 12px; margin: 0 0 20px; }
+.step .n { width: 26px; height: 26px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+           display: grid; place-items: center; font-size: 13.5px; font-weight: 700; }
+.step h3 { margin: 2px 0 8px; font-size: 16px; }
+
+/* —— 表格 —— */
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+th { color: var(--text-dim); font-weight: 600; font-size: 13.5px; }
+tbody tr:last-child td { border-bottom: 0; }
+
+/* —— 常见问题 —— */
+details { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px 16px;
+          background: var(--surface); margin-bottom: 10px; }
+details[open] { box-shadow: var(--shadow-1); }
+summary { cursor: pointer; font-weight: 600; }
+summary::marker { color: var(--accent); }
+details p { color: var(--text-dim); margin: 10px 0 0; }
+
+/* —— 更新日志 —— */
+.log h2 { margin: 40px 0 6px; font-size: 22px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.log h2:first-of-type { margin-top: 0; }
+.log h3 { margin: 26px 0 8px; font-size: 16.5px; color: var(--accent); }
+.log ul { margin: 0; padding-left: 22px; }
+.log li { margin: 0 0 7px; color: var(--text-dim); }
+.log li strong { color: var(--text); }
+.log li em { color: var(--text-dim); opacity: .8; }
+
+/* —— 页脚 —— */
+.foot { border-top: 1px solid var(--line); padding: 30px 0 46px; color: var(--text-dim); font-size: 14px; }
+.foot .row { display: flex; flex-wrap: wrap; gap: 16px; }
+.foot .row a { color: var(--text-dim); }
+.foot .row a:hover { color: var(--text); }
+.note { background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+        border-radius: var(--radius-md); padding: 14px 16px; font-size: 14.5px; }
+
+/* —— 响应式 —— */
+@media (max-width: 860px) {
+  .grid.three, .shots { grid-template-columns: repeat(2, 1fr); }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 620px) {
+  .hero { padding: 48px 0 24px; }
+  section { padding: 40px 0; }
+  .grid.two, .grid.three, .shots { grid-template-columns: 1fr; }
+  .top nav { gap: 12px; font-size: 13.5px; }
+  .top nav a.hide-sm { display: none; }
+}

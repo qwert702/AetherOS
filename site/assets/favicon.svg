@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="AetherOS">
+  <!-- AetherOS 图标：与产品同一套视觉语言 —— 纯白底 + 单一 teal + 无渐变 -->
+  <rect width="32" height="32" rx="7" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="6.5" fill="none" stroke="#e4e6ea"/>
+  <path d="M16 6 6.5 26h4.9L16 16.2 20.6 26h4.9z" fill="#0b8496"/>
+  <circle cx="16" cy="21.6" r="2.5" fill="#0b8496"/>
+</svg>

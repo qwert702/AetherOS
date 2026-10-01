@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>常见问题 · AetherOS — 为什么用 Linux 内核、能不能日常用、怎么装软件</title>
+<meta name="description" content="AetherOS 常见问题：为什么用 Linux 内核而不是自己写内核、能不能当日常系统、怎么安装市面上的软件、AI 中枢的数据去了哪、需要什么硬件、怎么参与。">
+<link rel="canonical" href="https://aether.cbnac.com/faq.html">
+<link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/faq.html">
+<link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/faq.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AetherOS">
+<meta property="og:url" content="https://aether.cbnac.com/faq.html">
+<meta property="og:title" content="常见问题 · AetherOS">
+<meta property="og:description" content="为什么用 Linux 内核、能不能日常用、怎么装软件、AI 数据去了哪。">
+<meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/app.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type":"Question","name":"为什么用 Linux 内核，而不是自己写一个内核？",
+     "acceptedAnswer":{"@type":"Answer","text":"重写内核没有差异化价值。Android、ChromeOS 都用 Linux 内核，决定体验的是内核之上那一层——本项目那一层全部自研：PID 1、窗口合成器、终端、中文输入法、AI 中枢。"}},
+    {"@type":"Question","name":"能当日常系统用吗？",
+     "acceptedAnswer":{"@type":"Answer","text":"目前是 v0.1.0 早期版本，适合体验、开发与试验，不建议承载重要数据。它能装真实软件、能装到磁盘持久化。"}},
+    {"@type":"Question","name":"怎么安装市面上的 Linux 软件？",
+     "acceptedAnswer":{"@type":"Answer","text":"用自研应用包与 aetherd：wget -O- <包地址> | sh。静态二进制与常见动态依赖均可运行，镜像已补齐 ncurses + terminfo、zlib、openssl、libffi、expat。"}},
+    {"@type":"Question","name":"AI 中枢会把我的数据发到哪里？",
+     "acceptedAnswer":{"@type":"Answer","text":"架构是客户端 → 你自己的网关 → 各家模型，系统内不存放上游 API Key。每一次工具调用都要过权限闸门，L2+ 操作弹确认框并写审计日志。"}}
+  ]
+}
+</script>
+</head>
+<body>
+
+<div class="top"><div class="wrap">
+  <a class="brand" href="/">
+    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 20h4.6l4.4-8.4L16.4 20H21z" fill="#0b8496"/><circle cx="12" cy="16.4" r="2.1" fill="#0b8496"/></svg>
+    AetherOS
+  </a>
+  <nav>
+    <a href="/">首页</a><a href="/download.html">下载</a>
+    <a href="/changelog.html">更新日志</a><a class="on" href="/faq.html">常见问题</a>
+    <a class="hide-sm" href="https://github.com/qwert702/AetherOS">GitHub</a>
+    <a class="lang" href="/en/faq.html">EN</a>
+  </nav>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <h1>常见问题</h1>
+  <p class="lede">关于定位、能力与边界。没找到答案就到 <a href="https://github.com/qwert702/AetherOS/issues">Issues</a> 提问。</p>
+</div></header>
+
+<section><div class="wrap">
+  <details open><summary>为什么用 Linux 内核，而不是自己写一个内核？</summary>
+    <p>因为<strong>重写内核没有差异化价值</strong>。Android 与 ChromeOS 都用 Linux 内核，它们的产品差异全在用户态。
+       一个 hobby OS 花几年写一个跑不了真实软件的半成品内核，换来的只是"内核是自己写的"这句话；
+       而把力气放在内核之上，得到的是一个<strong>能装真实软件、有完整桌面体验</strong>的系统。</p>
+    <p>本项目真正的差异化在内核之上那一层，而且那一层<strong>没有一行是现成的</strong>：
+       PID 1、窗口合成器、终端模拟器（自写 PTY + VT 解析器）、中文输入法、AI 中枢与 IPC 协议。</p></details>
+
+  <details><summary>系统里到底哪些是自己写的？</summary>
+    <p>Linux 内核与 Buildroot 提供的交叉工具链/根文件系统基础设施不是；其余全自研，共
+       7 个 Rust crate、23,694 行代码（43 个源文件）：</p>
+    <ul>
+      <li><code>aether-init</code>：PID 1，服务编排、持久化分区、串口日志、故障自愈</li>
+      <li><code>aether-compositor</code>：窗口合成器，直接写 framebuffer，含窗口管理、平铺布局、阴影圆角、脏行上屏</li>
+      <li><code>aether-shell</code>：顶栏</li>
+      <li><code>aetherd</code> + <code>aether-ipc</code>：AI 中枢与线协议（NDJSON over TCP）</li>
+      <li><code>aether-install</code>：安装向导；<code>aether-ops</code>：运维与自检</li>
+      <li>终端、中文输入法、回收站、应用包格式</li>
+    </ul></details>
+
+  <details><summary>能当日常系统用吗？</summary>
+    <p>目前是 <strong>v0.1.0 早期版本</strong>：适合体验、开发、试验与二次开发，
+       <strong>不建议</strong>承载重要数据或当作唯一工作机。它能装真实软件、能装到虚拟磁盘持久化引导 ——
+       欢迎试用并到 <a href="https://github.com/qwert702/AetherOS/issues">Issues</a> 反馈问题。</p></details>
+
+  <details><summary>怎么安装市面上的 Linux 软件？</summary>
+    <p>用自研的应用包与 <code>aetherd</code>：</p>
+<pre><code>wget -O- &lt;包地址&gt; | sh</code></pre>
+    <p>静态二进制与常见动态依赖都能跑；镜像已补齐 ncurses + <strong>terminfo</strong>、zlib、openssl、libffi、expat。
+       已实测运行 Ubuntu 24.04 官方仓库的 <strong>htop 3.3.0</strong>。打包说明见仓库 <code>docs/APP-PACKAGES.md</code>。</p></details>
+
+  <details><summary>AI 中枢会把我的数据发到哪里？</summary>
+    <p>架构是<strong>客户端 → 你自己的网关 → 各家模型</strong>：系统里<strong>不存放上游 API Key</strong>，
+       换模型不需要改系统。每一次工具调用都要过<strong>权限闸门</strong>，
+       L2+ 操作（写文件、执行命令等）会弹确认框，并把允许/拒绝记进审计日志。</p></details>
+
+  <details><summary>和别的自研系统 / Linux 发行版有什么不同？</summary>
+    <p>发行版是"把现成组件组装起来"：现成的 init、现成的桌面、现成的终端。本项目是
+       <strong>从 PID 1 往上自己写</strong>，同时保留"能装真实软件"这条底线 —— 这两件事同时做到的项目很少。</p></details>
+
+  <details><summary>为什么 ISO 只有 38.5 MB？</summary>
+    <p>因为里面没有庞大的桌面环境：合成器、终端、输入法都是自己写的，体积由我们控制。
+       内核与基础设施来自 Buildroot，字体是构建期按 GB2312 + 拉丁子集化生成的（约 5.7 MB）。</p></details>
+
+  <details><summary>需要什么硬件？</summary>
+    <p>64 位 x86 虚拟化环境、1 GB 内存起、支持 1024×768 的显示适配器。已在
+       QEMU / VirtualBox / VMware 三个平台实测开机；真实硬件通常可用，但当前以虚拟机为主要验证环境。</p></details>
+
+  <details><summary>界面支持中文吗？</summary>
+    <p>支持。界面字体是自带的 Noto Sans CJK SC 子集（含<strong>真粗体</strong>），并自研了拼音输入法与候选框。
+       浅色为默认主题，可在设置中心或控制中心切换深色。</p></details>
+
+  <details><summary>怎么反馈问题、怎么参与开发？</summary>
+    <p>到 <a href="https://github.com/qwert702/AetherOS/issues">GitHub Issues</a> 提问题。能复现的 bug 请带上：
+       虚拟机平台与版本、AetherOS 版本号、串口日志（见<a href="/download.html">下载页</a>的排错一节）。
+       想直接参与可以提 PR。</p></details>
+</div></section>
+
+<footer class="foot"><div class="wrap">
+  <div class="row">
+    <a href="/">首页</a><a href="/download.html">下载</a><a href="/changelog.html">更新日志</a>
+    <a href="/faq.html">常见问题</a><a href="https://github.com/qwert702/AetherOS">GitHub</a><a href="/en/faq.html">English</a>
+  </div>
+  <p style="margin:14px 0 0">AetherOS · GPL-3.0-only · 版本 v0.1.0 · 数据由 <code>scripts/gen-site.py</code> 从仓库实测注入</p>
+</div></footer>
+
+</body>
+</html>
