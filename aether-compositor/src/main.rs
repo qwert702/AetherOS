@@ -437,10 +437,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     tty_log("安装向导 → 开始安装（按钮确认）");
                 }
             }
-        } else if control_center_click(&mut renderer, &mut desktop, &mut ime, mouse.0, mouse.1, press) {
+        } else if control_center_click(&mut renderer, &mut desktop, &mut ime, mouse.0, mouse.1, click_pending) {
+            // 控制中心是浮层：展开时它优先消费点击（含"点别处关闭"）。
+            // 同样用一次性信号 —— 用电平信号会每帧翻转一次开关，面板疯狂闪。
             // 控制中心是浮层：展开时它优先消费点击（含"点别处关闭"）
-        } else if desktop_icon_click(&renderer, &mut desktop, mouse.0, mouse.1, press) {
-            // 桌面图标：打开对应应用
+        } else if desktop_icon_click(&renderer, &mut desktop, mouse.0, mouse.1, click_pending) {
+            // 桌面图标：打开对应应用。
+            // **必须用一次性信号 `click_pending`，不能用 `press`（= mouse_down || click_pending）**：
+            // `mouse_down` 是电平信号，按住期间每帧为真 —— 曾经导致"点一下文件图标弹出一大堆窗口"。
         } else if mouse_down || click_pending {
             if let Some((idx, edge, orig)) = resize {
                 if mouse_down {
@@ -498,16 +502,19 @@ fn run_fbdev() -> anyhow::Result<()> {
                         snap_zone = layout::Snap::None;
                     }
                 }
-            } else if let Some((idx, close, zoom)) = renderer
+            } else if let Some((idx, min, zoom, close)) = renderer
                 .window_lights
                 .iter()
                 .rev() // 后画的窗口在上层，命中优先
-                .find(|(_, c, z)| c.contains(mouse.0, mouse.1) || z.contains(mouse.0, mouse.1))
+                .find(|(_, mn, z, c)| {
+                    mn.contains(mouse.0, mouse.1) || z.contains(mouse.0, mouse.1) || c.contains(mouse.0, mouse.1)
+                })
                 .copied()
             {
-                // 红绿灯：此前只画不响应，开满窗口后用户会直接卡住
-                // 中间那颗（最小化）没有接线：没有"最小化到哪去"的语义，不假装支持
-                let msg = if close.contains(mouse.0, mouse.1) {
+                // Windows 三键：最小化 / 最大化 / 关闭（**三键全部接线**）
+                let msg = if min.contains(mouse.0, mouse.1) {
+                    minimize_window(&mut desktop, idx)
+                } else if close.contains(mouse.0, mouse.1) {
                     close_window(&mut desktop, idx)
                 } else if zoom.contains(mouse.0, mouse.1) {
                     toggle_zoom(&mut desktop, idx, layout::work_area(w, h))
@@ -557,8 +564,23 @@ fn run_fbdev() -> anyhow::Result<()> {
                 // 图标区间：内建 0..DOCK_BUILTINS → 已装应用 → 最后是"安装"向导（仅 Live ISO）
                 match dock_action(icon, &renderer.installed_apps, live_installer) {
                     DockAction::Builtin(i) => {
-                        if let Some(msg) = open_app(&mut desktop, i) {
-                            toast = Some((msg, Instant::now()));
+                        // 先看有没有**已最小化**的同类窗口：有就恢复，而不是再开一个
+                        // （否则用户点了没反应，会以为最小化把窗口弄丢了）
+                        let title = APP_TITLES.get(i).copied().unwrap_or("");
+                        let mini = desktop
+                            .wins
+                            .iter()
+                            .position(|w| w.title == title && is_minimized(w));
+                        match mini {
+                            Some(idx) => {
+                                restore_if_minimized(&mut desktop, idx);
+                                desktop.active = idx;
+                            }
+                            None => {
+                                if let Some(msg) = open_app(&mut desktop, i) {
+                                    toast = Some((msg, Instant::now()));
+                                }
+                            }
                         }
                     }
                     DockAction::Installed(id, name) => {
@@ -1324,6 +1346,50 @@ fn control_center_click(
         return true; // 面板内空白
     }
     renderer.control_open = false;
+    true
+}
+
+/// 最小化窗口时把 `rect` 挪到的 x 坐标（屏外）。
+///
+/// 为什么用"挪出屏外"而不是给 `Win` 加 `minimized` 字段：
+/// 挪出屏外后，**渲染、命中测试（标题栏/边缘/内容区）、平铺全都自然跳过它**，
+/// 不需要改 9 处 `Win` 构造点，也不会漏掉某个循环。恢复时从 `restore` 取回原矩形。
+/// 用一个具名常量而不是散落的魔数。
+const MINIMIZED_X: i32 = -10_000;
+
+/// 判断窗口是否处于最小化（屏外）。
+fn is_minimized(win: &Win) -> bool {
+    win.rect.x <= MINIMIZED_X
+}
+
+/// 最小化：移出屏外 + 脱离平铺（`floating`），并记住原矩形以便恢复。
+fn minimize_window(desktop: &mut Desktop, idx: usize) -> Option<String> {
+    let win = desktop.wins.get_mut(idx)?;
+    if is_minimized(win) {
+        return None;
+    }
+    win.restore = Some(win.rect);
+    win.rect = Rect { x: MINIMIZED_X, y: win.rect.y, w: win.rect.w, h: win.rect.h };
+    win.target = None;
+    win.floating = true; // 脱离平铺，否则下一帧布局又把它拉回屏幕
+    Some(format!("{} 已最小化（点 Dock 图标恢复）", win.title))
+}
+
+/// 若窗口已最小化则恢复（Dock 图标点击走这里）。返回 `true` = 确实恢复了。
+///
+/// 调用点在 Linux 的 fbdev 循环里；预览路径尚未接最小化（它只有走查用途）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn restore_if_minimized(desktop: &mut Desktop, idx: usize) -> bool {
+    let Some(win) = desktop.wins.get_mut(idx) else {
+        return false;
+    };
+    if !is_minimized(win) {
+        return false;
+    }
+    let r = win.restore.take().unwrap_or(Rect { x: 200, y: 90, w: 560, h: 400 });
+    win.rect = r;
+    win.target = Some(r);
+    win.floating = true; // 恢复后保持浮动（与 `open_app` 开出来的窗口一致）
     true
 }
 
@@ -2179,15 +2245,17 @@ fn preview_main() -> anyhow::Result<()> {
                         layout::Snap::None
                     };
                 }
-            } else if let Some((idx, close, zoom)) = renderer
+            } else if let Some((idx, min, zoom, close)) = renderer
                 .window_lights
                 .iter()
                 .rev() // 后画的窗口在上层，命中优先
-                .find(|(_, c, z)| c.contains(mx, my) || z.contains(mx, my))
+                .find(|(_, mn, z, c)| mn.contains(mx, my) || z.contains(mx, my) || c.contains(mx, my))
                 .copied()
             {
-                // 红绿灯：此前只画不响应
-                let msg = if close.contains(mx, my) {
+                // Windows 三键（预览路径与 fbdev 路径同一套语义）
+                let msg = if min.contains(mx, my) {
+                    minimize_window(&mut desktop, idx)
+                } else if close.contains(mx, my) {
                     close_window(&mut desktop, idx)
                 } else if zoom.contains(mx, my) {
                     toggle_zoom(&mut desktop, idx, layout::work_area(WIDTH, HEIGHT))
@@ -2241,8 +2309,23 @@ fn preview_main() -> anyhow::Result<()> {
                 // 这条路径是开发机预览（minifb），不是 Live ISO，所以没有安装向导
                 match dock_action(icon, &renderer.installed_apps, false) {
                     DockAction::Builtin(i) => {
-                        if let Some(msg) = open_app(&mut desktop, i) {
-                            toast = Some((msg, Instant::now()));
+                        // 先看有没有**已最小化**的同类窗口：有就恢复，而不是再开一个
+                        // （否则用户点了没反应，会以为最小化把窗口弄丢了）
+                        let title = APP_TITLES.get(i).copied().unwrap_or("");
+                        let mini = desktop
+                            .wins
+                            .iter()
+                            .position(|w| w.title == title && is_minimized(w));
+                        match mini {
+                            Some(idx) => {
+                                restore_if_minimized(&mut desktop, idx);
+                                desktop.active = idx;
+                            }
+                            None => {
+                                if let Some(msg) = open_app(&mut desktop, i) {
+                                    toast = Some((msg, Instant::now()));
+                                }
+                            }
                         }
                     }
                     DockAction::Installed(id, name) => {
@@ -3207,6 +3290,25 @@ mod desktop_icon_tests {
         assert_eq!(d.wins[0].kind, draw::WinKind::Settings, "序号 4 应打开设置中心");
         assert!(!desktop_icon_click(&r, &mut d, 40.0, 90.0, false), "没按下的移动不该消费");
         assert!(!desktop_icon_click(&r, &mut d, 800.0, 400.0, true), "空白处不该消费");
+    }
+    /// 最小化 → 恢复的往返：期间窗口必须在**屏外**（命中测试与平铺才会自然跳过它）。
+    #[test]
+    fn minimize_then_restore() {
+        let mut d = demo_desktop();
+        let before = d.wins[1].rect;
+        let msg = minimize_window(&mut d, 1).expect("最小化应返回提示文案");
+        assert!(msg.contains("最小化"), "提示要说明发生了什么：{msg}");
+        assert!(is_minimized(&d.wins[1]), "最小化后必须在屏外");
+        assert!(d.wins[1].floating, "最小化必须脱离平铺，否则下一帧布局又把它拉回屏幕");
+        assert!(d.wins[1].target.is_none());
+        assert!(!d.wins[1].rect.contains(640.0, 400.0), "屏外窗口不该被点中");
+        // 重复最小化是空操作
+        assert!(minimize_window(&mut d, 1).is_none());
+        // 恢复
+        assert!(restore_if_minimized(&mut d, 1));
+        assert_eq!(d.wins[1].rect, before, "恢复必须回到原来的位置与大小");
+        assert!(!is_minimized(&d.wins[1]));
+        assert!(!restore_if_minimized(&mut d, 1), "未最小化的窗口恢复是空操作");
     }
 }
 

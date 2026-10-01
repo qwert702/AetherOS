@@ -189,15 +189,13 @@ pub mod theme {
             pick([28, 106, 214], [90, 160, 250])
         }
 
-        // —— 窗控三色（红绿灯两种模式一致，这是"系统级"识别色）——
-        pub fn close() -> [u8; 3] {
-            [255, 95, 86]
-        }
-        pub fn min() -> [u8; 3] {
-            [254, 188, 46]
-        }
-        pub fn zoom() -> [u8; 3] {
-            [39, 201, 63]
+        // —— 标题栏按钮（2026-10-01 起为 Windows 风格三键）——
+        //
+        // 红绿灯的 close/min/zoom 三色已删除：换成 Windows 按钮后不再需要
+        // （Windows 的按钮是**灰底 + 细线符号**，唯一有颜色的是关闭键悬停）。
+        /// 关闭按钮悬停底色（Windows 11 的 #C42B1C）
+        pub fn close_hover() -> [u8; 3] {
+            [196, 43, 28]
         }
 
         // —— 2026-09-29 P0：极光/粉彩壁纸（aurora_* 与 vignette）移除，静态壁纸见 draw_background_rows ——
@@ -318,8 +316,9 @@ pub mod theme {
         /// 底部 Dock 保留区高度（托盘 + AI 指令条以下留白）
         pub const BOTTOM_DOCK: i32 = 104;
         /// 窗控圆点直径与间距（§3.1：10px / 7px，Step4 从 12/8 收细——12px 在 36px 标题栏里偏大）
-        pub const LIGHT_D: i32 = 10;
-        pub const LIGHT_GAP: i32 = 7;
+        // 2026-10-01：红绿灯换 Windows 三键后，LIGHT_D / LIGHT_GAP 已删除（圆点尺寸不再需要）。
+        /// Windows 标题栏按钮宽度（最小化 / 最大化 / 关闭各占一格，高度 = TITLE_H）
+        pub const CAPTION_BTN_W: i32 = 46;
     }
 }
 
@@ -1315,6 +1314,33 @@ pub fn draw_app_icon(
     }
 }
 
+/// Windows 标题栏按钮的几何符号。
+///
+/// `kind`：0 = 最小化（横线）/ 1 = 最大化（方框）/ 2 = 关闭（叉）。
+/// 全部用 1px 细线画 —— Windows 的这三个符号就是细线，用粗块会立刻变成"另一个系统"。
+fn caption_glyph(buf: &mut [u32], w: usize, h: usize, r: Rect, kind: u8, rgb: [u8; 3], alpha: f32) {
+    let cx = r.x + r.w / 2;
+    let cy = r.y + r.h / 2;
+    match kind {
+        // 最小化：一条横线
+        0 => fill_rect(buf, w, h, Rect { x: cx - 5, y: cy, w: 10, h: 1 }, rgb, alpha),
+        // 最大化：1px 方框（四条边分别画，圆角函数画不出这种硬边）
+        1 => {
+            fill_rect(buf, w, h, Rect { x: cx - 5, y: cy - 5, w: 11, h: 1 }, rgb, alpha);
+            fill_rect(buf, w, h, Rect { x: cx - 5, y: cy + 5, w: 11, h: 1 }, rgb, alpha);
+            fill_rect(buf, w, h, Rect { x: cx - 5, y: cy - 5, w: 1, h: 11 }, rgb, alpha);
+            fill_rect(buf, w, h, Rect { x: cx + 5, y: cy - 5, w: 1, h: 11 }, rgb, alpha);
+        }
+        // 关闭：两条 1px 对角线
+        _ => {
+            for k in -5..=5 {
+                fill_rect(buf, w, h, Rect { x: cx + k, y: cy + k, w: 1, h: 1 }, rgb, alpha);
+                fill_rect(buf, w, h, Rect { x: cx + k, y: cy - k, w: 1, h: 1 }, rgb, alpha);
+            }
+        }
+    }
+}
+
 pub struct Renderer {
     bg: Vec<u32>,
     frames_since_bg: u32,
@@ -1381,7 +1407,7 @@ pub struct Renderer {
     ///
     /// 此前红绿灯**只画不响应** —— 开了 8 个窗口后没有任何关闭手段，用户会直接卡住。
     /// 每帧重建，与窗口几何保持同步。
-    pub window_lights: Vec<(usize, Rect, Rect)>,
+    pub window_lights: Vec<(usize, Rect, Rect, Rect)>,
     /// "开始安装"按钮命中区
     pub installer_button: Rect,
     /// 权限确认弹窗的按钮命中区
@@ -1959,7 +1985,7 @@ fn draw_window(
     cells: &mut Vec<(Rect, usize)>,
     up: &mut Rect,
     win_idx: usize,
-    lights_out: &mut Vec<(usize, Rect, Rect)>,
+    lights_out: &mut Vec<(usize, Rect, Rect, Rect)>,
     sidebar_hits: &mut Vec<(Rect, usize)>,
     crumb_hits: &mut Vec<(Rect, String)>,
     settings: crate::settings::Settings,
@@ -2019,55 +2045,32 @@ fn draw_window(
         }
     }
 
-    // 红绿灯（左）：直径 10px、间距 7px，悬停时整组显示符号
+    // Windows 风格标题栏按钮（右上）：最小化 / 最大化 / 关闭。
     //
-    // 2026-09-30：**中间那颗（最小化）没有接线** —— 没有"最小化到哪去"的语义。
-    // 所以把它画成**禁用态**（暗一档、不显示悬停符号）：画一颗看起来能点、点了没反应的灯，
-    // 比不放这颗灯更糟（本项目对假控件零容忍，P2 已删掉假电量与假搜索胶囊）。
-    // 接线时要一并改：`Win` 加 `minimized`、渲染/命中/tab 循环跳过、Dock 图标负责恢复。
-    const MINIMIZE_WIRED: bool = false;
-    let lights = [color::close(), color::min(), color::zoom()];
-    let ly = r.y + (metric::TITLE_H - metric::LIGHT_D) / 2;
-    let group = Rect {
-        x: r.x + 8,
-        y: r.y,
-        w: metric::LIGHT_D * 3 + metric::LIGHT_GAP * 2 + 12,
-        h: metric::TITLE_H,
-    };
-    let hovered = active && group.contains(mouse.0, mouse.1);
-    // 命中区按"可视圆点 + 一点余量"登记（圆点只有 10px，直接用圆点本身太难点）
-    let mut close_rect = Rect { x: 0, y: 0, w: 0, h: 0 };
-    let mut zoom_rect = Rect { x: 0, y: 0, w: 0, h: 0 };
-    for (i, c) in lights.iter().enumerate() {
-        let lx = r.x + 14 + (i as i32) * (metric::LIGHT_D + metric::LIGHT_GAP);
-        let dot = Rect { x: lx, y: ly, w: metric::LIGHT_D, h: metric::LIGHT_D };
-        let disabled = i == 1 && !MINIMIZE_WIRED;
-        let alpha = if disabled {
-            0.28
+    // 2026-10-01：**换掉 macOS 红绿灯**（用户要求）。不只是审美：红绿灯圆点直径只有 10px，
+    // 命中区必须外扩才好点、还容易误触；Windows 按钮是 46px × 标题栏高，命中区就是按钮本身。
+    // 三键**全部接线**（最小化把窗口收进 Dock，靠 `Win.minimized`），没有装饰性按钮。
+    let btn_w = metric::CAPTION_BTN_W;
+    let close_rect = Rect { x: r.x + r.w - btn_w, y: r.y, w: btn_w, h: metric::TITLE_H };
+    let zoom_rect = Rect { x: close_rect.x - btn_w, y: r.y, w: btn_w, h: metric::TITLE_H };
+    let min_rect = Rect { x: zoom_rect.x - btn_w, y: r.y, w: btn_w, h: metric::TITLE_H };
+    for (br, kind) in [(min_rect, 0u8), (zoom_rect, 1), (close_rect, 2)] {
+        let hover = active && br.contains(mouse.0, mouse.1);
+        // 悬停：关闭键是 Windows 的红底白叉，另两个是浅灰底
+        if hover {
+            let (bg, a) = if kind == 2 { (color::close_hover(), 1.0) } else { (color::hairline(), 0.16) };
+            fill_rect(buf, w, h, br, bg, a);
+        }
+        let glyph = if hover && kind == 2 {
+            color::HIGHLIGHT
         } else if active {
-            0.95
+            color::text()
         } else {
-            0.6
+            color::text_dim()
         };
-        rounded_rect(buf, w, h, dot, metric::LIGHT_D as f32 / 2.0, *c, alpha);
-        if hovered && !disabled {
-            light_symbol(buf, w, h, lx + metric::LIGHT_D / 2, ly + metric::LIGHT_D / 2, i);
-        }
-        // 命中区扩到 24×24 且垂直居中于标题栏：10px 的圆点在真机上不好点
-        let hit = Rect {
-            x: lx + metric::LIGHT_D / 2 - 12,
-            y: r.y + (metric::TITLE_H - 24) / 2,
-            w: 24,
-            h: 24,
-        };
-        match i {
-            0 => close_rect = hit,
-            2 => zoom_rect = hit,
-            // 中间那颗不登记命中区：未接线就不该响应（与上面的禁用态一致）
-            _ => {}
-        }
+        caption_glyph(buf, w, h, br, kind, glyph, if active { 0.9 } else { 0.45 });
     }
-    lights_out.push((win_idx, close_rect, zoom_rect));
+    lights_out.push((win_idx, min_rect, zoom_rect, close_rect));
 
     // 居中标题：激活=纯白，非激活=明确灰阶
     if let Some(tr) = tr {
@@ -2458,6 +2461,11 @@ fn arrow_glyph(buf: &mut [u32], w: usize, h: usize, cx: i32, cy: i32, size: i32,
 }
 
 /// 窗控符号（悬停时显示）：纯几何绘制，不依赖字体字形覆盖。
+/// 悬停符号（macOS 红绿灯时期用）。
+///
+/// 2026-10-01 换成 Windows 三键（[`caption_glyph`]）后不再调用。
+/// **保留一个版本周期**：用户若想换回 macOS 风格，改回一行即可；下个版本删除。
+#[allow(dead_code)]
 fn light_symbol(buf: &mut [u32], w: usize, h: usize, cx: i32, cy: i32, kind: usize) {
     const S: i32 = 2; // 半臂长 → 符号跨度 5px（10px 圆内，Step4 收细）
     // 亮色圆点上用近黑符号：对比足，又不抢红绿灯本身的颜色语义
