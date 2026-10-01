@@ -3,195 +3,44 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AetherOS — 从 Linux 内核向上、用户态全部自研的桌面操作系统（Rust）</title>
-<meta name="description" content="AetherOS：基于 Linux 内核、用户态全部自研的桌面操作系统。7 个 Rust crate / 23,694 行 Rust，含自研合成器、PID 1、终端模拟器与带逐工具权限闸门的 AI 中枢。可引导 ISO 仅 38.5 MB，能安装市面上的 Linux 软件。GPL-3.0 开源。">
-<meta name="keywords" content="AetherOS, Rust 操作系统, osdev, 自研用户态, Linux 发行版, 合成器, compositor, init system, AI agent, 权限闸门, Buildroot, 开源操作系统">
+<title>AetherOS — 官网已迁移到 aether.cbnac.com</title>
+<!-- 2026-10-01：官网迁到自有域名 aether.cbnac.com（VPS + nginx + Let's Encrypt）。
+     这个 GitHub Pages 页面保留为**跳转页**，避免两处内容各说各话（旧版本还是粉+紫的配色，
+     与产品当前身份不符）。站点源码在仓库 site/ 目录，由 scripts/gen-site.py 生成。 -->
+<link rel="canonical" href="https://aether.cbnac.com/">
+<meta name="robots" content="noindex, follow">
+<meta http-equiv="refresh" content="0; url=https://aether.cbnac.com/">
 <meta property="og:type" content="website">
-<meta property="og:title" content="AetherOS — 用户态全部自研的操作系统">
-<meta property="og:description" content="Linux 内核 + 全自研 Rust 用户态（合成器 / PID 1 / 终端 / AI 中枢）。ISO 38.5 MB，356 项测试全绿。">
-<meta property="og:image" content="screenshot-htop-app.png">
+<meta property="og:site_name" content="AetherOS">
+<meta property="og:url" content="https://aether.cbnac.com/">
+<meta property="og:title" content="AetherOS — 用户态全部自研的桌面操作系统">
+<meta property="og:description" content="Linux 内核 + 全部自研的 Rust 用户态。可引导 ISO 仅 38.5 MB，能安装并运行市面上的 Linux 软件。">
+<meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
 <style>
-  :root{
-    --bg:#0f1115; --bg2:#151922; --fg:#e9edf5; --dim:#98a2b8;
-    --line:#232a36; --accent:#e5556f; --accent2:#8b6cf0; --ok:#39c07a;
-    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-       font:16px/1.7 system-ui,-apple-system,"Segoe UI","Noto Sans SC",sans-serif;}
-  a{color:var(--fg);text-decoration:none;border-bottom:1px solid #3a4356}
-  a:hover{border-bottom-color:var(--accent)}
-  .wrap{max-width:960px;margin:0 auto;padding:0 22px}
-  header{padding:74px 0 34px;background:
-      radial-gradient(900px 380px at 12% -10%,rgba(229,85,111,.20),transparent 60%),
-      radial-gradient(760px 340px at 88% 0%,rgba(139,108,240,.18),transparent 62%);}
-  h1{font-size:clamp(30px,5.4vw,52px);line-height:1.15;margin:0 0 14px;letter-spacing:-.02em}
-  h1 span{background:linear-gradient(92deg,var(--accent),var(--accent2));
-          -webkit-background-clip:text;background-clip:text;color:transparent}
-  .lead{font-size:clamp(17px,2.1vw,20px);color:#cfd7e6;max-width:44em;margin:0 0 8px}
-  .lead small{color:var(--dim);display:block;font-size:15px;margin-top:10px}
-  .btns{display:flex;flex-wrap:wrap;gap:12px;margin:26px 0 6px}
-  .btn{display:inline-block;padding:11px 20px;border-radius:11px;border:1px solid var(--line);
-       background:var(--bg2);border-bottom:1px solid var(--line);font-weight:600}
-  .btn.p{background:linear-gradient(92deg,var(--accent),var(--accent2));border-color:transparent;color:#fff}
-  .meta{color:var(--dim);font-size:14.5px;margin-top:16px}
-  section{padding:44px 0;border-top:1px solid var(--line)}
-  h2{font-size:23px;margin:0 0 18px;letter-spacing:-.01em}
-  img.shot{width:100%;height:auto;border-radius:14px;border:1px solid var(--line);display:block}
-  figure{margin:0}
-  figcaption{color:var(--dim);font-size:14px;margin-top:10px}
-  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(256px,1fr))}
-  .card{background:var(--bg2);border:1px solid var(--line);border-radius:13px;padding:18px 18px 16px}
-  .card h3{margin:0 0 8px;font-size:16.5px}
-  .card p{margin:0;color:#c3ccdd;font-size:14.6px}
-  pre{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
-      overflow-x:auto;font:13.6px/1.65 var(--mono)}
-  code{font-family:var(--mono);font-size:.94em}
-  table{width:100%;border-collapse:collapse;font-size:15px}
-  th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line)}
-  th{color:var(--dim);font-weight:600}
-  footer{padding:38px 0 60px;border-top:1px solid var(--line);color:var(--dim);font-size:14.5px}
-  .tag{display:inline-block;font-size:12.5px;color:#b9c3d6;border:1px solid var(--line);
-       border-radius:999px;padding:3px 10px;margin:0 6px 6px 0}
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         background: #fff; color: #17191d;
+         font: 16px/1.7 system-ui, -apple-system, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+  @media (prefers-color-scheme: dark) { body { background: #17181c; color: #e9ebef; } }
+  main { max-width: 34rem; padding: 2.5rem 1.5rem; text-align: center; }
+  h1 { font-size: 1.5rem; margin: 0 0 .6rem; letter-spacing: -.02em; }
+  p { color: #5f6672; margin: 0 0 1.4rem; }
+  @media (prefers-color-scheme: dark) { p { color: #9aa2b1; } }
+  a.btn { display: inline-block; padding: .7rem 1.4rem; border-radius: 6px; text-decoration: none;
+          background: #0b8496; color: #fff; font-weight: 600; }
+  a.plain { color: #0b8496; }
+  .note { margin-top: 1.6rem; font-size: .85rem; color: #7b828e; }
 </style>
 </head>
 <body>
-
-<header>
-  <div class="wrap">
-    <h1>Aether<span>OS</span></h1>
-    <p class="lead">
-      从 Linux 内核向上、<strong>用户态全部自研</strong>的桌面操作系统：
-      合成器与桌面 Shell、PID 1 与服务管理、终端模拟器、以及带<strong>逐工具权限闸门</strong>的 AI 中枢，全部用 Rust 写成。
-      <small>An operating system built from the Linux kernel up: a fully self-written Rust userland
-      (compositor, init, terminal) plus an AI hub with per-tool permission gating.</small>
-    </p>
-    <div class="btns">
-      <a class="btn p" href="https://github.com/qwert702/AetherOS/releases/latest">下载 ISO（38.5 MB）</a>
-      <a class="btn" href="https://github.com/qwert702/AetherOS">GitHub 源码</a>
-      <a class="btn" href="https://github.com/qwert702/AetherOS/blob/main/docs/APP-PACKAGES.md">装软件指南</a>
-    </div>
-    <p class="meta">
-      GPL-3.0-only · 23,694 行 Rust / 43 个源文件 / 7 个 crate ·
-      <strong style="color:var(--ok)">356 项测试全绿</strong> · 两个编译目标 0 警告 ·
-      连续 12 小时 43 分不崩
-    </p>
-    <p style="margin-top:14px">
-      <span class="tag">Rust</span><span class="tag">Linux kernel</span><span class="tag">osdev</span>
-      <span class="tag">compositor</span><span class="tag">init system</span><span class="tag">AI agent</span>
-      <span class="tag">permission gating</span><span class="tag">Buildroot</span>
-    </p>
-  </div>
-</header>
-
-<section>
-  <div class="wrap">
-    <figure>
-      <img class="shot" src="host-ui-light-desktop.png"
-           alt="AetherOS 桌面（明亮主题，系统默认）：顶栏、Dock、文件管理器与终端窗口">
-      <figcaption>
-        <strong>桌面（明亮主题，系统默认）</strong>：顶栏、Dock、窗口、终端、中文字体全部自研 ——
-        从 PID 1 到窗口合成器没有一行现成的桌面组件。
-      </figcaption>
-    </figure>
-    <figure style="margin-top:22px">
-      <img class="shot" src="demo-htop.gif"
-           alt="AetherOS 真机演示：从宿主拉包、安装 htop、在桌面里运行">
-      <figcaption>
-        <strong>真机录屏（QEMU 逐帧抓取，未剪辑）</strong>：终端敲一行
-        <code>wget -O- http://10.0.2.2/i|sh</code> → 从宿主拉下应用包 → <code>aetherd</code> 装好 htop
-        → 敲 <code>htop</code> 就在桌面里跑起来。
-      </figcaption>
-    </figure>
-    <figure style="margin-top:22px">
-      <img class="shot" src="screenshot-htop-app.png"
-           alt="AetherOS 桌面：文件管理器、终端窗口，以及正在运行的 htop">
-      <figcaption>
-        实拍：AetherOS 桌面里跑着 <strong>htop 3.3.0</strong>（Ubuntu 24.04 官方包）——
-        这是用户从宿主下载、安装并启动的市面软件，不是内置程序。
-      </figcaption>
-    </figure>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2>特别在哪</h2>
-    <div class="grid">
-      <div class="card">
-        <h3>用户态是自己写的</h3>
-        <p>没有抄现成桌面栈：合成器、窗口管理、终端模拟器、字体渲染、文件管理器、IME 都在 <code>aether-compositor</code> 里，共 12,845 行 Rust。</p>
-      </div>
-      <div class="card">
-        <h3>AI 是系统的一部分，不是外挂</h3>
-        <p><code>aetherd</code> 提供 15 个工具、L0–L3 四级授权闸门与离线/云端混合路由：越权操作要走确认，权限链路有端到端实证。</p>
-      </div>
-      <div class="card">
-        <h3>能装市面上的 Linux 软件</h3>
-        <p>自带打包器解析 ELF 依赖（递归、跳过 glibc 家族、校验符号版本、按需带 terminfo），实测 htop 装完即用。</p>
-      </div>
-      <div class="card">
-        <h3>可验证，而不是"我觉得没问题"</h3>
-        <p>356 项单元测试、双目标零警告、规模声明有门禁脚本可复算，还有逐像素的 UI 回归门禁。</p>
-      </div>
-      <div class="card">
-        <h3>小到能塞进一张旧 U 盘</h3>
-        <p>完整可引导 ISO 只有 38.5 MB：内核 + 全自研用户态 + 驱动 + 字体。</p>
-      </div>
-      <div class="card">
-        <h3>踩过的坑都记着</h3>
-        <p>文档里留着每轮审计发现的问题与修复理由（含未修复项），不是只写好话的 README。</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2>跑起来</h2>
-    <pre><code># 1) 下载 Release 里的 ISO，然后：
-qemu-system-x86_64 -cdrom aetheros-0.1-amd64.iso -m 1024 -boot d
-
-# 也可以用 VirtualBox / VMware 直接挂载这个 ISO 开机
-
-# 2) 从源码构建（首次 30–60 分钟）
-bash platform/build-iso.sh
-
-# 3) 验证（口径可复算）
-cargo test --workspace           # 单元测试
-python scripts/repo-stats.py     # 代码规模门禁</code></pre>
-    <p class="meta">桌面快捷键：<code>Alt+1–4</code> 切换布局（自由 / 两列 / 三列 / 独占），
-      <code>Ctrl+Shift+C/V</code> 终端复制粘贴，<code>Esc</code> 退出预览。</p>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2>实测口径</h2>
-    <table>
-      <tr><th>项</th><th>数值</th></tr>
-      <tr><td>代码规模</td><td>23,694 行 Rust / 43 个源文件 / 7 个 crate</td></tr>
-      <tr><td>单元测试</td><td>356 项全绿（Windows 实测；Linux 为推算，构建机复核中）</td></tr>
-      <tr><td>编译警告</td><td>两个目标 0 条</td></tr>
-      <tr><td>稳定性</td><td>连续 12 小时 43 分不崩（3053 轮巡检：0 退出 / 0 重启 / 0 panic）</td></tr>
-      <tr><td>ISO 体积</td><td>40,327,168 字节</td></tr>
-      <tr><td>许可证</td><td>GPL-3.0-only</td></tr>
-    </table>
-  </div>
-</section>
-
-<footer>
-  <div class="wrap">
-    <p>
-      <a href="https://github.com/qwert702/AetherOS">源码</a> ·
-      <a href="https://github.com/qwert702/AetherOS/releases/latest">下载</a> ·
-      <a href="https://github.com/qwert702/AetherOS/blob/main/INDEX.md">代码索引</a> ·
-      <a href="https://github.com/qwert702/AetherOS/blob/main/docs/APP-PACKAGES.md">应用包</a> ·
-      <a href="https://github.com/qwert702/AetherOS/blob/main/docs/roadmap.md">路线图</a>
-    </p>
-    <p>GPL-3.0-only · AetherOS 0.1.0（预览版）· 用 Rust 从内核往上写的一个操作系统。</p>
-  </div>
-</footer>
-
+<main>
+  <h1>AetherOS 官网已迁移</h1>
+  <p>正在跳转到 <strong>aether.cbnac.com</strong> …</p>
+  <p><a class="btn" href="https://aether.cbnac.com/">前往新官网</a></p>
+  <p class="note">
+    没有自动跳转？点上面的按钮，或直接访问 <a class="plain" href="https://aether.cbnac.com/">https://aether.cbnac.com/</a><br>
+    源码：<a class="plain" href="https://github.com/qwert702/AetherOS">github.com/qwert702/AetherOS</a>
+  </p>
+</main>
 </body>
 </html>

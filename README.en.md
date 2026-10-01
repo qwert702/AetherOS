@@ -1,4 +1,4 @@
-[中文](README.md) | **English** · [**Download ISO (38.5 MB)**](https://github.com/qwert702/AetherOS/releases/latest) · [Landing page](https://qwert702.github.io/AetherOS/) · [App packaging guide](docs/APP-PACKAGES.md)
+[中文](README.md) | **English** · [**Download ISO (38.5 MB)**](https://github.com/qwert702/AetherOS/releases/latest) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/APP-PACKAGES.md)
 
 # AetherOS
 

@@ -1,6 +1,6 @@
 # AetherOS
 
-[**English**](README.en.md) · 中文 ｜ [**下载 ISO（38.5 MB）**](https://github.com/qwert702/AetherOS/releases/latest) ｜ [落地页](https://qwert702.github.io/AetherOS/) ｜ [装软件指南](docs/APP-PACKAGES.md)
+[**English**](README.en.md) · 中文 ｜ [**下载 ISO（38.5 MB）**](https://github.com/qwert702/AetherOS/releases/latest) ｜ [落地页](https://aether.cbnac.com/) ｜ [装软件指南](docs/APP-PACKAGES.md)
 
 **一个自研的操作系统**：Linux 内核 + 全自研 Rust 用户态 + AI 中枢。
 
