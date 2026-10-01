@@ -210,7 +210,7 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "输入", group: "设备", enabled: true },
     PageDef { title: "AI", group: "智能", enabled: true },
     PageDef { title: "关于", group: "系统", enabled: true },
-    PageDef { title: "网络", group: "网络与共享", enabled: false },
+    PageDef { title: "网络", group: "网络与共享", enabled: true },
     PageDef { title: "应用", group: "应用", enabled: true },
     PageDef { title: "权限与隐私", group: "隐私和安全性", enabled: false },
 ];

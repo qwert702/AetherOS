@@ -34,6 +34,8 @@ mod widgets;
 
 /// 用户设置的持久化与声明（P3 设置中心）：`/var/lib/aether/settings.json`。
 mod settings;
+/// 网络状态（P4.2 设置中心「网络」页）：读内核真值（/sys/class/net、/proc/net/*），不新增 IPC。
+mod net;
 // Wayland 协议实现（3.1 spike）：wire/object 是纯逻辑，跨平台可测
 mod wayland;
 

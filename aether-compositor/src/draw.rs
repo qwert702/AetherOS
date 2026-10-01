@@ -2195,6 +2195,42 @@ fn draw_settings_content(
     }
 
     match title {
+        "网络" => {
+            // 真值来自内核（`/sys/class/net/*`、`/proc/net/route`、`/proc/net/fib_trie`、
+            // `/etc/resolv.conf`）—— 解析逻辑与单测见 `net.rs`。
+            //
+            // **只在打开这一页时读**（几个小文件，µs 级），不做缓存、更不伪造：
+            // 读不到就写"未发现网络接口"，绝不写"已连接"。
+            let n = crate::net::read();
+            widgets::group_header(buf, w, h, content.x + 24, ry, "状态", Some(tr));
+            ry += 24;
+            tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, &n.summary(), font::BODY, color::text(), 0.92);
+            ry += 30;
+            let (name, mac, gw, up) = match &n.iface {
+                Some(i) => (i.name.clone(), i.mac.clone(), i.gateway.clone(), i.up),
+                None => ("（无）".to_string(), String::new(), String::new(), false),
+            };
+            let dns = if n.dns.is_empty() { "（未配置）".to_string() } else { n.dns.join("   ") };
+            for (k, v) in [
+                ("接口", name),
+                ("MAC", if mac.is_empty() { "（无）".to_string() } else { mac }),
+                ("链路", if up { "已连接".to_string() } else { "断开".to_string() }),
+                ("网关", if gw.is_empty() { "（无）".to_string() } else { gw }),
+                ("DNS", dns),
+            ] {
+                tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
+                tr.draw(buf, w, h, (content.x + 110) as f32, ry as f32, &v, font::CAPTION, color::text_dim(), 0.9);
+                ry += 24;
+            }
+            ry += 10;
+            tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
+                    "只读展示内核真值；改网络配置需要 IPC 能力（下一步）。",
+                    font::CAPTION, color::text_dim(), 0.75);
+            if !n.note.is_empty() {
+                ry += 20;
+                tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32, &n.note, font::CAPTION, color::text_dim(), 0.75);
+            }
+        }
         "应用" => {
             // 2026-10-01：把「应用」页从"待接入"变成**真能用的页**。
             //
