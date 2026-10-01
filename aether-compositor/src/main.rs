@@ -475,6 +475,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                     .unwrap_or(false);
                 if is_settings {
                     settings::apply_hit(&mut renderer.settings, &mut renderer.settings_page, hit);
+                    // 动作类命中：打开内建应用（「应用」页的行）
+                    if let settings::SettingsHit::OpenApp(i) = hit {
+                        if let Some(msg) = open_app(&mut desktop, i) {
+                            toast = Some((msg, Instant::now()));
+                        }
+                    }
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
                     if matches!(hit, settings::SettingsHit::ToggleDark) {
                         let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer

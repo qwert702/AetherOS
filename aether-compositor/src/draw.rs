@@ -2195,6 +2195,40 @@ fn draw_settings_content(
     }
 
     match title {
+        "应用" => {
+            // 2026-10-01：把「应用」页从"待接入"变成**真能用的页**。
+            //
+            // 这里只列**内建应用**（每个都能真实打开）—— 不是偷懒：
+            // 已装应用的列表要从 `renderer.installed_apps` 取，而本函数是被
+            // `draw_window`（19 参自由函数）调用的，穿一个列表进去要动它的签名与调用链。
+            // 与其塞一个空列表进去装样子，不如**如实说明已装应用在 Dock 上**。
+            widgets::group_header(buf, w, h, content.x + 24, ry, "内建应用", Some(tr));
+            ry += 24;
+            for (i, name, desc) in [
+                (0usize, "文件管理", "浏览文件与应用目录"),
+                (1, "终端", "真实 PTY，可运行市面软件"),
+                (2, "浏览器", "复用文件管理器的纸面渲染"),
+                (3, "音乐", "本地曲库"),
+                (4, "系统设置", "即本窗口"),
+            ] {
+                let r = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                let st = widgets::States::at(r, mouse);
+                widgets::row(buf, w, h, r, name, Some(desc), st, Some(tr));
+                // 点击 → 打开（事件循环执行；见 main.rs 的设置命中分支）
+                hits.push((r, SettingsHit::OpenApp(i)));
+                ry += 44;
+            }
+            ry += 8;
+            widgets::group_header(buf, w, h, content.x + 24, ry, "已装应用", Some(tr));
+            ry += 22;
+            tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
+                    "从宿主安装的程序显示在 Dock 上（数据来自 /var/apps）。",
+                    font::CAPTION, color::text_dim(), 0.85);
+            ry += 20;
+            tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
+                    "在设置里列出/卸载它们需要 IPC 能力（aetherd 代理），下一步接入。",
+                    font::CAPTION, color::text_dim(), 0.75);
+        }
         "外观" => {
             // 主题开关：**默认明亮（纯白）**，切换立即生效 —— 改全局 MODE 并重建背景缓存，
             // 由事件循环执行（绘制期不改状态）。

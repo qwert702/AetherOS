@@ -187,6 +187,8 @@ pub enum SettingsHit {
     ToggleDark,
     /// 鼠标速度（百分比，由分段控件给值；越界由 `apply_hit` 夹取）
     MouseSpeed(i32),
+    /// **动作类**：打开内建应用（序号与 `main.rs::open_app` 一致）
+    OpenApp(usize),
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -209,7 +211,7 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "AI", group: "智能", enabled: true },
     PageDef { title: "关于", group: "系统", enabled: true },
     PageDef { title: "网络", group: "网络与共享", enabled: false },
-    PageDef { title: "应用", group: "应用", enabled: false },
+    PageDef { title: "应用", group: "应用", enabled: true },
     PageDef { title: "权限与隐私", group: "隐私和安全性", enabled: false },
 ];
 
@@ -238,6 +240,9 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::ImeDefault => s.ime_default = !s.ime_default,
         SettingsHit::ToggleDark => s.dark_mode = !s.dark_mode,
         SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
+        // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序），
+        // 放这里只是为了让 `apply_hit` 对枚举保持穷尽（漏一个变体会编译不过）。
+        SettingsHit::OpenApp(_) => {}
     }
 }
 
