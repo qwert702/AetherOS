@@ -425,7 +425,11 @@ fn run_fbdev() -> anyhow::Result<()> {
             }
         } else if installer.open {
             if press && !installer.running {
-                if let Some(i) = renderer
+                if renderer.installer_close.contains(mouse.0, mouse.1) {
+                    // 关闭向导：Esc 之外的**可见**入口（用户反馈"点开就关不掉"）
+                    installer.open = false;
+                    tty_log("安装向导 → 关闭（右上角按钮）");
+                } else if let Some(i) = renderer
                     .installer_rows
                     .iter()
                     .position(|(r, _, _)| r.contains(mouse.0, mouse.1))

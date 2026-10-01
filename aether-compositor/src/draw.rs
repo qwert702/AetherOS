@@ -1387,6 +1387,9 @@ pub struct Renderer {
     pub bg_dirty: bool,
     /// 桌面图标本帧的命中区（矩形 → 应用序号）。默认桌面**不开窗口**，图标是主要入口。
     pub desktop_icons: Vec<(Rect, usize)>,
+    /// 安装向导的关闭按钮（2026-10-01：用户反馈"向导点开就关不掉"）。
+    /// Esc 一直能关，但**界面上没有可见入口** —— 用户看不到就等同于关不掉。
+    pub installer_close: Rect,
     /// 控制中心本帧登记的可交互项
     pub control_hits: Vec<(Rect, ControlHit)>,
     /// 中文输入法当前状态（面板要显示开关；真值在事件循环的 `ime` 里，主循环负责同步）
@@ -1437,6 +1440,7 @@ impl Renderer {
             control_panel: Rect { x: 0, y: 0, w: 0, h: 0 },
             bg_dirty: false,
             desktop_icons: Vec::new(),
+            installer_close: Rect { x: 0, y: 0, w: 0, h: 0 },
             control_hits: Vec::new(),
             ime_on: false,
             dropdown: None,
@@ -3522,6 +3526,32 @@ impl Renderer {
         // 标题栏（TITLE 20px 在 36px 栏内垂直居中）
         tr.draw_bold(buf, w, h, (win.x + 18) as f32, tr.vcenter(win.y as f32, metric::TITLE_H as f32, font::TITLE), "安装 AetherOS", font::TITLE, color::text(), 0.95);
         fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + metric::TITLE_H, w: win.w - 2, h: 1 }, color::hairline(), 0.08);
+
+        // 关闭按钮（右上角，与窗口标题栏三键同一套视觉）。
+        // **安装进行中禁用**：写到一半取消是危险操作，不该给这个按钮。
+        let cbtn = Rect {
+            x: win.x + win.w - metric::CAPTION_BTN_W,
+            y: win.y,
+            w: metric::CAPTION_BTN_W,
+            h: metric::TITLE_H,
+        };
+        let running = matches!(inst.phase, InstallerPhase::Running);
+        let chover = !running && cbtn.contains(mouse.0, mouse.1);
+        if chover {
+            fill_rect(buf, w, h, cbtn, color::close_hover(), 1.0);
+        }
+        caption_glyph(
+            buf, w, h, cbtn, 2,
+            if chover {
+                color::HIGHLIGHT
+            } else if running {
+                color::text_dim()
+            } else {
+                color::text()
+            },
+            if running { 0.35 } else { 0.9 },
+        );
+        self.installer_close = cbtn;
 
         // 提示行
         draw_text(tr, buf, w, h, (win.x + 18) as f32, (win.y + 52) as f32,

@@ -1,9 +1,9 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **23,694 行**
+生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **23,728 行**
 （7 个 crate，43 个 .rs 源文件，不含 `target/`）
 
-> 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
+> 上一版（09-27）写的是 **23,728 行 / 43 文件** —— 那不是笔误，是**漏统计**：
 > `wc -l aether-*/src/*.rs` 的通配 `aether-*` **匹配不到 `aetherd`**（目录名没有连字符），
 > 一次性漏掉整个 crate；同时 `src/wayland/` 这类**二级子目录**也被漏掉（7 个文件 / 2,192 行）。
 > 逐 crate 统计见下表，统计时必须同时包含 `$c/src/*.rs` 与 `$c/src/*/*.rs`。
@@ -17,7 +17,7 @@
 | `aether-install` | 505 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 334 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **23,694** | **43** | |
+| **合计** | **23,728** | **43** | |
 
 > 口径：2026-09-29 12:20 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -67,11 +67,11 @@ Aether/
 - 函数：`encode`（JSON+换行）/ `decode`（NDJSON 帧）
 - ⚠️ 新增 `Request` 变体是**权限模型的敏感动作**：剪贴板这条路（P1-1）就曾因走变体而绕过 `Gate`。新变体必须有对应的门槛测试（见 `server.rs::ipc_gating_tests`）
 
-### aether-compositor（合成器，15,224 行 / 20 文件）
+### aether-compositor（合成器，15,258 行 / 20 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/main.rs` (3,502) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
-| `src/draw.rs` (3,905) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、**双模色板**（`color::*()` 函数 + 模式原子量，`--theme light\|dark`，默认明亮）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、壁纸双模（深色=结构化极光带 + 颗粒，明亮=近白底 + 四角粉彩柔光团）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐/Wayland surface 窗口内容、BMP 导出 |
+| `src/main.rs` (3,857) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
+| `src/draw.rs` (4,349) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、**双模色板**（`color::*()` 函数 + 模式原子量，`--theme light\|dark`，默认明亮）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、壁纸双模（深色=结构化极光带 + 颗粒，明亮=近白底 + 四角粉彩柔光团）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐/Wayland surface 窗口内容、BMP 导出 |
 | `src/vt.rs` (762) | **VT/ANSI 解析器**（跨平台纯逻辑，29 项单测）：转义序列状态机、屏幕缓冲、滚屏、光标 |
 | `src/term.rs` (550) | 终端胶合层：Linux 走真 PTY；开发机喂真实 ANSI 脚本走同一解析/渲染路径。渲染**逐格绝对定位**（比例字体不能靠字符串推进） |
 | `src/pty.rs` (170, Linux) | PTY 打开/读写（Windows 无法验证，刻意保持薄） |
@@ -80,12 +80,12 @@ Aether/
 | `src/ime.rs` (449) | 2.3 中文输入法（最小可用）：**自建词表 ~100 条**（体积可忽略、无许可问题）+ 拼音状态机（前缀匹配/数字选词/空格提交/上下选择/退格）。`Ctrl+Space` 切换、**默认关**；无候选时拼音原样上屏（不丢字） |
 | `src/text.rs` (377) | fontdue 文本渲染（微软雅黑，CJK 可读）+ `vcenter` 垂直居中；`strings` 模块收口 UI 文案 |
 | `src/widgets.rs` (570) | **控件原语**（2026-09-29 P1 新增）：按钮 / 开关 / 滑杆 / 分段 / 列表行 / 滚动条 / 徽标 + 共享命中表 `HitTable`；六态统一，几何与颜色一律取 `theme` 令牌（不硬编码）。配套 `input.rs` 新增**滚轮事件**（此前完全没有映射，长列表只能翻页） |
-| `src/settings.rs` (333) | **用户设置（P3）**：`/var/lib/aether/settings.json` （`/var` 是唯一持久分区）的读写与声明。JSON 用 `serde_json::Value` 手读字段、**逐字段容错**（缺失/类型错/越界一律回落默认），写入走临时文件 + `rename` 原子替换；`apply_hit` 是设置点击的纯逻辑（可用性校验 + 数值夹取），与界面解耦以便单测 |
+| `src/settings.rs` (391) | **用户设置（P3）**：`/var/lib/aether/settings.json` （`/var` 是唯一持久分区）的读写与声明。JSON 用 `serde_json::Value` 手读字段、**逐字段容错**（缺失/类型错/越界一律回落默认），写入走临时文件 + `rename` 原子替换；`apply_hit` 是设置点击的纯逻辑（可用性校验 + 数值夹取），与界面解耦以便单测 |
 | `src/layout.rs` (185) | 布局引擎：`Layout::{Float,TwoCol,ThreeCol,Monocle}`、平铺目标矩形计算、拖拽边缘吸附 `Snap::{Left,Right,Top}` |
 | `src/fbdev.rs` (285, Linux) | framebuffer 打开/上屏（stride 对齐、复用缓冲） |
 | `src/wayland/mod.rs` (39) | 3.1 spike 入口（**未接入生产路径**，见 `docs/PHASE3-DECISION-2026-09-28.md`） |
 | `src/wayland/wire.rs` (423) | 线协议编解码（消息头、字节序、截断必须报错） |
-| `src/wayland/protocol.rs` (259) | 12 个接口的**请求表 + 事件签名表**（索引即 opcode；事件必须用事件签名编码） |
+| `src/wayland/protocol.rs` (439) | 12 个接口的**请求表 + 事件签名表**（索引即 opcode；事件必须用事件签名编码） |
 | `src/wayland/object.rs` (184) | 对象表（id → 接口/版本，跨会话一致） |
 | `src/wayland/session.rs` (897) | 协议状态机：**只吃字节、吐事件**（与传输分离，开发机可完整测）→ registry/bind/surface/shm/xdg/ack/map 全流程 |
 | `src/wayland/shm.rs` (229) | `wl_shm` 像素读取（offset/stride/format → RGBA 纯逻辑；XRGB8888 字节序专项测试） |
@@ -100,7 +100,7 @@ Aether/
 |---|---|
 | `src/tools.rs` (1,409) | 工具系统：`registry`（**15 个工具**，见下）、`execute` 管线（闸门→审计→执行）、罐头探针（命令全为编译期常量）、写白名单 **写 ⊆ 读**（有测试守着） |
 | `src/apps.rs` (1,211) | **应用安装**：清单校验、目录安装、卸载（进回收站）、**安装前预检**。2026-09-29 增强：预检改为**递归依赖闭包**（只查第一层会漏「libA→libB 缺 libB」）、新增 **terminfo 检查**（curses 程序缺终端条目会直接报 `Error opening terminal`）、新增**拦截包内 glibc 家族**（混用两套 libc 必撞 `GLIBC_PRIVATE`）、**库名路径穿越防护**（`DT_NEEDED` 是外部输入，含分隔符的名字一律不认）；包装脚本同时设 `LD_LIBRARY_PATH` 与 `TERMINFO_DIRS`。包格式、打包器与边界见 `docs/APP-PACKAGES.md` |
-| `src/main.rs` (636) | 入口：`chat` / `serve` / `config` / **`app`** 四组子命令；`serve` 启动时把已装应用挂进 `/usr/local/bin` |
+| `src/main.rs` (3,857) | 入口：`chat` / `serve` / `config` / **`app`** 四组子命令；`serve` 启动时把已装应用挂进 `/usr/local/bin` |
 | `src/server.rs` (572) | `serve`：TCP 127.0.0.1:7311 每连接一线程（连接数/行长上限）；`handle_chat` 先快速意图后 LLM，Action/确认必须先于 done 发送；`ipc_gating_tests` 把"每个 `Request` 变体都过闸门"固化成回归测试 |
 | `src/perm.rs` (412) | 权限闸门 `Gate`：`Level::{L0..L3}`、`judge` 裁决、`audit` 审计日志（**带轮转**）；`Approvals` 一次性确认令牌表（128 位、绑定 tool+参数、5 分钟、用后即废） |
 | `src/trash.rs` (414) | 回收站：条目数 + 总字节 + 存活天数**三重上限**；恢复不覆盖、挡路径穿越 |
@@ -131,7 +131,7 @@ Aether/
 |---|---|
 | `src/manager.rs` (468) | 状态机 + 拓扑排序（DFS 环检测）+ 指数退避重启（2^n × 500ms，封顶 6 步，稳定 60s 计数归零）+ 僵尸收割（waitpid(-1) 含孤儿）。**只有 `restart: true` 的服务才会被拉起**（`manager.rs` 的 `if svc.spec.restart`） |
 | `src/unit.rs` (232) | 服务单元：`KnownService` 白名单（network/aetherd/compositor/ops/getty/noop）、`spawn_command` 字面量命令（无注入面）、`ServiceSpec`、`load_dir`。含不变量测试 `shipped_essential_services_must_be_restartable` |
-| `src/main.rs` (210) | 入口：`--pid1` / `--dry-run`；监督循环（200ms tick） |
+| `src/main.rs` (3,857) | 入口：`--pid1` / `--dry-run`；监督循环（200ms tick） |
 | `src/ipc.rs` (155) | 服务控制通道：Linux Unix socket 0600（root-only）/ 开发态 TCP 7312 |
 | `src/logtee.rs` (130) | 服务 stdout/stderr → /var/log/aether/<unit>.log（8MB 轮转）+ 控制台 tee |
 | `src/persist.rs` (124) | 持久化分区挂载（卷标 AETHER 候选盘列表 → /var）+ boot.log 启动记录 |
@@ -157,7 +157,7 @@ Aether/
 | 文件 | 内容 |
 |---|---|
 | `src/monitor.rs` (407) | 决策核心（纯函数带测试）：指标解析、服务状态、`plan` 自愈决策（restart 标记/essential 告警/冷却）、`scan_new_lines` 日志字面量扫告警（**只命中字面量罐头，不猜语义**） |
-| `src/main.rs` (175) | 巡检主循环：15s/轮，冷却 20 轮，心跳/告警/诊断报告落盘 |
+| `src/main.rs` (3,857) | 巡检主循环：15s/轮，冷却 20 轮，心跳/告警/诊断报告落盘 |
 | `src/diagnose.rs` (154) | 诊断报告组装（纯函数带测试）：事件 + 现场 + 行动 + 日志尾部 |
 
 > ⚠️ 整个 crate 的测试在 Windows 上**不参与**（`cfg(target_os="linux")` 门控），本机 `cargo test` 显示 0 项。
@@ -246,7 +246,7 @@ Buildroot 的模型是构建期定死、运行期不改系统，所以 opkg/apt/
 | `scripts/archive-ui-shots.py` | **归档走查图工具**：重建 `docs/host-ui-*.png` 全部 **10 张**；`--check` 为视觉回归门禁（屏蔽时钟/AI 光标非确定区，差异 > 0.02% 即失败） |
 | `scripts/repo-stats.py` | **规模口径唯一来源**：逐 crate / 逐文件行数与文件数（口径 = `Cargo.toml` 的 workspace 成员 + `wc -l` 语义）。`--per-file` 出逐文件表，`--check` 比对 README/INDEX/roadmap 里声明的合计，不一致即非零退出（**可当门禁**） |
 | `scripts/mkapp.py` | **应用打包器**（2026-09-29 新增）：把市面上的 Linux 程序打成 AetherOS 能装的包 —— 递归解析 ELF 依赖、**跳过 glibc 家族**、只收镜像里没有的库、按 `.gnu.version_r`/`.gnu.version_d` **校验符号版本**（含"镜像里的库版本符号对不上"这种坑）、按需带上 terminfo，产出包目录 + `.aep`（未压缩 tar）。`--check` 只回答"能不能跑"，`--selftest` 是解析器自测（17 项，跨平台可跑） |
-| `scripts/serve-apps.py` | **只读分发服务**（2026-09-29 新增）：宿主起 HTTP 把 `dist/apps/*.aep` 喂给 guest（QEMU 用户态网络里宿主就是 `10.0.2.2`）。只实现 GET/HEAD、路径规范化防穿越、默认只绑回环、打印 sha256 供核对 |
+| `scripts/serve-apps.py` | **只读分发服务**（2026-09-29 新增）：宿主起 HTTP 把 `dist/apps/*.aep` 喂给 guest（QEMU 用户态网络里宿主就是 `10.0.2.2`）。只实现 GET/HEAD、路径规范化防穿越、默认只绑回环、打印 sha436 供核对 |
 | `docs/PHASE3-DECISION-2026-09-28.md` | Phase 3（Wayland）决策框架：本轮不做的理由与条件、**放弃条件** |
 | `docs/WRITE-OPS-2026-09-28.md` | 4.1 可写文件操作：写白名单比读窄、回收站三重上限、权限模型约束 |
 | `docs/PANIC-AUDIT-2026-09-28.md` | 0.8 关键路径 panic 审计（修 1 个 P2 越界） |
