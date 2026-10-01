@@ -439,6 +439,8 @@ fn run_fbdev() -> anyhow::Result<()> {
             }
         } else if control_center_click(&mut renderer, &mut desktop, &mut ime, mouse.0, mouse.1, press) {
             // 控制中心是浮层：展开时它优先消费点击（含"点别处关闭"）
+        } else if desktop_icon_click(&renderer, &mut desktop, mouse.0, mouse.1, press) {
+            // 桌面图标：打开对应应用
         } else if mouse_down || click_pending {
             if let Some((idx, edge, orig)) = resize {
                 if mouse_down {
@@ -734,23 +736,18 @@ fn run_fbdev() -> anyhow::Result<()> {
     }
 }
 
-/// 按任意分辨率重建演示桌面。
-#[cfg(target_os = "linux")]
-fn demo_desktop_sized(w: usize, h: usize) -> Desktop {
-    let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None, wayland: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) , wayland: None },
-    ];
-    let work = layout::work_area(w, h);
-    let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
-    for (i, win) in wins.iter_mut().enumerate() {
-        win.rect = tg[i].unwrap();
-    }
-    let active = wins.len() - 1;
+/// 按任意分辨率重建**默认桌面**（P4.1 起不含任何窗口）。
+///
+/// 非 Linux 目标下没有调用点（预览/走查走 `demo_desktop()`），但单测要用它，
+/// 所以按目标收敛而不是整段 cfg 掉。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn demo_desktop_sized(_w: usize, _h: usize) -> Desktop {
+    // P4.1：**默认桌面不开任何窗口**（用户要求）—— 窗口改由桌面图标 / Dock 打开。
+    // 走查与预览路径仍用 `demo_desktop()`（3 窗口布局演示），不受影响。
+    let wins: Vec<Win> = Vec::new();
     let cwd = draw::default_cwd();
     let (entries, dir_error) = draw::read_dir_entries(&cwd);
-    let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), sidebar: sidebar_targets(), dir_error };
-    // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
+    let mut d = Desktop { wins, active: 0, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), sidebar: sidebar_targets(), dir_error };
     sync_files_title(&mut d);
     d
 }
@@ -1217,6 +1214,37 @@ const APP_TITLES: [&str; 5] = [
 /// 命中测试要靠 `DOCK_BUILTINS` 算"已装应用"的图标区间，两边必须一致。
 const _: () = assert!(APP_TITLES.len() == draw::DOCK_BUILTINS);
 
+/// 桌面图标点击：命中就打开对应应用（复用 `open_app` 的真实路径）。返回 `true` = 已消费。
+///
+/// 与 Dock 的差别：Dock 点已开的应用会**聚焦**，桌面图标一律**打开**
+/// （桌面图标是"启动器"，不是"任务栏"）。
+///
+/// 调用点在 Linux 的 fbdev 循环里，非 Linux 目标允许未使用（逻辑由单测覆盖）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn desktop_icon_click(
+    renderer: &draw::Renderer,
+    desktop: &mut Desktop,
+    mx: f32,
+    my: f32,
+    pressed: bool,
+) -> bool {
+    if !pressed {
+        return false;
+    }
+    let hit = renderer
+        .desktop_icons
+        .iter()
+        .find(|(r, _)| r.contains(mx, my))
+        .map(|(_, i)| *i);
+    match hit {
+        Some(idx) => {
+            let _ = open_app(desktop, idx);
+            true
+        }
+        None => false,
+    }
+}
+
 /// 切换主题：改全局 `MODE`（色板只读、每帧生效）+ 标记背景缓存作废。
 ///
 /// 两个入口共用：设置中心「外观」页与控制中心的深色开关。
@@ -1653,6 +1681,11 @@ fn main() -> anyhow::Result<()> {
         // 走查图用 `AETHER_FAKE_UTC` 固定时钟，否则顶栏与设置页预览每分钟都会变。
         if args.iter().any(|a| a == "--settings") {
             let _ = open_app(&mut desktop, 4);
+        }
+        // `--desktop-only`：清空演示窗口，走查**默认桌面**（无窗口 + 桌面图标）
+        if args.iter().any(|a| a == "--desktop-only") {
+            desktop.wins.clear();
+            desktop.active = 0;
         }
         // `--control-center`：展开控制中心再截图（状态簇面板的视觉走查）
         snap_now(&mut desktop, lay);
@@ -2951,7 +2984,8 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
             return None;
         }
         desktop.active = (desktop.active + 1) % desktop.wins.len();
-        return Some(format!("焦点：{}", desktop.wins[desktop.active].title));
+        // 用 get 而不是直接索引：默认桌面现在**没有窗口**，索引会越界 panic
+        return Some(format!("焦点：{}", desktop.wins.get(desktop.active)?.title));
     }
     if key == Delete {
         return None;
@@ -3144,6 +3178,35 @@ mod control_center_tests {
 
         // 未按下（松开）不消费
         assert!(!control_center_click(&mut r, &mut d, &mut i, 1120.0, 10.0, false));
+    }
+}
+
+#[cfg(test)]
+mod desktop_icon_tests {
+    use super::*;
+
+    /// 默认桌面**必须没有窗口**（用户要求：启动后是干净桌面，窗口由图标/Dock 打开）。
+    #[test]
+    fn boot_desktop_has_no_windows() {
+        let d = demo_desktop_sized(1280, 760);
+        assert!(d.wins.is_empty(), "默认桌面不该预开窗口");
+        assert!(
+            d.wins.get(d.active).is_none(),
+            "没有窗口时按 active 取窗口必须安全失败（不能越界 panic）"
+        );
+    }
+
+    /// 点桌面图标 → 打开对应应用（桌面图标是**启动器**，不是任务栏）。
+    #[test]
+    fn click_opens_app() {
+        let mut r = draw::Renderer::new(1280, 760);
+        let mut d = demo_desktop_sized(1280, 760);
+        r.desktop_icons = vec![(Rect { x: 20, y: 60, w: 96, h: 82 }, 4)];
+        assert!(desktop_icon_click(&r, &mut d, 40.0, 90.0, true));
+        assert_eq!(d.wins.len(), 1, "点桌面图标应开一个窗口");
+        assert_eq!(d.wins[0].kind, draw::WinKind::Settings, "序号 4 应打开设置中心");
+        assert!(!desktop_icon_click(&r, &mut d, 40.0, 90.0, false), "没按下的移动不该消费");
+        assert!(!desktop_icon_click(&r, &mut d, 800.0, 400.0, true), "空白处不该消费");
     }
 }
 

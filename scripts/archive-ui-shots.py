@@ -53,6 +53,9 @@ SHOTS: list[tuple[list[str], str]] = [
     # 控制中心（P4）：顶栏状态簇弹出的面板
     (["--shot", "2", "--control-center", "--theme", "dark"], "host-ui-control-center.png"),
     (["--shot", "2", "--control-center", "--theme", "light"], "host-ui-light-control-center.png"),
+    # 默认桌面（P4.1）：无窗口 + 桌面图标（文件管理/终端/系统设置）
+    (["--shot", "2", "--desktop-only", "--theme", "dark"], "host-ui-desktop-clean.png"),
+    (["--shot", "2", "--desktop-only", "--theme", "light"], "host-ui-light-desktop-clean.png"),
 ]
 
 #: 固定"当前时间"（对应 `text::now_utc_secs` 的 `AETHER_FAKE_UTC` 钩子）。

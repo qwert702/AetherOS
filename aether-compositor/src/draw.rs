@@ -1219,6 +1219,102 @@ pub enum ControlHit {
     ToggleDark,
 }
 
+/// 画一个应用图标：彩色底座 + 白色几何符号（全部纯 rect/圆，不依赖字体字形覆盖）。
+///
+/// **Dock 与桌面图标共用这一个函数** —— 两处各画一套必然会走形，而且改一处忘另一处。
+///
+/// - `idx`：内建序号（0 文件 / 1 终端 / 2 浏览器 / 3 音乐 / 4 设置）
+/// - `installed`：已装应用（青绿底座，与内建一眼可分）
+/// - `installer`：安装向导（琥珀警示色 —— Live ISO 里唯一要一眼找到的动作）
+/// - `running`：窗口已打开（青色微光，是状态反馈不是装饰）
+#[allow(clippy::too_many_arguments)]
+pub fn draw_app_icon(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    tile: Rect,
+    idx: usize,
+    installed: bool,
+    installer: bool,
+    hovered: bool,
+    running: bool,
+) {
+    let base: [u8; 3] = if installer {
+        [196, 142, 67] // 安装向导：琥珀
+    } else if installed {
+        [61, 149, 149] // 已装应用：青绿
+    } else {
+        match idx {
+            0 => [99, 164, 206],  // 文件：青蓝
+            1 => [82, 118, 168],  // 终端：钢青
+            2 => [88, 148, 224],  // 浏览器：蓝
+            3 => [108, 122, 148], // 音乐：雾灰蓝（P0：由紫色改）
+            _ => [116, 125, 147], // 设置：蓝灰
+        }
+    };
+    // 底座（P0：纯色，去"上亮下暗"渐变与紫色系 —— "彩色渐变底座"正是 AI 产品味的来源之一）
+    rounded_rect(buf, w, h, tile, radius::MD, base, if installer && !hovered { 0.92 } else { 0.97 });
+    // 顶部内高光（P0：0.24 → 0.08，去"玻璃高光"感）
+    fill_rect(buf, w, h, Rect { x: tile.x + 4, y: tile.y + 1, w: tile.w - 8, h: 1 }, color::HIGHLIGHT, 0.08);
+    if hovered {
+        rounded_rect(buf, w, h, tile, radius::MD, color::hairline(), 0.14);
+    }
+    if running {
+        rounded_rect(buf, w, h, tile, radius::MD, color::accent(), 0.10);
+    }
+    rounded_outline(buf, w, h, tile, radius::MD, color::hairline(), if hovered { 0.30 } else { 0.18 });
+
+    let (ix, iy) = (tile.x, tile.y);
+    let sym = color::HIGHLIGHT;
+    let a = 0.95;
+    if installer {
+        // 安装：向下箭头写入磁盘底座
+        fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 10, w: 6, h: 12 }, sym, a);
+        for r in 0..6i32 {
+            fill_rect(buf, w, h, Rect { x: ix + 14 + r, y: iy + 22 + r, w: 18 - 2 * r, h: 2 }, sym, a);
+        }
+        fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 33, w: 22, h: 3 }, sym, a);
+        return;
+    }
+    match idx {
+        // 文件：页签 + 文件夹体
+        0 => {
+            rounded_rect(buf, w, h, Rect { x: ix + 9, y: iy + 12, w: 12, h: 5 }, 2.0, sym, a);
+            rounded_rect(buf, w, h, Rect { x: ix + 10, y: iy + 17, w: 26, h: 17 }, 3.0, sym, a);
+        }
+        // 终端：">_"（45° 双斜臂 + 下划线）
+        1 => {
+            for k in 0..6 {
+                fill_rect(buf, w, h, Rect { x: ix + 13 + k, y: iy + 13 + k, w: 2, h: 2 }, sym, a);
+                fill_rect(buf, w, h, Rect { x: ix + 13 + k, y: iy + 25 - k, w: 2, h: 2 }, sym, a);
+            }
+            fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 30, w: 20, h: 2 }, sym, a);
+        }
+        // 浏览器：球体 = 圆环 + 经纬
+        2 => {
+            rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: 30 }, 15.0, sym, a);
+            fill_rect(buf, w, h, Rect { x: ix + 21, y: iy + 12, w: 3, h: 22 }, sym, a);
+            fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 21, w: 22, h: 3 }, sym, a);
+        }
+        // 音乐：双音符（两条符干 + 符头 + 横梁）
+        3 => {
+            fill_rect(buf, w, h, Rect { x: ix + 17, y: iy + 13, w: 3, h: 19 }, sym, a);
+            fill_rect(buf, w, h, Rect { x: ix + 26, y: iy + 13, w: 3, h: 19 }, sym, a);
+            fill_rect(buf, w, h, Rect { x: ix + 17, y: iy + 13, w: 12, h: 4 }, sym, a);
+            rounded_rect(buf, w, h, Rect { x: ix + 9, y: iy + 27, w: 13, h: 9 }, 4.0, sym, a);
+            rounded_rect(buf, w, h, Rect { x: ix + 18, y: iy + 27, w: 13, h: 9 }, 4.0, sym, a);
+        }
+        // 设置：齿轮 = 外环 + 内环 + 四齿（已装应用也走这一支，与原来一致）
+        _ => {
+            rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, sym, a);
+            rounded_outline(buf, w, h, Rect { x: ix + 16, y: iy + 16, w: 14, h: 14 }, 7.0, sym, a);
+            for (tx, ty) in [(21, 8), (21, 33), (8, 21), (33, 21)] {
+                fill_rect(buf, w, h, Rect { x: ix + tx, y: iy + ty, w: 5, h: 5 }, sym, a);
+            }
+        }
+    }
+}
+
 pub struct Renderer {
     bg: Vec<u32>,
     frames_since_bg: u32,
@@ -1263,6 +1359,8 @@ pub struct Renderer {
     /// 背景缓存需要重建（主题切换等）。惰性标记：下一帧 `prepare_background` 自动处理，
     /// 免得为切个主题把 `w/h` 传遍所有调用点。
     pub bg_dirty: bool,
+    /// 桌面图标本帧的命中区（矩形 → 应用序号）。默认桌面**不开窗口**，图标是主要入口。
+    pub desktop_icons: Vec<(Rect, usize)>,
     /// 控制中心本帧登记的可交互项
     pub control_hits: Vec<(Rect, ControlHit)>,
     /// 中文输入法当前状态（面板要显示开关；真值在事件循环的 `ime` 里，主循环负责同步）
@@ -1312,6 +1410,7 @@ impl Renderer {
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
             control_panel: Rect { x: 0, y: 0, w: 0, h: 0 },
             bg_dirty: false,
+            desktop_icons: Vec::new(),
             control_hits: Vec::new(),
             ime_on: false,
             dropdown: None,
@@ -1496,6 +1595,9 @@ impl Renderer {
         }
         mark!("windows");
 
+        // 桌面图标（默认桌面无窗口，它们是主要入口）—— 画在壁纸之上、窗口之下
+        self.draw_desktop_icons(buf, w, h, ui, tr);
+        mark!("deskicons");
         self.draw_menubar(buf, w, h, ui, tr);
         mark!("menubar");
         // 控制中心（P4）：画在顶栏之上、其它窗口之下 —— 弹出面板的常规层级
@@ -3216,6 +3318,50 @@ impl Renderer {
     ///
     /// 图标底座走中性灰阶（§1：极光只留给壁纸、AI 元素、品牌标识），
     /// 区分度由造型与状态（hover 提亮、运行中青色微光）承担，不再用彩色拟物色块。
+    /// 桌面图标：默认桌面**不开任何窗口**，图标是打开应用的主要入口（Windows/macOS 的桌面语义）。
+    ///
+    /// 只放**真实能打开**的三项；图形与 Dock 共用 [`draw_app_icon`]。
+    /// 图标贴在左侧竖排（Windows 的桌面图标就是左侧竖列），顶部避开顶栏。
+    fn draw_desktop_icons(
+        &mut self,
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        ui: &UiState,
+        tr: Option<&TextRenderer>,
+    ) {
+        const ICON: i32 = 48;
+        const CELL_W: i32 = 96;
+        const CELL_H: i32 = ICON + 34;
+        self.desktop_icons.clear();
+        let x = 26;
+        let mut y = metric::MENUBAR_H as i32 + 20;
+        // 序号与 `open_app` 的映射一致：0 文件 / 1 终端 / 4 设置
+        for (idx, name) in [
+            (0usize, strings::WIN_FILES),
+            (1, strings::WIN_TERM),
+            (4, strings::WIN_SETTINGS),
+        ] {
+            let cell = Rect { x: x - 12, y: y - 6, w: CELL_W, h: CELL_H };
+            let tile = Rect { x, y, w: ICON, h: ICON };
+            let hovered = cell.contains(ui.mouse.0, ui.mouse.1);
+            // 悬停反馈：让"能点"这件事可见（浅底 + accent 描边）
+            if hovered {
+                rounded_rect(buf, w, h, cell, radius::SM, color::hairline(), 0.12);
+                rounded_outline(buf, w, h, cell, radius::SM, color::accent(), 0.35);
+            }
+            draw_app_icon(buf, w, h, tile, idx, false, false, hovered, false);
+            // 标签：深色文字（浅色壁纸上是白底黑字，深色主题下 color::text() 自动转浅）
+            if let Some(tr) = tr {
+                let tw = tr.measure(name, font::LABEL);
+                let tx = tile.x + ((ICON as f32 - tw) / 2.0) as i32;
+                tr.draw(buf, w, h, tx as f32, (y + ICON + 6) as f32, name, font::LABEL, color::text(), 0.95);
+            }
+            self.desktop_icons.push((cell, idx));
+            y += CELL_H;
+        }
+    }
+
     fn draw_dock(&mut self, buf: &mut [u32], w: usize, h: usize, open_titles: &[&str], ui: &UiState, _tr: Option<&TextRenderer>) {
         let mut apps: Vec<&str> = vec![
             strings::WIN_FILES,
@@ -3260,84 +3406,8 @@ impl Renderer {
             let hovered = tile.contains(ui.mouse.0, ui.mouse.1);
             let running = open_titles.contains(name);
 
-            if *name == strings::INSTALLER {
-                // 安装是 Live ISO 里唯一需要被一眼找到的动作：琥珀警示色（P0：纯色去渐变）
-                rounded_rect(buf, w, h, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, [196, 142, 67], if hovered { 1.0 } else { 0.92 });
-            } else {
-                // 图标底座（P0：纯色，去"上亮下暗"渐变与紫色系——
-                // "彩色渐变底座"正是 AI 产品味的来源之一）
-                let base: [u8; 3] = if i >= DOCK_BUILTINS {
-                    [61, 149, 149] // 已装应用：青绿，与内建一眼可分
-                } else {
-                    match i {
-                        0 => [99, 164, 206],  // 文件：青蓝
-                        1 => [82, 118, 168],  // 终端：钢青
-                        2 => [88, 148, 224],  // 浏览器：蓝
-                        3 => [108, 122, 148], // 音乐：雾灰蓝（P0：由紫色改）
-                        _ => [116, 125, 147], // 设置：蓝灰
-                    }
-                };
-                rounded_rect(buf, w, h, Rect { x: ix, y: iy, w: metric::DOCK_ICON, h: metric::DOCK_ICON }, radius::MD, base, 0.97);
-                // 顶部内高光（P0：0.24 → 0.08，去"玻璃高光"感）
-                fill_rect(buf, w, h, Rect { x: ix + 4, y: iy + 1, w: metric::DOCK_ICON - 8, h: 1 }, color::HIGHLIGHT, 0.08);
-                if hovered {
-                    rounded_rect(buf, w, h, tile, radius::MD, color::hairline(), 0.14);
-                }
-                if running {
-                    // 运行中：青色微光（状态反馈，不是装饰）
-                    rounded_rect(buf, w, h, tile, radius::MD, color::accent(), 0.10);
-                }
-            }
-            rounded_outline(buf, w, h, tile, radius::MD, color::hairline(), if hovered { 0.30 } else { 0.18 });
-
-            // 白色几何符号（全部纯 rect 绘制，不依赖字体字形覆盖）
-            let sym = color::HIGHLIGHT;
-            let a = 0.95;
-            match i {
-                // 文件：页签 + 文件夹体
-                0 => {
-                    rounded_rect(buf, w, h, Rect { x: ix + 9, y: iy + 12, w: 12, h: 5 }, 2.0, sym, a);
-                    rounded_rect(buf, w, h, Rect { x: ix + 10, y: iy + 17, w: 26, h: 17 }, 3.0, sym, a);
-                }
-                // 终端：">_"（45° 双斜臂 + 下划线）
-                1 => {
-                    for k in 0..6 {
-                        fill_rect(buf, w, h, Rect { x: ix + 13 + k, y: iy + 13 + k, w: 2, h: 2 }, sym, a);
-                        fill_rect(buf, w, h, Rect { x: ix + 13 + k, y: iy + 25 - k, w: 2, h: 2 }, sym, a);
-                    }
-                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 30, w: 20, h: 2 }, sym, a);
-                }
-                // 浏览器：球体 = 圆环 + 经纬
-                2 => {
-                    rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: 30 }, 15.0, sym, a);
-                    fill_rect(buf, w, h, Rect { x: ix + 21, y: iy + 12, w: 3, h: 22 }, sym, a);
-                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 21, w: 22, h: 3 }, sym, a);
-                }
-                // 音乐：双音符（两条符干 + 符头 + 横梁）
-                3 => {
-                    fill_rect(buf, w, h, Rect { x: ix + 17, y: iy + 13, w: 3, h: 19 }, sym, a);
-                    fill_rect(buf, w, h, Rect { x: ix + 26, y: iy + 13, w: 3, h: 19 }, sym, a);
-                    fill_rect(buf, w, h, Rect { x: ix + 17, y: iy + 13, w: 12, h: 4 }, sym, a);
-                    rounded_rect(buf, w, h, Rect { x: ix + 9, y: iy + 27, w: 13, h: 9 }, 4.0, sym, a);
-                    rounded_rect(buf, w, h, Rect { x: ix + 18, y: iy + 27, w: 13, h: 9 }, 4.0, sym, a);
-                }
-                _ if *name == strings::INSTALLER => {
-                    // 安装：向下箭头写入磁盘底座
-                    fill_rect(buf, w, h, Rect { x: ix + 20, y: iy + 10, w: 6, h: 12 }, sym, a);
-                    for r in 0..6i32 {
-                        fill_rect(buf, w, h, Rect { x: ix + 14 + r, y: iy + 22 + r, w: 18 - 2 * r, h: 2 }, sym, a);
-                    }
-                    fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 33, w: 22, h: 3 }, sym, a);
-                }
-                // 设置：齿轮 = 外环 + 内环 + 四齿
-                _ => {
-                    rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, sym, a);
-                    rounded_outline(buf, w, h, Rect { x: ix + 16, y: iy + 16, w: 14, h: 14 }, 7.0, sym, a);
-                    for (tx, ty) in [(21, 8), (21, 33), (8, 21), (33, 21)] {
-                        fill_rect(buf, w, h, Rect { x: ix + tx, y: iy + ty, w: 5, h: 5 }, sym, a);
-                    }
-                }
-            }
+            // 底座 + 白色几何符号：与**桌面图标共用**同一函数（两处各画一套必然走形）
+            draw_app_icon(buf, w, h, tile, i, i >= DOCK_BUILTINS, *name == strings::INSTALLER, hovered, running);
 
             // 运行指示点：真实反映打开的窗口（强调色，品牌点缀）
             if running {
