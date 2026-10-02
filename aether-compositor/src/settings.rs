@@ -212,7 +212,7 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "关于", group: "系统", enabled: true },
     PageDef { title: "网络", group: "网络与共享", enabled: true },
     PageDef { title: "应用", group: "应用", enabled: true },
-    PageDef { title: "权限与隐私", group: "隐私和安全性", enabled: false },
+    PageDef { title: "权限与隐私", group: "隐私和安全性", enabled: true },
 ];
 
 /// 左栏默认选中的页（第一个可用的页）。
@@ -382,13 +382,18 @@ mod tests {
         }
         assert_eq!(s.tz_offset_min, TZ_MAX, "时区必须夹在 +14:00");
 
-        // 可用页能切、不可用页拒绝切（否则左栏"待接入"会点出空页）
-        let enabled = PAGES.iter().position(|p| p.enabled).unwrap();
-        let disabled = PAGES.iter().position(|p| !p.enabled).unwrap();
+        // 可用页能切；不可用页拒绝切（否则左栏"待接入"会点出空页）。
+        //
+        // 2026-10-02：网络 / 应用 / 权限与隐私三页全部接入后，**已经没有任何不可用页**。
+        // 所以这条规则改成**有条件断言**：有不可用页才验，没有就跳过 ——
+        // 规则本身仍由 `apply_hit` 保证（将来若再加占位页，这里会自动重新生效）。
+        let enabled = PAGES.iter().position(|p| p.enabled).expect("至少要有一个可用页");
         apply_hit(&mut s, &mut page, SettingsHit::Page(enabled));
         assert_eq!(page, enabled);
-        apply_hit(&mut s, &mut page, SettingsHit::Page(disabled));
-        assert_eq!(page, enabled, "不可用页不该被切过去");
+        if let Some(disabled) = PAGES.iter().position(|p| !p.enabled) {
+            apply_hit(&mut s, &mut page, SettingsHit::Page(disabled));
+            assert_eq!(page, enabled, "不可用页不该被切过去");
+        }
         apply_hit(&mut s, &mut page, SettingsHit::Page(9999));
         assert_eq!(page, enabled, "越界页索引必须被忽略");
         let _ = start;

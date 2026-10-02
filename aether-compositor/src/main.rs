@@ -36,6 +36,8 @@ mod widgets;
 mod settings;
 /// 网络状态（P4.2 设置中心「网络」页）：读内核真值（/sys/class/net、/proc/net/*），不新增 IPC。
 mod net;
+/// 审计日志（P4.3 设置中心「权限与隐私」页）：读 aetherd 的审计日志，只读展示，不新增 IPC。
+mod audit;
 // Wayland 协议实现（3.1 spike）：wire/object 是纯逻辑，跨平台可测
 mod wayland;
 

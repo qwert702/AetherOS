@@ -2195,6 +2195,62 @@ fn draw_settings_content(
     }
 
     match title {
+        "权限与隐私" => {
+            // 数据来源：aetherd 权限门的审计日志（`perm::Gate::audit` 追加写），
+            // 解析与单测见 `audit.rs`。**只读展示** —— 这一页不改任何权限。
+            //
+            // 三条如实原则：① 没记录就说"暂无记录"，不显示空表；② 坏行被**计数并显示**，
+            // 不静默丢弃（审计页最不该做的事就是假装没有记录）；③ 时间只说"多久以前"，
+            // 不编造日历时间（Unix 秒转本地日期要一套历法换算，与这一页的目的无关）。
+            // `now_utc_secs()` 是 i64（时钟可能被回拨成负数）；相对时间只需非负值。
+            let now = crate::text::now_utc_secs().max(0) as u64;
+            let info = crate::audit::read(crate::audit::AUDIT_PATH, 8);
+            widgets::group_header(buf, w, h, content.x + 24, ry, "审计日志", Some(tr));
+            ry += 24;
+            if !info.exists {
+                tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
+                        "暂无审计记录（本会话还没发生工具调用）。", font::CAPTION, color::text_dim(), 0.9);
+                ry += 26;
+            } else {
+                let mut line = format!("共 {} 条 · 被拒绝 {} · 失败 {}", info.total, info.denied, info.failed);
+                if info.unparsed > 0 {
+                    line.push_str(&format!(" · 无法解析 {}", info.unparsed));
+                }
+                tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, &line, font::BODY, color::text(), 0.92);
+                ry += 22;
+                tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32, &info.path, font::CAPTION, color::text_dim(), 0.7);
+                ry += 26;
+                for e in &info.recent {
+                    let dot = if e.is_denied() {
+                        color::close_hover() // 被拒绝：红（与标题栏关闭键同一支红，语义一致）
+                    } else if e.is_failed() {
+                        color::text_dim() // 失败：中性灰（不为它再造一个颜色）
+                    } else {
+                        color::accent()
+                    };
+                    rounded_rect(buf, w, h, Rect { x: content.x + 22, y: ry + 5, w: 6, h: 6 }, 3.0, dot, 0.95);
+                    let head = format!("{} · {} · {}", e.level, e.tool, e.verdict);
+                    tr.draw(buf, w, h, (content.x + 36) as f32, ry as f32, &head, font::CAPTION, color::text(), 0.9);
+                    let age = e.age_text(now);
+                    let aw = tr.measure(&age, font::CAPTION);
+                    tr.draw(buf, w, h, (content.x + row_w + 10) as f32 - aw, ry as f32, &age, font::CAPTION, color::text_dim(), 0.8);
+                    ry += 20;
+                    if !e.args.is_empty() {
+                        let a: String = e.args.chars().take(52).collect();
+                        let a = if e.args.chars().count() > 52 { format!("{a}…") } else { a };
+                        tr.draw(buf, w, h, (content.x + 36) as f32, ry as f32, &a, font::CAPTION, color::text_dim(), 0.6);
+                        ry += 18;
+                    }
+                    if ry > content.y + content.h - 40 {
+                        break;
+                    }
+                }
+            }
+            ry += 8;
+            tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
+                    "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
+                    font::CAPTION, color::text_dim(), 0.7);
+        }
         "网络" => {
             // 真值来自内核（`/sys/class/net/*`、`/proc/net/route`、`/proc/net/fib_trie`、
             // `/etc/resolv.conf`）—— 解析逻辑与单测见 `net.rs`。
@@ -4331,12 +4387,14 @@ mod blit_tests {
             assert!(rr.w > 0 && rr.h > 0, "命中区不能为空：{id:?}");
         }
 
-        // 3) 不可用的页不能出现在命中区里（点了不该有反应）
-        let disabled = crate::settings::PAGES.iter().position(|p| !p.enabled).unwrap();
-        assert!(
-            !hits.iter().any(|(_, x)| matches!(x, H::Page(i) if *i == disabled)),
-            "不可用页不该登记命中区"
-        );
+        // 3) 不可用的页不能出现在命中区里（点了不该有反应）。
+        //    2026-10-02：三页全部接入后已无不可用页 —— 有才断言，没有就跳过。
+        if let Some(disabled) = crate::settings::PAGES.iter().position(|p| !p.enabled) {
+            assert!(
+                !hits.iter().any(|(_, x)| matches!(x, H::Page(i) if *i == disabled)),
+                "不可用页不该登记命中区"
+            );
+        }
 
         // 4) 两栏结构：左栏底（inset 0.55）应比右侧页面（保持底色）暗
         let lum = |p: u32| ((p >> 16) & 0xFF) + ((p >> 8) & 0xFF) + (p & 0xFF);
