@@ -18,8 +18,12 @@ pub const PERSIST_CANDIDATES: [&str; 4] =
 /// 我们自己的持久化分区的 ext4 卷标。
 ///
 /// **必须与 `aether-install::PERSIST_LABEL` 一致**（安装器用 `mkfs.ext4 -L` 写入）。
-/// 两处各有一份常量，是因为 aether-init 不该依赖 aether-install（那是可执行 crate）；
-/// 下面的单测把这个约定钉住，改一处不改另一处会红。
+/// 两处各有一份常量，是因为 aether-init 不该依赖 aether-install（那是可执行 crate），
+/// 而 aether-install 连 aether-ipc 都不依赖（只为这一个常量拉进 serde 不划算）。
+/// 因此**两侧各钉一次字面量**：本文件有 `persist_label_and_mount_opts_follow_contract`，
+/// aether-install 有 `persist_label_matches_init_convention`。
+/// 只改一侧 ⇒ 那一侧的测试变红 —— 这是"改一处会红"能达到的最好效果
+/// （真正的跨 crate 钉法需要共享常量所在的新 crate，见审计报告附录 C 的残余项）。
 pub const PERSIST_LABEL: &str = "AETHER";
 
 /// 读设备头部这么多字节就够（ext4 超级块在 1024，卷标在 1024+0x78）。
@@ -28,9 +32,19 @@ const EXT_HEAD_LEN: usize = 2048;
 /// /var 下需要存在的目录（挂载覆盖后可能为空，运行时补齐）。
 pub const VAR_DIRS: [&str; 3] = ["/var/log/aether", "/var/diag", "/var/tmp"];
 
-/// 挂载选项：持久分区只放日志/诊断/回收站，没有任何需要设备节点、setuid 或可执行的东西。
-/// 少一项就等于给"从持久分区执行代码"留了一条路（2026-10-02 审计 H-3）。
-pub const PERSIST_MOUNT_OPTS: &str = "nodev,nosuid,noexec";
+/// 挂载选项。
+///
+/// **为什么是 nodev,nosuid 而不是 nodev,nosuid,noexec**（对抗审查修正）：
+/// 这个分区上不只是日志/诊断/回收站 —— `aetherd` 的**已装应用**就住在 `/var/apps`
+/// （`aetherd::apps::DEFAULT_DIR`），包装脚本 `exec /var/apps/<id>/<entry>` 并设
+/// `LD_LIBRARY_PATH`。`noexec` 会同时挡掉 execve 与 `dlopen` 的 PROT_EXEC 映射，
+/// 于是"装个 htop 跑起来"这个已实测宣传的功能，在带持久分区安装后就失效了。
+/// `nodev`（设备节点）与 `nosuid`（setuid/setgid 位）才是这一层真正需要的两个约束：
+/// 它们挡掉"用持久分区提权"，而不影响正常程序执行。
+///
+/// 残余风险（已知、有理由）：该分区可写且可执行 ⇒ 能往它写的人可以留持久化代码。
+/// 但"能写"已经要求 root（或经 AI 的 L2 确认写白名单），所以在当前单用户模型下不构成升级路径。
+pub const PERSIST_MOUNT_OPTS: &str = "nodev,nosuid";
 
 /// fsck 退出码 ≥ 此值表示"有未纠正的错误"（e2fsck 语义：4 = 未修复，8 = 操作错误）。
 const FSCK_UNCORRECTED_CODE: i32 = 4;
@@ -268,13 +282,18 @@ mod tests {
     /// H-3 回归：卷标与挂载选项的约定不能被改坏。
     #[test]
     fn persist_label_and_mount_opts_follow_contract() {
-        // 必须与 aether-install 的 `mkfs.ext4 -L` 一致（两处常量，靠这条钉住）
+        // 必须与 aether-install 的 `mkfs.ext4 -L` 一致（两侧各钉一次字面量）
         assert_eq!(PERSIST_LABEL, "AETHER");
-        // 三项缺一不可：nodev/nosuid/noexec 合起来才挡住"从持久分区执行代码"
+        // 这两项挡掉"用持久分区提权"：设备节点与 setuid 位
         let opts: Vec<&str> = PERSIST_MOUNT_OPTS.split(',').collect();
-        for want in ["nodev", "nosuid", "noexec"] {
+        for want in ["nodev", "nosuid"] {
             assert!(opts.contains(&want), "挂载选项缺少 {want}：{PERSIST_MOUNT_OPTS}");
         }
-        assert_eq!(opts.len(), 3, "不应有意外选项：{PERSIST_MOUNT_OPTS}");
+        // **不能有 noexec**：/var/apps 上的已装应用要能 execve（见常量文档）
+        assert!(
+            !opts.contains(&"noexec"),
+            "不能加 noexec —— 它会让 /var/apps 里已装的应用无法运行：{PERSIST_MOUNT_OPTS}"
+        );
+        assert_eq!(opts.len(), 2, "不应有意外选项：{PERSIST_MOUNT_OPTS}");
     }
 }

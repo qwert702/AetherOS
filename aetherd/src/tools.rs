@@ -312,7 +312,13 @@ pub fn registry() -> Vec<Tool> {
 ///
 /// 判定依据是**资源敏感度**而不是工具等级：这些工具读写的是"用户环境里的数据"，
 /// L1 的自动放行只对"已确认身份的调用方"成立。
-const TRUSTED_CHANNEL_TOOLS: &[&str] = &["clipboard_read", "clipboard_write"];
+///
+/// `read_file` 是 2026-10-02 对抗审查补进来的：它与 `clipboard_read` 同为
+/// `sensitive_output`，但等级是 **L0**（免确认）—— 于是"未注册连接以 root 身份
+/// 代读 /home 下任意文件（含别的用户家目录）"是一条现成的原语。合成器（唯一正牌
+/// 交互方）始终先注册，所以对正常使用没有影响；`aetherd chat` 这类无 UI 的命令行
+/// 用法会失去读文件能力，这是有意的收紧。
+const TRUSTED_CHANNEL_TOOLS: &[&str] = &["clipboard_read", "clipboard_write", "read_file"];
 
 /// 按名字查询该工具是否需要可信通道（`agent_run` 与 `server::ToolCall` 共用同一条判定）。
 pub fn requires_trusted_channel(name: &str) -> bool {
@@ -349,7 +355,10 @@ fn fingerprint(s: &str) -> u64 {
 ///
 /// 保留长度 + 指纹，是为了不牺牲可追溯性：仍能回答"写的是不是同一份内容""多大"。
 /// 注意 `NeedsConfirmation` 发给 UI 的 `arguments` **不脱敏** —— 用户要看到自己批准的是什么。
-fn audit_args(tool: &str, args: &serde_json::Value) -> String {
+///
+/// `pub` 是因为**所有**写审计的地方都要用它（执行路径、用户拒绝路径……）：
+/// 只在其中一处脱敏等于没脱敏（自查时发现 `ConfirmCancel` 漏了）。
+pub fn audit_args(tool: &str, args: &serde_json::Value) -> String {
     /// (工具名, 需要脱敏的字段)。
     const SENSITIVE_FIELDS: &[(&str, &[&str])] = &[
         ("clipboard_write", &["text"]),
@@ -396,7 +405,6 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
     let Some(tool) = registry().into_iter().find(|t| t.name == name) else {
         bail!("未知工具: {name}");
     };
-    let args_str = audit_args(name, args);
     let verdict = gate.judge(name, tool.level, args, approved);
     let verdict_str = match &verdict {
         Verdict::Allowed => verdict::ALLOWED,
@@ -404,7 +412,8 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
         Verdict::Denied(_) => verdict::DENIED,
     };
     // 审计失败不阻断执行，但必须显式可见：错误随输出返回调用方，并落 stderr。
-    let audit_warn = gate.audit(name, tool.level, &args_str, verdict_str).err().map(|e| {
+    // 参数由 `audit_call` 内部脱敏（不在这里传字符串 —— 见该方法的说明）。
+    let audit_warn = gate.audit_call(name, tool.level, args, verdict_str).err().map(|e| {
         eprintln!("[aetherd] 审计日志写入失败: {e}");
         format!("⚠ 审计日志写入失败（{e}），本次操作未留痕\n")
     });
@@ -417,7 +426,7 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
             Err(e) => {
                 // 执行失败也留痕：否则"闸门放行"与"真的读到了"在审计里无法区分
                 // （例如 read_file 通过闸门但被路径白名单拒绝，只记 allowed 会误导）
-                if let Err(ae) = gate.audit(name, tool.level, &args_str, verdict::FAILED) {
+                if let Err(ae) = gate.audit_call(name, tool.level, args, verdict::FAILED) {
                     eprintln!("[aetherd] 审计日志写入失败: {ae}");
                 }
                 Err(e)
@@ -981,7 +990,7 @@ mod tests {
     fn every_tool_is_classified_for_trusted_channel() {
         const NOT_TRUSTED: &[&str] = &[
             "file_write", "file_delete", "file_rename", "trash_list", "trash_restore",
-            "sys_info", "read_file", "sys_probe", "desktop", "install_disk",
+            "sys_info", "sys_probe", "desktop", "install_disk",
             "app_list", "app_install", "app_remove",
         ];
         let names: Vec<&str> = registry().iter().map(|t| t.name).collect();
@@ -996,10 +1005,15 @@ mod tests {
             TRUSTED_CHANNEL_TOOLS.len() + NOT_TRUSTED.len(),
             "分类表与注册表数量不一致（新增或删除了工具？）"
         );
-        // 剪贴板两个端点必须被判定为需要可信通道；只读探针不应被误判
+        // 剪贴板两个端点必须被判定为需要可信通道
         assert!(requires_trusted_channel("clipboard_read"));
         assert!(requires_trusted_channel("clipboard_write"));
-        assert!(!requires_trusted_channel("read_file"));
+        // read_file 也一样（2026-10-02 对抗审查补入）：它与 clipboard_read 同为
+        // sensitive_output，却是 L0 免确认 —— 不拦就是"未注册连接以 root 代读用户家目录"。
+        assert!(requires_trusted_channel("read_file"));
+        // 只读探针不应被误判（否则桌面状态查询会被无谓地挡住）
+        assert!(!requires_trusted_channel("sys_info"));
+        assert!(!requires_trusted_channel("sys_probe"));
     }
 
     /// M-1 回归：审计参数必须脱敏 —— 剪贴板明文与写入内容都不得逐字落盘。
@@ -1034,8 +1048,7 @@ mod tests {
     /// 分两层：凭证类判定是纯函数（与平台无关），入口层则必须用**本平台白名单内**
     /// 的路径，否则报的是"不在允许范围"而不是"凭证类"，测不到真正想测的那一层。
     #[test]
-    fn credential_paths_including_ui_key_are_rejected() {
-        for p in [
+    fn credential_paths_including_ui_key_are_rejected() {        for p in [
             "/var/log/aether/ui.key",
             "/run/aether/ui.key",
             "/etc/aether/model.json",
@@ -1061,6 +1074,31 @@ mod tests {
                 .to_string();
             assert!(err.contains("凭证类"), "{p} 入口实得: {err}");
         }
+    }
+
+    /// 拒绝清单必须与**真实的密钥路径**绑定（代码审查建议）。
+    ///
+    /// 否则把 `aether_ipc::UI_KEY_PATH` 改成别的文件名时，上面那条测试照绿 ——
+    /// 它用的是硬编码字面量，测不到"路径改了但清单没跟上"，而 H-1 会原样复现。
+    #[test]
+    fn deny_list_is_bound_to_the_real_key_path() {
+        let real = std::path::Path::new(aether_ipc::UI_KEY_PATH);
+        assert!(
+            is_credential_path(real),
+            "真实密钥路径 {} 必须被判为凭证类",
+            aether_ipc::UI_KEY_PATH
+        );
+        let name = real.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        assert!(
+            !name.is_empty(),
+            "UI_KEY_PATH 必须有文件名：{}",
+            aether_ipc::UI_KEY_PATH
+        );
+        assert!(
+            READ_DENY_SUBPATHS.iter().any(|d| name.contains(d) || d.contains(name)),
+            "拒绝清单里没有任何条目能覆盖 {name}：{READ_DENY_SUBPATHS:?}\
+             —— 改了密钥路径就必须同步改这里，否则 AI 又能读到密钥"
+        );
     }
 
     #[test]

@@ -215,8 +215,17 @@ def gate_crates(stats: Sequence[CrateStat]) -> bool:
                     f"实测 {want[0]:,} 行 / {want[1]} 文件"
                 )
                 bad += 1
+        # **完整性断言**（代码审查发现）：只逐行比对的话，把某个 crate 整行删掉，
+        # 剩下的行依然全部一致 → 门禁报 OK。这是"门禁给虚假保证"的典型形态，
+        # 所以这里要求两侧的 crate 集合完全相等。
+        listed = {r[0] for r in index_rows}
+        missing = sorted(set(actual) - listed)
+        if missing:
+            print(f"[FAIL] INDEX.md 汇总表漏了 {len(missing)} 个 crate：{missing}"
+                  "（删掉一行不算通过）")
+            bad += len(missing)
         if bad == 0:
-            print(f"[ OK ] INDEX.md 逐 crate：{len(index_rows)} 个 crate 全部一致")
+            print(f"[ OK ] INDEX.md 逐 crate：{len(index_rows)} 个 crate 全部一致（集合相等）")
         else:
             ok = False
 
@@ -237,8 +246,13 @@ def gate_crates(stats: Sequence[CrateStat]) -> bool:
             if got != want[0]:
                 print(f"[FAIL] README.md: `{name}` 声明 {got:,} 行，实测 {want[0]:,} 行")
                 bad += 1
+        listed = {r[0] for r in readme_rows}
+        missing = sorted(set(actual) - listed)
+        if missing:
+            print(f"[FAIL] README.md 组件表漏了 {len(missing)} 个 crate：{missing}")
+            bad += len(missing)
         if bad == 0:
-            print(f"[ OK ] README.md 逐 crate：{len(readme_rows)} 个 crate 行数一致")
+            print(f"[ OK ] README.md 逐 crate：{len(readme_rows)} 个 crate 行数一致（集合相等）")
         else:
             ok = False
     return ok
@@ -254,6 +268,7 @@ def gate_files(stats: Sequence[CrateStat]) -> bool:
     section: str | None = None
     checked = 0
     mismatches: list[str] = []
+    seen: set[str] = set()
     for line in INDEX_MD.read_text(encoding="utf-8").splitlines():
         head = SECTION_INDEX.match(line)
         if head:
@@ -263,6 +278,7 @@ def gate_files(stats: Sequence[CrateStat]) -> bool:
         if not row or section is None:
             continue
         full = f"{section}/{row.group(1)}"
+        seen.add(full)
         want = actual.get(full)
         if want is None:
             mismatches.append(f"{full}: 表里有，但仓库里没有这个文件")
@@ -271,6 +287,16 @@ def gate_files(stats: Sequence[CrateStat]) -> bool:
         declared = int(row.group(2).replace(",", ""))
         if declared != want:
             mismatches.append(f"{full}: 声明 {declared:,} / 实测 {want:,}")
+    # **双向断言**（代码审查发现）：原来的实现只做"表 → 仓库"单向核对，
+    # 于是 (a) 删掉表里某一行、(b) 仓库新增文件但表里没登记、(c) 格式漂移让
+    # 正则匹配不上（该行静默脱管）这三种情况全都报 OK。这里要求两边集合相等。
+    unchecked = sorted(set(actual) - seen)
+    if unchecked:
+        print(f"[FAIL] INDEX.md 逐文件表漏了 {len(unchecked)} 个源文件（新增文件必须登记，"
+              "格式也必须让正则认得出）：")
+        for m in unchecked[:MAX_REPORTED_FILE_MISMATCHES]:
+            print(f"        {m}")
+        return False
     if mismatches:
         print(f"[FAIL] INDEX.md 逐文件行数：{len(mismatches)} 条不一致（已核对 {checked} 条）")
         for m in mismatches[:MAX_REPORTED_FILE_MISMATCHES]:

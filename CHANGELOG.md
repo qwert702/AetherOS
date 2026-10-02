@@ -17,7 +17,7 @@
 
 **首个公开版本。** 可引导 ISO，QEMU / VirtualBox / VMware 三个平台实测开机；可安装到虚拟磁盘后独立引导。
 
-*First public release. Bootable ISO verified on QEMU, VirtualBox and VMware; installable to a virtual disk and bootable from it.*
+*First public release. Bootable ISO verified on QEMU, VirtualBox and VMware. ~~installable to a virtual disk and bootable from it~~ — **corrected 2026-10-02: the published ISO is not isohybrid, so disk installation does not work; see the note below.***
 
 **⚠️ 2026-10-02 更正**：上面"可安装到虚拟磁盘后独立引导"**对本版本发布的那个 ISO 不成立**。
 实测该资产（40,327,168 字节 / sha256 `7c50f481…`）首 512 字节无 MBR 签名，即**未经 `isohybrid` 处理**，

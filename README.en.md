@@ -16,8 +16,8 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 
 | | |
 |---|---|
-| **Scale** | 25,545 lines of Rust / 45 source files / 7 crates (measured 2026-10-02) |
-| **Verification** | 385 unit tests green · 0 compiler warnings on both targets · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
+| **Scale** | 25,750 lines of Rust / 45 source files / 7 crates (measured 2026-10-02) |
+| **Verification** | 387 unit tests green · 0 compiler warnings on Windows and on 6/7 crates for musl (`aetherd` cannot be cross-checked because of ring) · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
 | **Artifact** | bootable ISO ≈ 38.5 MB, tested booting in QEMU, VirtualBox and VMware |
 
 ## What makes it unusual
@@ -25,7 +25,7 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 - **The whole user space is home-grown.** The compositor rasterizes in software over `fbdev` and needs no GPU; the VT/ANSI parser, the PTY glue layer, the Chinese input method, PID 1, the IPC protocol and the disk installer are all first-party code. None of the seven crates is glued together from an existing desktop stack.
 - **The AI is a first-class part of the system, not a chat window.** `aetherd` runs as a daemon and exposes 15 tools that actually operate the machine. Simple commands are answered by an offline rule-based intent channel (**no model call at all**); only complex requests reach an LLM, which is routed locally or to the cloud according to privacy and complexity.
 - **The permission model is the most carefully designed part of the system.** Four authorization levels (L0–L3), one-time confirmation tokens bound to both the tool and its arguments (5-minute expiry, single use), six distinct audit verdicts, and a rejection cooldown. The key invariant is **sensitive output is pinned local**: once `read_file` or `clipboard_read` results enter the context, every later round of that conversation stays on-device and never goes to the cloud. This was not inferred — the exfiltration path was demonstrated end to end with **two fake LLM endpoints and a canary file** (a 13-character input and two file reads, with the canary indeed arriving at the cloud endpoint), and the fixed behavior is pinned by two `router` unit tests.
-- **Verifiable, not "looks fine to me".** Beyond the 385 unit tests there is a **per-pixel regression gate over 19 archived walkthrough images** (fails on more than 0.02% difference), a 12 h 43 m stability soak (3,053 patrol rounds: 0 service exits, 0 restarts, 0 panics, no memory leak trend), and four full code-review rounds with **zero unresolved findings**.
+- **Verifiable, not "looks fine to me".** Beyond the 387 unit tests there is a **per-pixel regression gate over 19 archived walkthrough images** (fails on more than 0.02% difference), a 12 h 43 m stability soak (3,053 patrol rounds: 0 service exits, 0 restarts, 0 panics, no memory leak trend), and four full code-review rounds with **zero unresolved findings**.
 - **It really installs applications.** On a system with no package manager at all, it ships its own application package format (manifest + dependency preflight). Installed programs are immediately callable from `/usr/local/bin`, **an icon appears in the Dock**, and clicking it opens a terminal and runs the program.
 
 ## Quick start
@@ -57,6 +57,35 @@ On a Windows development machine, add `--offline` to `cargo`, otherwise it stall
 - **AI operations** — `aether-ops` patrols every 15 seconds, restarts unhealthy services, and writes a diagnosis report to disk.
 
 ![Chinese input method](docs/host-ui-light-ime.png)
+
+## Boundaries (what does *not* work yet)
+
+Written down so nobody misuses it — not self-deprecation. The full list lives in
+[`docs/HANDOVER.md`](docs/HANDOVER.md) and the "known gaps" section of [`INDEX.md`](INDEX.md).
+
+- **Stage**: every subsystem genuinely runs, but this is not yet a desktop that could replace
+  your daily machine.
+- **Tested in virtual machines only**: QEMU / VirtualBox / VMware were all exercised, and a
+  12 h 43 m stability soak passed — but **bare metal, real GPUs and real peripherals are untouched**.
+- **On-device interaction still needs verification**: file-manager `Delete`, terminal
+  drag-to-select-and-copy, and Chinese input inside the terminal are confirmed down to
+  compilation and source review only (`Delete`'s L2 confirmation chain is complete in code);
+  `--shot` produces static frames, so key presses and drags cannot be covered by it.
+- **No GPU acceleration**: everything is software-rasterised. A deliberate trade-off; the cost
+  is limited headroom for large repaints.
+- **No Wayland client support**: the desktop goes `DRM → fbdev`. A home-grown `wl_display`
+  subset spike exists (wire protocol, object table, `wl_shm` pixel reads, surfaces wired into
+  the render pipeline) but is not on the production path.
+- **AI is not wired to a real model**: the protocol layer is verified against two fake
+  endpoints (21 assertions); a real model is still to come.
+- **Disk installation does not work at the moment**: the whole-disk installer requires an
+  `isohybrid`-processed ISO, and the ISO published as v0.1.0 **was not processed that way**
+  (measured: no MBR signature in the first 512 bytes). The installer now **refuses before
+  touching the target disk** and explains why. Booting and the live desktop are unaffected.
+  `platform/build-iso.sh` now applies isohybrid with a self-check, so a rebuilt ISO will
+  support installation (see
+  [`docs/SECURITY-AUDIT-2026-10-02.md`](docs/SECURITY-AUDIT-2026-10-02.md), finding H-6).
+- `aether-shell` is an 11-line placeholder; shell duties currently sit inside the compositor.
 
 ## Application packages
 
@@ -142,7 +171,7 @@ Details, rules and boundaries are in [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.
 Key paths through the system:
 
 ```
-UI ──RegisterUi──▶ aetherd:7311 ──▶ UiRegistered    (prerequisite for clipboard / config hot reload)
+UI ──RegisterUi──▶ aetherd (/run/aetherd.sock, 0600) ──▶ UiRegistered    (prerequisite for clipboard / reading files / config hot reload; TCP 7311 still listens but is only used with AETHER_IPC_TCP=1)
 UI ──Chat────────▶ fast intent → router → llm → tools (up to 4 rounds)
                     perm gate (L0-L3) → aether-audit.log
    ◀──ChatChunk(channel) / Action / NeedsConfirmation(token)
@@ -156,11 +185,11 @@ aether-ops patrol ─▶ init service status + /var/log/aether ─▶ self-heali
 | Directory | Lines | Description | Milestone |
 |---|---|---|---|
 | `aether-compositor/` | 16,318 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
-| `aetherd/` | 5,992 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
-| `aether-init/` | 1,572 | PID 1 and service management | M3 |
+| `aetherd/` | 6,111 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
+| `aether-init/` | 1,627 | PID 1 and service management | M3 |
 | `aether-ops/` | 736 | AI operations and self-healing | M5 |
-| `aether-install/` | 579 | Disk installer | M6 |
-| `aether-ipc/` | 337 | System-wide IPC protocol | M0 |
+| `aether-install/` | 595 | Disk installer | M6 |
+| `aether-ipc/` | 352 | System-wide IPC protocol | M0 |
 | `aether-shell/` | 11 | Placeholder skeleton | M2 |
 | `platform/` | — | Buildroot external tree, rootfs overlay, ISO packaging | M3 |
 | `scripts/` | — | Host-side development, walkthrough images, end-to-end verification | ongoing |
@@ -193,8 +222,8 @@ A few invariants hold this together:
 
 | Method | Status |
 |---|---|
-| Unit tests | 385 green on Windows (measured 2026-10-02, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
-| Compiler warnings | 0 on both targets |
+| Unit tests | 387 green on Windows (measured 2026-10-02, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
+| Compiler warnings | 0 on Windows; 0 on the 6 crates that can be musl-checked (`aetherd` cannot: ring needs x86_64-linux-musl-gcc) |
 | Visual regression | 19 archived walkthrough images compared pixel by pixel, currently 19/19 with zero difference |
 | Code review | Four full and incremental review rounds, every finding fixed (zero unresolved); the consolidated report is [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |
 | End-to-end | Permission chain, installer, QEMU QMP keyboard/mouse injection plus screenshots |

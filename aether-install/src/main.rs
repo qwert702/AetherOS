@@ -36,7 +36,13 @@ pub const PERSIST_LBA_START: u32 = 65536;
 pub const PERSIST_MIN_SECTORS: u32 = 65536;
 /// 持久化分区类型（Linux native）。
 pub const PART_TYPE_LINUX: u8 = 0x83;
-/// 持久化分区卷标（aether-init 也据此识别）。
+/// 持久化分区卷标（aether-init 据此识别）。
+///
+/// **必须与 `aether-init::persist::PERSIST_LABEL` 保持一致**：两边各有一份常量
+/// （aether-init 不该依赖这个可执行 crate；这个 crate 连 aether-ipc 都不依赖，
+/// 只为常量把 serde 拉进来不划算）。因此**两侧各钉一次字面量** —— 本文件有
+/// `persist_label_matches_init_convention`，aether-init 有同名契约测试。
+/// 只改一侧，那一侧就会红。
 pub const PERSIST_LABEL: &str = "AETHER";
 /// 持久化分区的挂载点（安装期）。
 pub const PERSIST_MNT: &str = "/mnt/aether-persist";
@@ -412,6 +418,16 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 卷标必须与 `aether-init::persist::PERSIST_LABEL` 一致。
+    ///
+    /// 这里钉的是**字面量**：aether-init 那边有同名契约测试。两侧各钉一次，
+    /// 于是"只改一侧"必然让那一侧变红（代码审查指出：只在一侧断言钉不住跨 crate 约定）。
+    /// 真正的共享常量需要新 crate，收益不抵成本，见审计报告附录 C 的残余项。
+    #[test]
+    fn persist_label_matches_init_convention() {
+        assert_eq!(PERSIST_LABEL, "AETHER");
     }
 
     /// 造一个与真实 isohybrid 镜像一致的 MBR：第 1 项类型 0x17、0..59392 扇区。

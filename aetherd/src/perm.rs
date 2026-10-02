@@ -85,6 +85,27 @@ fn deny_key(tool: &str, args: &serde_json::Value) -> String {
     format!("{tool}\u{1}{args}")
 }
 
+/// 把目录权限收紧到 `mode`，**不跟随符号链接**。
+///
+/// 为什么需要它（对抗审查发现）：`set_permissions` 会跟随符号链接 —— `/var` 挂在
+/// 外部持久分区上时，攻击者放一个 `log -> /etc`，root 就会把 `/etc` 改成 0700。
+/// 这里先判"路径本身是不是链接"，是就拒绝。
+///
+/// 说明：Linux 上更彻底的做法是 `O_NOFOLLOW|O_DIRECTORY` 打开再 fchmod（无竞态，
+/// 见 `aether-init::logtee::set_dir_mode_no_follow`）。aetherd 不为此引入 libc 依赖，
+/// 因此这里保留一个很小的 TOCTOU 窗口 —— 利用它需要能在外部分区上预置链接（物理接触前提）。
+#[cfg(unix)]
+fn set_dir_mode_no_follow(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "目标是符号链接，拒绝改权限",
+        ));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
 impl Gate {
     /// 审计日志固定在 /var/log/aether/（持久化分区挂载点），跨重启保留。
     ///
@@ -96,9 +117,8 @@ impl Gate {
         if let Some(parent) = audit_path.parent() {
             let _ = std::fs::create_dir_all(parent);
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            if let Err(e) = set_dir_mode_no_follow(parent, 0o700) {
+                eprintln!("[aetherd] 提示：收紧审计目录权限失败（{e}）—— 已跳过（不跟随符号链接）");
             }
         }
         Self {
@@ -149,31 +169,64 @@ impl Gate {
         Verdict::Allowed
     }
 
+    /// 追加一条**带工具参数**的审计记录（参数在内部统一脱敏）。
+    ///
+    /// 为什么不暴露"传字符串"的入口（代码审查建议，治本）：M-1 修好后又漏过一次 ——
+    /// 脱敏只加在 `tools::execute` 一处，`ConfirmCancel` 那条路照样把 `file_write`
+    /// 的全文写进日志。**靠"记得调用脱敏函数"是不成立的**（H-2 的教训：按入口手写
+    /// 必然漏）。所以这里收 `&Value`，脱敏在方法内部做，调用方**没有**办法传明文。
+    pub fn audit_call(
+        &self,
+        tool: &str,
+        level: Level,
+        args: &serde_json::Value,
+        verdict: &str,
+    ) -> std::io::Result<()> {
+        self.audit(tool, level, &crate::tools::audit_args(tool, args), verdict)
+    }
+
+    /// 追加一条**不带参数**的审计记录（拒绝、注册失败这类没有可记录参数的事件）。
+    pub fn audit_note(&self, tool: &str, level: Level, verdict: &str) -> std::io::Result<()> {
+        self.audit(tool, level, "", verdict)
+    }
+
     /// 追加一条审计记录。审计失败不阻断执行，但会显式报错给调用方记录。
     ///
     /// `docs/ai-permissions.md` 的承诺是"审计写入失败不阻断执行，但**不允许静默
     /// 零留痕**" —— 所以调用方**不应**忽略这里的返回值：至少要在失败时打一条
     /// stderr，否则"审计静默停止"会变成一个查不出原因的现象。
-    pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std::io::Result<()> {
+    ///
+    /// **私有**：外部只能走 `audit_call`（自动脱敏）或 `audit_note`（无参数），
+    /// 这样"忘了脱敏"在类型层面就不可能出现。
+    fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std::io::Result<()> {
         self.rotate_if_needed();
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        // 目标是符号链接就拒绝：`/var/log/aether` 可能在外部持久分区上，一个
+        // `aether-audit.log -> /etc/shadow` 就能让 root 的审计行被追加进任意文件。
+        // （与 aether-init 的 logtee 同一类问题 —— 审计自查补齐，不只修日志那一侧。）
+        if let Ok(md) = std::fs::symlink_metadata(&self.audit_path) {
+            if md.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("审计日志路径是符号链接，拒绝写入: {}", self.audit_path.display()),
+                ));
+            }
+        }
         let mut opts = std::fs::OpenOptions::new();
         opts.create(true).append(true);
-        // 只在**创建**时生效；已存在的旧文件（历史上按 umask 建的可能更宽）下面再收一次。
+        // 只在**创建**时生效。
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
         let mut f = opts.open(&self.audit_path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
-        }
+        // **不再对已存在的文件 chmod**（对抗审查发现）：chmod 会跟随符号链接，
+        // 等于给出一个"root 改任意文件权限"的原语。新建文件已由 `mode(0o600)` 保证；
+        // 若是从旧版本升上来的、权限偏宽的日志文件，手工 `chmod 600` 一次即可。
         writeln!(f, "{ts}\t{level}\t{tool}\t{args}\t{verdict}")
     }
 

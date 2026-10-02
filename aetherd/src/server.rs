@@ -19,16 +19,17 @@ const MAX_CONNECTIONS: usize = 32;
 /// 单连接空闲读超时：半开连接不永久占用线程。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// aetherd 的 Unix socket 路径（合成器与 e2e 脚本约定一致）。
+/// aetherd 的 Unix socket 路径（定义在协议 crate 里，两侧共用）。
 ///
 /// **默认通道**：socket 由文件权限兜底（`/run` 属 root，socket 0600），因此
 /// "对端是不是 aetherd"由内核保证 —— 而 TCP 上客户端**无法验证对端**，谁抢到
 /// 7311 谁就能收到 `RegisterUi` 里的 UI 密钥（2026-10-02 审计 M-17）。
 /// TCP 仍然保留（开发机预览与 hostfwd 调试），但客户端默认不再用它注册。
 #[cfg(unix)]
-const UNIX_SOCKET_PATH: &str = "/run/aetherd.sock";
+const UNIX_SOCKET_PATH: &str = aether_ipc::UNIX_SOCKET_PATH;
 
-/// UI 通道密钥的落盘位置。///
+/// UI 通道密钥的落盘位置。
+///
 /// **为什么从 `/var/log/aether/` 迁到 `/run/aether/`**（2026-10-02 审计 H-1）：
 /// 旧位置正好在 `read_file` 的读取白名单里，于是"任意本机进程 → ToolCall(read_file)
 /// → 取走密钥 → 注册为 UI 通道 → 自我确认 L3"是一条完整链路（已实测复现）。
@@ -36,7 +37,8 @@ const UNIX_SOCKET_PATH: &str = "/run/aetherd.sock";
 /// 里的 `ui.key`；迁址是第二道防线，同时让"密钥"与"日志"在语义上分开
 /// （审计日志目录是给人看的，密钥不是）。
 /// `/run` 是 ramfs：密钥每次开机重新生成，不再跨重启残留。
-const UI_KEY_PATH: &str = "/run/aether/ui.key";
+/// 常量本身定义在协议 crate 里（与合成器共用同一条路径）。
+const UI_KEY_PATH: &str = aether_ipc::UI_KEY_PATH;
 
 /// 两个监听器共享的连接处理状态。
 struct Shared {
@@ -98,6 +100,11 @@ fn spawn_unix_listener(shared: Arc<Shared>) -> std::io::Result<()> {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
+            // 写超时同样必须有（对抗审查发现）：只设读超时的话，一个"连上但不读"的
+            // 对端会让 `write_all` **永久阻塞**在该 socket 上 —— 32 条这样的连接就能
+            // 占满全部连接槽，合法客户端（合成器）再也连不进来。写超时到点后
+            // write_all 返回错误、连接被关闭、线程释放。
+            stream.set_write_timeout(Some(IDLE_TIMEOUT)).ok();
             match stream.try_clone() {
                 Ok(reader) => shared.spawn_conn(reader, stream),
                 Err(e) => eprintln!("[aetherd] Unix 连接克隆失败: {e}"),
@@ -138,6 +145,8 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
+        // 写超时：理由同 spawn_unix_listener（防"连上不读"占满连接槽）
+        stream.set_write_timeout(Some(IDLE_TIMEOUT)).ok();
         match stream.try_clone() {
             Ok(reader) => shared.spawn_conn(reader, stream),
             Err(e) => eprintln!("[aetherd] 连接克隆失败: {e}"),
@@ -181,12 +190,22 @@ fn resolve_ui_key() -> String {
     }
     match std::fs::write(&path, &key) {
         Ok(()) => {
+            // 只在**权限确实收紧到 0600 之后**才这样打印（代码审查发现）：
+            // 此前 `let _` 吞掉 chmod 错误后无条件打印"（0600）"，日志便断言了一个
+            // 未经验证的权限事实 —— 而 H-1 的整个论证正建立在"密钥是 0600"上。
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                match std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+                    Ok(()) => eprintln!("[aetherd] 已生成 UI 通道密钥 → {}（0600）", path.display()),
+                    Err(e) => eprintln!(
+                        "[aetherd] 警告：已生成 UI 通道密钥 → {}，但收紧权限失败（{e}）—— \
+                         该文件可能被同机其它用户读取，请手工 `chmod 600`", path.display()
+                    ),
+                }
             }
-            eprintln!("[aetherd] 已生成 UI 通道密钥 → {}（0600）", path.display());
+            #[cfg(not(unix))]
+            eprintln!("[aetherd] 已生成 UI 通道密钥 → {}", path.display());
         }
         Err(e) => eprintln!("[aetherd] UI 密钥落盘失败（{e}）：本次会话使用内存密钥"),
     }
@@ -239,7 +258,7 @@ fn handle_conn<R: Read, W: Write>(
 /// 零留痕**"。用 `let _ = gate.audit(...)` 恰恰就是静默 —— 磁盘满之后审计会停止，
 /// 而系统继续正常运行，没有任何人会发现。这里把它显式化。
 fn audit_or_warn(gate: &Gate, tool: &str, level: Level, verdict: &str) {
-    if let Err(e) = gate.audit(tool, level, "", verdict) {
+    if let Err(e) = gate.audit_note(tool, level, verdict) {
         eprintln!("[aetherd] 审计日志写入失败（{tool}/{verdict}）: {e}");
     }
 }
@@ -286,7 +305,10 @@ fn handle_request(
             match approvals.revoke(&token) {
                 Some((tool, args)) => {
                     gate.mark_denied(&tool, &args);
-                    if let Err(e) = gate.audit(&tool, tool_level(&tool), &args.to_string(), verdict::DENIED_BY_USER) {
+                    // 走 `audit_call`：参数在 Gate 内部统一脱敏。否则"用户拒绝了一个
+                    // file_write"这条记录会把待写入的全文（可能是密钥）原样落盘 ——
+                    // M-1 的修复当初只覆盖了 tools::execute 一处（自查补漏）。
+                    if let Err(e) = gate.audit_call(&tool, tool_level(&tool), &args, verdict::DENIED_BY_USER) {
                         eprintln!("[aetherd] 审计日志写入失败: {e}");
                     }
                     eprintln!("[aetherd] 用户拒绝了 {tool}：令牌已撤销，{} 秒内不再重复询问", DENY_COOLDOWN_SECS);

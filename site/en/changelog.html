@@ -205,7 +205,16 @@
 <h2 id="iso-vmware-p4-4">十五、重建 ISO 并部署到 VMware（含 P4.4 服务控制）</h2>
 <ul>
   <li>构建：<code>platform/build-iso.sh</code>（构建机 AetherOS-Build），退出码 0</li>
-  <li>新 ISO：<strong>40359936 字节（38.5 MB）</strong>，sha256 <code>43c53f4c8f8b16ebbd5e1a782b024d1fee1912015e0fc3c4c4e1c7481b1bd8aa</code></li>
+  <li>新 ISO：<strong>40359936 字节（38.5 MB）</strong>，sha256 <code>43c53f4c…</code>（<strong>本地构建产物</strong>；完整值见本次提交的</li>
+</ul>
+<p>  <code>site/release.json</code> 前后对比 —— 故意不再印全，避免被当成"下载校验值"抄走）</p>
+<p>  &gt; ⚠️ <strong>2026-10-02 补注</strong>：上面这组数字是<strong>本地工作区构建产物</strong>的，<strong>不是</strong> GitHub Release</p>
+<p>  &gt; 上那个资产的（资产为 40,327,168 字节 / sha256 <code>7c50f481…</code>）。当时 <code>gen-site.py</code> 直接</p>
+<p>  &gt; 把本地值当作"下载页的哈希"发布，于是官网让人拿一个<strong>必然校验失败</strong>的值去校验下载的</p>
+<p>  &gt; 文件；更新日志里也留下了同一个误导性数字。</p>
+<p>  &gt; 修法：新增 <code>site/release.json</code> 作为"已发布事实"的单一来源，并给站点门禁加了</p>
+<p>  &gt; <strong>"禁止出现非发布产物的 sha256"</strong> 检查。详见 <code>docs/SECURITY-AUDIT-2026-10-02.md</code> 附录 C。</p>
+<ul>
   <li>部署：复制到 <code>D:\aether-vm\AetherOS-VMware</code>，<code>vmrun stop/start</code> 重启虚拟机</li>
   <li><strong>串口验证</strong>：日志含「字节序」「字体已加载」「已渲染」「已挂载」✓，</li>
 </ul>
@@ -222,6 +231,70 @@
 <h3>下一步（需要人在机器前）</h3>
 <p>在虚拟机里打开 设置 →「网络」页点「重启网络服务」、→「AI」页点「重启 AI 服务」，</p>
 <p>确认 toast 显示 aetherd 的 ack。这是 P4.4 <strong>唯一未验证</strong>的环节（编译与单测已过）。</p>
+<h2 id="">十六、安全审计与修复（同日）</h2>
+<p>对全仓库做了一轮安全审计（报告：<a href="../docs/SECURITY-AUDIT-2026-10-02.md"><code>docs/SECURITY-AUDIT-2026-10-02.md</code></a>），</p>
+<p>并按"可用性 / 交付链路 / 文档门禁 / 底层加固"四个批次修完。<strong>下面只列用户能感知的变化</strong>：</p>
+<h3>行为变化（会影响怎么用）</h3>
+<ul>
+  <li><strong>装应用目前不可用</strong>：v0.1.0 发布的那个 ISO 未经 <code>isohybrid</code> 处理（实测首 512 字节无 MBR</li>
+</ul>
+<p>  签名），不能 dd 到磁盘引导。安装器现在会在<strong>动目标盘之前</strong>拒绝执行并说明原因（以前是</p>
+<p>  先毁盘、再报错、还打印"安装完成"）。引导与 Live 桌面不受影响；重建 ISO 后装机恢复。</p>
+<ul>
+  <li><strong>UI 密钥换了位置</strong>：<code>/var/log/aether/ui.key</code> → <strong><code>/run/aether/ui.key</code></strong>（0600，开机重新生成）。</li>
+</ul>
+<p>  它不再能被 AI 的读文件工具读到 —— 此前"任意本机进程读密钥 → 自注册 UI 通道 → 自我确认 L3"</p>
+<p>  是一条完整链路（已实测复现）。</p>
+<ul>
+  <li><strong>IPC 默认走 Unix socket</strong>：<code>/run/aetherd.sock</code>（0600）。TCP 7311 仍在，但客户端只在显式</li>
+</ul>
+<p>  设 <code>AETHER_IPC_TCP=1</code> 时才用它（那是给开发机 hostfwd 调试用的降级路径，因为密钥会走明文 TCP）。</p>
+<ul>
+  <li><strong>剪贴板与读文件需要"已注册的 UI 通道"</strong>：桌面（合成器）始终先注册，所以正常使用无变化；</li>
+</ul>
+<p>  <code>aetherd chat</code> 这类没有界面的命令行用法会失去这两项能力（有意的收紧）。</p>
+<ul>
+  <li><strong>终端粘贴更安全</strong>：剥离控制字符，并在程序声明支持时使用括号粘贴（DECSET 2004）。</li>
+</ul>
+<p>  注意：出厂 shell 是 busybox，若它不支持 2004 就会退回"换行即回车"的老行为（<strong>待实机确认</strong>）。</p>
+<ul>
+  <li><strong>日志与审计权限收紧</strong>：<code>/var/log/aether</code> 0700、审计文件 0600；审计里的剪贴板内容与</li>
+</ul>
+<p>  写入内容改为脱敏记录（保留长度与指纹，仍可追溯"是不是同一份"）。</p>
+<ul>
+  <li><strong>子进程不再继承合成器环境变量</strong>：终端里 <code>env</code> 看不到 <code>AETHER_UI_KEY</code> 等敏感变量。</li>
+</ul>
+<h3>底层加固（用户看不见，但都是真实风险）</h3>
+<ul>
+  <li><code>/var</code> 持久分区<strong>先认身份再挂载</strong>（ext4 卷标必须是 <code>AETHER</code>），挂载前跑 <code>fsck</code>，</li>
+</ul>
+<p>  挂载选项 <code>nodev,nosuid</code>。此前候选设备表里的 <code>/dev/nvme0n1p2</code> 恰好是多数发行版的 root</p>
+<p>  分区 —— 双系统机器上会把<strong>别人的根分区</strong>挂成 <code>/var</code> 并往里写日志。</p>
+<ul>
+  <li>日志与审计的写入<strong>不跟随符号链接</strong>（<code>/var/log</code> 指向 <code>/tmp</code> 的镜像上，预置一个</li>
+</ul>
+<p>  <code>aetherd.log -&gt; /etc/shadow</code> 就能让 root 的日志追加进任意文件）。</p>
+<ul>
+  <li>PID 1 加了兜底：服务名重复、依赖成环、socket 建不出来都会<strong>回落救援模式</strong>而不是退出</li>
+</ul>
+<p>  （PID 1 退出 = 内核 panic，只能人工救砖）。</p>
+<h3>门禁与文档</h3>
+<ul>
+  <li><code>scripts/repo-stats.py --check</code> 从"只比对合计"扩到<strong>三层</strong>（合计 / 逐 crate / 逐文件），</li>
+</ul>
+<p>  且三层都有<strong>集合相等</strong>断言 —— 删一行、改格式、新增文件不登记都会变红。</p>
+<ul>
+  <li><code>scripts/gen-site.py --check</code> 现在会<strong>重新测量事实</strong>（含"下载脚本内置哈希 == 已发布资产"），</li>
+</ul>
+<p>  站点不再可能公布一个对不上的校验值。</p>
+<ul>
+  <li>修掉站点的三处硬伤：公布的 ISO 哈希取自<strong>本地构建</strong>（与 Release 资产不符）、</li>
+</ul>
+<p>  ISO 文件名写成 <code>aetheros-v0.1.0-amd64.iso</code>（实际是 <code>aetheros-0.1-amd64.iso</code>）、</p>
+<p>  "17 张界面走查图"与门禁清单的 19 张不符。</p>
+<ul>
+  <li>中英文 README 结构对齐（英文版补上「边界在哪」整节），全仓库规模/测试数字统一为实测值。</li>
+</ul>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>
@@ -293,7 +366,7 @@
 <p>&gt;</p>
 <h2 id="v0-1-0-2026-09-29">v0.1.0 — 2026-09-29</h2>
 <p><strong>首个公开版本。</strong> 可引导 ISO，QEMU / VirtualBox / VMware 三个平台实测开机；可安装到虚拟磁盘后独立引导。</p>
-<p><em>First public release. Bootable ISO verified on QEMU, VirtualBox and VMware; installable to a virtual disk and bootable from it.</em></p>
+<p><em>First public release. Bootable ISO verified on QEMU, VirtualBox and VMware. ~~installable to a virtual disk and bootable from it~~ — <strong>corrected 2026-10-02: the published ISO is not isohybrid, so disk installation does not work; see the note below.</strong></em></p>
 <p><strong>⚠️ 2026-10-02 更正</strong>：上面"可安装到虚拟磁盘后独立引导"<strong>对本版本发布的那个 ISO 不成立</strong>。</p>
 <p>实测该资产（40,327,168 字节 / sha256 <code>7c50f481…</code>）首 512 字节无 MBR 签名，即<strong>未经 <code>isohybrid</code> 处理</strong>，</p>
 <p>不能 dd 到磁盘引导 —— 装机路径会失败。引导与 Live 桌面不受影响。构建脚本已补上 isohybrid 步骤与自检</p>

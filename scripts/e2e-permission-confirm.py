@@ -20,6 +20,7 @@ UI 通道密钥：优先 AETHER_UI_KEY 环境变量，否则读 /run/aether/ui.k
   9. **拒绝后同一操作再次请求**          → 直接拒绝，不再弹确认（Denied 可达）
  10. **未注册连接经 ToolCall 读剪贴板**  → 403（H-2 回归：闸门必须按资源判，不能按入口变体判）
  11. **已注册通道仍可写剪贴板**          → 成功（反向断言，防"一律拒绝"式作弊）
+ 12. **拒绝 file_write 后审计不泄漏全文** → 审计脱敏覆盖"拒绝"路径（M-1 回归）
 """
 import json
 import os
@@ -28,6 +29,7 @@ import sys
 
 PORT = 7311
 DISK = {"disk": "/dev/vda", "confirm": "/dev/vda"}
+AUDIT_LOG = "/var/log/aether/aether-audit.log"
 
 fails = []
 
@@ -185,6 +187,26 @@ def main():
         r["type"] == "tool_result" and r["payload"].get("ok") is True,
         f"实得 {r}",
     )
+
+    # 12. M-1 回归：审计脱敏必须覆盖**用户拒绝**这条路径。
+    #     此前脱敏只加在 tools::execute 一处，而"拒绝"走的是 server 的
+    #     ConfirmCancel 分支 —— 拒绝一个 file_write 会把待写入的全文原样落盘。
+    canary = "E2E-AUDIT-CANARY-9c1f"
+    r = rpc([toolcall({"path": "/tmp/e2e-redaction.txt", "content": canary}, tool="file_write")])[0]
+    tok5 = r.get("payload", {}).get("token", "")
+    check("12 file_write 需确认（拒绝路径的前置）", r["type"] == "needs_confirmation" and tok5, f"实得 {r['type']}")
+    if tok5:
+        rpc([{"type": "confirm_cancel", "payload": {"token": tok5}}])
+        leaked = False
+        readable = True
+        try:
+            with open(AUDIT_LOG, encoding="utf-8", errors="replace") as f:
+                leaked = canary in f.read()
+        except OSError as exc:
+            readable = False
+            print(f"      （读不到审计日志，跳过：{exc}）")
+        if readable:
+            check("12a 审计日志不得含被拒绝的写入内容", not leaked, "泄漏" if leaked else "已脱敏")
 
     print()
     print("结果：", "全部通过" if not fails else f"失败 {len(fails)} 项: {fails}")

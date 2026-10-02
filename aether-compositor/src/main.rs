@@ -54,14 +54,14 @@ use std::net::TcpStream;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// aetherd 的 Unix socket 路径（与 `aetherd/src/server.rs` 约定一致）。
+/// aetherd 的 Unix socket 路径（定义在协议 crate 里，与 aetherd 监听侧共用）。
 ///
 /// 为什么 IPC 要优先走它（2026-10-02 审计 M-17）：`register_ui` 的前提是"对端确实是
 /// aetherd"，而 TCP 的连接方**无法验证对端**（谁能绑上 7311，谁就能收到 UI 密钥）。
-/// Unix socket 由文件权限兜底：`/run/aether/` 属 root，socket 0600 —— 非 root 进程
-/// 既建不了、也连不上。
+/// Unix socket 由文件权限兜底：`/run` 属 root，socket 0600 —— 非 root 进程既建不了、
+/// 也连不上。
 #[cfg(unix)]
-const AETHERD_SOCKET: &str = "/run/aetherd.sock";
+const AETHERD_SOCKET: &str = aether_ipc::UNIX_SOCKET_PATH;
 
 /// 显式改用 TCP 连接 aetherd（默认关闭）。
 ///
@@ -1119,7 +1119,7 @@ fn ui_key() -> Option<String> {
             return Some(k);
         }
     }
-    std::fs::read_to_string("/run/aether/ui.key")
+    std::fs::read_to_string(aether_ipc::UI_KEY_PATH)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

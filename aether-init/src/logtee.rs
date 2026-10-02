@@ -76,13 +76,49 @@ fn open_append_no_follow(path: &str) -> Option<std::fs::File> {
     }
 }
 
+/// 把目录权限收紧到 `mode`，**不跟随符号链接**。
+///
+/// 为什么不能直接 `set_permissions`（对抗审查发现）：chmod 会跟随符号链接 ——
+/// `/var` 挂在外部持久分区上时，攻击者在分区上放一个 `log -> /etc`，root 就会把
+/// `/etc` 改成 0700（破坏级）。Linux 上用 `O_NOFOLLOW|O_DIRECTORY` 打开目录再
+/// fchmod：目标若是符号链接，open 直接 `ELOOP` 失败，**不存在竞态窗口**。
+///
+/// 非 unix 平台不会调用它（`ensure_log_dir` 里是 `#[cfg(unix)]`），故允许 dead_code。
+#[cfg_attr(not(unix), allow(dead_code))]
+fn set_dir_mode_no_follow(path: &str, mode: u32) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let dir = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(path)?;
+        return dir.set_permissions(std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "目标是符号链接，拒绝改权限",
+            ));
+        }
+        return std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+        Ok(())
+    }
+}
+
 /// 建日志目录并收紧到 0700（日志里可能有服务打印的敏感内容，同机其它用户不该读）。
 fn ensure_log_dir() {
     let _ = std::fs::create_dir_all(LOG_DIR);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(LOG_DIR, std::fs::Permissions::from_mode(0o700));
+    if let Err(e) = set_dir_mode_no_follow(LOG_DIR, 0o700) {
+        eprintln!("[aether-init] 提示：收紧日志目录权限失败（{e}）—— 已跳过（不跟随符号链接）");
     }
 }
 

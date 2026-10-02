@@ -90,9 +90,15 @@ def count_archived_shots() -> int:
     path = ROOT / "scripts" / "archive-ui-shots.py"
     if not path.is_file():
         return 0
-    return len(
+    n = len(
         re.findall(r'^\s*\(\[.*?\],\s*"host-ui-[^"]+"\),\s*$', path.read_text(encoding="utf-8"), re.M)
     )
+    if n == 0:
+        # 命中 0 说明清单格式变了 —— **必须报错**，不能静默沿用上次值
+        # （代码审查发现：静默回退会让"页面 + data.json 都不变 → 门禁全绿"，
+        #  而站点上的张数从此永久脱节。同文件 load_release() 对格式坏就是报错的。）
+        sys.exit("无法从 scripts/archive-ui-shots.py 数出走查图清单条数（格式变了？）")
+    return n
 
 
 def load_release() -> dict | None:
@@ -520,6 +526,20 @@ def main(argv: list[str]) -> int:
             for f in drift:
                 print("   -", f)
             return 1
+        # **--check 也要重新测量事实**（代码审查发现）：此前 check 模式直接用 data.json
+        # 的旧值渲染并比对，"页面 == data.json"永远成立 —— 于是改了 release.json、
+        # 换了本地 ISO、或代码规模变了而忘了 --refresh，门禁照样全绿，而线上公布的
+        # 字节数/哈希/规模已经过期。这里重新测一次（跳过跑测试那一步，保持秒级），
+        # 与 data.json 不一致就报出来。
+        fresh = measure(skip_tests=True, previous=data)
+        stale = [f"{k}: data.json={data.get(k)} 实测={fresh.get(k)}"
+                 for k in ("iso_bytes", "iso_sha256", "rust_lines", "shots", "iso_size")
+                 if data.get(k) != fresh.get(k)]
+        if stale:
+            print("[FAIL] data.json 里的发布事实已过期（跑 python scripts/gen-site.py --refresh）:")
+            for s in stale:
+                print("   -", s)
+            return 1
         missing = [p for p in html_pages()
                    if "<!--DATA:" in p.read_text(encoding="utf-8")
                    or "<!--CHANGELOG-->" in p.read_text(encoding="utf-8")]
@@ -536,21 +556,80 @@ def main(argv: list[str]) -> int:
             # 脱节就永远补不上（2026-10-02 审计，与 iso_bytes 同一类问题）。
             "index.html": ["rust_lines", "tests", "iso_size", "shots"],
             "en/index.html": ["rust_lines", "tests", "iso_size", "shots"],
-            # iso_bytes 也纳入门禁：它的字面量曾长期停在 40,351,744（与实测的
-            # 40,359,936 差 8,192 字节）而没人发现 —— 因为页面上的字节数是手写常量，
-            # 而 patch_values 只做"上次值 → 本次值"，常量一旦与 data.json 脱节就再也
-            # 补不上（2026-10-02 安全审计 I-2）。
+            # iso_bytes/iso_sha256 也纳入门禁：它的字面量曾长期停在 40,351,744
+            # （与实测差 8,192 字节）而没人发现；哈希则一度是本地产物那份
+            # （2026-10-02 安全审计 §3.2/§3.3）。
             "download.html": ["iso_size", "iso_bytes", "iso_sha256"],
             "en/download.html": ["iso_size", "iso_bytes", "iso_sha256"],
+            # faq 页也写着 ISO 体积，此前不在门禁范围内（代码审查发现 4.8）
+            "faq.html": ["iso_size"],
+            "en/faq.html": ["iso_size"],
+        }
+        # **带上下文的锚定匹配**（代码审查发现）：原先只判"这个值出现在页面任意位置" ——
+        # 于是把"19 张走查图"改成 10 张、只要页面别处还有个 19 就能过。
+        # 这里给每个键规定它必须紧邻的量词；数字与量词之间允许有 HTML 标签
+        # （页面里常见 `<b>25,750</b><span>行 Rust…</span>` 这种写法）。
+        between = r"(?:\s|<[^>]*>|&nbsp;)*"
+        anchor = {
+            # 中英两版页面各用各的量词，两种都接受（锚定只为了防止"数字出现在别处"）
+            "rust_lines": between + r"(?:行|lines)",
+            "tests": between + r"(?:项|unit tests|tests)",
+            "shots": between + r"(?:张|UI screenshots|screenshots|images)",
+            "iso_size": r"",
+            "iso_bytes": between + r"(?:字节|bytes)",
+            "iso_sha256": r"",
         }
         for rel, keys in need.items():
             body = (SITE / rel).read_text(encoding="utf-8")
             for k in keys:
                 want_v = str(data.get(k, "—"))
-                if want_v != "—" and want_v not in body:
-                    print(f"[FAIL] {rel} 里找不到当前 {k}={want_v}（页面与数据脱节）")
+                if want_v == "—":
+                    continue
+                pat = re.escape(want_v) + anchor.get(k, "")
+                if not re.search(pat, body):
+                    print(f"[FAIL] {rel} 里找不到当前 {k}={want_v}（页面与数据脱节，"
+                          f"期望形如 /{pat}/）")
                     return 1
-        print(f"[ OK ] site: {len(html_pages())} 个页面与实测数据一致"
+
+        # —— 禁止站点上出现"非已发布产物"的 sha256 ——
+        #
+        # 为什么（2026-10-02 审计自查）：下载页与更新日志都曾公布**本地构建产物**的
+        # 哈希（43c53f4c…），而用户下载的是 Release 资产（7c50f481…）—— 让人拿一个
+        # 必然校验失败的值去校验，比不校验更糟（他会以为文件坏了）。
+        # 逐页扫 64 位十六进制串，只允许等于 release.json 里那个值。
+        published = str(data.get("iso_sha256", ""))
+        foreign: list[tuple[str, str]] = []
+        for page in html_pages():
+            body = page.read_text(encoding="utf-8")
+            for h in sorted(set(re.findall(r"\b[0-9a-f]{64}\b", body))):
+                if h != published:
+                    foreign.append((str(page.relative_to(ROOT)), h))
+        if foreign:
+            print("[FAIL] 站点上出现了非已发布产物的 sha256（会让用户校验失败）：")
+            for name, h in foreign:
+                print(f"   - {name}: {h}")
+            print("     期望值来自 site/release.json；历史条目请改写成「本地构建产物」并注明，不要只删数字")
+            return 1
+
+        # —— 下载脚本内置的哈希必须与已发布产物一致 ——
+        #
+        # 为什么（代码审查发现 5.4）：同一份 SHA256 在 4 处各写一遍
+        # （try-aether.sh / try-aether.ps1 / release.json / data.json），换版本时漏改一处
+        # 就会**拒收用户的合法下载**。脚本是 shell/PowerShell，没法 import，只能读源码。
+        if published:
+            for rel in ("scripts/try-aether.sh", "scripts/try-aether.ps1"):
+                text = (ROOT / rel).read_text(encoding="utf-8")
+                found = set(re.findall(r"\b[0-9a-f]{64}\b", text))
+                if not found:
+                    print(f"[FAIL] {rel} 里找不到 SHA256 常量（下载校验被移除了？）")
+                    return 1
+                wrong = sorted(found - {published})
+                if wrong:
+                    print(f"[FAIL] {rel} 内置的 SHA256 与已发布产物不一致：{wrong}")
+                    print(f"     已发布：{published}（site/release.json）—— 用户校验会失败")
+                    return 1
+
+        print(f"[ OK ] site: {len(html_pages())} 个页面与实测数据一致 · 下载脚本哈希与发布一致"
               f"（{data['version']} · ISO {data['iso_size']} · {data['rust_lines']} 行 · {data['tests']} 项测试）")
         return 0
 

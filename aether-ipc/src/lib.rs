@@ -156,6 +156,21 @@ pub const DEFAULT_PORT: u16 = 7311;
 /// aether-init 服务控制（PID 1）的监听端口。
 pub const INIT_PORT: u16 = 7312;
 
+/// aetherd 的 Unix socket 路径（**默认通道**，0600）。
+///
+/// 放在协议 crate 里而不是各组件各写一遍：aetherd（监听侧）与合成器（连接侧）
+/// 必须用同一条路径，两处字面量一旦漂开就变成"连不上"这种最难查的故障。
+/// 0600 由 aetherd 在 bind 后设置；`/run` 属 root，因此非 root 进程既建不了也连不上 ——
+/// 这正是 `RegisterUi` 需要的"对端身份"保证（2026-10-02 审计 M-17）。
+pub const UNIX_SOCKET_PATH: &str = "/run/aetherd.sock";
+
+/// UI 通道密钥的落盘位置（aetherd 生成、合成器读取，0600）。
+///
+/// 同 `UNIX_SOCKET_PATH`：两侧必须一致，所以定义在这里。
+/// **它不在 AI 的读取白名单内**（`aetherd::tools::READ_DENY_SUBPATHS` 明确拒绝 `ui.key`）——
+/// 2026-10-02 审计 H-1：放在 `/var/log/aether/` 时，`read_file` 能把密钥交给任意本机进程。
+pub const UI_KEY_PATH: &str = "/run/aether/ui.key";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SysInfoScope {

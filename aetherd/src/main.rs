@@ -197,7 +197,12 @@ pub(crate) fn agent_run(
             let raw_args = call.pointer("/function/arguments").and_then(|v| v.as_str()).unwrap_or("{}");
             let args: serde_json::Value = serde_json::from_str(raw_args).unwrap_or(serde_json::json!({}));
 
-            eprintln!("[aetherd] 工具调用: {name} {args}");
+            // 打印工具调用必须走**同一套脱敏**（审计自查补漏）：
+            // 这行的输出会被 aether-init 的 logtee 收进 `/var/log/aether/aetherd.log`，
+            // 而 `/var/log/aether` 在 `read_file` 的读取白名单里 —— 于是
+            // "本机任意进程 → ToolCall(read_file) → 拿到用户刚写入的密码/文件全文"
+            // 是一条与审计日志**同源**的泄露路径。只脱敏审计日志等于没脱敏。
+            eprintln!("[aetherd] 工具调用: {name} {}", tools::audit_args(&name, &args));
             // 需要可信通道的工具（剪贴板）：未注册连接发起的对话一律拒绝。
             // 仍要补一条 tool 消息 —— OpenAI 兼容协议要求每个 tool_call.id 都有对应结果，
             // 否则下一轮请求直接 400。
@@ -282,6 +287,7 @@ fn main() -> Result<()> {
             }
             let cfg = config_from_env();
             let gate = Gate::new(PathBuf::from("/var/log/aether/aether-audit.log"));
+            // CLI 没有 UI 通道（`false`）⇒ 剪贴板/读文件这类工具一律拒绝，见 agent_run 的说明
             let out = agent_run(&cfg, &gate, &text, false).context("agent 运行失败")?;
             if let Some(p) = out.pending {
                 // CLI 无 UI 通道：说明需确认及原因，退出码 3 供脚本区分

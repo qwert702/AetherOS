@@ -325,6 +325,33 @@ def safe_soname(name: str) -> bool:
     return not Path(name).is_absolute()
 
 
+def valid_app_id(app_id: str) -> bool:
+    """应用 id 会作为**目录名**用，且已存在的同名目录会被 `rmtree` 先删掉。
+
+    对抗审查发现（2026-10-02）：原校验的字符白名单**含 `.`**，于是 `--id ..` 通过；
+    接着 `pkg = Path(out)/".."`、`pkg.exists()` 为真、`shutil.rmtree(pkg)` —— 把
+    `--out` 的**父目录整个删掉**。同一条路也让 `--entry` 可以把文件写到包外。
+    修法：首字符必须是字母数字（这样 `.`、`..`、`.hidden` 自然出局），
+    其余只允许字母数字与 `- _ .`（不允许分隔符）。
+    """
+    if not app_id or not app_id[0].isalnum() or not app_id[0].isascii():
+        return False
+    return all(c.isascii() and (c.isalnum() or c in "-_.") for c in app_id)
+
+
+def valid_rel_path(rel: str) -> bool:
+    """包里相对路径（`--entry`）：不得是绝对路径，也不得含 `.`/`..` 组件。
+
+    与 `safe_soname` 同一类问题：这个值来自命令行，而它决定往哪里写文件。
+    """
+    if not rel or rel.startswith(("/", "\\")) or "\\" in rel:
+        return False
+    parts = [p for p in rel.split("/")]
+    if any(p in ("", ".", "..") for p in parts):
+        return False
+    return not Path(rel).is_absolute()
+
+
 # ── 依赖收集 ────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -612,10 +639,13 @@ def main(argv: list[str]) -> int:
         return 0
 
     app_id = args.id or binary.name
-    if not app_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in app_id):
-        print(f"[mkapp] 非法 id：{app_id!r}（只允许字母数字与 - _ .）", file=sys.stderr)
+    if not valid_app_id(app_id):
+        print(f"[mkapp] 非法 id：{app_id!r}（只允许字母数字与 - _ .，且必须以字母数字开头）", file=sys.stderr)
         return 2
     entry_rel = args.entry or f"bin/{binary.name}"
+    if not valid_rel_path(entry_rel):
+        print(f"[mkapp] 非法 --entry：{entry_rel!r}（必须是包内相对路径，不得含 .. 或以 / 开头）", file=sys.stderr)
+        return 2
 
     pkg = Path(args.out) / app_id
     if pkg.exists():
@@ -809,6 +839,15 @@ def selftest() -> int:
     check(all(not safe_soname(b) for b in bad_names),
           "含路径分隔符/空名字的 soname 必须被拒：" + repr(bad_names))
     check(not safe_soname("x" + chr(92) + "y.so"), "反斜杠 soname 必须被拒")
+
+    # 应用 id / 包内路径：路径穿越（对抗审查发现 `--id ..` 会 rmtree 掉 --out 的父目录）
+    # 注意：循环变量**不能**叫 `bad` —— 它会覆盖上面的失败累加器（本文件已踩过一次）
+    check(valid_app_id("htop") and valid_app_id("my-app_2.1"), "正常 id 应通过")
+    for case in ["..", ".", ".hidden", "a/b", "a\\b", "", "-x", "a..b/c"]:
+        check(not valid_app_id(case), f"非法 id 必须被拒：{case!r}")
+    check(valid_rel_path("bin/htop"), "正常 entry 应通过")
+    for case in ["../x", "/etc/passwd", "a/../../b", "", "a//b", "a/./b", "x\\y"]:
+        check(not valid_rel_path(case), f"非法 entry 必须被拒：{case!r}")
 
     # verneed 按库分组：这是"镜像里有同名库 ≠ 它能满足要求"的判断依据
     e4 = parse_elf(_synth_elf("/lib64/ld-linux-x86-64.so.2", ["libncursesw.so.6"],

@@ -292,6 +292,11 @@ def verify_security_headers(c) -> None:
     2026-10-02 审计 M-10 的教训：`add_header` 的继承规则让"配置里写了"与
     "响应里有"变成两件事，而这个差异在配置文件里完全看不出来。所以部署脚本
     自己必须回头看一眼真实响应。
+
+    **不达标必须让部署失败**（代码审查发现）：此前这里只 `print("⚠️ …")`，
+    `main()` 照常返回 0 —— 等于把"自检"降级成"提示"，线上真的丢了头也照样报
+    "部署成功"。这与本项目最忌讳的"看起来做了 ≠ 真的做了"是同一个毛病，
+    也与同文件 `reload_and_regress()` 不达标即 `sys.exit` 的做法不一致。
     """
     print("== 8a) 安全头实际下发校验 ==")
     # HTML 是最关键的一类（CSP 的主要保护对象），也正是此前被丢掉的层级
@@ -308,9 +313,11 @@ def verify_security_headers(c) -> None:
         found = 0
     if found >= 3:
         print(f"  HTML 响应含 {found}/3 项关键安全头 ✓")
-    else:
-        print(f"  ⚠️ HTML 响应只含 {found}/3 项关键安全头 —— 检查 add_header 继承（M-10）")
-        print("     修复要点：安全头片段必须在带 add_header 的每个层级各 include 一次")
+        return
+    print(f"  ✗ HTML 响应只含 {found}/3 项关键安全头 —— 部署判定失败")
+    print("     修复要点：安全头片段必须在带 add_header 的每个层级各 include 一次（M-10）")
+    print("     （尤其检查 certbot 生成的 443 段是否也被补上了 include）")
+    sys.exit(1)
 
 
 def main() -> int:
