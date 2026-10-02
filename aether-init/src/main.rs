@@ -10,6 +10,7 @@ mod ipc;
 mod logtee;
 mod manager;
 mod persist;
+mod power;
 mod unit;
 
 use manager::Manager;
@@ -28,9 +29,22 @@ fn main() -> anyhow::Result<()> {
         Some("--pid1") => pid1_or_rescue(),
         Some("--dry-run") | None => run_dry_run(args.get(2).map(|s| s.as_str())),
         Some("--rescue") => rescue_console("手动进入救援模式（--rescue）"),
+        // 控制台/串口路径：**无图形界面时也要能关机**。
+        // 场景：桌面起不来（或正在救援模式），用户只能敲命令 —— 此时若没有这条路，
+        // 他只能长按电源键（等于硬断电，可能损坏文件系统）。
+        Some("--poweroff") => power_cli(aether_ipc::PowerAction::PowerOff),
+        Some("--reboot") => power_cli(aether_ipc::PowerAction::Reboot),
         Some(other) => {
-            eprintln!("aether-init — AetherOS PID 1\n\n用法:\n  aether-init --pid1            真机 PID 1 模式（仅 Linux）\n  aether-init --dry-run [DIR]   开发自检：加载服务定义并跑监督循环
-  aether-init --rescue          手动进入救援模式（打印原因 + 控制台 shell）\n\n服务定义目录默认 /etc/aether/services");
+            eprintln!(
+                "aether-init — AetherOS PID 1\n\n\
+                 用法:\n\
+                 \x20 aether-init --pid1            真机 PID 1 模式（仅 Linux）\n\
+                 \x20 aether-init --dry-run [DIR]   开发自检：加载服务定义并跑监督循环\n\
+                 \x20 aether-init --rescue          手动进入救援模式（打印原因 + 控制台 shell）\n\
+                 \x20 aether-init --poweroff        关机（控制台路径：sync → reboot）\n\
+                 \x20 aether-init --reboot          重启（控制台路径）\n\n\
+                 服务定义目录默认 /etc/aether/services"
+            );
             if other != "--help" {
                 std::process::exit(2);
             }
@@ -39,8 +53,24 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// PID 1 的唯一入口：**永不返回**（返回类型是 `!`，由类型系统保证）。
+/// 控制台关机路径（`--poweroff` / `--reboot`）：**桌面起不来时的出路**。
 ///
+/// 为什么需要它：如果只有 GUI 能关机，那么"桌面起不来"的用户就只剩长按电源键
+/// 一条路（硬断电，可能损坏文件系统）。能敲这条命令的人已经在本机控制台上，
+/// 而控制台本来就是 root（见审计 M-4 的认证基线），所以这里不做额外鉴权。
+///
+/// **与 GUI 路径共用 `power::sync_and_reboot`** —— 危险的那一步只有一份实现。
+/// 差别只有一点：控制台路径没有 `Manager`（服务表在 PID 1 手里），因此不停服务；
+/// 若 PID 1 还在运行，应该走 GUI/IPC 路径让它按序停服务。
+fn power_cli(action: aether_ipc::PowerAction) -> anyhow::Result<()> {
+    eprintln!(
+        "[aether-init] 控制台电源请求：{}（sync → reboot；不经过服务表）",
+        action.as_str()
+    );
+    anyhow::bail!("{}", power::sync_and_reboot(action))
+}
+
+/// PID 1 的唯一入口：**永不返回**（返回类型是 `!`，由类型系统保证）。///
 /// 三层兜底，缺一不可：
 /// 1. `Ok(Ok(()))` —— 监督循环理论上不会结束；真结束了也说明状态异常，进救援模式；
 /// 2. `Ok(Err(e))` —— 启动期的任何 `?`（重名服务、依赖环、socket 建不出来……）；
@@ -227,6 +257,23 @@ fn run_loop(services_dir: &str, pid1: bool) -> anyhow::Result<()> {
         for e in events {
             eprintln!("[aether-init] {e}");
         }
+
+        // 电源请求（IPC 线程置的标志）：在这里执行，而不是在 IPC 线程里 ——
+        // 停服务要拿 Manager 的锁，且"正在关机"这件事应该由监督循环主导
+        // （日志顺序自然，也不会与 tick 抢锁）。见 power.rs 的模块说明。
+        if let Some(action) = power::take() {
+            eprintln!("[aether-init] 收到电源请求：{}", action.as_str());
+            let mut g = mgr.lock().unwrap_or_else(|e| e.into_inner());
+            // pid1 == false（--dry-run）时**不真的关机**：开发自检不能把机器关掉。
+            // 这与"测试必须跑的是生产那份代码"并不矛盾 —— 同一条路径，只是最后一步
+            // 被显式挡住，而且会打印"dry-run：不执行 reboot"。
+            for e in power::execute(action, &mut g, !pid1) {
+                eprintln!("[aether-init] {e}");
+            }
+            // 走到这里说明没关成（成功的话进程已经消失）。PID 1 不能退出，
+            // 继续监督循环；用户可从日志看到失败原因。
+        }
+
         std::thread::sleep(Duration::from_millis(200));
     }
 }

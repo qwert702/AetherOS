@@ -77,6 +77,18 @@ pub enum Request {
         unit: String,
         action: ServiceAction,
     },
+    /// 电源动作（**不可逆**）：关机 / 重启。
+    ///
+    /// 与 `ServiceControl` 分开而不是复用（"保留单元名 power"）的理由：电源动作的
+    /// 语义、鉴权与后果都和"重启某个服务"不同 —— 它是**整机级且不可逆**的，
+    /// 混在服务控制里会让"服务名白名单"这种保护失效（power 不是服务）。
+    ///
+    /// 谁可以发：只有已注册的 UI 通道，且**必须**经确认卡片（见 `aetherd` 的
+    /// `system_power` 工具，L3）。执行在 `aether-init`（PID 1）里：
+    /// 停服务 → `sync()` → `reboot(2)`。
+    SystemPower {
+        action: PowerAction,
+    },
 }
 
 /// 系统服务 → 客户端的响应。
@@ -104,6 +116,16 @@ pub enum Response {
     ServiceAck {
         unit: String,
         ok: bool,
+        message: String,
+    },
+    /// 电源动作受理回执（`Request::SystemPower` 的应答）。
+    ///
+    /// 注意语义：`accepted = true` 只表示**受理**，不表示"已经关机了" ——
+    /// 关机过程中进程会消失，不可能再回一条"完成"。调用方据此提示用户
+    /// "正在关机"，而不是"已关机"。
+    PowerAck {
+        action: PowerAction,
+        accepted: bool,
         message: String,
     },
     /// 剪贴板内容（`Request::ClipboardGet` 的应答）。
@@ -202,6 +224,40 @@ pub enum ServiceAction {
     Status,
 }
 
+/// 电源动作。
+///
+/// **没有 `Logout`**：注销 = 重启合成器（`compositor.json` 的 `restart:true` 会让
+/// aether-init 拉起它），那是合成器自己的事，不需要经过 PID 1 —— 放进这里
+/// 会让人以为"注销"也要整机权限。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerAction {
+    /// 关机（`reboot(RB_POWER_OFF)`）
+    PowerOff,
+    /// 重启（`reboot(RB_AUTOBOOT)`）
+    Reboot,
+}
+
+impl PowerAction {
+    /// 稳定的字符串标识：**用于回显确认与审计**（两种用途都要求跨版本稳定，
+    /// 所以不用 `Debug` 格式 —— 那个会随代码改动而变）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PowerAction::PowerOff => "poweroff",
+            PowerAction::Reboot => "reboot",
+        }
+    }
+
+    /// 从字符串解析（大小写不敏感）。未知值返回 None —— 调用方负责报错。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "poweroff" | "power_off" | "shutdown" => Some(PowerAction::PowerOff),
+            "reboot" | "restart" => Some(PowerAction::Reboot),
+            _ => None,
+        }
+    }
+}
+
 /// 系统状态汇报（M4/M5 由 aetherd 与 aether-ops 填充真实数据）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SysReport {
@@ -293,6 +349,37 @@ mod tests {
             Response::ChatChunk { channel, .. } => assert_eq!(channel, None),
             other => panic!("应为 ChatChunk，实得 {other:?}"),
         }
+    }
+
+    /// 电源动作的协议往返 + `as_str`/`parse` 必须互逆。
+    ///
+    /// `as_str` 用于**回显确认与审计**：如果它和 `parse` 不互逆，就会出现
+    /// "卡片让你输入 poweroff、实际却不认"这种自相矛盾的交互。
+    #[test]
+    fn power_action_roundtrip_and_string_contract() {
+        for a in [PowerAction::PowerOff, PowerAction::Reboot] {
+            let r = Request::SystemPower { action: a };
+            match decode::<Request>(&encode(&r)).unwrap() {
+                Request::SystemPower { action } => assert_eq!(action, a),
+                other => panic!("应为 SystemPower，实得 {other:?}"),
+            }
+            assert_eq!(
+                PowerAction::parse(a.as_str()),
+                Some(a),
+                "as_str 与 parse 必须互逆：{a:?}"
+            );
+        }
+        // 大小写与常见别名（用户手输的可能带空格/大写）
+        assert_eq!(PowerAction::parse(" PowerOff "), Some(PowerAction::PowerOff));
+        assert_eq!(PowerAction::parse("REBOOT"), Some(PowerAction::Reboot));
+        // 未知值必须返回 None（调用方据此报错，不能默默当成关机）
+        assert_eq!(PowerAction::parse("sleep"), None);
+        assert_eq!(PowerAction::parse(""), None);
+        // 序列化形态稳定（审计与回显都依赖它）
+        assert_eq!(
+            serde_json::to_string(&PowerAction::PowerOff).unwrap(),
+            "\"power_off\""
+        );
     }
 
     #[test]

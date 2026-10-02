@@ -272,6 +272,26 @@ impl Manager {
         v
     }
 
+    /// 停止全部服务，**按启动序的逆序**。
+    ///
+    /// 关机路径专用：依赖别人的先停（合成器依赖 aetherd，所以先停合成器）。
+    /// 顺序反了会留下一堆"对端已经不在"的错误日志 —— 关机日志必须干净，
+    /// 否则真出问题时没人愿意读它。
+    ///
+    /// 单个服务停不下来**不阻断**关机（继续停其余的，并把失败记进事件里）：
+    /// 一个卡住的服务不该让用户永远关不了机。
+    pub fn stop_all(&mut self) -> Vec<String> {
+        let order = self.boot_sequence().unwrap_or_default();
+        let mut events = Vec::new();
+        for name in order.iter().rev() {
+            match self.stop(name) {
+                Ok(st) => events.push(format!("已停止服务 {name}（{:?}）", st.state)),
+                Err(e) => events.push(format!("停止服务 {name} 失败（继续关机）：{e}")),
+            }
+        }
+        events
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.services.contains_key(name)
     }

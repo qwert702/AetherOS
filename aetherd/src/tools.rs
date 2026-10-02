@@ -255,8 +255,26 @@ pub fn registry() -> Vec<Tool> {
             sensitive_output: false,
         },
         Tool {
-            name: "app_list",
-            description: "列出这台机器上已安装的应用。要装应用、排障、或者确认某个程序在不在，先看这个。",
+            name: "system_power",
+            description: "关机或重启这台机器。**不可逆**：未保存的工作会丢失。L3 危险操作：需用户确认，且 confirm 参数必须与 action 完全一致。",
+            level: Level::L3,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["poweroff", "reboot"], "description": "poweroff = 关机；reboot = 重启"},
+                    "confirm": {"type": "string", "description": "回显确认：必须与 action 完全相同，否则拒绝执行"}
+                },
+                "required": ["action", "confirm"]
+            }),
+            run: tool_system_power,
+            consequence: "整机关机/重启：正在运行的程序会立即停止，未保存的数据将丢失。",
+            // 回显动作名（poweroff / reboot）而不是"yes"：不可逆动作让用户把要做的
+            // 事打一遍，是防误点最有效的一步，也复用了 install_disk 的同一套交互。
+            echo_field: Some("action"),
+            sensitive_output: false,
+        },
+        Tool {
+            name: "app_list",            description: "列出这台机器上已安装的应用。要装应用、排障、或者确认某个程序在不在，先看这个。",
             level: Level::L0,
             parameters: serde_json::json!({
                 "type": "object",
@@ -318,7 +336,16 @@ pub fn registry() -> Vec<Tool> {
 /// 代读 /home 下任意文件（含别的用户家目录）"是一条现成的原语。合成器（唯一正牌
 /// 交互方）始终先注册，所以对正常使用没有影响；`aetherd chat` 这类无 UI 的命令行
 /// 用法会失去读文件能力，这是有意的收紧。
-const TRUSTED_CHANNEL_TOOLS: &[&str] = &["clipboard_read", "clipboard_write", "read_file"];
+///
+/// `system_power` 是 2026-10-02 功能批次 J 加入的：它虽然是 L3（要确认令牌），
+/// 但仍要求可信通道 —— 令牌机制与通道身份是**两道**独立的门，"有令牌"不该
+/// 等价于"是谁都行"（令牌可能经日志/转发泄漏，通道身份不能）。
+const TRUSTED_CHANNEL_TOOLS: &[&str] = &[
+    "clipboard_read",
+    "clipboard_write",
+    "read_file",
+    "system_power",
+];
 
 /// 按名字查询该工具是否需要可信通道（`agent_run` 与 `server::ToolCall` 共用同一条判定）。
 pub fn requires_trusted_channel(name: &str) -> bool {
@@ -970,6 +997,33 @@ fn valid_disk_path(disk: &str) -> bool {
 
 /// 整盘安装工具：调 aether-install（其内部为罐头 dd，目标值仅作参数）。
 /// L3 双重确认的第二道：confirm 参数必须回显目标盘设备名。
+/// 电源动作工具（L3）：关机 / 重启。
+///
+/// 三件事按顺序做，缺一不可：
+/// 1. **解析动作**（只认 poweroff/reboot，未知值报错而不是猜）；
+/// 2. **回显确认**（`confirm` 必须与 `action` 逐字相同）；
+/// 3. **转发给 PID 1**（`aether-init`）—— 电源是整机级动作，只有 PID 1 能做，
+///    aetherd 不越权（它连 `reboot(2)` 都不该调）。
+///
+/// 鉴权不在这里做：L3 的确认令牌由闸门统一校验（见 `perm.rs`），
+/// 未注册 UI 通道根本拿不到令牌。这里只负责"确认过了之后真正执行"。
+fn tool_system_power(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+    let raw = args
+        .get("action")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("缺少 action 参数"))?;
+    let action = aether_ipc::PowerAction::parse(raw)
+        .ok_or_else(|| anyhow::anyhow!("未知电源动作「{raw}」：只接受 poweroff / reboot"))?;
+    let confirm = args.get("confirm").and_then(|v| v.as_str()).unwrap_or("");
+    if confirm != action.as_str() {
+        bail!(
+            "关机/重启需回显确认：请将 confirm 参数设为与 action 完全相同（{}）以确认未保存的数据会丢失",
+            action.as_str()
+        );
+    }
+    crate::control_init_power(action)
+}
+
 fn tool_install_disk(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let Some(disk) = args.get("disk").and_then(|v| v.as_str()) else {
         bail!("缺少 disk 参数");
@@ -1264,6 +1318,107 @@ mod tests {
         let mut ctx = ToolCtx::default();
         let r = execute(&gate(), &mut ctx, "sys_probe", &serde_json::json!({"probe":"uname"}), false);
         assert!(r.is_ok(), "probe failed: {r:?}");
+    }
+
+    /// 批次 J 回归：电源是 L3 且**必须回显动作名**。
+    ///
+    /// 三件事一起钉：等级是 L3（不可逆）、卡片要告诉用户"输入 poweroff"、
+    /// 以及**未确认时不能执行**（返回 NeedsConfirmation 而不是 Done）。
+    #[test]
+    fn system_power_is_l3_with_echo_and_needs_confirmation() {
+        let mut ctx = ToolCtx::default();
+        let out = execute(
+            &gate(),
+            &mut ctx,
+            "system_power",
+            &serde_json::json!({"action":"poweroff","confirm":"poweroff"}),
+            false, // 没有确认令牌
+        )
+        .expect("应返回 NeedsConfirmation 而不是错误");
+        match out {
+            ExecOutcome::NeedsConfirmation { tool, level, echo_required, consequence, .. } => {
+                assert_eq!(tool, "system_power");
+                assert_eq!(level, Level::L3, "电源必须是最高的 L3");
+                assert_eq!(
+                    echo_required.as_deref(),
+                    Some("poweroff"),
+                    "回显的应是动作名本身（用户要打的就是它）"
+                );
+                assert!(
+                    consequence.contains("未保存") || consequence.contains("丢失"),
+                    "后果说明必须讲清数据风险：{consequence}"
+                );
+            }
+            other => panic!("未确认的电源请求应弹确认卡片，实得 {other:?}"),
+        }
+    }
+
+    /// 批次 J 回归：动作名未知/回显不匹配都要**拒绝**，不能猜也不能放行。
+    #[test]
+    fn system_power_rejects_unknown_action_and_bad_echo() {
+        let mut ctx = ToolCtx::default();
+        // 未知动作：不能默默当成关机
+        let e = execute(
+            &gate(),
+            &mut ctx,
+            "system_power",
+            &serde_json::json!({"action":"sleep","confirm":"sleep"}),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("未知电源动作"), "实得：{e}");
+
+        // 回显不匹配：拒绝（这是"防误点"的核心）
+        let e = execute(
+            &gate(),
+            &mut ctx,
+            "system_power",
+            &serde_json::json!({"action":"reboot","confirm":"poweroff"}),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("回显确认"), "实得：{e}");
+
+        // 缺参数
+        let e = execute(&gate(), &mut ctx, "system_power", &serde_json::json!({}), true)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("缺少 action"), "实得：{e}");
+    }
+
+    /// 批次 J 回归：确认之后**真的会去执行**（非 Linux 上如实报"没有 init 通道"）。
+    ///
+    /// 这条钉的是"别又做成一个只会回话的桩"：确认后必须走到转发那一步。
+    #[test]
+    fn system_power_after_confirmation_reaches_the_backend() {
+        let mut ctx = ToolCtx::default();
+        let out = execute(
+            &gate(),
+            &mut ctx,
+            "system_power",
+            &serde_json::json!({"action":"poweroff","confirm":"poweroff"}),
+            true, // 已确认
+        );
+        // 非 Linux：必须是明确的"没有控制通道"错误，而不是 Ok("已关机")
+        #[cfg(not(target_os = "linux"))]
+        {
+            let e = out.expect_err("非 Linux 不该假装成功").to_string();
+            assert!(e.contains("aether-init"), "错误要指明缺什么：{e}");
+            assert!(!e.contains("已关机"), "绝不能谎报已关机：{e}");
+        }
+        // Linux（CI）：连不上 init 时同样是错误；连上了则返回受理文案
+        #[cfg(target_os = "linux")]
+        {
+            match out {
+                Ok(msg) => assert!(!msg.contains("已关机"), "受理不等于已完成：{msg}"),
+                Err(e) => assert!(
+                    e.contains("aether-init") || e.contains("电源动作"),
+                    "失败要给出真实原因：{e}"
+                ),
+            }
+        }
     }
 
     #[test]

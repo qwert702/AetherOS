@@ -208,7 +208,24 @@ fn handle_conn<S: DuplexStream>(stream: S, manager: Arc<Mutex<Manager>>) -> anyh
             Ok(Request::Ping) => Response::Pong,
             Ok(Request::ServiceControl { unit, action }) => service_control(&manager, &unit, action),
             Ok(Request::SysInfo { .. }) => sys_report(&manager),
-            Ok(_) => Response::Error { code: 1, message: "aether-init 仅处理 service_control/ping/sys_info".into() },
+            // 电源请求：**只置标志**，真正的执行在监督主循环里（见 power.rs 的说明）。
+            // 这样 IPC 线程不会被"停服务"的长操作占住，日志顺序也由主循环主导。
+            Ok(Request::SystemPower { action }) => {
+                let accepted = crate::power::request(action);
+                Response::PowerAck {
+                    action,
+                    accepted,
+                    message: if accepted {
+                        format!("已受理 {}：正在停止服务并断电", action.as_str())
+                    } else {
+                        "已有电源动作正在处理中（重复请求已忽略）".to_string()
+                    },
+                }
+            }
+            Ok(_) => Response::Error {
+                code: 1,
+                message: "aether-init 仅处理 ping/sys_info/service_control/system_power".into(),
+            },
             Err(e) => Response::Error { code: 1, message: e.to_string() },
         };
         writer.write_all(encode(&resp).as_bytes())?;

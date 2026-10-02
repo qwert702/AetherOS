@@ -532,6 +532,29 @@ fn handle_request(
             vec![Response::ConfigReloading]
         }
         Request::SysInfo { .. } => vec![Response::SysInfo(sys_report())],
+        // **电源动作不走这条入口**（2026-10-02 功能批次 J）。
+        //
+        // `Request::SystemPower` 在协议里存在，但它的合法使用方向是
+        // **aetherd → aether-init**（aetherd 确认过用户意图之后转发给 PID 1）。
+        // 客户端若直接把它发给 aetherd，说明它想绕过 L3 确认流程 —— 一律拒绝。
+        //
+        // 这不是"多一道没用的检查"：`system_power` 工具的确认令牌由闸门签发并绑定参数，
+        // 而直接发这个 Request 完全不需要令牌。两条路都通的话，确认机制就形同虚设。
+        Request::SystemPower { action } => {
+            audit_or_warn(gate, "system_power", Level::L3, verdict::REJECTED_NO_UI);
+            eprintln!(
+                "[aetherd] 拒绝直接下发的电源请求（{}）：必须经 system_power 工具（L3 + 用户确认）",
+                action.as_str()
+            );
+            vec![Response::Error {
+                code: 403,
+                message: format!(
+                    "电源动作必须经 system_power 工具执行（L3，需用户确认）；\
+                     不接受直接下发的 {}",
+                    action.as_str()
+                ),
+            }]
+        }
         Request::ServiceControl { unit, action } => {
             // 服务控制是"改系统状态"，与剪贴板/配置重载同一门槛：**必须**由已注册的
             // UI 通道发起。此前这里是个桩（直接回 ok:false + "M3 就绪后生效"），
@@ -693,6 +716,31 @@ mod ipc_gating_tests {
         let gate = Gate::new(std::env::temp_dir().join("aether_clipboard_audit_test.log"));
         let approvals = Approvals::new();
         handle_request(line, &cfg, &gate, &approvals, "test-key", is_ui)
+    }
+
+    /// 批次 J 回归：**直接下发的电源请求必须被拒**（哪怕连接已注册为 UI 通道）。
+    ///
+    /// `Request::SystemPower` 的合法方向是 aetherd → aether-init（确认之后转发）。
+    /// 若客户端也能直接发给 aetherd 并生效，L3 的确认令牌就形同虚设 ——
+    /// 这条测试钉住"只有一条路可走"。
+    #[test]
+    fn direct_power_request_is_rejected_even_from_ui_channel() {
+        let mut is_ui = true;
+        let out = handle_line(
+            &aether_ipc::encode(&Request::SystemPower {
+                action: aether_ipc::PowerAction::PowerOff,
+            }),
+            &mut is_ui,
+        );
+        assert!(
+            matches!(&out[0], Response::Error { code: 403, .. }),
+            "直接下发电源请求必须 403（否则绕过确认卡片）：{out:?}"
+        );
+        let Response::Error { message, .. } = &out[0] else { unreachable!() };
+        assert!(
+            message.contains("system_power"),
+            "拒绝时要告诉调用方正确的路径：{message}"
+        );
     }
 
     /// 批次 I 回归：服务控制**必须**由已注册的 UI 通道发起。

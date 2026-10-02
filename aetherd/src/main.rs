@@ -669,6 +669,41 @@ pub(crate) fn control_init_service(
     anyhow::bail!("本平台没有 aether-init 控制通道（仅 Linux 提供）")
 }
 
+/// 请求 aether-init 执行电源动作（关机/重启）。
+///
+/// 与 `control_init_service` 同一条通道，但语义不同：电源是**整机级且不可逆**的，
+/// 所以它只由 L3 工具 `system_power` 在**用户确认之后**调用。
+///
+/// 返回 `Ok` 只表示 init **受理**了请求（`accepted: true`）—— 真正断电时进程会
+/// 消失，不可能再回一条"完成"。所以文案用"正在关机"而不是"已关机"。
+#[cfg(target_os = "linux")]
+pub(crate) fn control_init_power(action: aether_ipc::PowerAction) -> anyhow::Result<String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let mut stream = UnixStream::connect(aether_init_socket())
+        .map_err(|e| anyhow::anyhow!("连不上 aether-init（{e}）—— 无法执行电源动作"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(8))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(8))).ok();
+    stream.write_all(
+        aether_ipc::encode(&aether_ipc::Request::SystemPower { action }).as_bytes(),
+    )?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    match aether_ipc::decode::<aether_ipc::Response>(&line)? {
+        aether_ipc::Response::PowerAck { accepted: true, message, .. } => Ok(message),
+        aether_ipc::Response::PowerAck { message, .. } => Err(anyhow::anyhow!(message)),
+        aether_ipc::Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
+        _ => Err(anyhow::anyhow!("aether-init 返回了意外响应")),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn control_init_power(_action: aether_ipc::PowerAction) -> anyhow::Result<String> {
+    anyhow::bail!("本平台没有 aether-init 控制通道（仅 Linux 提供）")
+}
+
 /// 汇总真实系统状态：/proc 内存/运行时长 + aether-init 服务列表。
 /// 拿不到的部分保持 None/空（调用方按缺省展示）。非 Linux（单测）返回空报告。
 pub(crate) fn collect_sys_report() -> aether_ipc::SysReport {
