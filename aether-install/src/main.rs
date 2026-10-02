@@ -51,10 +51,22 @@ pub const PERSIST_MNT: &str = "/mnt/aether-persist";
 const BLKRRPART: libc::c_ulong = 0x125f;
 
 /// 解析命令行参数：(disk, yes, persist)。
-pub fn parse_args(args: &[String]) -> Result<(String, bool, bool)> {
+/// 命令行选项。
+pub struct Options {
+    pub disk: String,
+    pub yes: bool,
+    pub persist: bool,
+    /// `--wipe`：先整盘清零再写入（审计 M-8）。默认**不做** ——
+    /// 整盘清零在几百 GB 的盘上要几分钟到几十分钟，而"旧数据仍留在未使用扇区"
+    /// 对演示系统不是威胁模型的一部分。需要移交/回收机器时显式打开。
+    pub wipe: bool,
+}
+
+pub fn parse_args(args: &[String]) -> Result<Options> {
     let mut disk = None;
     let mut yes = false;
     let mut persist = true;
+    let mut wipe = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -68,12 +80,16 @@ pub fn parse_args(args: &[String]) -> Result<(String, bool, bool)> {
             }
             "--yes" => yes = true,
             "--no-persist" => persist = false,
-            other => bail!("未知参数「{other}」（用法: aether-install --disk <块设备> --yes [--no-persist]）"),
+            "--wipe" => wipe = true,
+            other => bail!(
+                "未知参数「{other}」（用法: aether-install --disk <块设备> --yes \
+                 [--no-persist] [--wipe]）"
+            ),
         }
         i += 1;
     }
     let disk = disk.ok_or_else(|| anyhow::anyhow!("必须用 --disk 指定目标块设备（如 /dev/vda）"))?;
-    Ok((disk, yes, persist))
+    Ok(Options { disk, yes, persist, wipe })
 }
 
 /// 目标盘防呆校验：存在、是块设备（Unix）、不小于 MIN_DISK_MB。
@@ -94,6 +110,41 @@ pub fn validate_disk(disk: &str) -> Result<u64> {
         bail!("{disk} 只有 {mb}MB，小于最小要求 {MIN_DISK_MB}MB");
     }
     Ok(mb)
+}
+
+/// 把目标盘路径规范化成 `/dev/<name>`（2026-10-02 审计 M-7）。
+///
+/// 为什么不能只做字符串比较：`metadata()` 接受 `/dev//vda`、`/dev/./vda`、
+/// `/dev/disk/by-id/...` 这些写法，而"目标盘不得是安装源"原先用的是
+/// `disk == SOURCE` 纯字符串比较 —— 多一个斜杠就能绕过，
+/// 结果是 `dd if=/dev/sr0 of=/dev//sr0`：**读安装介质又写回安装介质**。
+/// 这里先 `canonicalize`（解析符号链接与 `.`/`..`），再要求落在 `/dev` 下。
+pub fn canonicalize_disk(disk: &str) -> Result<String> {
+    let p = std::fs::canonicalize(disk).with_context(|| format!("目标 {disk} 不存在"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let md = std::fs::metadata(&p)?;
+        if !md.file_type().is_block_device() {
+            bail!("{} 不是块设备（拒绝写入，防止误写普通文件）", p.display());
+        }
+    }
+    let s = p.to_string_lossy().to_string();
+    let name = s.strip_prefix("/dev/").unwrap_or("");
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        bail!("目标 {s} 不是 /dev 下的裸块设备名（拒绝写入）");
+    }
+    Ok(format!("/dev/{name}"))
+}
+
+/// 两个路径是否指向同一个设备（用于"拒绝自读自写"）。
+///
+/// 比较前各自 `canonicalize`：这样 `/dev//sr0`、`/dev/./sr0`、`/dev/disk/by-id/xxx`
+/// 都会收敛到同一个路径，字符串比较才有效（审计 M-7）。
+pub fn same_device(a: &str, b: &str) -> bool {
+    let ca = std::fs::canonicalize(a).unwrap_or_else(|_| std::path::PathBuf::from(a));
+    let cb = std::fs::canonicalize(b).unwrap_or_else(|_| std::path::PathBuf::from(b));
+    ca == cb
 }
 
 /// 块设备容量（MB）。块设备 metadata().len() 恒为 0，必须读 sysfs 扇区数。
@@ -281,7 +332,23 @@ fn setup_persist(disk: &str) -> Result<String> {
     let node = reread_and_wait(disk, index as u32)?;
     let node_s = node.to_string_lossy().to_string();
 
-    // 4. 格式化
+    // 4. 清掉这块分区上遗留的文件系统签名，再格式化（审计 M-8）。
+    //
+    // 为什么必须清：装机目标盘上常常有**上一个系统**的分区痕迹。mkfs.ext4 -F 会
+    // 覆盖本分区的超级块，但残留的其它签名（如旧的 vfat/LVM/RAID 元数据）会让
+    // 内核的自动探测与 `blkid` 报出乱七八糟的结果。wipefs 只动签名、不擦数据，
+    // 秒级完成；工具缺失时只提示（不让装机因此失败）。
+    if std::path::Path::new("/sbin/wipefs").exists() {
+        let st = Command::new("/sbin/wipefs").arg("-a").arg(&node_s).status();
+        match st {
+            Ok(s) if s.success() => {}
+            Ok(s) => println!("aether-install: 提示 —— wipefs 返回 {s}（继续格式化）"),
+            Err(e) => println!("aether-install: 提示 —— wipefs 未能执行（{e}）"),
+        }
+    } else {
+        println!("aether-install: 提示 —— 镜像内没有 wipefs，跳过旧签名清理");
+    }
+
     let st = Command::new("/sbin/mkfs.ext4")
         .arg("-F")
         .arg("-q")
@@ -304,7 +371,10 @@ fn setup_persist(disk: &str) -> Result<String> {
     if !st.success() {
         bail!("挂载 {node_s} 到 {PERSIST_MNT} 失败");
     }
-    for d in ["log", "diag", "lib", "tmp", "spool", "home"] {
+    // `apps` 必须在骨架里（审计 M-8）：`aetherd::apps::DEFAULT_DIR` 是 `/var/apps`，
+    // 持久分区挂到 /var 之后这个目录就是"已装应用"的家。安装时建好它，
+    // 用户装机后第一件事（装应用）才不会碰到"目录不存在"。
+    for d in ["log", "diag", "lib", "tmp", "spool", "home", "apps"] {
         std::fs::create_dir_all(format!("{PERSIST_MNT}/{d}")).ok();
     }
     // /var/run 在本系统里指向 /run（tmpfs）：持久分区上保持同样的软链，
@@ -318,6 +388,10 @@ fn setup_persist(disk: &str) -> Result<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    // 这个标记文件是**启动侧识别"这是我们的持久分区"的依据**（审计 H-3 残余）：
+    // aether-init 会先把候选分区只读挂起，确认 `log/install-id` 存在才改挂 rw。
+    // 诚实边界：能写盘的人可以伪造它；它挡的是"误挂别人的分区"（双系统机器上
+    // 把宿主机的根分区当成 /var），不是有物理访问权的攻击者 —— 后者要靠安全启动/TPM。
     std::fs::write(format!("{PERSIST_MNT}/log/install-id"), format!("{ts}\n")).ok();
     std::fs::write(
         format!("{PERSIST_MNT}/boot.log"),
@@ -355,11 +429,15 @@ fn has_mbr(path: &str) -> Result<bool> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (disk, yes, persist) = parse_args(&args)?;
+    let opt = parse_args(&args)?;
+    let (yes, persist, wipe) = (opt.yes, opt.persist, opt.wipe);
 
+    // 先规范化（审计 M-7）：后面所有比较与写入都用规范化后的路径
+    let disk = canonicalize_disk(&opt.disk)?;
     let mb = validate_disk(&disk)?;
-    // 目标盘不得是安装源自己：--disk /dev/sr0 会变成 dd if=/dev/sr0 of=/dev/sr0 自读自写
-    if disk == SOURCE {
+    // 目标盘不得是安装源自己：--disk /dev/sr0 会变成 dd if=/dev/sr0 of=/dev/sr0 自读自写。
+    // 用规范化后的路径比较（`same_device`），别再退回字符串比较。
+    if same_device(&disk, SOURCE) {
         bail!("目标盘不能是安装源（{SOURCE}）：拒绝自读自写");
     }
     println!("aether-install: 目标 {disk}（{mb}MB），源 {SOURCE}");
@@ -378,11 +456,30 @@ fn main() -> Result<()> {
         );
     }
 
+    // 可选的整盘清零（审计 M-8）：默认不做，理由是时间成本 vs 威胁模型；
+    // 需要把机器移交出去时用 --wipe 把旧数据真正抹掉。
+    if wipe {
+        println!("aether-install: --wipe：先整盘清零（{mb}MB，可能要几分钟）…");
+        let st = Command::new("/bin/dd")
+            .arg("if=/dev/zero")
+            .arg(format!("of={disk}"))
+            .arg("bs=4M")
+            .arg("conv=fsync")
+            .status()
+            .context("执行整盘清零失败")?;
+        if !st.success() {
+            bail!("整盘清零失败: {st}");
+        }
+    }
+
     println!("aether-install: 写入中（约 32MB，几秒钟）…");
     let status = Command::new("/bin/dd")
         .arg(format!("if={SOURCE}"))
         .arg(format!("of={disk}"))
         .arg(format!("bs={BS}"))
+        // conv=fsync：dd 返回前把数据落盘（审计 L-12）。不加的话"dd 成功"只代表
+        // 数据进了页缓存，紧接着的分区重读/mkfs 可能与写盘竞争。
+        .arg("conv=fsync")
         .status()
         .context("执行 /bin/dd 失败")?;
     if !status.success() {
@@ -447,14 +544,54 @@ mod tests {
 
     #[test]
     fn parse_ok() {
-        let (disk, yes, persist) = parse_args(&args(&["--disk", "/dev/vda", "--yes"])).unwrap();
-        assert_eq!(disk, "/dev/vda");
-        assert!(yes);
-        assert!(persist);
-        let (_, yes, persist) =
-            parse_args(&args(&["--yes", "--disk", "/dev/sda", "--no-persist"])).unwrap();
-        assert!(yes);
-        assert!(!persist);
+        let o = parse_args(&args(&["--disk", "/dev/vda", "--yes"])).unwrap();
+        assert_eq!(o.disk, "/dev/vda");
+        assert!(o.yes);
+        assert!(o.persist);
+        assert!(!o.wipe, "--wipe 默认必须是关的（整盘清零很慢）");
+        let o2 = parse_args(&args(&["--yes", "--disk", "/dev/sda", "--no-persist"])).unwrap();
+        assert!(o2.yes);
+        assert!(!o2.persist);
+        let o3 = parse_args(&args(&["--disk", "/dev/vdb", "--yes", "--wipe"])).unwrap();
+        assert!(o3.wipe);
+    }
+
+    /// M-7 回归：目标路径必须被规范化，否则"拒绝自读自写"能被多余的斜杠绕过。
+    ///
+    /// 在开发机上用临时**普通文件**验证"规范化 + 拒非块设备"这条路径：
+    /// 块设备分支要 Linux 才走得到，这里至少钉住"路径收敛"与"非块设备必须拒"。
+    #[test]
+    fn canonicalize_rejects_non_block_device_and_normalizes() {
+        let dir = std::env::temp_dir().join("aether-install-canon");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("disk.img");
+        std::fs::write(&f, b"x").unwrap();
+
+        #[cfg(unix)]
+        {
+            // 普通文件不是块设备 → 必须拒
+            assert!(canonicalize_disk(f.to_str().unwrap()).is_err());
+        }
+
+        // 带 `./` 与重复分隔符的写法必须收敛到同一路径（这正是绕过字符串比较的手法）
+        let messy = format!("{}{}disk.img", dir.display(), std::path::MAIN_SEPARATOR);
+        let messy2 = format!("{}{}.{}disk.img", dir.display(),
+                             std::path::MAIN_SEPARATOR, std::path::MAIN_SEPARATOR);
+        if std::fs::canonicalize(&messy).is_ok() && std::fs::canonicalize(&messy2).is_ok() {
+            assert_eq!(std::fs::canonicalize(&messy).unwrap(),
+                       std::fs::canonicalize(&messy2).unwrap(),
+                       "不同写法必须收敛到同一路径");
+        }
+
+        // same_device：同一文件的不同写法必须判为同一设备
+        assert!(same_device(
+            f.to_str().unwrap(),
+            std::fs::canonicalize(&f).unwrap().to_str().unwrap()
+        ));
+        // 不存在的路径退回字符串比较，不应误判为相同
+        assert!(!same_device("/dev/definitely-not-here-a", "/dev/definitely-not-here-b"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

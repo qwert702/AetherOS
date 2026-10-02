@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-10-02（复核自 git 历史 + 代码实测）· 源码 **25,862 行**
+生成时间：2026-10-02（复核自 git 历史 + 代码实测）· 源码 **26,095 行**
 （7 个 crate，45 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
@@ -12,12 +12,12 @@
 |---|---|---|---|
 | `aether-compositor` | 16,318 | 22 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 4,489 视觉层 / `main.rs` 4,061 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
 | `aetherd` | 6,223 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
-| `aether-init` | 1,627 | 6 | PID 1 与服务管理 |
-| `aether-ops` | 736 | 3 | AI 运维：日志监控 + 故障诊断 |
-| `aether-install` | 595 | 1 | 磁盘安装器（isohybrid 整盘写入） |
+| `aether-init` | 1,679 | 6 | PID 1 与服务管理 |
+| `aether-ops` | 780 | 3 | AI 运维：日志监控 + 故障诊断 |
+| `aether-install` | 732 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 352 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **25,862** | **45** | |
+| **合计** | **26,095** | **45** | |
 
 > 口径：2026-10-02 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -130,7 +130,7 @@ Aether/
 - 环境变量：`AETHER_API_KEY`/`AETHER_API_BASE`/`AETHER_MODEL`（云端 GLM）、`AETHER_LOCAL_URL`/`AETHER_LOCAL_MODEL`/`AETHER_LOCAL_ONLY`、`AETHER_BIND`（调试用，出厂不设）
 - 端口/socket：`/run/aetherd.sock`（aetherd 默认）、7311（aetherd TCP 备用）、11434（Ollama 默认）
 
-### aether-init（PID 1，1,627 行 / 6 文件）
+### aether-init（PID 1，1,679 行 / 6 文件）
 | 文件 | 内容 |
 |---|---|
 | `src/manager.rs` (468) | 状态机 + 拓扑排序（DFS 环检测）+ 指数退避重启（2^n × 500ms，封顶 6 步，稳定 60s 计数归零）+ 僵尸收割（waitpid(-1) 含孤儿）。**只有 `restart: true` 的服务才会被拉起**（`manager.rs` 的 `if svc.spec.restart`） |
@@ -138,7 +138,7 @@ Aether/
 | `src/main.rs` (232) | 入口：`--pid1` / `--dry-run`；监督循环（200ms tick） |
 | `src/ipc.rs` (155) | 服务控制通道：Linux Unix socket 0600（root-only）/ 开发态 TCP 7312 |
 | `src/logtee.rs` (241) | 服务 stdout/stderr → /var/log/aether/<unit>.log（8MB 轮转）+ 控制台 tee |
-| `src/persist.rs` (299) | 持久化分区挂载（卷标 AETHER 候选盘列表 → /var）+ boot.log 启动记录 |
+| `src/persist.rs` (351) | 持久化分区挂载（卷标 AETHER 候选盘列表 → /var）+ boot.log 启动记录 |
 
 > **`essential: true` 必须同时 `restart: true`** —— 这条不变量有测试守着（2026-09-28 新增）。
 > 起因是一次**跨提交的语义漂移**：`compositor.json` 的 `restart: false` 是 09-12 设的，
@@ -152,15 +152,15 @@ Aether/
 > "服务状态查询失败（No such file or directory）"的假故障。启动序列**持锁**执行，
 > 让这期间到达的 IPC 请求排队到 boot 完成。实机串口日志可验证：socket 行必须早于"自启动序列"行。
 
-### aether-install（磁盘安装器，595 行 / 1 文件）
+### aether-install（磁盘安装器，732 行 / 1 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/main.rs` (595) | isohybrid dd 整盘安装：防呆校验（块设备/容量/`--yes`/禁自读自写）→ **装机前置校验镜像是否 isohybrid**（H-6，避免先毁盘后报错）→ MBR 持久化分区规划（>2TB 放弃、不覆盖既有分区）→ mkfs.ext4 + /var 骨架 + 引导记录 |
+| `src/main.rs` (732) | isohybrid dd 整盘安装：防呆校验（块设备/容量/`--yes`/禁自读自写）→ **装机前置校验镜像是否 isohybrid**（H-6，避免先毁盘后报错）→ MBR 持久化分区规划（>2TB 放弃、不覆盖既有分区）→ mkfs.ext4 + /var 骨架 + 引导记录 |
 
-### aether-ops（AI 运维，736 行 / 3 文件，Linux 常驻）
+### aether-ops（AI 运维，780 行 / 3 文件，Linux 常驻）
 | 文件 | 内容 |
 |---|---|
-| `src/monitor.rs` (407) | 决策核心（纯函数带测试）：指标解析、服务状态、`plan` 自愈决策（restart 标记/essential 告警/冷却）、`scan_new_lines` 日志字面量扫告警（**只命中字面量罐头，不猜语义**） |
+| `src/monitor.rs` (451) | 决策核心（纯函数带测试）：指标解析、服务状态、`plan` 自愈决策（restart 标记/essential 告警/冷却）、`scan_new_lines` 日志字面量扫告警（**只命中字面量罐头，不猜语义**） |
 | `src/main.rs` (175) | 巡检主循环：15s/轮，冷却 20 轮，心跳/告警/诊断报告落盘 |
 | `src/diagnose.rs` (154) | 诊断报告组装（纯函数带测试）：事件 + 现场 + 行动 + 日志尾部 |
 
@@ -307,7 +307,7 @@ cargo run -p aetherd -- config --show                           # 模型配置�
 cargo run -p aetherd -- config --api-key K --cloud-base URL      # 配置云端（也支持自建网关）
 cargo run -p aether-init -- --dry-run ./platform/overlay/etc/aether/services  # 服务监督自检
 python scripts/e2e-permission-confirm.py                        # 权限链路端到端（先起 aetherd serve）
-cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 389 项，分布见「测试分布」）
+cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 390 项，分布见「测试分布」）
 
 # ⚠️ 改了 cfg(target_os="linux") 的代码后必须交叉检查：Windows 构建会整段屏蔽那些路径
 cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether-compositor -p aether-init -p aether-ops -p aether-install -p aether-ipc -p aether-shell
@@ -349,7 +349,7 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
   空格提交 / 退格删拼音，**未被 IME 吃掉的字符才送 PTY**（`3a34f49`）；Esc 取消拼字同轮接上
 - ⚠️ 终端里的中文输入**只做过编译与源码级确认，没有实机键盘交互验证**（`--shot` 出静态帧，测不了输入）
 
-## 测试分布（2026-10-02 实测：**Windows 389 全绿；Windows 侧 0 警告，musl 侧 6/7 crate 0 警告**）
+## 测试分布（2026-10-02 实测：**Windows 390 全绿；Windows 侧 0 警告，musl 侧 6/7 crate 0 警告**）
 
 > **Linux 侧未实测。** 本机是 Windows，跑不了 Linux 二进制。此前文档里的
 > **358 / 333 是静态推算**，两者互相矛盾且都无法复现，已删除（2026-10-02 安全审计）。
@@ -368,11 +368,11 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
 | `aether-compositor` | 233 | 234 | `fbdev.rs` 是 Linux 专属模块，其中 1 项在 Windows 不参与 |
 | `aetherd` | 118 | 121 | 3 项是 Linux/unix 专属（`read_file` 目标机策略、审计文件 0600）|
 | `aether-init` | 20 | 21 | 1 项为 unix 专属（日志符号链接拒绝）；含 `shipped_essential_services_must_be_restartable`（见下） |
-| `aether-ops` | 0 | 13 | 整个 crate 是 Linux 专属，Windows 不参与 |
-| `aether-install` | 10 | 10 | 含 `has_mbr_detects_isohybrid_and_rejects_plain_iso`（H-6 回归）|
+| `aether-ops` | 0 | 14 | 整个 crate 是 Linux 专属，Windows 不参与 |
+| `aether-install` | 12 | 12 | 含 `has_mbr_detects_isohybrid_and_rejects_plain_iso`（H-6 回归）|
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **389** | **403** | 差值 18 = 只在 Linux 上运行的用例 |
+| **合计** | **390** | **403** | 差值 18 = 只在 Linux 上运行的用例 |
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。

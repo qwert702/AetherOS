@@ -17,4 +17,10 @@ ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
 # 由调试脚本显式注入 AETHER_BIND=0.0.0.0，出厂镜像绝不对外暴露 IPC。
 
 echo "[init] AetherOS 0.1 — 交接给 aether-init"
+
+# 认证基线必须**在启动横幅里就可见**（2026-10-02 审计 M-4）：出厂镜像 root 无口令，
+# 控制台/串口拿到就是 root。这是 Live 演示系统的刻意取舍，但不能让人"不知道"。
+# 上锁方式见 /etc/issue 与 platform/build-iso.sh（AETHER_ROOT_PW_HASH）。
+echo "[init] ⚠ 本镜像无账号体系：控制台/串口访问 = root（详见 /etc/issue）"
+
 exec /usr/bin/aether-init --pid1

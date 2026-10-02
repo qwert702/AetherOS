@@ -49,6 +49,45 @@ pub const PERSIST_MOUNT_OPTS: &str = "nodev,nosuid";
 /// fsck 退出码 ≥ 此值表示"有未纠正的错误"（e2fsck 语义：4 = 未修复，8 = 操作错误）。
 const FSCK_UNCORRECTED_CODE: i32 = 4;
 
+/// 安装标记（相对分区根）：由 `aether-install` 在建立持久分区时写入。
+///
+/// 这是"这个分区确实是本机装出来的"的第二个判据（第一个是卷标）。见
+/// [`has_install_marker`] 的说明 —— 它挡的是误挂，不是有物理访问权的攻击者。
+pub const INSTALL_MARKER: &str = "log/install-id";
+
+/// 身份探测用的临时挂载点（`/run` 是 tmpfs，随时可写；不复用 `/var`，
+/// 因为探测阶段 `/var` 还得保持原样）。
+#[cfg(target_os = "linux")]
+const PROBE_MNT: &str = "/run/aether-persist-probe";
+
+/// 只读探测：分区里有没有安装标记。
+///
+/// 为什么必须是**只读**挂载（2026-10-02 审计 H-3 残余）：ext4 在 rw 挂载时会重放
+/// 日志、更新时间戳 —— 对"误挂别人的分区"这个场景，**写盘本身就是损失**。
+/// 所以顺序是：卷标 → 只读探测标记 → fsck → rw 挂载；把 fsck 放在探测之后，
+/// 也是因为 `fsck -p` 会修改文件系统。
+///
+/// 诚实边界：能写盘的人可以伪造卷标与标记。它挡的是**误挂**
+/// （双系统机器上把宿主机的根分区当 /var），不是有物理访问权的攻击者 ——
+/// 后者要靠安全启动/TPM，不在本系统当前能力范围内。
+#[cfg(target_os = "linux")]
+fn has_install_marker(dev: &str) -> bool {
+    if std::fs::create_dir_all(PROBE_MNT).is_err() {
+        return false;
+    }
+    let mounted = std::process::Command::new("/bin/mount")
+        .args(["-t", "ext4", "-o", "ro,nodev,nosuid,noexec", dev, PROBE_MNT])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !mounted {
+        return false;
+    }
+    let found = std::path::Path::new(PROBE_MNT).join(INSTALL_MARKER).is_file();
+    let _ = std::process::Command::new("/bin/umount").arg(PROBE_MNT).status();
+    found
+}
+
 /// 从设备头部字节里解析 ext4 卷标（**纯函数**，可在开发机上单测）。
 ///
 /// ext4 超级块固定在偏移 1024：`s_magic` 在 +0x38（`0xEF53`），`s_volume_name`
@@ -146,10 +185,14 @@ pub fn count_boot_records(text: &str) -> usize {
 
 /// 把持久化分区挂到 /var。返回挂载成功的设备名。
 ///
-/// 三道门，缺一不可（2026-10-02 审计 H-3）：
+/// 四道门，顺序有讲究（2026-10-02 审计 H-3）：
 /// 1. **身份**：ext4 且卷标为 `AETHER` —— 否则跳过（候选表里的 nvme 分区可能是别人的 root）；
-/// 2. **健康**：挂载前跑 `fsck -p`，有未纠正的错误就不挂；
-/// 3. **收敛**：挂载选项 `nodev,nosuid,noexec`（只放日志/诊断/回收站，不需要这些权限）。
+/// 2. **归属**：**只读**探测安装标记 `log/install-id` —— 只读是因为 rw 挂载会写盘，
+///    而这一步的整个意义就是"不碰不属于我们的东西"；
+/// 3. **健康**：`fsck -p`（会改文件系统，所以必须排在"确认归属"之后），
+///    有未纠正的错误就不挂；
+/// 4. **收敛**：挂载选项 `nodev,nosuid`（只放日志/诊断/回收站/已装应用，
+///    不需要设备节点与 setuid；但**不能加 noexec** —— 已装应用要能执行）。
 #[cfg(target_os = "linux")]
 pub fn mount_persist() -> Option<String> {
     for dev in PERSIST_CANDIDATES {
@@ -158,6 +201,13 @@ pub fn mount_persist() -> Option<String> {
         }
         if let Err(why) = is_our_persist_partition(dev) {
             println!("[aether-init] 跳过 {dev}：{why}（不是本系统的持久化分区）");
+            continue;
+        }
+        if !has_install_marker(dev) {
+            println!(
+                "[aether-init] 跳过 {dev}：卷标是 {PERSIST_LABEL}，但没有安装标记 \
+                 {INSTALL_MARKER} —— 不是本机装出来的分区，拒绝挂载（也不做 fsck：那是写操作）"
+            );
             continue;
         }
         if !fsck_before_mount(dev) {
@@ -284,6 +334,8 @@ mod tests {
     fn persist_label_and_mount_opts_follow_contract() {
         // 必须与 aether-install 的 `mkfs.ext4 -L` 一致（两侧各钉一次字面量）
         assert_eq!(PERSIST_LABEL, "AETHER");
+        // 安装标记路径必须与安装器写的那一个一致（aether-install::setup_persist）
+        assert_eq!(INSTALL_MARKER, "log/install-id");
         // 这两项挡掉"用持久分区提权"：设备节点与 setuid 位
         let opts: Vec<&str> = PERSIST_MOUNT_OPTS.split(',').collect();
         for want in ["nodev", "nosuid"] {

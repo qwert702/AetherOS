@@ -1,0 +1,12 @@
+\n
+AetherOS 0.1 — 这是一个**没有账号体系**的 Live 演示系统。
+
+  控制台（含串口）拿到就是 root：出厂镜像的 root 口令为空。
+  这是刻意的取舍（Live 系统要能直接上手），但你必须知道它的边界：
+  任何能碰到键盘/串口/虚拟机控制台的人，都拥有这台机器的完全控制权。
+
+  要让镜像"上锁"：构建时设 AETHER_ROOT_PW_HASH="$(openssl passwd -6)"
+  重新构建（见 platform/build-iso.sh 与 README「边界在哪」）。
+
+  细节与残余风险见 docs/SECURITY-AUDIT-2026-10-02.md（M-4）。
+\n

@@ -21,6 +21,22 @@ BUILD="$ROOT/platform/build"
 OVERLAY="$ROOT/platform/overlay"
 BR_EXT="$ROOT/platform/br2-external"
 
+# ── 认证基线（2026-10-02 审计 M-4）──────────────────────────────────────────
+# 出厂镜像 root **无口令**：控制台/串口拿到就是 root。对 Live 演示系统这是刻意的
+# （没有账号体系才谈得上"一条命令跑起来"），但必须**显式可见**，而且要有上锁的路：
+#   AETHER_ROOT_PW_HASH="$(openssl passwd -6)" platform/build-iso.sh
+# 设了就把哈希写进 /etc/shadow（0600），登录需要口令；没设就打一条醒目警告。
+if [ -n "${AETHER_ROOT_PW_HASH:-}" ]; then
+    mkdir -p "$OVERLAY/etc"
+    printf 'root:%s:0:0:99999:7:::\n' "$AETHER_ROOT_PW_HASH" > "$OVERLAY/etc/shadow"
+    chmod 600 "$OVERLAY/etc/shadow"
+    echo "==> 认证基线：已写入 root 口令哈希（镜像需要登录）"
+else
+    echo "!! 认证基线：出厂镜像 root 无口令 —— 控制台/串口拿到即 root。"
+    echo "   这是 Live 演示系统的刻意取舍；要上锁请设 AETHER_ROOT_PW_HASH=\"\$(openssl passwd -6)\" 重新构建。"
+    echo "   （提醒会同时出现在启动横幅与 /etc/issue 里，不会「悄悄」存在。）"
+fi
+
 echo "==> [1/3] musl 静态编译 Aether 组件"
 rustup target add x86_64-unknown-linux-musl
 COMPONENTS=(aether-init aetherd aether-ops aether-compositor)

@@ -240,12 +240,19 @@ impl LogWatch {
             if file.seek(SeekFrom::Start(*offset)).is_err() {
                 continue;
             }
-            let mut text = String::new();
-            if file.read_to_string(&mut text).is_err() {
-                continue; // 非 UTF-8 片段（半行截断）留给下一轮
+            // 按**字节**读、再按 UTF-8 有损解码（2026-10-02 审计 M-6）。
+            //
+            // 原来用 `read_to_string`：遇到非 UTF-8 就 `continue`，而**偏移不推进** ——
+            // 于是日志里只要有一个坏字节（终端输出、崩溃转储、被截断的多字节字符），
+            // 这个文件就**从此永远扫不到**，后面的告警全部丢失。有损解码把坏字节
+            // 变成 U+FFFD，字面量匹配不受影响，而偏移照常前进。
+            let mut buf = Vec::new();
+            if file.read_to_end(&mut buf).is_err() {
+                continue; // 只有真的读失败才跳过（偏移不动，下一轮重试）
             }
             // 偏移推进按实际读取字节数：metadata 与读取之间文件增长时不会重复扫描
-            *offset += text.len() as u64;
+            *offset += buf.len() as u64;
+            let text = String::from_utf8_lossy(&buf);
             for line in scan_new_lines(&text) {
                 alerts.push((name.to_string(), line));
             }
@@ -266,6 +273,43 @@ mod tests {
             restart: true,
             essential: false,
         }
+    }
+
+    /// M-6 回归：日志里出现非 UTF-8 字节时，**偏移必须照常推进**。
+    ///
+    /// 修复前的行为：`read_to_string` 失败 → `continue` 且偏移不动 ⇒ 这个文件
+    /// 从此永远扫不到（一个坏字节让后面的所有告警消失）。这里在坏字节**之后**
+    /// 写一行告警，它必须被扫出来。
+    #[test]
+    fn non_utf8_log_still_advances_and_finds_later_alerts() {
+        let dir = std::env::temp_dir().join("aether-ops-m6");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("aetherd.log");
+
+        // 坏字节 + 换行 + 一行会命中的告警
+        let mut data = vec![0xFFu8, 0xFE, b'\n'];
+        data.extend_from_slice("panic: 故意构造的告警行\n".as_bytes());
+        std::fs::write(&log, &data).unwrap();
+
+        let mut w = LogWatch::new();
+        let first = w.scan_dir(dir.to_str().unwrap(), "ops");
+        assert!(
+            first.iter().any(|(_, l)| l.contains("panic")),
+            "坏字节之后的那行告警必须被扫到，实得 {first:?}"
+        );
+        // 第二轮：没有新增内容 ⇒ 不应重复上报（偏移确实推进了）
+        let second = w.scan_dir(dir.to_str().unwrap(), "ops");
+        assert!(second.is_empty(), "偏移未推进会导致重复上报，实得 {second:?}");
+
+        // 追加一行再扫：只报新增的那行
+        let mut more = std::fs::read(&log).unwrap();
+        more.extend_from_slice("ERROR 又一条告警\n".as_bytes());
+        std::fs::write(&log, &more).unwrap();
+        let third = w.scan_dir(dir.to_str().unwrap(), "ops");
+        assert_eq!(third.len(), 1, "应只报新增的一行，实得 {third:?}");
+        assert!(third[0].1.contains("又一条告警"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

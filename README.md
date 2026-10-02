@@ -9,8 +9,8 @@
 
 | | |
 |---|---|
-| **规模** | 合计 25,862 行 Rust / 45 个源文件 / 7 个 crate（2026-10-02 实测） |
-| **验证** | 389 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **规模** | 合计 26,095 行 Rust / 45 个源文件 / 7 个 crate（2026-10-02 实测） |
+| **验证** | 390 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 38.5 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](docs/host-ui-light-desktop.png)
@@ -33,7 +33,7 @@
   外泄路径是用**两个假 LLM 端点 + canary 文件**端到端证明的（13 字输入、两次读文件，
   云端端点确实收到了 canary），修复后的行为由 `router` 的两条单测钉住。
 - **连字体都自己带。** 桌面用 **Noto Sans CJK SC 子集**（GB2312 + 拉丁 + 标点，约 5.7 MB，**含真粗体**）—— 不是「粗体=正文字体」的伪粗。
-- **可验证，而不是"我觉得没问题"。** 除 389 项单测外，还有 19 张归档走查图的**逐像素回归门禁**
+- **可验证，而不是"我觉得没问题"。** 除 390 项单测外，还有 19 张归档走查图的**逐像素回归门禁**
   （差异 > 0.02% 即失败）、12 小时 43 分的稳定性长跑（3053 轮巡检：服务退出 0 / 自动重启 0 /
   panic 0，内存无泄漏趋势）、四轮代码审查且**未修项归零**。
 - **真能装应用。** 在没有任何包管理器的系统上做了自己的应用包格式（清单 + 依赖预检），
@@ -50,7 +50,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
 cargo run -p aether-compositor -- --theme dark     # 深空主题
 cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试（Windows 389 项，见「测试与验证」）
+cargo test --workspace                             # 单元测试（Windows 390 项，见「测试与验证」）
 ```
 
 构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
@@ -89,6 +89,9 @@ cargo test --workspace                             # 单元测试（Windows 389 
   在**动目标盘之前**拒绝执行并说明原因。引导与 Live 桌面不受影响。
   `platform/build-iso.sh` 已补上 isohybrid 步骤与自检，重新构建后装机可用
   （见 [`docs/SECURITY-AUDIT-2026-10-02.md`](docs/SECURITY-AUDIT-2026-10-02.md) H-6）
+- **没有账号体系**：出厂镜像 root **无口令**，控制台（含串口）拿到就是 root ——
+  Live 演示系统的刻意取舍（启动横幅与 `/etc/issue` 都会写明）。要上锁的镜像：
+  构建时设 `AETHER_ROOT_PW_HASH="$(openssl passwd -6)"` 重新构建（见 `platform/build-iso.sh`）
 - `aether-shell` 是 11 行占位，Shell 职责暂时压在 compositor 里
 
 ## 装应用
@@ -203,9 +206,9 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 |---|---|---|---|
 | `aether-compositor/` | 16,318 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
 | `aetherd/` | 6,223 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
-| `aether-init/` | 1,627 | PID 1 与服务管理 | M3 |
-| `aether-ops/` | 736 | AI 运维与自修复 | M5 |
-| `aether-install/` | 595 | 磁盘安装器 | M6 |
+| `aether-init/` | 1,679 | PID 1 与服务管理 | M3 |
+| `aether-ops/` | 780 | AI 运维与自修复 | M5 |
+| `aether-install/` | 732 | 磁盘安装器 | M6 |
 | `aether-ipc/` | 352 | 全系统 IPC 协议 | M0 |
 | `aether-shell/` | 11 | 占位骨架 | M2 |
 | `platform/` | — | Buildroot 外部树、rootfs overlay、ISO 打包 | M3 |
@@ -245,7 +248,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 389 项全绿（2026-10-02 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
+| 单元测试 | Windows 390 项全绿（2026-10-02 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
 | 编译警告 | 两个目标都是 0 条 |
 | 视觉回归 | 19 张归档走查图逐像素比对，当前 19/19 零差异 |
 | 代码审查 | 四轮全量 / 增量审查，问题全部修复（未修项归零）；结论总集见 [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |
