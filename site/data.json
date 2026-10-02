@@ -4,7 +4,7 @@
   "rust_files": "45",
   "rust_lines_num": 27203,
   "crates": 7,
-  "tests": "400",
+  "tests": "279",
   "iso_bytes": 40327168,
   "iso_size": "38.5 MB",
   "iso_sha256": "7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb",
