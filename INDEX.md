@@ -255,11 +255,12 @@ Buildroot 的模型是构建期定死、运行期不改系统，所以 opkg/apt/
 | `docs/LLM-E2E-2026-09-28.md` | 0.7 LLM 端到端：双假端点 21 项断言（协议层；真模型待接） |
 | `docs/archive/CODE-REVIEW-2026-09.md` | **四轮代码审查总集**（原文 6 份共 1,686 行已移出，取回见文末）：各轮发现与处置、跨轮教训、未修/未验证清单、已钉住的边界 |
 | `docs/archive/` | **历史快照目录**（决策历史，**不作现状依据**）：`PRODUCTION-PLAN-2026-09-27`、`PERF-REPORT-2026-09-26`（91 → 15.5 ms/帧推导）、`UNIMPLEMENTED-2026-09-27`、`ui-design-plan`、`image-gen-prompts` |
+| `docs/FEATURE-GAPS-2026-10-02.md` | **功能缺口与增强规划**：按用户预期落差分级（P0 硬伤 / P1 系统能力 / P2 工程质量），每条附**代码证据**（`文件:行号`）与**可验收标准**；含 12 项增强建议、明确不做清单、M1-M3 里程碑、以及**未验证清单** |
 | `docs/ai-permissions.md` | AI 权限模型：L0-L3、审计、确认令牌 |
 | `docs/roadmap.md` | 路线图 |
 | `docs/HANDOVER.md` | 交接报告 v4（M4/M5/M6 实测记录 + 构建/验证手册） |
 | `docs/ui-design-handover.md` | UI 设计系统交接 + 视觉质量冲刺 + 本机环境陷阱 + 双模主题（**视觉改动的权威依据**） |
-| `docs/host-ui-*.png` | 主机 `--shot` 走查图 **10 张**（深空 5 / 明亮 5，含 ime 候选框两张。与实机 `screenshot-*.png` 区分） |
+| `docs/host-ui-*.png` | 主机 `--shot` 走查图 **19 张**（深空/明亮各一组；含设置中心、控制中心、默认桌面与设置三页（网络/应用/权限与隐私）。与实机 `screenshot-*.png` 区分） |
 
 ## 关键链路
 
