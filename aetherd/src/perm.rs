@@ -64,6 +64,31 @@ const DENY_TTL: Duration = Duration::from_secs(300);
 /// 审计日志大小上限（与服务日志的 `logtee::MAX_LOG_BYTES` 取同一值，便于记忆）。
 const MAX_AUDIT_BYTES: u64 = 8 * 1024 * 1024;
 
+/// 测试专用：轮转上限调小，让测试**不依赖磁盘空间**。
+///
+/// 为什么需要它（第三遍审计实测发现）：原来的轮转测试用 `set_len(8MB+1)` 造超限文件，
+/// 而 NTFS 的 `set_len` 是**真分配**（不是稀疏文件）—— 在 C 盘只剩 0 字节的机器上
+/// 直接 `StorageFull` 失败，测试变红。一个"逻辑测试"不该因为宿主磁盘空间而红，
+/// 更不该逼着 CI 准备 8MB 连续空间。测试用 1KB 足够验证轮转逻辑。
+#[cfg(test)]
+const TEST_AUDIT_BYTES: u64 = 1024;
+
+/// 轮转上限：测试用 1KB，生产用 8MB。
+///
+/// 注意不能用 `if cfg!(test) { A } else { B }` —— `cfg!` 是**值**层面的条件，
+/// 两个分支仍会被名字解析，而 `TEST_AUDIT_BYTES` 只在 test 下存在（构建会报 E0425）。
+/// 用 `#[cfg]` 分开的语句块才是"只编译一支"。
+fn audit_limit() -> u64 {
+    #[cfg(test)]
+    {
+        TEST_AUDIT_BYTES
+    }
+    #[cfg(not(test))]
+    {
+        MAX_AUDIT_BYTES
+    }
+}
+
 /// 审计裁决列取值。
 ///
 /// 前 5 个与 `docs/ai-permissions.md` 的表格一致；`REJECTED_NO_UI` 是第四轮审查
@@ -259,7 +284,8 @@ impl Gate {
         let Ok(meta) = std::fs::metadata(&self.audit_path) else {
             return; // 文件还不存在：本次写入会创建它
         };
-        if meta.len() <= MAX_AUDIT_BYTES {
+        let limit = audit_limit();
+        if meta.len() <= limit {
             return;
         }
         let old = PathBuf::from(format!("{}.1", self.audit_path.display()));
@@ -450,6 +476,19 @@ mod tests {
         assert!(a.revoke(&tok).is_none());
     }
 
+    /// 生产轮转上限必须是 8MB（与服务日志同值）。
+    ///
+    /// 这条断言除了钉住数值，还有个副作用：让 `MAX_AUDIT_BYTES` 在 test 构建里
+    /// **仍被引用**（否则测试专用的小上限会让它在 `cargo test` 下变成 dead_code 警告）。
+    #[test]
+    fn production_audit_limit_is_eight_megabytes() {
+        assert_eq!(MAX_AUDIT_BYTES, 8 * 1024 * 1024);
+        assert!(
+            TEST_AUDIT_BYTES < MAX_AUDIT_BYTES,
+            "测试上限必须远小于生产上限（测试要跑得快、不占磁盘）"
+        );
+    }
+
     /// P2-2：审计日志超过上限要轮转，且轮转后**新日志只含新记录**。
     #[test]
     fn audit_rotates_when_oversized() {
@@ -459,17 +498,18 @@ mod tests {
         let path = dir.join("aether-audit.log");
         let g = Gate::new(path.clone());
 
-        // set_len 造超限文件是 O(1)，不用真写 8MB
+        // set_len 造超限文件是 O(1) 的**逻辑**操作，但 NTFS 上是真分配 ——
+        // 所以测试用 1KB 上限（TEST_AUDIT_BYTES），既快又不依赖磁盘空间。
         std::fs::File::create(&path)
             .expect("建日志文件")
-            .set_len(MAX_AUDIT_BYTES + 1)
+            .set_len(TEST_AUDIT_BYTES + 1)
             .expect("扩容");
 
         g.audit("read_file", Level::L0, "", "allowed").expect("审计应成功");
 
         let archived = std::fs::metadata(format!("{}.1", path.display()))
             .expect("旧内容应被归档到 .1");
-        assert_eq!(archived.len(), MAX_AUDIT_BYTES + 1, "旧内容应整体归档");
+        assert_eq!(archived.len(), TEST_AUDIT_BYTES + 1, "旧内容应整体归档");
         let now = std::fs::read_to_string(&path).expect("新日志可读");
         assert!(now.contains("read_file"), "新日志应含新写入的一条：{now:?}");
         assert!(now.len() < 1000, "新日志不应含旧内容（只有一条记录）：{now:?}");
