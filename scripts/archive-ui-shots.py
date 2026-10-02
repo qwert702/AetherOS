@@ -56,6 +56,12 @@ SHOTS: list[tuple[list[str], str]] = [
     # 默认桌面（P4.1）：无窗口 + 桌面图标（文件管理/终端/系统设置）
     (["--shot", "2", "--desktop-only", "--theme", "dark"], "host-ui-desktop-clean.png"),
     (["--shot", "2", "--desktop-only", "--theme", "light"], "host-ui-light-desktop-clean.png"),
+    # 设置中心各页（P4.2/P4.3）：这三页此前**只有单测与渲染断言、没有视觉基线**。
+    # 用明亮主题（产品默认）：令牌共用，深色由其他图覆盖。
+    # **注意：本脚本不会自动构建二进制** —— 改完 compositor 必须先 `cargo build`，否则拍的是旧程序。
+    (["--shot", "2", "--settings", "--settings-page", "5", "--theme", "light"], "host-ui-light-settings-net.png"),
+    (["--shot", "2", "--settings", "--settings-page", "6", "--theme", "light"], "host-ui-light-settings-apps.png"),
+    (["--shot", "2", "--settings", "--settings-page", "7", "--theme", "light"], "host-ui-light-settings-privacy.png"),
 ]
 
 #: 固定"当前时间"（对应 `text::now_utc_secs` 的 `AETHER_FAKE_UTC` 钩子）。

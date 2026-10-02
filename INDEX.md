@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **24,388 行**
+生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **24,396 行**
 （7 个 crate，45 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
@@ -10,14 +10,14 @@
 
 | crate | 行数 | 文件 | 职责 |
 |---|---|---|---|
-| `aether-compositor` | 15,890 | 22 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 3,621 视觉层 / `main.rs` 3,438 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
+| `aether-compositor` | 15,926 | 22 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 3,621 视觉层 / `main.rs` 3,438 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
 | `aetherd` | 5,565 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
 | `aether-init` | 1,319 | 6 | PID 1 与服务管理 |
 | `aether-ops` | 736 | 3 | AI 运维：日志监控 + 故障诊断 |
 | `aether-install` | 505 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 334 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **24,388** | **45** | |
+| **合计** | **24,396** | **45** | |
 
 > 口径：2026-09-29 12:20 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -67,7 +67,7 @@ Aether/
 - 函数：`encode`（JSON+换行）/ `decode`（NDJSON 帧）
 - ⚠️ 新增 `Request` 变体是**权限模型的敏感动作**：剪贴板这条路（P1-1）就曾因走变体而绕过 `Gate`。新变体必须有对应的门槛测试（见 `server.rs::ipc_gating_tests`）
 
-### aether-compositor（合成器，15,890 行 / 22 文件）
+### aether-compositor（合成器，15,926 行 / 22 文件）
 | 文件 | 内容 |
 |---|---|
 | `src/main.rs` (3,857) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
@@ -245,7 +245,7 @@ Buildroot 的模型是构建期定死、运行期不改系统，所以 opkg/apt/
 | `scripts/shot-diff.py` | 截图像素回归（仅适用于"纯重构不应有视觉变化"的改动） |
 | `scripts/bmp2png.py` | `--shot` 产物 BMP→PNG（仅标准库，供目视走查；**勿包成 .sh 调用**，见 ui-design-handover §11） |
 | `scripts/png-crop.py` | 走查图裁剪 + 整数倍放大（1:1 检查边框/字重/图标比例） |
-| `scripts/archive-ui-shots.py` | **归档走查图工具**：重建 `docs/host-ui-*.png` 全部 **10 张**；`--check` 为视觉回归门禁（屏蔽时钟/AI 光标非确定区，差异 > 0.02% 即失败） |
+| `scripts/archive-ui-shots.py` | **归档走查图工具**：重建 `docs/host-ui-*.png` 全部 **19 张**；`--check` 为视觉回归门禁（屏蔽时钟/AI 光标非确定区，差异 > 0.02% 即失败） |
 | `scripts/repo-stats.py` | **规模口径唯一来源**：逐 crate / 逐文件行数与文件数（口径 = `Cargo.toml` 的 workspace 成员 + `wc -l` 语义）。`--per-file` 出逐文件表，`--check` 比对 README/INDEX/roadmap 里声明的合计，不一致即非零退出（**可当门禁**） |
 | `scripts/mkapp.py` | **应用打包器**（2026-09-29 新增）：把市面上的 Linux 程序打成 AetherOS 能装的包 —— 递归解析 ELF 依赖、**跳过 glibc 家族**、只收镜像里没有的库、按 `.gnu.version_r`/`.gnu.version_d` **校验符号版本**（含"镜像里的库版本符号对不上"这种坑）、按需带上 terminfo，产出包目录 + `.aep`（未压缩 tar）。`--check` 只回答"能不能跑"，`--selftest` 是解析器自测（17 项，跨平台可跑） |
 | `scripts/serve-apps.py` | **只读分发服务**（2026-09-29 新增）：宿主起 HTTP 把 `dist/apps/*.aep` 喂给 guest（QEMU 用户态网络里宿主就是 `10.0.2.2`）。只实现 GET/HEAD、路径规范化防穿越、默认只绑回环、打印 sha436 供核对 |
@@ -357,14 +357,14 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
 
 | crate | Windows | Linux | 备注 |
 |---|---|---|---|
-| `aether-compositor` | 15,890 | 22 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
+| `aether-compositor` | 15,926 | 22 | 差的 4 项是演示脚本解析测试，标了 `#[cfg(not(target_os="linux"))]` —— Linux 下 `Terminal::spawn` 开的是**真 PTY**，没有演示脚本可解析（终端行为改由实机验证覆盖） |
 | `aether-ops` | 0 | **13** | 整个 crate 是 Linux 专属，Windows 不参与 |
 | `aetherd` | 110 | 111 | 含 `apps.rs` 的 22 项（清单校验/目录穿越/符号链接拒绝/ELF 解析/**递归依赖闭包**/**terminfo 判定**/**glibc 家族拦截**/**库名穿越防护**/包装脚本）+ `llm.rs` 的 5 项（错误路径必须带出服务器正文；本地假端点，不联网） |
 | `aether-init` | 17 | 17 | 含 `shipped_essential_services_must_be_restartable`（见下） |
 | `aether-install` | 9 | 9 | |
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **24,388** | **45** | |
+| **合计** | **24,396** | **45** | |
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。
