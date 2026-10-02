@@ -40,7 +40,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
    别人在群里分享你的链接时，这张图决定有没有人点。
 4. **开启 GitHub Pages 并把地址填进 Homepage**：
    Settings → Pages → Source 选 `main` 分支的 `/docs` 目录 →
-   地址形如 `https://qwert702.github.io/AetherOS/` → 再回仓库首页把 Homepage 填上。
+   地址形如 `https://aether.cbnac.com/` → 再回仓库首页把 Homepage 填上。
 5. **提交 awesome-list**（一条 PR 能带来长期流量）：
    - [`awesome-osdev`](https://github.com/awesome-os/awesome-os) / [`awesome-rust`](https://github.com/rust-unofficial/awesome-rust)（Operating Systems 一节）
    - [`awesome-selfhosted`](https://github.com/awesome-selfhosted/awesome-selfhosted) 不太合适（不是服务类），别硬塞

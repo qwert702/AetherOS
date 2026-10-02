@@ -1,44 +1,15 @@
-# 更新日志 / Changelog
+# 版本发布说明
 
-> 本文件是 **`aether.cbnac.com/changelog.html` 的唯一来源**，由 `scripts/gen-site.py` 渲染成页面。
-> 每一条都对应仓库里真实存在的提交；版本号、ISO 体积、行数、测试数由生成器**从仓库实测注入**，不手写。
+> 这里是**版本级**的发布说明（首个公开版本 v0.1.0）。
+> **日常改动**记录在同目录的 [`更新日志/`](更新日志/) 里 —— 按日期一天一个文件。
 >
-> This file is the **single source** for the changelog page. Every entry maps to real commits;
-> version, ISO size, line counts and test counts are injected from the repository by the generator.
-
----
-
-## 未发布 / Unreleased
-
-### 界面重做：从「AI 味」到桌面系统 / UI rework: from "AI-flavoured" to a real desktop
-
-- **静态中性壁纸**：删除极光带、粉彩柔光团、颗粒与暗角；浅色改为纯白 `#FFFFFF → #F4F5F7`。
-  *Static neutral wallpaper — aurora bands, pastel blooms, grain and vignette removed; light theme is now pure white.*
-- **单一强调色**：删除紫色与全部渐变，AI 相关元素统一为 teal。界面不再有"渐变紫"，那是 AI 产品味的来源。
-  *Single accent colour — violet and every gradient removed.*
-- **圆角 8/12/16 → 4/6/8**；**五层大软影 → 两层轻影**，层次改由 1px 描边承担。
-  *Radii 8/12/16 → 4/6/8; five-layer shadows → two light layers, hierarchy carried by 1px hairlines.*
-- **自带字体**：构建期由 `scripts/mkfont.py` 生成 Noto Sans CJK SC 子集（GB2312 + 拉丁，约 5.7 MB，含**真粗体**），
-  修掉此前"粗体 = 正文字体"的伪粗。
-  *Bundled Noto Sans CJK SC subset with a genuine bold face.*
-- **控件库**：六态控件（normal / hover / pressed / focus / disabled / selected）+ 共享命中表，
-  并补上此前**完全没有**的**滚轮**事件。
-  *Six-state widget library and wheel-scroll support.*
-- **设置中心**：8 页分组导航；「时钟与时区」「输入」「外观」「AI」「关于」真实可用，
-  设置原子写入 `/var/lib/aether/settings.json` 并持久化（`/var` 是唯一挂真盘的分区）。
-  *Settings centre with real, persisted settings.*
-- **控制中心**：点顶栏状态簇弹出面板 —— AI 三态、中文输入法开关、24 小时制、快捷跳转。
-  *Control centre popover.*
-- **主题可切换**：默认明亮（纯白），用户可在设置中心或控制中心切到深色，**切换即时生效**
-  （背景缓存与投影合成层同步重建）。
-  *Switchable light/dark theme, applied live.*
-- **桌面图标**：默认桌面不再预开窗口，改为左侧图标（文件管理 / 终端 / 系统设置）。
-  *Desktop icons; the desktop no longer opens windows by default.*
-- **Windows 风格标题栏三键**：最小化 / 最大化 / 关闭，替换原 macOS 红绿灯；最小化**真接线**
-  （窗口收进 Dock，点 Dock 图标原位恢复）。
-  *Windows-style caption buttons replacing the macOS traffic lights, with real minimise.*
-- **修复**：点桌面图标会连开多个窗口（把电平信号当成了单击）；鼠标灵敏度被硬编码成 2 倍。
-  *Fixed: clicking a desktop icon spawned many windows; mouse sensitivity was hard-coded to 2×.*
+> 官网 `aether.cbnac.com/changelog.html` 由 `scripts/gen-site.py` 把两者一起渲染：
+> 先按日期**倒序**列出每日更新，再把本文档（最早的版本说明）放在最后。
+> **两个来源各只有一份，不重复维护。**
+>
+> This file holds **release-level** notes only. Day-to-day changes live in
+> [`更新日志/`](更新日志/) (one file per day). The generator renders both into the changelog page —
+> daily entries newest-first, then this file (the earliest) last.
 
 ---
 

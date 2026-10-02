@@ -132,6 +132,7 @@ def measure(skip_tests: bool, previous: dict) -> dict:
 
 def inline(s: str) -> str:
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
     s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
     s = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", s)
     s = re.sub(r"`([^`]+?)`", r"<code>\1</code>", s)
@@ -139,15 +140,23 @@ def inline(s: str) -> str:
 
 
 def render_changelog(md: str) -> str:
-    """把 CHANGELOG.md 渲染成页面正文（h2 版本 / h3 分组 / ul 条目）。"""
+    """把 Markdown 渲染成页面正文：h2 版本 / h3 分组 / ul 条目 / **表格** / 行内格式。
+
+    每日更新日志里用了表格（例如"三页一览"那一节），所以表格必须支持 ——
+    否则站点上会直接显示 `| 页 | 数据来源 | 是否新增 IPC |` 这样的原始文本。
+    """
     out: list[str] = []
     in_list = False
+    in_table = False
 
     def close_list() -> None:
-        nonlocal in_list
+        nonlocal in_list, in_table
         if in_list:
             out.append("</ul>")
             in_list = False
+        if in_table:
+            out.append("</tbody></table>")
+            in_table = False
 
     for raw in md.splitlines():
         line = raw.rstrip()
@@ -167,7 +176,22 @@ def render_changelog(md: str) -> str:
             close_list()
             out.append(f"<h3>{inline(line[4:])}</h3>")
             continue
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(set(c) <= set("-: ") for c in cells):  # |---|---| 分隔行
+                continue
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            if not in_table:
+                out.append("<table><tbody>")
+                in_table = True
+            out.append("  <tr>" + "".join(f"<td>{inline(c)}</td>" for c in cells) + "</tr>")
+            continue
         if line.startswith("- "):
+            if in_table:
+                out.append("</tbody></table>")
+                in_table = False
             if not in_list:
                 out.append("<ul>")
                 in_list = True
@@ -270,10 +294,51 @@ def data_placeholders(data: dict) -> dict[str, str]:
     return {k: str(v) for k, v in data.items()}
 
 
-def render_page(path: Path, data: dict, changelog_html: str) -> str:
+def patch_values(text: str, old: dict, new: dict) -> str:
+    """把页面上"上次注入的值"替换成本次的值。
+
+    为什么需要它：占位符 `<!--DATA:key-->` **只在第一次渲染时存在**，渲染后就被具体值取代了。
+    所以后续更新不能靠占位符，只能靠"上次的值 → 本次的值"。
+    上次的值存在 `site/data.json`（**已入库**，所以新克隆也能正确打补丁）。
+
+    数字类一律加词边界，避免 `356` 命中 `13560` 这种误伤。
+    """
+    def num(key: str, pattern: str) -> None:
+        nonlocal text
+        o, n = str(old.get(key, "")), str(new.get(key, ""))
+        if o and n and o != n:
+            text = re.sub(pattern.replace("%OLD%", re.escape(o)), pattern.replace("%OLD%", n), text)
+
+    for key in ("rust_lines", "tests", "iso_bytes"):
+        num(key, r"(?<![\d,])%OLD%(?![\d,])")
+    num("iso_sha256", r"\b%OLD%\b")
+
+    # 带上下文的（`16` 这种裸数字直接替换太危险，必须靠上下文锚定）
+    o, n = str(old.get("rust_files", "")), str(new.get("rust_files", ""))
+    if o and n and o != n:
+        text = re.sub(rf"{re.escape(o)}(?=\s*(?:个源文件|source files))", n, text)
+    o, n = str(old.get("shots", "")), str(new.get("shots", ""))
+    if o and n and o != n:
+        text = re.sub(rf"{re.escape(o)}(?=\s*(?:张界面走查图|UI screenshots))", n, text)
+
+    for key in ("iso_size", "version"):
+        o, n = str(old.get(key, "")), str(new.get(key, ""))
+        if o and n and o != n:
+            text = text.replace(o, n)
+    return text
+
+
+def render_page(path: Path, data: dict, changelog_html: str, previous: dict) -> str:
     text = path.read_text(encoding="utf-8")
     for k, v in data_placeholders(data).items():
-        text = text.replace(f"<!--DATA:{k}-->", v)
+        text = text.replace(f"<!--DATA:{k}-->", v)  # 首次渲染（模板里还有占位符）
+    text = patch_values(text, previous, data)  # 之后靠"上次值 → 本次值"
+    # 更新日志页的正文完全由 更新日志/ 与 CHANGELOG.md 决定 —— 每次整体重算
+    if path.name == "changelog.html":
+        text = re.sub(
+            r'(<div class="log">).*?(</div>\s*</div>\s*</section>)',
+            lambda m: m.group(1) + "\n" + changelog_html + "\n  " + m.group(2),
+            text, flags=re.S)
     text = text.replace("<!--CHANGELOG-->", changelog_html)
     return text
 
@@ -320,6 +385,24 @@ def write_generated(data: dict) -> None:
     print("  sitemap.xml / robots.txt / 404.html")
 
 
+def build_changelog() -> str:
+    """站点更新日志页的正文 = **每日更新日志**（新→旧）+ 版本发布说明（放最后 = 最早）。
+
+    单一来源：日常改动只写 `更新日志/YYYY-MM-DD.md`（仓库既定约定，面向"你能看到的变化"），
+    版本级说明只写 `CHANGELOG.md`。两者都**不必为站点再维护一份** —— 这是这个生成器存在的理由。
+    """
+    parts: list[str] = []
+    daily = sorted((p for p in (ROOT / "更新日志").glob("*.md") if p.name != "README.md"),
+                   reverse=True)
+    for p in daily:
+        parts.append(render_changelog(p.read_text(encoding="utf-8")))
+    if CHANGELOG.exists():
+        parts.append(render_changelog(CHANGELOG.read_text(encoding="utf-8")))
+    if not parts:
+        sys.exit("既没有 更新日志/*.md 也没有 CHANGELOG.md —— 更新日志页没有来源")
+    return "\n".join(parts)
+
+
 def main(argv: list[str]) -> int:
     refresh = "--refresh" in argv
     check = "--check" in argv
@@ -338,13 +421,11 @@ def main(argv: list[str]) -> int:
         build_images(data)
         write_generated(data)
 
-    if not CHANGELOG.exists():
-        sys.exit("缺 CHANGELOG.md（站点更新日志页的唯一来源）")
-    changelog_html = render_changelog(CHANGELOG.read_text(encoding="utf-8"))
+    changelog_html = build_changelog()
 
     drift: list[str] = []
     for page in html_pages():
-        want = render_page(page, data, changelog_html)
+        want = render_page(page, data, changelog_html, previous)
         have = page.read_text(encoding="utf-8")
         if want != have:
             drift.append(str(page.relative_to(ROOT)))
@@ -364,6 +445,23 @@ def main(argv: list[str]) -> int:
         if missing:
             print("[FAIL] 还有未替换的占位符：", ", ".join(str(p.relative_to(ROOT)) for p in missing))
             return 1
+        # —— 真门禁：值必须真的出现在页面上 ——
+        #
+        # 只比较"渲染结果 vs 磁盘"是不够的：两者可能同样陈旧（曾经就因此让线上数字冻结了
+        # 23,694 行 / 356 项测试，而 --check 一直"通过"）。所以这里直接断言当前值在页面里。
+        need = {
+            "index.html": ["rust_lines", "tests", "iso_size"],
+            "en/index.html": ["rust_lines", "tests", "iso_size"],
+            "download.html": ["iso_size", "iso_sha256"],
+            "en/download.html": ["iso_size", "iso_sha256"],
+        }
+        for rel, keys in need.items():
+            body = (SITE / rel).read_text(encoding="utf-8")
+            for k in keys:
+                want_v = str(data.get(k, "—"))
+                if want_v != "—" and want_v not in body:
+                    print(f"[FAIL] {rel} 里找不到当前 {k}={want_v}（页面与数据脱节）")
+                    return 1
         print(f"[ OK ] site: {len(html_pages())} 个页面与实测数据一致"
               f"（{data['version']} · ISO {data['iso_size']} · {data['rust_lines']} 行 · {data['tests']} 项测试）")
         return 0
