@@ -1776,14 +1776,6 @@ fn main() -> anyhow::Result<()> {
         if args.iter().any(|a| a == "--control-center") {
             renderer.control_open = true;
         }
-        // `--settings-page N`：设置窗口打开后切到第 N 页（走查各页的视觉基线）。
-        // 索引与 `settings::PAGES` 一致；这里**夹一次上限**，越界会让走查图静默拍成别的页。
-        if let Some(pos) = args.iter().position(|a| a == "--settings-page") {
-            if let Some(n) = args.get(pos + 1).and_then(|s| s.parse::<usize>().ok()) {
-                let n_pages = settings::PAGES.len();
-                renderer.settings_page = if n_pages == 0 { 0 } else { n.min(n_pages - 1) };
-            }
-        }
         let sample_input = "把窗口排成两列";
         // `--ime`：走查输入法候选框（预置 "nihao" → 候选「你好」）
         let shot_ime = if args.iter().any(|a| a == "--ime") {
