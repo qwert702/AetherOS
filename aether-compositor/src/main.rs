@@ -49,10 +49,114 @@ use draw::{InstallerPhase, InstallerUi};
 #[cfg(not(target_os = "linux"))]
 use draw::UiState;
 use layout::Layout;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// aetherd 的 Unix socket 路径（与 `aetherd/src/server.rs` 约定一致）。
+///
+/// 为什么 IPC 要优先走它（2026-10-02 审计 M-17）：`register_ui` 的前提是"对端确实是
+/// aetherd"，而 TCP 的连接方**无法验证对端**（谁能绑上 7311，谁就能收到 UI 密钥）。
+/// Unix socket 由文件权限兜底：`/run/aether/` 属 root，socket 0600 —— 非 root 进程
+/// 既建不了、也连不上。
+#[cfg(unix)]
+const AETHERD_SOCKET: &str = "/run/aetherd.sock";
+
+/// 显式改用 TCP 连接 aetherd（默认关闭）。
+///
+/// 只有一个正当用途：**开发机上用 hostfwd 直连 guest 的 7311** 调试。
+/// 打开它意味着"UI 密钥会经 TCP 明文发送"，所以必须显式设环境变量才会生效。
+/// 非 unix 平台没有 Unix socket，连接本来就只能走 TCP，这个开关没有意义
+/// （因此那边标 dead_code，避免"未使用常量"警告）。
+#[cfg_attr(not(unix), allow(dead_code))]
+const AETHER_IPC_TCP_ENV: &str = "AETHER_IPC_TCP";
+
+/// 与 aetherd 的连接：优先 Unix socket，其次（仅显式允许时）TCP。
+///
+/// 实现 `Read + Write` 并转发 `try_clone`/`set_read_timeout`，因此上层的
+/// `BufReader<IpcStream>` 与既有调用形式不变。
+enum IpcStream {
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
+    Tcp(TcpStream),
+}
+
+impl IpcStream {
+    /// 连接 aetherd。`connect_timeout` 只对 TCP 生效（Unix socket 是本机连接，立即返回）。
+    fn connect(connect_timeout: Duration) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            // 显式要求走 TCP 时才跳过 socket（调试用）
+            if std::env::var(AETHER_IPC_TCP_ENV).map(|v| v == "1").unwrap_or(false) {
+                return Self::connect_tcp(connect_timeout);
+            }
+            match std::os::unix::net::UnixStream::connect(AETHERD_SOCKET) {
+                Ok(s) => return Ok(IpcStream::Unix(s)),
+                // **不回退到 TCP**：socket 不在 = aetherd 没在跑。此时回退 TCP 只会
+                // 把密钥交给"抢到他端口"的进程，正是 M-17 要堵的路。
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        format!("连接 aetherd 失败（{AETHERD_SOCKET}: {e}）"),
+                    ))
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self::connect_tcp(connect_timeout)
+        }
+    }
+
+    fn connect_tcp(connect_timeout: Duration) -> std::io::Result<Self> {
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
+        Ok(IpcStream::Tcp(TcpStream::connect_timeout(&addr, connect_timeout)?))
+    }
+
+    fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => IpcStream::Unix(s.try_clone()?),
+            IpcStream::Tcp(s) => IpcStream::Tcp(s.try_clone()?),
+        })
+    }
+
+    fn set_read_timeout(&self, d: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => s.set_read_timeout(d),
+            IpcStream::Tcp(s) => s.set_read_timeout(d),
+        }
+    }
+}
+
+impl Read for IpcStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => s.read(buf),
+            IpcStream::Tcp(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for IpcStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => s.write(buf),
+            IpcStream::Tcp(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            IpcStream::Unix(s) => s.flush(),
+            IpcStream::Tcp(s) => s.flush(),
+        }
+    }
+}
 
 // 预览/走查分辨率：仅非 Linux 路径使用（系统内走 fbdev 真实分辨率）
 #[cfg_attr(target_os = "linux", allow(dead_code))]
@@ -1026,7 +1130,7 @@ fn ui_key() -> Option<String> {
 /// 这是 P1-8 的客户端侧配套：服务端只把确认令牌下发给**已注册的 UI 通道**，
 /// 也只接受已注册通道的兑现请求。没有这一步，L2+ 操作会被服务端直接拒绝，
 /// 令牌也不再有"任何人都能兑现"的漏洞。
-fn register_ui(stream: &mut TcpStream, reader: &mut BufReader<TcpStream>) -> anyhow::Result<()> {
+fn register_ui(stream: &mut IpcStream, reader: &mut BufReader<IpcStream>) -> anyhow::Result<()> {
     let key = ui_key().ok_or_else(|| {
         anyhow::anyhow!(
             "未找到 UI 通道密钥（设置 AETHER_UI_KEY，或确认 aetherd 已生成 /run/aether/ui.key）"
@@ -1051,8 +1155,7 @@ fn cancel_confirm(token: &str) {
     let token = token.to_string();
     std::thread::spawn(move || {
         let run = || -> anyhow::Result<()> {
-            let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
-            let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+            let mut stream = IpcStream::connect(Duration::from_secs(3))?;
             stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
             let mut reader = BufReader::new(stream.try_clone()?);
             register_ui(&mut stream, &mut reader)?;
@@ -1104,8 +1207,7 @@ fn send_tool_call(
     origin: ConfirmOrigin,
     tx: &mpsc::Sender<AiEvent>,
 ) -> anyhow::Result<()> {
-    let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+    let mut stream = IpcStream::connect(Duration::from_secs(3))?;
     stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
     let mut reader = BufReader::new(stream.try_clone()?);
     // 先注册为 UI 通道：确认令牌只下发给已注册通道，也只被已注册通道兑现（P1-8）
@@ -1140,8 +1242,7 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
     let run = || -> anyhow::Result<()> {
         println!("aether-compositor: AI 查询「{text}」连接 aetherd…");
         // connect_timeout：aetherd 不可达时快速失败，而不是无限阻塞
-        let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
-        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+        let mut stream = IpcStream::connect(Duration::from_secs(3))
             .map_err(|e| anyhow::anyhow!("aetherd 不可达（127.0.0.1:{}）：{e}", aether_ipc::DEFAULT_PORT))?;
         println!("aether-compositor: AI 查询已连接，发送请求（超时 {timeout_secs}s）");
         stream.set_read_timeout(Some(Duration::from_secs(timeout_secs))).ok();
@@ -3150,8 +3251,7 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
 fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether_ipc::ServiceAction) {
     std::thread::spawn(move || {
         let run = || -> anyhow::Result<Response> {
-            let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
-            let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+            let mut stream = IpcStream::connect(Duration::from_secs(2))?;
             stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
             let mut reader = BufReader::new(stream.try_clone()?);
             register_ui(&mut stream, &mut reader)?;
@@ -3190,8 +3290,7 @@ fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether
 fn sync_clipboard_to_daemon(text: String) {
     std::thread::spawn(move || {
         let run = || -> anyhow::Result<()> {
-            let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
-            let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+            let mut stream = IpcStream::connect(Duration::from_secs(2))?;
             stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
             let mut reader = BufReader::new(stream.try_clone()?);
             // 剪贴板 IPC 要求已注册 UI 通道（第四轮审查 P1-1）：不注册会被 403。

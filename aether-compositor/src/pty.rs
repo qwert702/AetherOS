@@ -23,6 +23,15 @@ pub struct Pty {
 /// 默认 shell。用绝对路径避免 PATH 差异（PID 1 环境里 PATH 由 /init 设置）。
 const SHELL: &str = "/bin/sh";
 
+/// 交给终端会话的 PATH。
+///
+/// 与 `platform/overlay/init` 导出的那条一致 —— `/usr/local/bin` 放的是"已装应用"的
+/// 包装脚本，少了它用户装了应用却在终端里敲不到（这是该项目已验证过的行为）。
+const SHELL_PATH: &str = "/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin";
+
+/// 终端会话的 HOME。镜像里唯一的账号是 root（`/etc/passwd` 只有 root）。
+const SHELL_HOME: &str = "/root";
+
 /// `write_all` 遇到 `EAGAIN` 时的最大等待时长。
 ///
 /// 有界是必须的：主循环每帧都可能往 PTY 写，不能因为一个卡住的 shell 拖住渲染。
@@ -61,9 +70,19 @@ impl Pty {
         // 用 Command + pre_exec 而不是手写 fork：手写 fork 在**多线程**进程里
         // （合成器有输入/AI 线程）后只能调 async-signal-safe 函数，容易埋雷。
         let mut cmd = Command::new(SHELL);
+        // **env_clear + 显式白名单**，不要继承合成器的环境。
+        //
+        // 为什么（2026-10-02 审计 M-16）：合成器以 root 运行，而 UI 通道密钥的约定是
+        // "`AETHER_UI_KEY` 环境变量优先"（合成器自己就这么读，见 `main.rs::ui_key`）。
+        // 环境若被继承，终端里任意一条命令都能 `env` 看到密钥，进而自行注册 UI 通道
+        // 并批准 L2/L3 操作 —— 那等于把确认门槛交给任意程序。
+        // 同理也不该把其它无关变量（如调试开关）带进终端。
         cmd.stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave))
+            .env_clear()
+            .env("PATH", SHELL_PATH)
+            .env("HOME", SHELL_HOME)
             .env("TERM", "xterm-256color")
             .env("PS1", "$ ")
             .env("LANG", "C.UTF-8");

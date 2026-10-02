@@ -15,8 +15,110 @@
 pub const PERSIST_CANDIDATES: [&str; 4] =
     ["/dev/vda2", "/dev/sda2", "/dev/hda2", "/dev/nvme0n1p2"];
 
+/// 我们自己的持久化分区的 ext4 卷标。
+///
+/// **必须与 `aether-install::PERSIST_LABEL` 一致**（安装器用 `mkfs.ext4 -L` 写入）。
+/// 两处各有一份常量，是因为 aether-init 不该依赖 aether-install（那是可执行 crate）；
+/// 下面的单测把这个约定钉住，改一处不改另一处会红。
+pub const PERSIST_LABEL: &str = "AETHER";
+
+/// 读设备头部这么多字节就够（ext4 超级块在 1024，卷标在 1024+0x78）。
+const EXT_HEAD_LEN: usize = 2048;
+
 /// /var 下需要存在的目录（挂载覆盖后可能为空，运行时补齐）。
 pub const VAR_DIRS: [&str; 3] = ["/var/log/aether", "/var/diag", "/var/tmp"];
+
+/// 挂载选项：持久分区只放日志/诊断/回收站，没有任何需要设备节点、setuid 或可执行的东西。
+/// 少一项就等于给"从持久分区执行代码"留了一条路（2026-10-02 审计 H-3）。
+pub const PERSIST_MOUNT_OPTS: &str = "nodev,nosuid,noexec";
+
+/// fsck 退出码 ≥ 此值表示"有未纠正的错误"（e2fsck 语义：4 = 未修复，8 = 操作错误）。
+const FSCK_UNCORRECTED_CODE: i32 = 4;
+
+/// 从设备头部字节里解析 ext4 卷标（**纯函数**，可在开发机上单测）。
+///
+/// ext4 超级块固定在偏移 1024：`s_magic` 在 +0x38（`0xEF53`），`s_volume_name`
+/// 在 +0x78（16 字节，NUL 填充）。只读 2KiB 就能判定，**不需要 blkid**
+/// （镜像里是 busybox，参数支持不齐），也不需要挂载。
+///
+/// 返回 `None` = 不是 ext4；`Some("")` = 是 ext4 但没卷标。
+pub fn ext4_label(head: &[u8]) -> Option<String> {
+    const SB: usize = 1024;
+    const MAGIC_OFF: usize = SB + 0x38;
+    const LABEL_OFF: usize = SB + 0x78;
+    const MAGIC: u16 = 0xEF53;
+    const LABEL_LEN: usize = 16;
+
+    let magic = u16::from_le_bytes(head.get(MAGIC_OFF..MAGIC_OFF + 2)?.try_into().ok()?);
+    if magic != MAGIC {
+        return None;
+    }
+    let raw = head.get(LABEL_OFF..LABEL_OFF + LABEL_LEN)?;
+    let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
+    Some(String::from_utf8_lossy(&raw[..end]).trim().to_string())
+}
+
+/// 读块设备头部（只读打开；失败 → None）。
+#[cfg(target_os = "linux")]
+fn read_device_head(dev: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(dev).ok()?;
+    let mut buf = vec![0u8; EXT_HEAD_LEN];
+    f.read_exact(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// 该设备是不是"我们的"持久化分区（ext4 且卷标为 [`PERSIST_LABEL`]）。
+///
+/// 2026-10-02 审计 H-3：原实现只判"设备存在 + mount 成功"。而候选表里的
+/// `/dev/nvme0n1p2` 恰好是多数 Linux 发行版的 root 分区 —— 在双系统机器上引导
+/// 本镜像，会把**别人的根分区**以 rw 挂成 /var，然后往里写日志（污染另一个系统）。
+#[cfg(target_os = "linux")]
+fn is_our_persist_partition(dev: &str) -> Result<(), String> {
+    match read_device_head(dev) {
+        Some(head) => match ext4_label(&head) {
+            Some(label) if label == PERSIST_LABEL => Ok(()),
+            Some(other) => Err(format!("卷标是「{other}」，不是 {PERSIST_LABEL}")),
+            None => Err("没有 ext4 超级块".to_string()),
+        },
+        None => Err("读不到设备头部（权限或设备异常）".to_string()),
+    }
+}
+
+/// 挂载前的文件系统检查。返回 `true` = 可以挂载。
+///
+/// 判据用 fsck 的退出码（权威）：0/1 = 干净或已自动修复；≥4 = 有未纠正的错误 →
+/// **不挂载**（把可能损坏的文件系统以 rw 挂上去，比暂时不挂更糟）。
+/// 工具缺失时返回 true 并明确提示：不因缺工具而让系统失去持久化能力。
+#[cfg(target_os = "linux")]
+fn fsck_before_mount(dev: &str) -> bool {
+    const FSCK_TOOLS: [&str; 2] = ["/sbin/fsck.ext4", "/usr/sbin/fsck.ext4"];
+    for tool in FSCK_TOOLS {
+        if !std::path::Path::new(tool).exists() {
+            continue;
+        }
+        match std::process::Command::new(tool).arg("-p").arg(dev).status() {
+            Ok(st) => {
+                let code = st.code().unwrap_or(FSCK_UNCORRECTED_CODE);
+                if code < FSCK_UNCORRECTED_CODE {
+                    println!("[aether-init] fsck {dev}: 通过（退出码 {code}）");
+                    return true;
+                }
+                println!(
+                    "[aether-init] 拒绝挂载 {dev}：fsck 报未纠正的错误（退出码 {code}），\
+                     请手工修复后再启动"
+                );
+                return false;
+            }
+            Err(e) => {
+                println!("[aether-init] 警告：fsck {dev} 执行失败（{e}）—— 跳过检查并继续");
+                return true;
+            }
+        }
+    }
+    println!("[aether-init] 提示：镜像内没有 fsck.ext4，跳过文件系统检查");
+    true
+}
 
 /// 启动记录行：`<unix秒> 启动（第 N 次）`。安装行不计入启动次数。
 pub fn boot_record_line(ts: u64, boot_index: usize) -> String {
@@ -29,17 +131,26 @@ pub fn count_boot_records(text: &str) -> usize {
 }
 
 /// 把持久化分区挂到 /var。返回挂载成功的设备名。
+///
+/// 三道门，缺一不可（2026-10-02 审计 H-3）：
+/// 1. **身份**：ext4 且卷标为 `AETHER` —— 否则跳过（候选表里的 nvme 分区可能是别人的 root）；
+/// 2. **健康**：挂载前跑 `fsck -p`，有未纠正的错误就不挂；
+/// 3. **收敛**：挂载选项 `nodev,nosuid,noexec`（只放日志/诊断/回收站，不需要这些权限）。
 #[cfg(target_os = "linux")]
 pub fn mount_persist() -> Option<String> {
     for dev in PERSIST_CANDIDATES {
         if !std::path::Path::new(dev).exists() {
             continue;
         }
+        if let Err(why) = is_our_persist_partition(dev) {
+            println!("[aether-init] 跳过 {dev}：{why}（不是本系统的持久化分区）");
+            continue;
+        }
+        if !fsck_before_mount(dev) {
+            continue;
+        }
         let ok = std::process::Command::new("/bin/mount")
-            .arg("-t")
-            .arg("ext4")
-            .arg(dev)
-            .arg("/var")
+            .args(["-t", "ext4", "-o", PERSIST_MOUNT_OPTS, dev, "/var"])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
@@ -49,7 +160,7 @@ pub fn mount_persist() -> Option<String> {
         for d in VAR_DIRS {
             let _ = std::fs::create_dir_all(d);
         }
-        println!("[aether-init] 持久化分区已挂载: {dev} -> /var");
+        println!("[aether-init] 持久化分区已挂载: {dev} -> /var（{PERSIST_MOUNT_OPTS}）");
         append_boot_record();
         return Some(dev.to_string());
     }
@@ -120,5 +231,50 @@ mod tests {
     fn var_dirs_cover_logs_and_diag() {
         assert!(VAR_DIRS.contains(&"/var/log/aether"));
         assert!(VAR_DIRS.contains(&"/var/diag"));
+    }
+
+    /// 造一个 2KiB 的假设备头部：可指定 ext4 magic 与卷标。
+    fn fake_head(magic: u16, label: &str) -> Vec<u8> {
+        let mut b = vec![0u8; EXT_HEAD_LEN];
+        b[1024 + 0x38..1024 + 0x3A].copy_from_slice(&magic.to_le_bytes());
+        let lb = label.as_bytes();
+        let n = lb.len().min(16);
+        b[1024 + 0x78..1024 + 0x78 + n].copy_from_slice(&lb[..n]);
+        b
+    }
+
+    /// H-3 回归：卷标必须能从超级块里读出来 —— 这是"只挂自己的分区"的唯一依据。
+    #[test]
+    fn ext4_label_is_parsed_from_superblock() {
+        assert_eq!(ext4_label(&fake_head(0xEF53, "AETHER")).as_deref(), Some("AETHER"));
+        // 不是 ext4 → None（调用方据此跳过该设备）
+        assert_eq!(ext4_label(&fake_head(0x1234, "AETHER")), None);
+        // 是 ext4 但没卷标 → Some("")，仍要能区分于"不是 ext4"
+        assert_eq!(ext4_label(&fake_head(0xEF53, "")).as_deref(), Some(""));
+        // 别人的分区卷标照原样返回 —— 正是靠它把宿主机的 root 分区挡在外面
+        assert_eq!(ext4_label(&fake_head(0xEF53, "ROOT")).as_deref(), Some("ROOT"));
+        // 16 字节塞满、没有 NUL 结尾 → 全取
+        assert_eq!(
+            ext4_label(&fake_head(0xEF53, "0123456789ABCDEF")).as_deref(),
+            Some("0123456789ABCDEF")
+        );
+        // 头部读不全 → None，不能把"读不全"当成"没有卷标"
+        let short = [0u8; 100];
+        assert_eq!(ext4_label(&short), None);
+        let empty: [u8; 0] = [];
+        assert_eq!(ext4_label(&empty), None);
+    }
+
+    /// H-3 回归：卷标与挂载选项的约定不能被改坏。
+    #[test]
+    fn persist_label_and_mount_opts_follow_contract() {
+        // 必须与 aether-install 的 `mkfs.ext4 -L` 一致（两处常量，靠这条钉住）
+        assert_eq!(PERSIST_LABEL, "AETHER");
+        // 三项缺一不可：nodev/nosuid/noexec 合起来才挡住"从持久分区执行代码"
+        let opts: Vec<&str> = PERSIST_MOUNT_OPTS.split(',').collect();
+        for want in ["nodev", "nosuid", "noexec"] {
+            assert!(opts.contains(&want), "挂载选项缺少 {want}：{PERSIST_MOUNT_OPTS}");
+        }
+        assert_eq!(opts.len(), 3, "不应有意外选项：{PERSIST_MOUNT_OPTS}");
     }
 }

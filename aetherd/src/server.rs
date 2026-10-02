@@ -7,7 +7,7 @@ use crate::perm::verdict;
 use crate::{intent, perm::{Approvals, Gate, Level}, tools, Config};
 use aether_ipc::{encode, Request, Response, SysReport};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,8 +18,17 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 /// 单连接空闲读超时：半开连接不永久占用线程。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
-/// UI 通道密钥的落盘位置。
+
+/// aetherd 的 Unix socket 路径（合成器与 e2e 脚本约定一致）。
 ///
+/// **默认通道**：socket 由文件权限兜底（`/run` 属 root，socket 0600），因此
+/// "对端是不是 aetherd"由内核保证 —— 而 TCP 上客户端**无法验证对端**，谁抢到
+/// 7311 谁就能收到 `RegisterUi` 里的 UI 密钥（2026-10-02 审计 M-17）。
+/// TCP 仍然保留（开发机预览与 hostfwd 调试），但客户端默认不再用它注册。
+#[cfg(unix)]
+const UNIX_SOCKET_PATH: &str = "/run/aetherd.sock";
+
+/// UI 通道密钥的落盘位置。///
 /// **为什么从 `/var/log/aether/` 迁到 `/run/aether/`**（2026-10-02 审计 H-1）：
 /// 旧位置正好在 `read_file` 的读取白名单里，于是"任意本机进程 → ToolCall(read_file)
 /// → 取走密钥 → 注册为 UI 通道 → 自我确认 L3"是一条完整链路（已实测复现）。
@@ -28,6 +37,75 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 /// （审计日志目录是给人看的，密钥不是）。
 /// `/run` 是 ramfs：密钥每次开机重新生成，不再跨重启残留。
 const UI_KEY_PATH: &str = "/run/aether/ui.key";
+
+/// 两个监听器共享的连接处理状态。
+struct Shared {
+    cfg: Arc<Config>,
+    gate: Arc<Gate>,
+    approvals: Arc<Approvals>,
+    ui_key: Arc<String>,
+    active: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Shared {
+    /// 在独立线程里处理一条已建立的连接（含连接数上限与活跃计数）。
+    ///
+    /// 泛型化是为了让 TCP 与 Unix socket 走**同一段**请求处理逻辑 —— 两处各写一份
+    /// 必然会在某次修改后走偏（这个项目已经吃过"逐入口手写权限检查"的亏）。
+    fn spawn_conn<R, W>(&self, reader: R, writer: W)
+    where
+        R: Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        if self.active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
+            eprintln!("[aetherd] 连接数已达上限（{MAX_CONNECTIONS}），拒绝新连接");
+            return;
+        }
+        let cfg = self.cfg.clone();
+        let gate = self.gate.clone();
+        let approvals = self.approvals.clone();
+        let ui_key = self.ui_key.clone();
+        let active = self.active.clone();
+        active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::thread::spawn(move || {
+            let _guard = ActiveGuard(&active);
+            if let Err(e) = handle_conn(reader, writer, &cfg, &gate, &approvals, ui_key.as_str()) {
+                eprintln!("[aetherd] 连接处理结束: {e}");
+            }
+        });
+    }
+}
+
+/// 建 Unix socket 监听（0600）并在后台线程里接受连接。
+///
+/// 失败**不算致命**：TCP 通道仍在，只是客户端默认不会用它注册。所以这里只告警，
+/// 由 `serve` 决定怎么报。
+#[cfg(unix)]
+fn spawn_unix_listener(shared: Arc<Shared>) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+
+    if let Some(parent) = PathBuf::from(UNIX_SOCKET_PATH).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // 上次异常退出留下的 socket 文件必须先删，否则 bind 报 EADDRINUSE
+    let _ = std::fs::remove_file(UNIX_SOCKET_PATH);
+    let listener = UnixListener::bind(UNIX_SOCKET_PATH)?;
+    // 0600：只有 root 能连 —— "对端身份"就是由这一行保证的
+    std::fs::set_permissions(UNIX_SOCKET_PATH, std::fs::Permissions::from_mode(0o600))?;
+    eprintln!("[aetherd] IPC 服务（Unix socket，0600）: {UNIX_SOCKET_PATH}");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
+            match stream.try_clone() {
+                Ok(reader) => shared.spawn_conn(reader, stream),
+                Err(e) => eprintln!("[aetherd] Unix 连接克隆失败: {e}"),
+            }
+        }
+    });
+    Ok(())
+}
 
 pub fn serve(cfg: Config) -> anyhow::Result<()> {
     // 只听回环；宿主调试需要 hostfwd 直连时，由调试脚本显式注入 AETHER_BIND=0.0.0.0，
@@ -43,30 +121,27 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
         cfg.cloud.as_ref().map(|c| c.base_url.as_str()).unwrap_or("(未配置)")
     );
     let cfg = Arc::new(cfg);
-    let gate = Arc::new(Gate::new(PathBuf::from("/var/log/aether/aether-audit.log")));
-    // 一次性确认令牌表：跨连接共享（确认请求与重发可能来自不同连接）
-    let approvals = Arc::new(Approvals::new());
-    // UI 通道密钥（P1-8）：确认令牌只有"已注册的 UI 通道"能兑现
-    let ui_key = Arc::new(resolve_ui_key());
-    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let shared = Arc::new(Shared {
+        cfg,
+        gate: Arc::new(Gate::new(PathBuf::from("/var/log/aether/aether-audit.log"))),
+        approvals: Arc::new(Approvals::new()),
+        ui_key: Arc::new(resolve_ui_key()),
+        active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
+
+    // Unix socket 优先通道（0600）。建不起来只告警：TCP 还在，服务不该因此停摆。
+    #[cfg(unix)]
+    if let Err(e) = spawn_unix_listener(shared.clone()) {
+        eprintln!("[aetherd] 警告：Unix socket 建立失败（{e}）—— 只剩 TCP 通道，客户端会拒绝经它注册");
+    }
+
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        if active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
-            eprintln!("[aetherd] 连接数已达上限（{MAX_CONNECTIONS}），拒绝新连接");
-            continue;
+        stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
+        match stream.try_clone() {
+            Ok(reader) => shared.spawn_conn(reader, stream),
+            Err(e) => eprintln!("[aetherd] 连接克隆失败: {e}"),
         }
-        let cfg = cfg.clone();
-        let gate = gate.clone();
-        let approvals = approvals.clone();
-        let ui_key = ui_key.clone();
-        let active = active.clone();
-        active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::thread::spawn(move || {
-            let _guard = ActiveGuard(&active);
-            if let Err(e) = handle_conn(stream, &cfg, &gate, &approvals, ui_key.as_str()) {
-                eprintln!("[aetherd] 连接处理结束: {e}");
-            }
-        });
     }
     Ok(())
 }
@@ -126,18 +201,23 @@ impl Drop for ActiveGuard<'_> {
     }
 }
 
-fn handle_conn(
-    stream: TcpStream,
+/// 处理一条连接（TCP 与 Unix socket 共用）。
+///
+/// `reader`/`writer` 是同一连接的两个句柄：读端要 `take()` 限长，写端要逐条 flush，
+/// 用一对句柄而不是一个 `TcpStream`，是为了两种传输走同一段逻辑。
+/// 读超时由调用方在底层 stream 上设置（两种 stream 的设置方法一致，但不是同一类型）。
+fn handle_conn<R: Read, W: Write>(
+    reader: R,
+    writer: W,
     cfg: &Config,
     gate: &Gate,
     approvals: &Approvals,
     ui_key: &str,
 ) -> anyhow::Result<()> {
-    stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
     // 注意：`take()` 作用在整个 reader 生命周期上，是**连接级累计**上限而非单行上限
     // （见代码审查 P2-17）。此处保留该行为以约束 Approvals 的内存增长。
-    let mut reader = BufReader::new(stream.try_clone()?).take(MAX_LINE_BYTES);
-    let mut writer = stream;
+    let mut reader = BufReader::new(reader).take(MAX_LINE_BYTES);
+    let mut writer = writer;
     let mut line = String::new();
     // 本连接是否已注册为 UI 通道：只有已注册通道能兑现确认令牌（P1-8）
     let mut is_ui = false;

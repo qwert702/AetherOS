@@ -36,6 +36,15 @@ impl Cell {
     }
 }
 
+/// CSI 参数个数上限。
+///
+/// 为什么需要（2026-10-02 审计 M-14）：`params` 只在**下一条转义序列开始时**才清空，
+/// 而 `;` 会无条件 push —— 终端里的程序持续输出 `ESC[;;;;;;;;;;…` 就能让它无界增长
+/// （1 字节输入换 2 字节内存），最终把以 root 运行的合成器撑爆。
+/// 真实序列的参数个数是个位数（SGR 最长也就十几个），32 绰绰有余；
+/// 超出的部分按"参数缺失"处理（走 default），不影响任何正常程序。
+const MAX_CSI_PARAMS: usize = 32;
+
 /// 解析器状态机。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
@@ -235,12 +244,17 @@ impl Screen {
                     self.cur_param = Some(v.min(65535) as u16);
                 }
                 b';' => {
-                    self.params.push(self.cur_param.unwrap_or(0));
+                    // 上限见 MAX_CSI_PARAMS 的说明：这里的 push 是**外部可控**的
+                    if self.params.len() < MAX_CSI_PARAMS {
+                        self.params.push(self.cur_param.unwrap_or(0));
+                    }
                     self.cur_param = None;
                 }
                 0x40..=0x7E => {
                     if let Some(p) = self.cur_param.take() {
-                        self.params.push(p);
+                        if self.params.len() < MAX_CSI_PARAMS {
+                            self.params.push(p);
+                        }
                     }
                     self.state = State::Ground;
                     self.dispatch_csi(b);
@@ -295,13 +309,21 @@ impl Screen {
         self.cells[idx] = Cell { ch, fg: self.fg, bg: self.bg, bold: self.bold, wide_tail: false };
         if width == 2 {
             // 第二格占位（清掉它原有的内容，否则旧字符会从宽字右边露出来）
-            self.cells[idx + 1] = Cell {
-                ch: ' ',
-                fg: self.fg,
-                bg: self.bg,
-                bold: self.bold,
-                wide_tail: true,
-            };
+            //
+            // 边界（2026-10-02 审计 M-15）：`cols == 1` 时这一格**不存在**。宽字符会
+            // 先折行，但若光标已在末行，折行只是滚屏、cur_x 仍是 0，于是
+            // `idx + 1 == cells.len()` → 越界 panic。当前几何路径算不出 cols==1
+            // （窗口最小宽 320px），但布局或分辨率一变就会变成"打印一个汉字崩桌面"。
+            // 用 `get_mut` 把这条路径彻底关掉。
+            if let Some(cell) = self.cells.get_mut(idx + 1) {
+                *cell = Cell {
+                    ch: ' ',
+                    fg: self.fg,
+                    bg: self.bg,
+                    bold: self.bold,
+                    wide_tail: true,
+                };
+            }
         }
         self.cur_x += width;
         if self.cur_x >= self.cols {
@@ -755,6 +777,35 @@ mod tests {
     fn bracketed_paste_does_not_affect_output() {
         let s = screen(10, 2, "\x1b[?2004hok");
         assert_eq!(s.to_lines()[0], "ok");
+    }
+
+    /// M-14 回归：CSI 参数表必须有上限。
+    ///
+    /// 修复前：`ESC[` 后面跟一万个 `;` 会让 `params` 涨到一万项（外部可控的无界增长）。
+    #[test]
+    fn csi_params_are_bounded() {
+        let mut s = Screen::new(20, 2);
+        let flood = format!("\x1b[{}m", ";".repeat(10_000));
+        s.feed(flood.as_bytes());
+        assert!(
+            s.params.len() <= MAX_CSI_PARAMS,
+            "参数表未被限制：{} 项（上限 {MAX_CSI_PARAMS}）",
+            s.params.len()
+        );
+    }
+
+    /// M-15 回归：`cols == 1` 且光标在末行时打印宽字符**不得 panic**。
+    ///
+    /// 修复前：宽字符折行后 `idx + 1` 正好等于 `cells.len()` → 越界 panic。
+    #[test]
+    fn wide_char_in_single_column_does_not_panic() {
+        let mut s = Screen::new(1, 1);
+        s.feed("中".as_bytes()); // 修复前这一行会 panic
+        assert_eq!(s.cols, 1);
+        // 多行单列也一样
+        let mut s2 = Screen::new(1, 3);
+        s2.feed("中\r\n文".as_bytes());
+        assert_eq!(s2.cols, 1);
     }
 
     #[test]

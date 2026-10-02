@@ -38,16 +38,57 @@ fn open_log(unit: &str) -> Option<std::fs::File> {
             rotate_in(LOG_DIR, unit);
         }
     }
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok()
+    open_append_no_follow(&path)
+}
+
+/// 以**不跟随符号链接**的方式打开追加写文件。
+///
+/// 为什么必须这样（2026-10-02 审计 H-4）：`/var` 可能挂在**外部**持久分区上，
+/// 而镜像里 `/var/log` 是指向 `/tmp` 的软链、`/tmp` 权限 1777 —— 只要有人能在
+/// 日志目录里放一个 `aetherd.log -> /etc/shadow` 的符号链接，root 的服务输出就会
+/// 被**追加写入**那个文件（日志内容可构造，等于任意文件写）。
+///
+/// 两道防线：
+/// 1. `symlink_metadata` 预检（跨平台，能给出清楚的日志）；
+/// 2. Linux 上再加 `O_NOFOLLOW` —— 由内核保证，彻底消掉 ① 与 open 之间的竞态。
+///
+/// 目标是符号链接时返回 `None`（服务照常运行，只是不写这一路文件日志）。
+fn open_append_no_follow(path: &str) -> Option<std::fs::File> {
+    if let Ok(md) = std::fs::symlink_metadata(path) {
+        if md.file_type().is_symlink() {
+            eprintln!("[aether-init] 拒绝写日志：{path} 是符号链接（防符号链接攻击）");
+            return None;
+        }
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    match opts.open(path) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            eprintln!("[aether-init] 打不开日志 {path}：{e}");
+            None
+        }
+    }
+}
+
+/// 建日志目录并收紧到 0700（日志里可能有服务打印的敏感内容，同机其它用户不该读）。
+fn ensure_log_dir() {
+    let _ = std::fs::create_dir_all(LOG_DIR);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(LOG_DIR, std::fs::Permissions::from_mode(0o700));
+    }
 }
 
 /// 接管 child 的 stdout/stderr（必须在 spawn 后、wait 前调用）。
 pub fn tee_child(unit: &str, child: &mut Child) {
-    let _ = std::fs::create_dir_all(LOG_DIR);
+    ensure_log_dir();
     let out = child.stdout.take().map(|r| Box::new(r) as Box<dyn Read + Send>);
     let err = child.stderr.take().map(|r| Box::new(r) as Box<dyn Read + Send>);
     for pipe in [out, err] {
@@ -125,6 +166,40 @@ mod tests {
     fn rotate_missing_file_is_noop() {
         let dir = tmpdir("rot3");
         assert!(!rotate_in(&dir, "nope"), "没有日志时不应报告轮转成功");
+    }
+
+    /// H-4 回归：日志路径是符号链接时**必须拒绝写**，而不是顺着链接写过去。
+    ///
+    /// 攻击形态：在持久分区上预置 `aetherd.log -> /etc/shadow`，启动后 root 的
+    /// 服务输出就被追加进目标文件。
+    #[cfg(unix)]
+    #[test]
+    fn open_log_refuses_symlink() {
+        let dir = tmpdir("symlink");
+        let victim = format!("{dir}/victim.txt");
+        std::fs::write(&victim, b"original").unwrap();
+        let link = format!("{dir}/aetherd.log");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        assert!(open_append_no_follow(&link).is_none(), "符号链接必须被拒绝");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"original", "目标文件不得被写入");
+        // 链接本身也不该被删/改
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    }
+
+    /// 反向断言：普通文件照常可写、且是**追加**而不是截断 ——
+    /// 防"为了安全把正常路径也一起挡掉"。
+    #[test]
+    fn open_log_accepts_regular_file_in_append_mode() {
+        let dir = tmpdir("regular");
+        let p = format!("{dir}/aetherd.log");
+        let mut f = open_append_no_follow(&p).expect("普通文件应可打开");
+        f.write_all(b"hello").unwrap();
+        drop(f);
+        let mut f2 = open_append_no_follow(&p).expect("再次打开应成功");
+        f2.write_all(b"+more").unwrap();
+        drop(f2);
+        assert_eq!(std::fs::read(&p).unwrap(), b"hello+more", "必须追加而不是截断");
     }
 }
 
