@@ -176,6 +176,51 @@
   <li><code>--check</code> <strong>连跑三次全部通过</strong>（幂等 —— 之前的病根就是不幂等）</li>
   <li>行数门禁 3/3、双目标 0 警告、工作区测试全绿</li>
 </ul>
+<h2 id="ai">十四、服务控制泛化：「重启 AI 服务」+ 动作类不改状态的回归测试</h2>
+<h3>改动</h3>
+<ul>
+  <li><code>SettingsHit::RestartNetwork</code> → <strong><code>SettingsHit::RestartService(&amp;'static str)</code></strong>：</li>
+</ul>
+<p>  单元名由调用点给出，新增动作不再需要动枚举与命中处理。</p>
+<ul>
+  <li>「AI」页新增 <strong>「重启 AI 服务」</strong>（单元 <code>aetherd</code>，注明"会话会中断"）。</li>
+</ul>
+<p>  与「网络」页的「重启网络服务」共用同一条 IPC 路径（<code>ServiceControl</code> → init）。</p>
+<ul>
+  <li>新增回归测试 <code>restart_hit_is_an_action_not_state</code>：</li>
+</ul>
+<p>  动作类命中<strong>只产生副作用</strong>，不得改动任何设置项、也不得切换设置页</p>
+<p>  （防"点重启顺手改了配置"这类回归）。</p>
+<h3>为什么不做「改权限策略」</h3>
+<p>权限状态（拒绝记录、闸门阈值）在 aetherd 进程内，改它需要<strong>新的 IPC 变体</strong></p>
+<p>（<code>PermissionForget</code> 之类）＋ 服务端鉴权分支 ＋ 门禁清单 —— 属于独立一步，</p>
+<p>不适合塞进本轮；本轮先把"复用现有协议就能拿到"的动作做完整。</p>
+<h3>验证</h3>
+<ul>
+  <li>双目标 0 警告、工作区 370 项测试全绿（含新增的 1 项）</li>
+  <li>走查图 <code>--check</code> 一致；行数门禁 3/3（24,491 行 / 45 文件）</li>
+  <li><strong>未验证</strong>：真机端到端（需重建 ISO 后在 VMware 里点一次看 toast）</li>
+</ul>
+<h2 id="iso-vmware-p4-4">十五、重建 ISO 并部署到 VMware（含 P4.4 服务控制）</h2>
+<ul>
+  <li>构建：<code>platform/build-iso.sh</code>（构建机 AetherOS-Build），退出码 0</li>
+  <li>新 ISO：<strong>40359936 字节（38.5 MB）</strong>，sha256 <code>43c53f4c8f8b16ebbd5e1a782b024d1fee1912015e0fc3c4c4e1c7481b1bd8aa</code></li>
+  <li>部署：复制到 <code>D:\aether-vm\AetherOS-VMware</code>，<code>vmrun stop/start</code> 重启虚拟机</li>
+  <li><strong>串口验证</strong>：日志含「字节序」「字体已加载」「已渲染」「已挂载」✓，</li>
+</ul>
+<p>  尾部可见网络配置（<code>adding dns 192.168.254.2</code>）与合成器渲染帧 ✓</p>
+<ul>
+  <li>站点数据随新 ISO 刷新（下载页哈希/体积）</li>
+</ul>
+<h3>部署脚本踩的坑（值得记住）</h3>
+<p><code>vmrun start</code> 会拉起 VMware <strong>GUI</strong>，GUI 子进程<strong>继承了 stdout 管道</strong> ——</p>
+<p><code>subprocess.run(..., capture_output=True)</code> 会<strong>永远等不到 EOF</strong> 而挂死。</p>
+<p>ISO 其实已经部署成功、虚拟机也在跑新构建，但脚本卡在第 3 步不动。</p>
+<p><strong>教训</strong>：调用会拉起 GUI 的程序（vmrun/vmplayer 等）时，</p>
+<p>要么 <code>stdout=subprocess.DEVNULL</code>，要么加超时 —— 不能无超时地捕获输出。</p>
+<h3>下一步（需要人在机器前）</h3>
+<p>在虚拟机里打开 设置 →「网络」页点「重启网络服务」、→「AI」页点「重启 AI 服务」，</p>
+<p>确认 toast 显示 aetherd 的 ack。这是 P4.4 <strong>唯一未验证</strong>的环节（编译与单测已过）。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>
