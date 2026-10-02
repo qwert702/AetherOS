@@ -163,9 +163,31 @@ def upload(c, layout: dict, with_iso: bool) -> None:
 
 
 def write_vhost(c, layout: dict, with_iso: bool) -> None:
-    """新增一个 vhost —— 只写 HTTP 段，TLS 交给 certbot（它自己会插入 443 段）。"""
+    """新增一个 vhost —— 只写 HTTP 段，TLS 交给 certbot（它自己会插入 443 段）。
+
+    安全头走**片段 include**，理由见 `deploy/security-headers.conf`：
+    nginx 的 `add_header` 不跨层级继承，某个 location 里写了 Cache-Control 就会
+    把 server 级的安全头全部丢掉（含所有 HTML 页面）—— 配置看起来已加固、
+    线上却没有（2026-10-02 审计 M-10）。
+    """
     print("== 5) 新增 vhost（只加这一个文件，不动其它配置）==")
+
+    # 安全头片段是 vhost 的依赖：必须**先**落盘，否则 include 指向不存在的文件，
+    # nginx -t 会直接失败（宁可在这里失败，也不要留一份坏配置在服务器上）。
+    snippet_dir = "/etc/nginx/snippets"
+    snippet = f"{snippet_dir}/aether-security-headers.conf"
+    local_snippet = ROOT / "deploy" / "security-headers.conf"
+    if not local_snippet.is_file():
+        sys.exit(f"缺少 {local_snippet} —— 安全头片段是 vhost 的依赖，不能跳过")
+    sh(c, f"mkdir -p {snippet_dir}")
+    sftp = c.open_sftp()
+    sftp.put(str(local_snippet), snippet)
+    sftp.close()
+    sh(c, f"chmod 644 {snippet}")
+    print(f"  写入 {snippet}")
+
     conf = f"{layout['conf_dir']}/{DOMAIN}.conf"
+    inc = f"include {snippet};"
     dl = ""
     if with_iso:
         dl = f"""
@@ -173,6 +195,7 @@ def write_vhost(c, layout: dict, with_iso: bool) -> None:
     location /dl/ {{
         alias {layout['root']}/dl/;
         add_header Cache-Control "public, max-age=86400";
+        {inc}
     }}
 """
     body = f"""# {DOMAIN} —— AetherOS 官网
@@ -190,19 +213,17 @@ server {{
     # certbot 的 ACME 校验（既有配置里已有 /var/www/certbot）
     location /.well-known/acme-challenge/ {{ root /var/www/certbot; }}
 {dl}
-    # 安全头
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'self'; frame-ancestors 'none'" always;
+    # 安全头：片段必须在**每个带 add_header 的层级**各 include 一次（nginx 继承规则）
+    {inc}
 
     gzip on;
     gzip_vary on;
     gzip_min_length 512;
     gzip_types text/plain text/css application/javascript application/json image/svg+xml application/xml;
 
-    location /assets/img/ {{ expires 30d; add_header Cache-Control "public, max-age=2592000"; access_log off; }}
-    location ~* \\.(css|svg|woff2?)$ {{ expires 7d; add_header Cache-Control "public, max-age=604800"; }}
-    location ~* \\.html$ {{ expires 10m; add_header Cache-Control "public, max-age=600, must-revalidate"; }}
+    location /assets/img/ {{ expires 30d; add_header Cache-Control "public, max-age=2592000"; {inc} access_log off; }}
+    location ~* \\.(css|svg|woff2?)$ {{ expires 7d; add_header Cache-Control "public, max-age=604800"; {inc} }}
+    location ~* \\.html$ {{ expires 10m; add_header Cache-Control "public, max-age=600, must-revalidate"; {inc} }}
 
     location = /sitemap.xml {{ access_log off; }}
     location = /robots.txt  {{ access_log off; }}
@@ -265,6 +286,33 @@ def verify(c) -> None:
     print("  响应头：\n" + "\n".join("    " + l for l in head.splitlines()[:10]))
 
 
+def verify_security_headers(c) -> None:
+    """验证安全头**真的下发**了 —— 而不是只写在配置里。
+
+    2026-10-02 审计 M-10 的教训：`add_header` 的继承规则让"配置里写了"与
+    "响应里有"变成两件事，而这个差异在配置文件里完全看不出来。所以部署脚本
+    自己必须回头看一眼真实响应。
+    """
+    print("== 8a) 安全头实际下发校验 ==")
+    # HTML 是最关键的一类（CSP 的主要保护对象），也正是此前被丢掉的层级
+    probe = sh(
+        c,
+        f"curl -sI -m 15 https://{DOMAIN}/download.html | tr -d '\\r' | grep -ci "
+        f"'\\(content-security-policy\\|x-content-type-options\\|strict-transport-security\\)' "
+        f"|| echo 0",
+        check=False,
+    ).strip()
+    try:
+        found = int(probe)
+    except ValueError:
+        found = 0
+    if found >= 3:
+        print(f"  HTML 响应含 {found}/3 项关键安全头 ✓")
+    else:
+        print(f"  ⚠️ HTML 响应只含 {found}/3 项关键安全头 —— 检查 add_header 继承（M-10）")
+        print("     修复要点：安全头片段必须在带 add_header 的每个层级各 include 一次")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="部署 AetherOS 官网到 VPS")
     ap.add_argument("--tls", action="store_true", help="用 certbot 签发 HTTPS 证书")
@@ -282,6 +330,7 @@ def main() -> int:
         layout = probe_layout(c)
         if args.check_only:
             verify(c)
+            verify_security_headers(c)
             return 0
         base = baseline(c)
         upload(c, layout, args.with_iso)
@@ -290,6 +339,7 @@ def main() -> int:
         if args.tls:
             tls(c, layout)
         verify(c)
+        verify_security_headers(c)
     finally:
         c.close()
     print("\n完成。")

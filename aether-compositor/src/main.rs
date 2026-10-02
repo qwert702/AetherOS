@@ -3251,7 +3251,11 @@ fn clipboard_paste(desktop: &mut Desktop) -> Option<String> {
     }
     let text = desktop.clipboard.clone();
     if let Some(t) = desktop.wins.get_mut(desktop.active).and_then(|w| w.term.as_mut()) {
-        t.write(&term::paste_bytes(&text));
+        // 应用声明了括号粘贴（DECSET 2004）就用它：多行文本进编辑缓冲，
+        // 不会被逐行执行。没声明则退回老行为（见 term::paste_bytes 的说明）。
+        // 2026-10-02 审计 M-13：两种模式都会先剥掉控制字符。
+        let bracketed = t.bracketed_paste();
+        t.write(&term::paste_bytes(&text, bracketed));
         return None;
     }
     Some(text)

@@ -325,6 +325,28 @@ fn setup_persist(disk: &str) -> Result<String> {
     Ok(node_s)
 }
 
+/// 安装源镜像是否具备可引导的 MBR 签名（isohybrid 的产物）。
+///
+/// **为什么必须在 dd 之前判**（2026-10-02 审计 H-6）：`setup_persist` 里也读 MBR，
+/// 但那是在**写完目标盘之后** —— 那时目标盘首 32MB 已被覆盖、分区表已毁，
+/// 再报错只是"事后告知"，数据不可恢复，而且程序仍会打印"安装完成"。
+/// 实测：工作区 `aetheros-0.1-amd64.iso` 前 512 字节全 0、无 0x55AA、分区项全空，
+/// 即纯 ISO9660 + El Torito，**不是** isohybrid。
+///
+/// 纯读、不写盘：这个函数返回 false 时调用方必须**中止且未动目标盘**。
+fn source_has_mbr() -> Result<bool> {
+    has_mbr(SOURCE)
+}
+
+/// 读 `path` 的前 512 字节并判断 MBR 签名（纯函数式，便于跨平台单测）。
+fn has_mbr(path: &str) -> Result<bool> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).with_context(|| format!("打不开安装源 {path}"))?;
+    let mut mbr = [0u8; 512];
+    f.read_exact(&mut mbr).with_context(|| format!("读取 {path} 头部失败"))?;
+    Ok(mbr[510] == 0x55 && mbr[511] == 0xAA)
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (disk, yes, persist) = parse_args(&args)?;
@@ -337,6 +359,17 @@ fn main() -> Result<()> {
     println!("aether-install: 目标 {disk}（{mb}MB），源 {SOURCE}");
     if !yes {
         bail!("将整盘覆盖写入 {disk} —— 确认无误后追加 --yes 执行");
+    }
+    // 引导前提必须在**动目标盘之前**验证：不满足就中止，且**不做任何写入**。
+    // 否则用户会得到一块被毁掉、又起不来的盘，而程序还报"安装完成"。
+    if !source_has_mbr()? {
+        bail!(
+            "安装源 {SOURCE} 不是 isohybrid 镜像（首 512 字节无 MBR 签名 0x55AA）——\n\
+             它只能作为光盘/ISO 引导，不能 dd 到磁盘引导。\n\
+             构建侧需在产出 ISO 后执行 isohybrid（见 platform/build-iso.sh 与\n\
+             scripts/rebuild-m4.sh）。\n\
+             已中止：**未对 {disk} 做任何写入**"
+        );
     }
 
     println!("aether-install: 写入中（约 32MB，几秒钟）…");
@@ -501,5 +534,46 @@ mod tests {
     fn partition_node_naming() {
         assert_eq!(partition_node("/dev/vda", 2), "/dev/vda2");
         assert_eq!(partition_node("/dev/sda", 1), "/dev/sda1");
+    }
+
+    /// H-6 回归：安装前必须能识别"源镜像不是 isohybrid"。
+    ///
+    /// 这条判定的价值在于**时机**：它必须在 dd 之前跑。此前同样的检查写在
+    /// `setup_persist` 里（dd 之后），于是目标盘已被覆盖、分区表已毁才发现起不来。
+    #[test]
+    fn has_mbr_detects_isohybrid_and_rejects_plain_iso() {
+        let dir = std::env::temp_dir().join("aether_install_mbr_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+
+        // 1) 纯 ISO9660（前 512 字节全 0）：不是 isohybrid
+        let plain = dir.join("plain.iso");
+        std::fs::write(&plain, vec![0u8; 512]).unwrap();
+        assert!(!has_mbr(&plain.to_string_lossy()).unwrap(), "全 0 头部应判为非 isohybrid");
+
+        // 2) 带 MBR 签名：是 isohybrid
+        let hybrid = dir.join("hybrid.iso");
+        let mut buf = vec![0u8; 512];
+        buf[510] = 0x55;
+        buf[511] = 0xAA;
+        std::fs::write(&hybrid, &buf).unwrap();
+        assert!(has_mbr(&hybrid.to_string_lossy()).unwrap(), "0x55AA 应判为 isohybrid");
+
+        // 3) 只有半个签名也不行
+        let half = dir.join("half.iso");
+        let mut buf = vec![0u8; 512];
+        buf[510] = 0x55;
+        std::fs::write(&half, &buf).unwrap();
+        assert!(!has_mbr(&half.to_string_lossy()).unwrap());
+
+        // 4) 文件不足 512 字节：报错而不是当成"没有签名"（避免把读取失败误判为判定结果）
+        let tiny = dir.join("tiny.bin");
+        std::fs::write(&tiny, vec![0u8; 100]).unwrap();
+        assert!(has_mbr(&tiny.to_string_lossy()).is_err(), "不足 512 字节应报错");
+
+        // 5) 文件不存在：报错
+        assert!(has_mbr(&dir.join("nope.iso").to_string_lossy()).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

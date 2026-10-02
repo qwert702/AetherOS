@@ -8,6 +8,7 @@
 #   1. musl 静态交叉编译 Aether 组件（aether-init/aetherd/...）
 #   2. 拷贝二进制进 rootfs overlay
 #   3. 下载/解压 Buildroot，应用 defconfig，构建
+#   4. isohybrid + 自检（MBR 签名）—— 少了这步 ISO 只能光盘引导、不能装机
 set -euo pipefail
 
 # Rust 不在非交互式 SSH 的 PATH 里（2026-09-29 实测：无人值守跑本脚本会
@@ -68,6 +69,29 @@ make BR2_EXTERNAL="$BR_EXT" O="$BUILD/output" -j"$(nproc)"
 ISO="$BUILD/output/images/rootfs.iso9660"
 if [ -f "$ISO" ]; then
     cp "$ISO" "$ROOT/aetheros-0.1-amd64.iso"
+
+    # isohybrid：让 ISO 可以被 dd 到磁盘后直接引导（M6 安装器依赖这一点）。
+    #
+    # 为什么必须有这一步（2026-10-02 审计 H-6）：aether-install 的前提是"源镜像
+    # 带 MBR 签名与隐藏 ISO 分区表"，而纯 ISO9660 + El Torito **没有** MBR ——
+    # 装机时 dd 会毁掉目标盘首 32MB，盘却起不来，程序还会打印"安装完成"。
+    # 实测：未经本步骤产出的 ISO 前 512 字节全 0、无 0x55AA。
+    ISOHYBRID="$BUILD/output/host/bin/isohybrid"
+    if [ ! -x "$ISOHYBRID" ]; then
+        echo "!! 未找到 $ISOHYBRID —— 缺 syslinux 主机工具。"
+        echo "   这份 ISO 只能光盘引导，装机（aether-install）会拒绝执行。"
+        exit 1
+    fi
+    "$ISOHYBRID" "$ROOT/aetheros-0.1-amd64.iso"
+
+    # 自检：签名必须真的写进去了 —— 否则"看起来做了"和"真的做了"会分不清。
+    SIGN="$(dd if="$ROOT/aetheros-0.1-amd64.iso" bs=1 skip=510 count=2 2>/dev/null \
+            | od -An -tx1 | tr -d ' \n')"
+    if [ "$SIGN" != "55aa" ]; then
+        echo "!! isohybrid 之后仍无 MBR 签名（实得 '$SIGN'）—— 安装器会拒绝装机"
+        exit 1
+    fi
+    echo "==> isohybrid 完成，MBR 签名自检通过（可 dd 到磁盘引导）"
     echo "==> 完成: $ROOT/aetheros-0.1-amd64.iso"
 else
     echo "!! 未找到 ISO 产物，检查 $BUILD/output/images/"

@@ -244,6 +244,11 @@ pub fn cell_at(
         }
     }
 
+    /// 应用是否启用了括号粘贴（DECSET 2004）—— 粘贴路径据此选择编码方式。
+    pub fn bracketed_paste(&self) -> bool {
+        self.screen.bracketed_paste()
+    }
+
     /// 屏幕内容为空的判定（仅测试使用：渲染路径没有「空白就不画」的分支）。
     #[cfg(test)]
     pub fn is_blank(&self) -> bool {
@@ -253,12 +258,28 @@ pub fn cell_at(
 
 /// 粘贴文本 → 终端字节。
 ///
-/// 必须把 `\n` 换成 `\r`：终端（以及 readline）把回车当"提交"，把裸换行当"换行不提交"。
-/// 直接送 `\n` 的话多行粘贴只会显示换行、命令永远不会执行。
-pub fn paste_bytes(text: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len());
+/// `bracketed` = 应用是否启用了括号粘贴（DECSET 2004，见 `vt::Screen::bracketed_paste`）。
+///
+/// **两种模式的区别就是"换行会不会执行"**（2026-10-02 审计 M-13）：
+/// - 启用：`ESC[200~ … ESC[201~` 包起来，shell 知道这是粘贴，多行文本进编辑缓冲
+///   而不是被逐行提交 —— 这是**唯一正确**的多行粘贴方式；
+/// - 未启用：沿用老行为，把 `\n` 换成 `\r`（回车=提交），多行文本会被逐行执行。
+///   这是终端世界的既有约定（xterm 亦然），但它意味着"粘贴一段不可信文本"
+///   等于"执行它"——所以能走括号粘贴时一定要走。
+///
+/// 两种模式都会先剥掉控制字符（见 [`strip_control`]）。
+pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let clean = strip_control(text);
+    if bracketed {
+        let mut out = Vec::with_capacity(clean.len() + 12);
+        out.extend_from_slice(b"\x1b[200~");
+        out.extend_from_slice(clean.as_bytes());
+        out.extend_from_slice(b"\x1b[201~");
+        return out;
+    }
+    let mut out = Vec::with_capacity(clean.len());
     let mut prev_cr = false;
-    for ch in text.chars() {
+    for ch in clean.chars() {
         match ch {
             '\r' => {
                 out.push(b'\r');
@@ -279,6 +300,17 @@ pub fn paste_bytes(text: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+/// 剥掉会**改变终端状态**的控制字符（保留 `\r` `\n` `\t`）。
+///
+/// 为什么：粘贴内容来自外部（网页、文件、AI 回答），其中的 `ESC` 序列会被终端
+/// 解释成控制指令（移动光标、清屏、`ESC]0;…BEL` 改标题），`\x03`(Ctrl-C) 会打断
+/// 前台进程。这些都不是"文本"，不该随粘贴进入终端。
+fn strip_control(text: &str) -> String {
+    text.chars()
+        .filter(|c| !(c.is_control() && !matches!(c, '\r' | '\n' | '\t')))
+        .collect()
 }
 
 /// 终端需要的按键语义。
@@ -482,18 +514,49 @@ mod tests {
 
     #[test]
     fn paste_converts_newlines_to_carriage_returns() {
-        assert_eq!(paste_bytes("ls\n"), b"ls\r".to_vec());
-        assert_eq!(paste_bytes("a\nb\n"), b"a\rb\r".to_vec());
+        assert_eq!(paste_bytes("ls\n", false), b"ls\r".to_vec());
+        assert_eq!(paste_bytes("a\nb\n", false), b"a\rb\r".to_vec());
     }
 
     #[test]
     fn paste_does_not_double_cr_for_crlf() {
-        assert_eq!(paste_bytes("a\r\nb"), b"a\rb".to_vec(), "CRLF 不应变成两个回车");
+        assert_eq!(paste_bytes("a\r\nb", false), b"a\rb".to_vec(), "CRLF 不应变成两个回车");
     }
 
     #[test]
     fn paste_keeps_utf8_intact() {
-        assert_eq!(paste_bytes("中文"), "中文".as_bytes().to_vec());
+        assert_eq!(paste_bytes("中文", false), "中文".as_bytes().to_vec());
+    }
+
+    /// M-13 回归：应用启用括号粘贴时，内容必须被 `ESC[200~ … ESC[201~` 包住，
+    /// **且换行保持为 `\n`**（不能再折成 `\r` —— 那正是"逐行执行"的来源）。
+    #[test]
+    fn bracketed_paste_wraps_and_keeps_newlines() {
+        let out = paste_bytes("echo hi\necho bye\n", true);
+        assert!(out.starts_with(b"\x1b[200~"), "缺少括号粘贴起始标记");
+        assert!(out.ends_with(b"\x1b[201~"), "缺少括号粘贴结束标记");
+        let body = &out[6..out.len() - 6];
+        assert_eq!(body, b"echo hi\necho bye\n", "括号粘贴内不得把 \\n 换成 \\r");
+        assert!(!body.contains(&b'\r'), "括号粘贴内不应出现回车");
+    }
+
+    /// M-13 回归：粘贴内容里的控制字符必须先被剥掉。
+    ///
+    /// `ESC` 序列会被终端解释成控制指令，`\x03`(Ctrl-C) 会打断前台进程 ——
+    /// 粘贴进来的"文本"不该有这种能力。
+    #[test]
+    fn paste_strips_control_characters() {
+        // ESC 序列 + Ctrl-C + BEL 全部剥掉；\r \n \t 保留
+        let raw = "safe\x1b[2J\x03text\x07\ttab\nnext";
+        let out = paste_bytes(raw, true);
+        let body = String::from_utf8_lossy(&out[6..out.len() - 6]).to_string();
+        assert_eq!(body, "safe[2Jtext\ttab\nnext", "控制字符应被剥掉，实得 {body:?}");
+        assert!(!body.contains('\u{1b}'), "ESC 不得进入终端");
+        assert!(!body.contains('\u{3}'), "Ctrl-C 不得进入终端");
+        // 非括号模式同样要剥
+        let plain = paste_bytes(raw, false);
+        assert!(!plain.contains(&0x1b), "非括号模式也不得放行 ESC");
+        assert!(!plain.contains(&0x03), "非括号模式也不得放行 Ctrl-C");
     }
 
     #[test]

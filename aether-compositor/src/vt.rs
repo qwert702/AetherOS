@@ -94,6 +94,12 @@ pub struct Screen {
     saved: (usize, usize),
     /// 上一字符刚好写到行尾：下一个可打印字符要先换行（延迟折行，符合 xterm 行为）
     wrap_pending: bool,
+    /// 应用是否启用了括号粘贴（DECSET 2004）。
+    ///
+    /// 终端**不**据此改变输出渲染，只影响粘贴：启用后粘贴内容用
+    /// `ESC[200~ … ESC[201~` 包起来，shell 就知道"这是粘贴、不是键入"，
+    /// 多行文本因此不会被逐行当成命令执行（2026-10-02 审计 M-13）。
+    bracketed_paste: bool,
 }
 
 impl Screen {
@@ -116,6 +122,7 @@ impl Screen {
             utf8_need: 0,
             saved: (0, 0),
             wrap_pending: false,
+            bracketed_paste: false,
         };
         s.cells = vec![Cell::default(); s.cols * s.rows];
         s
@@ -345,8 +352,18 @@ impl Screen {
     }
 
     fn dispatch_csi(&mut self, final_byte: u8) {
-        // 私有序列（`?`）：只认"显示/隐藏光标"，其余忽略（不做鼠标上报与完整 DSR）
+        // 私有序列（`?`）：只认**括号粘贴 2004**，其余忽略（不做鼠标上报与完整 DSR）。
+        //
+        // 为什么要单独认 2004：它是"应用能区分粘贴与键入"的声明。认了它，粘贴多行
+        // 文本才能走 `ESC[200~ … ESC[201~`，从而不被 shell 逐行执行（2026-10-02
+        // 审计 M-13）。其余私有序列保持"忽略"这一保守行为不变。
         if self.private {
+            let is_set = final_byte == b'h';
+            let is_unset = final_byte == b'l';
+            // 参数可能是一张列表（`?25;2004h`），所以查"是否包含"而不是"是否等于第一个"
+            if (is_set || is_unset) && self.params.contains(&2004) {
+                self.bracketed_paste = is_set;
+            }
             self.params.clear();
             return;
         }
@@ -506,6 +523,14 @@ impl Screen {
         self.sgr_reset();
         self.state = State::Ground;
         self.wrap_pending = false;
+        // `ESC c`（RIS）是"整机复位"：应用重开后要重新声明括号粘贴
+        self.bracketed_paste = false;
+    }
+
+    /// 应用是否启用了括号粘贴（DECSET 2004）。粘贴路径据此决定要不要包
+    /// `ESC[200~ … ESC[201~`（见 `term::paste_bytes`）。
+    pub fn bracketed_paste(&self) -> bool {
+        self.bracketed_paste
     }
 
     /// 整屏文本（测试与"复制全部"用；行尾空格已裁剪）。
@@ -696,6 +721,39 @@ mod tests {
     #[test]
     fn private_sequences_are_ignored_safely() {
         let s = screen(10, 2, "\x1b[?25lok");
+        assert_eq!(s.to_lines()[0], "ok");
+    }
+
+    /// M-13 回归：括号粘贴模式（DECSET/DECRST 2004）必须被跟踪，
+    /// 其余私有序列继续"忽略但不崩"。
+    #[test]
+    fn bracketed_paste_mode_is_tracked() {
+        let mut s = Screen::new(10, 2);
+        assert!(!s.bracketed_paste(), "默认必须是关闭的");
+
+        s.feed(b"\x1b[?2004h");
+        assert!(s.bracketed_paste(), "DECSET 2004 应开启括号粘贴");
+
+        s.feed(b"\x1b[?2004l");
+        assert!(!s.bracketed_paste(), "DECRST 2004 应关闭括号粘贴");
+
+        // 只认 2004：其它私有模式（光标、鼠标）不得误改这个状态
+        s.feed(b"\x1b[?25h\x1b[?1000h\x1b[?1049h");
+        assert!(!s.bracketed_paste(), "其它私有模式不应开启括号粘贴");
+
+        // 多个参数时只有 2004 生效
+        s.feed(b"\x1b[?25;2004h");
+        assert!(s.bracketed_paste(), "参数列表里的 2004 也应被识别");
+
+        // RIS 复位后要重新声明
+        s.feed(b"\x1bc");
+        assert!(!s.bracketed_paste(), "整机复位后应为关闭");
+    }
+
+    /// 括号粘贴状态只影响粘贴编码，不得影响屏幕渲染。
+    #[test]
+    fn bracketed_paste_does_not_affect_output() {
+        let s = screen(10, 2, "\x1b[?2004hok");
         assert_eq!(s.to_lines()[0], "ok");
     }
 

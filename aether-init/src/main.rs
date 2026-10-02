@@ -20,7 +20,12 @@ use std::time::Duration;
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("--pid1") => run_pid1(),
+        // PID 1 **不允许退出**：退出即内核 panic（"Attempted to kill init!"），
+        // 而这条路径每次启动都会复现 —— 只能人工救砖。所以这里兜住**所有**错误与
+        // panic，一律回落救援模式（2026-10-02 审计 M-3）。此前只有"服务目录为空"
+        // 才回落，而服务名重复、依赖成环、/run/aether-init.sock 建不出来都会直接
+        // 冒泡到 main。
+        Some("--pid1") => pid1_or_rescue(),
         Some("--dry-run") | None => run_dry_run(args.get(2).map(|s| s.as_str())),
         Some("--rescue") => rescue_console("手动进入救援模式（--rescue）"),
         Some(other) => {
@@ -31,6 +36,23 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// PID 1 的唯一入口：**永不返回**（返回类型是 `!`，由类型系统保证）。
+///
+/// 三层兜底，缺一不可：
+/// 1. `Ok(Ok(()))` —— 监督循环理论上不会结束；真结束了也说明状态异常，进救援模式；
+/// 2. `Ok(Err(e))` —— 启动期的任何 `?`（重名服务、依赖环、socket 建不出来……）；
+/// 3. `Err(_)` —— 主线程 panic（`catch_unwind` 捕获；子线程 panic 不影响 PID 1）。
+///
+/// 救援模式给的是**一条出路**（打印原因 + 控制台 shell），而不是黑屏或死循环 ——
+/// 对一个"起不来就整机不可用"的组件，这是可用性上的最后一道防线。
+fn pid1_or_rescue() -> ! {
+    match std::panic::catch_unwind(run_pid1) {
+        Ok(Ok(())) => rescue_console("PID 1 主流程意外返回（监督循环不应结束）"),
+        Ok(Err(e)) => rescue_console(&format!("PID 1 启动失败：{e:#}")),
+        Err(_) => rescue_console("PID 1 主流程发生 panic（回溯见上方输出）"),
     }
 }
 
