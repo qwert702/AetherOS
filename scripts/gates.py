@@ -37,6 +37,32 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
 
+# ⚠️ **不要**把子进程的 TEMP/TMPDIR 改到仓库内（曾经试过，已回退）。
+#
+# 动机是合理的：本机 C 盘一度可用空间为 0，`mkapp.py --selftest` 之类会**间歇性**
+# 失败，`perm::tests::audit_rotates_when_oversized` 更是直接 `StorageFull`。
+# 但把临时目录指到 `<repo>/target/gates-tmp` 会**破坏测试语义**：
+# `aetherd` 的写工具白名单只允许"用户数据区（家目录、/tmp）"，而测试用
+# `std::env::temp_dir()` 造路径 —— 一旦它落到仓库里，删除/重命名类测试会正确地
+# 拒绝写入而失败（`tools.rs::delete_then_restore_*`、`rename_refuses_to_overwrite_existing`）。
+# 也就是说：临时目录的位置**是测试前提的一部分**，不能随手改。
+#
+# 正确做法：磁盘空间问题按环境问题处理（清理磁盘 / 换机器），
+# 测试自身的空间占用问题在测试里解决（例：审计轮转测试用 1KB 上限，见 perm.rs）。
+
+
+def run(cmd: list[str], timeout: int = 1800) -> tuple[int, str]:
+    t0 = time.time()
+    try:
+        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+        out = (r.stdout or "") + (r.stderr or "")
+        return r.returncode, f"{time.time() - t0:.1f}s · {out.strip()[-400:]}"
+    except subprocess.TimeoutExpired:
+        return 124, f"超时（{timeout}s）"
+    except FileNotFoundError as exc:
+        return 127, f"命令不存在：{exc}"
+
 
 def _posix_shell() -> str | None:
     """找一个能用的 POSIX shell 做语法检查。
@@ -52,19 +78,6 @@ def _posix_shell() -> str | None:
         if Path(cand).exists():
             return cand
     return shutil.which("sh")
-
-
-def run(cmd: list[str], timeout: int = 1800) -> tuple[int, str]:
-    t0 = time.time()
-    try:
-        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout)
-        out = (r.stdout or "") + (r.stderr or "")
-        return r.returncode, f"{time.time() - t0:.1f}s · {out.strip()[-400:]}"
-    except subprocess.TimeoutExpired:
-        return 124, f"超时（{timeout}s）"
-    except FileNotFoundError as exc:
-        return 127, f"命令不存在：{exc}"
 
 
 def main() -> int:
