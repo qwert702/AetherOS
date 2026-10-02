@@ -3081,6 +3081,15 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
             return None;
         }
         desktop.active = (desktop.active + 1) % desktop.wins.len();
+        // 切到**已最小化**的窗口时必须把它恢复 —— 这是 Windows 的 Alt+Tab 语义。
+        //
+        // 两种错法都要避免：
+        // ① 不处理 → 焦点落在一个不可见的窗口上，用户看到的是"按了 Alt+Tab 什么都没发生"；
+        // ② 直接跳过最小化的窗口 → 最小化的窗口就**键盘不可达**了（Dock 之外没有入口）。
+        let idx = desktop.active;
+        if desktop.wins.get(idx).map(is_minimized).unwrap_or(false) {
+            restore_if_minimized(desktop, idx);
+        }
         // 用 get 而不是直接索引：默认桌面现在**没有窗口**，索引会越界 panic
         return Some(format!("焦点：{}", desktop.wins.get(desktop.active)?.title));
     }
@@ -3436,6 +3445,25 @@ mod window_mgmt_tests {
         toggle_zoom(&mut d, 0, work);
         assert_eq!(d.wins[0].target, Some(before));
         assert_eq!(d.wins[0].restore, None);
+    }
+
+    /// Alt+Tab 切到已最小化的窗口时**必须恢复它**（Windows 语义）。
+    ///
+    /// 不处理的话焦点会落在不可见的窗口上（用户看到"按了没反应"）；
+    /// 直接跳过的话最小化的窗口会变成键盘不可达。两个错法都要防住。
+    #[test]
+    fn tab_restores_minimized_target() {
+        let mut d = desk(3);
+        d.active = 0;
+        minimize_window(&mut d, 1).expect("最小化应成功");
+        assert!(is_minimized(&d.wins[1]));
+        apply_nav(&mut d, input::NavKey::Tab);
+        assert_eq!(d.active, 1, "应切到下一个窗口");
+        assert!(!is_minimized(&d.wins[1]), "切到已最小化的窗口必须把它恢复");
+        // 再切一次（目标是正常窗口）不应产生副作用
+        apply_nav(&mut d, input::NavKey::Tab);
+        assert_eq!(d.active, 2);
+        assert!(!is_minimized(&d.wins[2]));
     }
 
     #[test]

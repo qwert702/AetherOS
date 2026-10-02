@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **24,360 行**
+生成时间：2026-09-29 12:20（复核自 git 历史 + 代码实测）· 源码 **24,388 行**
 （7 个 crate，45 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
@@ -17,7 +17,7 @@
 | `aether-install` | 505 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 334 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **24,360** | **45** | |
+| **合计** | **24,388** | **45** | |
 
 > 口径：2026-09-29 12:20 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -364,7 +364,7 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
 | `aether-install` | 9 | 9 | |
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **24,360** | **45** | |
+| **合计** | **24,388** | **45** | |
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。
