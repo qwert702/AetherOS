@@ -613,9 +613,17 @@ def main(argv: list[str]) -> int:
         # 字节数/哈希/规模已经过期。这里重新测一次（跳过跑测试那一步，保持秒级），
         # 与 data.json 不一致就报出来。
         fresh = measure(skip_tests=True, previous=data)
-        stale = [f"{k}: data.json={data.get(k)} 实测={fresh.get(k)}"
-                 for k in ("iso_bytes", "iso_sha256", "rust_lines", "shots", "iso_size")
-                 if data.get(k) != fresh.get(k)]
+        # **比较全部可实测的键**，而不是手挑 5 个（自查的负向测试发现）：
+        # 原来只比 iso_bytes/iso_sha256/rust_lines/shots/iso_size，于是
+        # `rust_lines_num`（机器可读的那个数字）被改坏时门禁**照样全绿** ——
+        # 页面渲染用的是 rust_lines，所以页面比对也发现不了。
+        # 现在按 measure() 实际产出的键逐个比；tests 在 skip_tests 时沿用旧值，
+        # 天然相等，不需要特判。
+        comparable = [
+            k for k in fresh
+            if k not in ("tests",) and data.get(k) != fresh.get(k)
+        ]
+        stale = [f"{k}: data.json={data.get(k)} 实测={fresh.get(k)}" for k in comparable]
         if stale:
             print("[FAIL] data.json 里的发布事实已过期（跑 python scripts/gen-site.py --refresh）:")
             for s in stale:
