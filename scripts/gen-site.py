@@ -307,7 +307,13 @@ def patch_values(text: str, old: dict, new: dict) -> str:
         nonlocal text
         o, n = str(old.get(key, "")), str(new.get(key, ""))
         if o and n and o != n:
-            text = re.sub(pattern.replace("%OLD%", re.escape(o)), pattern.replace("%OLD%", n), text)
+            # **替换串只放新值**，并且用 lambda —— 不能用字符串替换串：
+            # 搜索模式里带环视 `(?<!…)`/`\d`，若整条模式也塞进替换串，
+            # `re.sub` 会把替换串当**模板**再解析一次，`\d` 触发
+            # `re.error: bad escape \d` 直接抛异常 → 渲染中断。
+            # 更隐蔽的是旧代码**先写 data.json 再渲染**：崩了之后 data.json 已是新值，
+            # 下次 `o == n` 连替换都不尝试 → 页面**静默**永远停在旧值。
+            text = re.sub(pattern.replace("%OLD%", re.escape(o)), lambda _m: n, text)
 
     for key in ("rust_lines", "tests", "iso_bytes"):
         num(key, r"(?<![\d,])%OLD%(?![\d,])")
@@ -332,7 +338,11 @@ def render_page(path: Path, data: dict, changelog_html: str, previous: dict) -> 
     text = path.read_text(encoding="utf-8")
     for k, v in data_placeholders(data).items():
         text = text.replace(f"<!--DATA:{k}-->", v)  # 首次渲染（模板里还有占位符）
-    text = patch_values(text, previous, data)  # 之后靠"上次值 → 本次值"
+    # changelog 页**不参与数值补丁**：它的正文是每次从 `更新日志/*.md` 整体重算的，
+    # 里面会出现**历史数字**（当时的行数/测试数）。套用"上次值 → 本次值"会把历史文字也改掉，
+    # 于是"写盘结果"与"下次重算结果"来回不一致 —— 门禁会反复红/绿，且历史记录被污染。
+    if path.name != "changelog.html":
+        text = patch_values(text, previous, data)  # 之后靠"上次值 → 本次值"
     # 更新日志页的正文完全由 更新日志/ 与 CHANGELOG.md 决定 —— 每次整体重算
     if path.name == "changelog.html":
         text = re.sub(

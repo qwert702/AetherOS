@@ -189,6 +189,12 @@ pub enum SettingsHit {
     MouseSpeed(i32),
     /// **动作类**：打开内建应用（序号与 `main.rs::open_app` 一致）
     OpenApp(usize),
+    /// **动作类**：重启网络服务。
+    ///
+    /// 这是"设置里真正能**改**系统"的第一个动作（P4.4）：走 `Request::ServiceControl`
+    /// 交给 aetherd，再由它转给 init —— **不新增 IPC 变体**（协议里本来就有），
+    /// 也不在合成器里直接碰系统（那是 aetherd/init 的职责）。
+    RestartNetwork,
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -242,7 +248,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
         // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序），
         // 放这里只是为了让 `apply_hit` 对枚举保持穷尽（漏一个变体会编译不过）。
-        SettingsHit::OpenApp(_) => {}
+        SettingsHit::OpenApp(_) | SettingsHit::RestartNetwork => {}
     }
 }
 

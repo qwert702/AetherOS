@@ -485,6 +485,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                             toast = Some((msg, Instant::now()));
                         }
                     }
+                    // 「网络」页：重启网络服务 —— 唯一一个真正**改系统**的动作（P4.4）。
+                    // 走 aetherd（ServiceControl）转 init，合成器不直接碰系统。
+                    if matches!(hit, settings::SettingsHit::RestartNetwork) {
+                        control_service(ai_tx.clone(), "network", aether_ipc::ServiceAction::Restart);
+                        toast = Some(("正在重启网络服务…".to_string(), Instant::now()));
+                    }
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
                     if matches!(hit, settings::SettingsHit::ToggleDark) {
                         let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer
@@ -3126,6 +3132,52 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
     desktop.selected = Some(next);
     desktop.scroll = draw::scroll_to_show(next, desktop.scroll, per_page);
     None
+}
+
+/// 请求 aetherd 控制一个服务（当前只用于「重启网络」）。
+///
+/// **为什么不在合成器里直接改系统**：改系统状态是 aetherd / init 的职责，合成器只画界面。
+/// 所以走 `Request::ServiceControl` —— 协议里本来就有这个变体，**不需要新增 IPC**。
+///
+/// 与剪贴板同步同一套路：独立线程 + 超时 + 结果回到主循环（绝不阻塞渲染）。
+/// 改系统状态必须来自**已注册的 UI 通道**（服务端会 403），所以先 `register_ui`。
+///
+/// 调用点在 Linux 的 fbdev 循环里（设置命中处理），非 Linux 目标允许未使用。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether_ipc::ServiceAction) {
+    std::thread::spawn(move || {
+        let run = || -> anyhow::Result<Response> {
+            let addr: std::net::SocketAddr = ([127, 0, 0, 1], aether_ipc::DEFAULT_PORT).into();
+            let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut reader = BufReader::new(stream.try_clone()?);
+            register_ui(&mut stream, &mut reader)?;
+            stream.write_all(
+                aether_ipc::encode(&Request::ServiceControl { unit: unit.to_string(), action }).as_bytes(),
+            )?;
+            let mut line = String::new();
+            reader.read_line(&mut line)?;
+            serde_json::from_str::<Response>(line.trim()).map_err(|e| anyhow::anyhow!("解析响应失败: {e}"))
+        };
+        let ev = match run() {
+            Ok(Response::ServiceAck { unit, ok, message }) => AiEvent::ToolDone {
+                ok,
+                output: format!("{unit}：{message}"),
+                origin: ConfirmOrigin::Ai,
+            },
+            Ok(_) => AiEvent::ToolDone {
+                ok: false,
+                output: "重启网络：收到意外响应".to_string(),
+                origin: ConfirmOrigin::Ai,
+            },
+            Err(e) => AiEvent::ToolDone {
+                ok: false,
+                output: format!("重启网络失败：{e}"),
+                origin: ConfirmOrigin::Ai,
+            },
+        };
+        let _ = tx.send(ev);
+    });
 }
 
 /// 把本地剪贴板同步给 aetherd（2.2 跨进程剪贴板的落地点）。

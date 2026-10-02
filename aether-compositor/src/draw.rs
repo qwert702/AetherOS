@@ -2279,8 +2279,14 @@ fn draw_settings_content(
                 ry += 24;
             }
             ry += 10;
+            // 唯一一个"能改系统"的动作（P4.4）：走 aetherd → init，不是本地假动作
+            let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(buf, w, h, act, "重启网络服务", Some("断开后重新连接（经 aetherd 转交 init）"),
+                         widgets::States::at(act, mouse), Some(tr));
+            hits.push((act, SettingsHit::RestartNetwork));
+            ry += 50;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
-                    "只读展示内核真值；改网络配置需要 IPC 能力（下一步）。",
+                    "配置项本身仍是只读；改动类操作一律经 aetherd 执行。",
                     font::CAPTION, color::text_dim(), 0.75);
             if !n.note.is_empty() {
                 ry += 20;

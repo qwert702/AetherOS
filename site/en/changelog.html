@@ -137,6 +137,46 @@
 <p><code>--settings</code> 会多开一个窗口，<code>snap_now</code> 因窗口数变化<strong>重排演示桌面</strong></p>
 <p>（<code>Music</code> 从 617×602 变成 617×294）。所以拿"带 settings"和"不带 settings"的图对比，</p>
 <p>差异里混着<strong>布局变化</strong>，不能直接当页面差异。</p>
+<h2 id="gen-site">十一、更正：第十节之后那条 "gen-site 修复" 的验证声称有误</h2>
+<p>提交 <code>c24dd37</code> 的信息里写"故障路径：用缺 Pillow 的解释器跑 <code>--refresh</code> → 退出码非 0、</p>
+<p>打印不写 data.json、且 data.json 未变" —— <strong>那一步并没有真的触发故障</strong>：</p>
+<p>系统 python 那次跑<strong>成功了</strong>（exit 0、页面也渲染了），"data.json 未变"只是因为</p>
+<p><strong>值本来就没变</strong>，不构成证据。</p>
+<p><strong>真正的故障路径验证</strong>（本轮补做）：把 <code>site/index.html</code> 临时改名，使落盘前自检必然失败：</p>
+<ul>
+  <li>退出码 <strong>非 0</strong> ✓</li>
+  <li>打印 <code>[FAIL] 页面没拿到本次值 [...] —— 不写 data.json</code> ✓</li>
+  <li><code>site/data.json</code> <strong>逐字节未变</strong> ✓ → 锚点保住，可重跑修复 ✓</li>
+</ul>
+<p>修复本身（先渲染+自检、通过才落盘）是对的 ✓，但<strong>证据必须是真故障</strong>，不能拿"值没变"</p>
+<p>当成"没落盘"的证据 —— 这是今天第三次同类教训：<strong>判据要能真的区分两种可能</strong>。</p>
+<h2 id="patch-values">十三、找到"站点再也更新不了"的<strong>真正根因</strong>：<code>patch_values</code> 崩溃</h2>
+<h3>根因（一行代码）</h3>
+<p>```python</p>
+<p># 错：整条正则（含环视 (?&lt;![\d,])）也被塞进"替换串"</p>
+<p>re.sub(pattern.replace("%OLD%", re.escape(o)), pattern.replace("%OLD%", n), text)</p>
+<p>```</p>
+<p><code>re.sub</code> 的<strong>替换串</strong>同样会被当模板解析 → 替换串里的 <code>\d</code> 触发</p>
+<p><code>re.error: bad escape \d at position 5</code> → <strong>渲染循环直接抛异常中断</strong>。</p>
+<h3>为什么表现为"静默永不更新"</h3>
+<p>旧代码的顺序是<strong>先写 <code>data.json</code> 再渲染</strong>：</p>
+<p>1. <code>data.json</code> 已改成新值；</p>
+<p>2. 渲染抛异常 → 页面<strong>一个都没写</strong>；</p>
+<p>3. 下次运行 <code>o == n</code> → <code>num()</code> 里 <code>if o and n and o != n</code> 不成立 → <strong>连替换都不尝试</strong> → 不崩溃；</p>
+<p>4. 页面<strong>永远停在旧值</strong>，门禁只报"页面与数据脱节"，看不出原因。</p>
+<p>这与用户此前修的"站点再也更新不了"是<strong>同一个 bug</strong> —— 之前的修复让门禁能报出来，</p>
+<p>但<strong>没有修到崩溃点本身</strong>。</p>
+<h3>修法</h3>
+<p>```python</p>
+<p>text = re.sub(pattern.replace("%OLD%", re.escape(o)), lambda _m: n, text)</p>
+<p>```</p>
+<p>替换用 <strong>lambda</strong>：既只放新值，又彻底不经过模板解析（新值里出现 <code>\</code> 也不会再炸）。</p>
+<h3>验证</h3>
+<ul>
+  <li><code>--refresh</code> 退出码 0，且这次<strong>真的打印</strong> <code>渲染 site\changelog.html</code></li>
+  <li><code>--check</code> <strong>连跑三次全部通过</strong>（幂等 —— 之前的病根就是不幂等）</li>
+  <li>行数门禁 3/3、双目标 0 警告、工作区测试全绿</li>
+</ul>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>
