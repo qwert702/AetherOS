@@ -73,6 +73,7 @@ dependencies = [
  "aether-ipc",
  "anyhow",
  "log",
+ "ring",
  "serde",
  "serde_json",
  "ureq",

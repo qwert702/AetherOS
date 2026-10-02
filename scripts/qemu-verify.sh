@@ -30,4 +30,11 @@ setsid /usr/bin/qemu-system-x86_64 \
     -device virtio-net-pci,netdev=n0 \
     < /dev/null > /home/aether/qemu-stdout.log 2>&1 &
 echo $! > /home/aether/qemu.pid
-echo "QEMU pid=$(cat /home/aether/qemu.pid) vga=$VGA vnc=:5900 cwd=$(readlink /proc/$!/cwd 2>/dev/null)"
+# QMP 走 Unix socket（比 TCP 好：访问控制来自文件权限），但 socket 文件的权限取决于
+# 进程 umask —— 显式收紧到 0600（2026-10-02 审计 L-7）。
+for _ in 1 2 3 4 5; do [ -S /home/aether/qmp.sock ] && break; sleep 0.2; done
+[ -S /home/aether/qmp.sock ] && chmod 600 /home/aether/qmp.sock
+# VNC **故意不加口令**：VNC 的经典认证基于 DES（本项目安全基线禁用 DES），
+# 且 vnc-shot.py 还需要按同一套握手实现 —— 收益不抵成本。它的边界就是
+# "只绑 127.0.0.1"，所以**不要**把它改成对外监听。
+echo "QEMU pid=$(cat /home/aether/qemu.pid) vga=$VGA vnc=127.0.0.1:5900 qmp=$([ -S /home/aether/qmp.sock ] && stat -c '%a' /home/aether/qmp.sock) cwd=$(readlink /proc/$!/cwd 2>/dev/null)"

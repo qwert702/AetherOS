@@ -13,10 +13,21 @@ BusyBox 自带 `wget`。所以"装软件"的最后一段就是：**宿主起个�
     # 宿主侧（把 dist/apps 里的 .aep 服务出去）
     python3 scripts/serve-apps.py --dir dist/apps
 
-    # guest 侧（在 AetherOS 的终端里）
-    wget http://10.0.2.2:8765/htop.aep -O /var/tmp/htop.aep
+    # guest 侧（在 AetherOS 的终端里）—— **先校验再解包**
+    #   ① 取哈希（HEAD 只回一行 X-SHA256，不传正文）
+    SHA=$(wget -qS --spider http://10.0.2.2:8765/htop.aep 2>&1 | sed -n 's/.*X-SHA256: *//p' | tr -d '\r')
+    #   ② 下载 + 用 aetherd 校验（不符即非零退出，别解包）
+    wget -q http://10.0.2.2:8765/htop.aep -O /var/tmp/htop.aep
+    aetherd app verify /var/tmp/htop.aep --sha256 "$SHA" || { echo 校验失败，丢弃; rm -f /var/tmp/htop.aep; }
+    #   ③ 解包并安装
     mkdir -p /var/tmp/pkg && tar xf /var/tmp/htop.aep -C /var/tmp/pkg
     aetherd app install /var/tmp/pkg/htop
+
+为什么非要"先取哈希再校验"（2026-10-02 审计 L-9）：服务端一直在发 `X-SHA256`，
+但文档化的 guest 流程**从来没用过它** —— 也就是说这条链路在传输被篡改时毫无察觉。
+把校验写进流程才让那个头有用；`aetherd app verify` 就是这条流程的执行者
+（它算出的哈希与 `sha256sum` 逐字节一致，有公开测试向量钉住）。
+（`sha256sum -c` 也能用 —— busybox 自带 —— 但让被安装的一方自己校验更不容易被跳过。）
 
 ## 安全边界（刻意做窄）
 

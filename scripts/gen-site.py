@@ -189,9 +189,45 @@ def measure(skip_tests: bool, previous: dict) -> dict:
 
 # —— Markdown → HTML（只支持 CHANGELOG.md 用到的那一小撮语法）——
 
+#: 允许的协议。**白名单**而不是黑名单：漏掉一个危险协议
+#: （`javascript:` / `data:` / `vbscript:`）就等于把 XSS 写进公开站点。
+_SAFE_SCHEME = re.compile(r"^(?:https?|mailto):", re.I)
+#: 有 scheme 的判据（`xxx:` 形式）。没有 scheme 的就是相对路径（`docs/x.md`、`/x`、`#x`），放行。
+_HAS_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+
+
+def _safe_href(url: str) -> str | None:
+    """把 Markdown 链接目标转成可安全放进 `href` 的字符串；不安全返回 None。
+
+    2026-10-02 审计 L-10：此前是 `re.sub(..., r'<a href="\\2">')` 直接拼 ——
+    `[x](javascript:alert(1))` 会原样变成可点击的 JS 链接；URL 里带一个 `"`
+    还能提前闭合属性注入任意属性（与 M-10 的 CSP 缺失叠加即可执行）。
+    站点内容来自仓库里的 Markdown（CHANGELOG / 更新日志），门槛不高，
+    但"发布出去的页面"不该依赖上游作者的自觉。
+    """
+    u = url.strip()
+    if not u:
+        return None
+    if _HAS_SCHEME.match(u) and not _SAFE_SCHEME.match(u):
+        return None  # 只允许 http/https/mailto；其余（javascript/data/vbscript…）一律拒
+    # 引号/尖括号/控制字符一律拒绝：它们能闭合属性或改变解析
+    if any(c in u for c in ('"', "'", "<", ">", "`")) or any(ord(c) < 0x20 for c in u):
+        return None
+    return u
+
+
 def inline(s: str) -> str:
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
+
+    def _link(m: re.Match) -> str:
+        text, url = m.group(1), m.group(2)
+        href = _safe_href(url)
+        if href is None:
+            # 不安全就把链接**降级成纯文本**（保留内容，去掉可点击性）
+            return f"{text}（链接已移除：{url}）"
+        return f'<a href="{href}">{text}</a>'
+
+    s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _link, s)
     s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
     s = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", s)
     s = re.sub(r"`([^`]+?)`", r"<code>\1</code>", s)
@@ -472,7 +508,52 @@ def build_changelog() -> str:
     return "\n".join(parts)
 
 
+def selftest() -> int:
+    """`--selftest`：链接白名单等纯函数自检。不读网络、不写文件、不碰 site/。
+
+    只为让"危险链接被降级"这条规则有地方**被真的执行一次** ——
+    此前它只存在于 `--check` 的渲染结果里，而渲染结果里没有危险链接，
+    等于这条规则从未被验证过。
+    """
+    ok = 0
+    bad: list[str] = []
+
+    def check(cond: bool, msg: str) -> None:
+        nonlocal ok
+        if cond:
+            ok += 1
+        else:
+            bad.append(msg)
+
+    # L-10：危险协议/可疑字符必须被降级成纯文本
+    for evil in (
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        "data:text/html,<script>x</script>",
+        "vbscript:msgbox(1)",
+        'https://a/b"onload="alert(1)',
+        "https://a/b'c",
+    ):
+        html = inline(f"[点我]({evil})")
+        check("<a href" not in html, f"危险链接未被降级：{evil!r} → {html}")
+
+    # 正常链接不能被误杀
+    for good in ("https://example.com/x", "http://a/b", "/download.html", "mailto:a@b.c", "#sec"):
+        html = inline(f"[x]({good})")
+        check(f'<a href="{good}">' in html, f"正常链接被误杀：{good!r} → {html}")
+
+    # 行内代码里的链接语法不该被当成链接处理（保持既有行为）
+    check("<code>" in inline("`[x](javascript:alert(1))`"), "行内代码应保留为 code")
+
+    print(f"[selftest] 通过 {ok} 项")
+    for m in bad:
+        print(f"  ✗ {m}", file=sys.stderr)
+    return 0 if not bad else 1
+
+
 def main(argv: list[str]) -> int:
+    if "--selftest" in argv:
+        return selftest()
     refresh = "--refresh" in argv
     check = "--check" in argv
     skip_tests = "--skip-tests" in argv

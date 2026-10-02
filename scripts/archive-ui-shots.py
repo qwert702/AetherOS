@@ -87,7 +87,8 @@ def load_bmp2png():
     """按路径加载同目录的 bmp2png.py（scripts 不是包，不能直接 import）。"""
     spec = importlib.util.spec_from_file_location("bmp2png", ROOT / "scripts" / "bmp2png.py")
     mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
+    if spec.loader is None:  # 不用 assert：-O 下会被剥离（审计 L-6）
+        raise SystemExit("动态加载走查脚本失败：没有 loader")
     spec.loader.exec_module(mod)
     return mod
 

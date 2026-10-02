@@ -24,7 +24,9 @@ MASK_REGIONS = [
 
 def pixels(name):
     raw = (D / name).read_bytes()
-    assert len(raw) == HDR + W * H * 3, f"{name}: {len(raw)} bytes"
+    if len(raw) != HDR + W * H * 3:
+        # 不用 assert：-O 下会被剥离，尺寸不对的帧会被当成正常帧比对（审计 L-6）
+        raise SystemExit(f"{name}: 只有 {len(raw)} 字节，与 {W}x{H} 不符")
     return raw[HDR:]
 
 

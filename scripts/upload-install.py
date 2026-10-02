@@ -18,7 +18,8 @@ def upload(c, local_abs, remote):
     s = c.open_sftp()
     s.putfo(io.BytesIO(data), remote)
     got = s.stat(remote).st_size
-    assert got == len(data), (got, len(data))
+    if got != len(data):  # 不用 assert：-O 下会被剥离（审计 L-6）
+        raise RuntimeError(f"上传长度不符：远端 {got} / 本地 {len(data)}（{remote}）")
 
 
 c = vm.client()

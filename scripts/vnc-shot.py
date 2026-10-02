@@ -57,7 +57,9 @@ assert mtype == 0, 'unexpected message %d' % mtype
 canvas = bytearray(w * h * 3)
 for _ in range(nrect):
     x, y, rw, rh, enc = struct.unpack('>HHHHi', need(12))
-    assert enc == 0, 'encoding %d 未支持' % enc
+    if enc != 0:
+        # 不用 assert：-O 下会被剥离，然后拿一段没解析的像素当截图用（审计 L-6）
+        raise SystemExit('encoding %d 未支持（只支持 Raw）' % enc)
     data = need(rw * rh * 4)
     for row in range(rh):
         src = row * rw * 4

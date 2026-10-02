@@ -9,7 +9,15 @@
 
 ## 凭据（只从环境变量读，绝不写进文件）
 
-    AETHER_VPS_HOST / AETHER_VPS_USER / AETHER_VPS_PASSWORD（或 AETHER_VPS_KEY）
+    AETHER_VPS_HOST / AETHER_VPS_USER / AETHER_VPS_KEY（私钥路径，推荐）
+    AETHER_VPS_PASSWORD（口令；需显式 AETHER_VPS_ALLOW_PASSWORD=1 才允许）
+
+纪律（2026-10-02 安全审计 H-5 之后）：
+  * 主机密钥**首次记录、之后严格校验**（TOFU，同 `scripts/vm.py`）——
+    此前用的 `AutoAddPolicy` 会静默接受任何主机密钥，等于对中间人开门
+  * 默认**拒绝以 root 直连**（需显式 AETHER_VPS_ALLOW_ROOT=1）
+  * 默认**要求密钥认证**（口令需显式 AETHER_VPS_ALLOW_PASSWORD=1）
+  * 本脚本**只做代码级校验**：不做任何真实部署动作，除非你显式运行它并给出凭据
 
 ## 这台生产服务器的真实情况（2026-10-01 侦察）
 
@@ -35,6 +43,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import os
 import subprocess
 import sys
@@ -44,6 +54,15 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
 DOMAIN = "aether.cbnac.com"
 PY = sys.executable
+
+# paramiko 是可选依赖：模块级导入一次，供各辅助函数共用类型（缺了在 connect 里统一报错）
+try:
+    import paramiko
+except ImportError:  # pragma: no cover - 只在没装 paramiko 时走到
+    paramiko = None  # type: ignore[assignment]
+
+#: 主机密钥记录（TOFU；已 gitignore）。首次连接写入，之后密钥变了就拒连。
+_DEFAULT_KNOWN_HOSTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".vps_known_hosts")
 
 #: 回归验证：这些既有站点在 reload 前后必须返回同样的状态码
 REGRESSION = ["https://cbnac.com/", "https://school.cbnac.com/", "https://api.cbnac.com/"]
@@ -73,20 +92,94 @@ def build() -> None:
         sys.exit("站点门禁未过")
 
 
-def connect(host: str, user: str):
+def _known_hosts_path() -> str:
+    return os.environ.get("AETHER_VPS_KNOWN_HOSTS") or _DEFAULT_KNOWN_HOSTS
+
+
+def _load_known_hosts(client) -> bool:
+    """加载主机密钥记录。返回是否**已有**记录（决定严格校验还是首次信任）。"""
+    path = _known_hosts_path()
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return False
     try:
-        import paramiko
+        client.load_host_keys(path)
+    except (OSError, paramiko.SSHException) as exc:
+        sys.exit(f"主机密钥记录读取失败（{path}）：{exc}")
+    return True
+
+
+def _remember_host_key(client) -> None:
+    """首次连接：打印指纹并落盘，之后一律严格校验。"""
+    transport = client.get_transport()
+    if transport is None:
+        sys.exit("连接已断开，无法记录主机密钥")
+    key = transport.get_remote_server_key()
+    fingerprint = base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+    path = _known_hosts_path()
+    try:
+        client.save_host_keys(path)
+    except OSError as exc:
+        sys.exit(f"写入主机密钥记录失败（{path}）：{exc}")
+    print(f"  首次连接：已记录主机密钥 {key.get_name()} SHA256:{fingerprint} → {path}")
+    print("        可用 `ssh-keyscan <host> | ssh-keygen -lf -` 交叉核对后再继续")
+
+
+def connect(host: str, user: str):
+    """连接生产机。**默认严格校验主机密钥、默认非 root、默认用密钥认证。**
+
+    为什么这么改（2026-10-02 安全审计 H-5）：此前是
+    `AutoAddPolicy()` + 默认 `root` + 没密钥就走口令 ——
+    中间人只要能把流量引到自己那里就能拿到 root 口令与整套站点内容；
+    而目标机器上跑着**多个真实业务**（cbnac.com 等），代价不只是本站。
+    """
+    try:
+        import paramiko as _p  # noqa: F401  （已在模块级导入；这里给出可执行的缺失提示）
     except ImportError:
         sys.exit("需要 paramiko（用项目 venv 的 python 运行本脚本）")
+
     c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    has_record = _load_known_hosts(c)
+    # 首次连接：记录指纹（TOFU）；之后密钥变了**直接拒连**，不静默接受新密钥
+    c.set_missing_host_key_policy(paramiko.RejectPolicy() if has_record else paramiko.AutoAddPolicy())
+
     key = os.environ.get("AETHER_VPS_KEY", "").strip()
-    print(f"== 2) 连接 {user}@{host} ==")
+    allow_password = os.environ.get("AETHER_VPS_ALLOW_PASSWORD", "") == "1"
+    if not key and not allow_password:
+        sys.exit(
+            "缺少凭据或凭据方式不安全：请设 AETHER_VPS_KEY=<私钥路径>（推荐）。\n"
+            "        坚持用口令认证需显式设 AETHER_VPS_ALLOW_PASSWORD=1"
+            "（口令经 SSH 加密传输，但它可被复用、且会留在 shell 历史/进程环境里）"
+        )
+    if user == "root":
+        if os.environ.get("AETHER_VPS_ALLOW_ROOT", "") != "1":
+            sys.exit(
+                f"拒绝以 root 直连 {host}：请用有 sudo 的普通账号（AETHER_VPS_USER），\n"
+                "        或显式设 AETHER_VPS_ALLOW_ROOT=1 表示你确实要这么做。\n"
+                "        这台机器上跑着多个业务，root 会话的一次误操作代价过大。"
+            )
+        print("  ⚠️ 已允许 root 直连（AETHER_VPS_ALLOW_ROOT=1）")
+
+    print(f"== 2) 连接 {user}@{host}（主机密钥{'严格校验' if has_record else '首次记录'}）==")
     if key:
-        c.connect(host, username=user, key_filename=key, timeout=25)
+        c.connect(host, username=user, key_filename=os.path.expanduser(key), timeout=25,
+                  banner_timeout=30, auth_timeout=30)
     else:
-        c.connect(host, username=user, password=env("AETHER_VPS_PASSWORD"), timeout=25)
+        c.connect(host, username=user, password=env("AETHER_VPS_PASSWORD"),
+                  timeout=25, banner_timeout=30, auth_timeout=30)
+    if not has_record:
+        _remember_host_key(c)
     return c
+
+
+def sudo(c, cmd: str, timeout: int = 600, check: bool = True) -> str:
+    """以 root 执行一条命令：普通账号 + `sudo -n`。
+
+    审计 H-5 之后，脚本默认不再用 root 直连（见 `connect()`），需要 root 的步骤
+    都走这里。`-n` 是**非交互**：没配免密 sudo 就立刻失败并给出提示，
+    而不是把密码提示卡在远端会话里。
+    """
+    quoted = cmd.replace("'", "'\\''")
+    return sh(c, f"sudo -n bash -c '{quoted}'", timeout=timeout, check=check)
 
 
 def sh(c, cmd: str, timeout: int = 600, check: bool = True) -> str:
@@ -157,9 +250,9 @@ def upload(c, layout: dict, with_iso: bool) -> None:
         else:
             print("  警告：本地没有 ISO，跳过")
     sftp.close()
-    sh(c, f"chown -R nginx:nginx {layout['root']} 2>/dev/null || chown -R www-data:www-data {layout['root']}; "
-          f"find {layout['root']} -type d -exec chmod 755 {{}} +; "
-          f"find {layout['root']} -type f -exec chmod 644 {{}} +")
+    sudo(c, f"chown -R nginx:nginx {layout['root']} 2>/dev/null || chown -R www-data:www-data {layout['root']}; "
+             f"find {layout['root']} -type d -exec chmod 755 {{}} +; "
+             f"find {layout['root']} -type f -exec chmod 644 {{}} +")
 
 
 def write_vhost(c, layout: dict, with_iso: bool) -> None:
@@ -179,11 +272,11 @@ def write_vhost(c, layout: dict, with_iso: bool) -> None:
     local_snippet = ROOT / "deploy" / "security-headers.conf"
     if not local_snippet.is_file():
         sys.exit(f"缺少 {local_snippet} —— 安全头片段是 vhost 的依赖，不能跳过")
-    sh(c, f"mkdir -p {snippet_dir}")
+    sudo(c, f"mkdir -p {snippet_dir}")
     sftp = c.open_sftp()
     sftp.put(str(local_snippet), snippet)
     sftp.close()
-    sh(c, f"chmod 644 {snippet}")
+    sudo(c, f"chmod 644 {snippet}")
     print(f"  写入 {snippet}")
 
     conf = f"{layout['conf_dir']}/{DOMAIN}.conf"
@@ -237,18 +330,18 @@ server {{
 """
     sftp = c.open_sftp()
     if sh(c, f"[ -f {conf} ] && echo yes || echo no", check=False) == "yes":
-        sh(c, f"cp -a {conf} {conf}.bak-$(date +%Y%m%d-%H%M%S)")
+        sudo(c, f"cp -a {conf} {conf}.bak-$(date +%Y%m%d-%H%M%S)")
         print("  已备份既有同名配置")
     with sftp.file(conf, "w") as f:
         f.write(body)
     sftp.close()
     print(f"  写入 {conf}")
-    print("  nginx -t:", sh(c, "nginx -t 2>&1"))
+    print("  nginx -t:", sudo(c, "nginx -t 2>&1"))
 
 
 def reload_and_regress(c, base: dict) -> None:
     print("== 6) reload + 生产回归验证 ==")
-    sh(c, "systemctl reload nginx || nginx -s reload")
+    sudo(c, "systemctl reload nginx || nginx -s reload")
     print("  nginx 已 reload")
     bad = []
     for url, code in base.items():
@@ -269,9 +362,9 @@ def tls(c, layout: dict) -> None:
         return
     if "nginx" not in sh(c, "certbot plugins 2>/dev/null | grep -i nginx || echo none", check=False):
         print("  装 certbot 的 nginx 插件…")
-        sh(c, f"{layout['pkg']} install -y python3-certbot-nginx || "
+        sudo(c, f"{layout['pkg']} install -y python3-certbot-nginx || "
               f"{layout['pkg']} install -y certbot-nginx || echo '插件安装失败，稍后手工处理'", check=False)
-    out = sh(c, f"certbot --nginx -d {DOMAIN} --non-interactive --agree-tos "
+    out = sudo(c, f"certbot --nginx -d {DOMAIN} --non-interactive --agree-tos "
                 f"--register-unsafely-without-email --redirect", timeout=600, check=False)
     print(" ", out[-700:])
 
@@ -329,7 +422,8 @@ def main() -> int:
     args = ap.parse_args()
 
     host = env("AETHER_VPS_HOST")
-    user = env("AETHER_VPS_USER", "root")
+    # 默认**不再假设 root**（审计 H-5）：请给一个有 sudo 的普通账号，脚本里用 sudo 提权
+    user = env("AETHER_VPS_USER", "aether-deploy")
     if not args.skip_build:
         build()
     c = connect(host, user)

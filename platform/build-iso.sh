@@ -25,7 +25,9 @@ echo "==> [1/3] musl 静态编译 Aether 组件"
 rustup target add x86_64-unknown-linux-musl
 COMPONENTS=(aether-init aetherd aether-ops aether-compositor)
 for c in "${COMPONENTS[@]}"; do
-    cargo build --release --target x86_64-unknown-linux-musl -p "$c"
+    # --locked：按仓库里的 Cargo.lock 精确构建。不加的话 cargo 会顺手升级依赖，
+    # 于是"同一个提交"在不同时间构建出的镜像可以不同（2026-10-02 审计 M-9）。
+    cargo build --release --locked --target x86_64-unknown-linux-musl -p "$c"
     mkdir -p "$OVERLAY/usr/bin"
     cp "target/x86_64-unknown-linux-musl/release/$c" "$OVERLAY/usr/bin/$c"
     echo "    $c -> overlay/usr/bin/"
@@ -58,6 +60,26 @@ cd "$BUILD"
 if [ ! -d "buildroot-$BR_VERSION" ]; then
     URL="https://buildroot.org/downloads/buildroot-$BR_VERSION.tar.gz"
     wget -q "$URL" -O br.tar.gz
+    # 工具链来源必须可对账（2026-10-02 审计 M-9）：此前是直接解包，下载到什么都用。
+    # 做法是 TOFU：第一次构建把哈希记下来，之后每次都对账，变了就停。
+    # （Buildroot 官方只发 .sign 的 GPG 签名，校验它需要导入构建机的 keyring，
+    #  对一台一次性构建机来说不如"首次记录 + 之后对账"实用。）
+    SUM_FILE="$BUILD/buildroot.sha256"
+    SUM_NOW="$(sha256sum br.tar.gz | awk '{print $1}')"
+    if [ -f "$SUM_FILE" ]; then
+        SUM_OLD="$(awk '{print $1}' "$SUM_FILE")"
+        if [ "$SUM_OLD" != "$SUM_NOW" ]; then
+            echo "!! Buildroot 压缩包哈希与上次构建不一致："
+            echo "     上次: $SUM_OLD"
+            echo "     本次: $SUM_NOW"
+            echo "   要么官方重新发布了该版本（几乎不会），要么下载被篡改/损坏。请人工确认。"
+            exit 1
+        fi
+        echo "    Buildroot 压缩包哈希对账通过（$SUM_NOW）"
+    else
+        echo "$SUM_NOW  buildroot-$BR_VERSION.tar.gz" > "$SUM_FILE"
+        echo "    首次构建：已记录 Buildroot 压缩包哈希 $SUM_NOW → $SUM_FILE"
+    fi
     tar -xzf br.tar.gz
 fi
 cd "buildroot-$BR_VERSION"
@@ -92,7 +114,14 @@ if [ -f "$ISO" ]; then
         exit 1
     fi
     echo "==> isohybrid 完成，MBR 签名自检通过（可 dd 到磁盘引导）"
+
+    # 产出哈希文件（审计 M-9）：发布、下载校验、site/release.json 三处都要用到它，
+    # 让"用户下载到的字节"和"我们公布的哈希"出自同一次构建、同一行命令。
+    ( cd "$ROOT" && sha256sum "aetheros-0.1-amd64.iso" > "aetheros-0.1-amd64.iso.sha256" )
     echo "==> 完成: $ROOT/aetheros-0.1-amd64.iso"
+    echo "    $(cat "$ROOT/aetheros-0.1-amd64.iso.sha256")"
+    echo "    下一步：上传 Release 后把这份哈希同步进 site/release.json，再跑"
+    echo "            python scripts/gen-site.py --refresh"
 else
     echo "!! 未找到 ISO 产物，检查 $BUILD/output/images/"
     exit 1

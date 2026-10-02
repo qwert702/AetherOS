@@ -42,6 +42,48 @@ pub const DEFAULT_DIR: &str = "/var/apps";
 /// 清单文件名（固定在包根）。
 pub const MANIFEST_NAME: &str = "app.json";
 
+/// 计算一段字节的 SHA-256，返回小写十六进制（与 `sha256sum` 输出同格式）。
+///
+/// 为什么需要它（2026-10-02 审计 L-9）：`scripts/serve-apps.py` 一直在回
+/// `X-SHA256` 头，但**文档化的 guest 安装流程从来没用过它** —— 也就是说
+/// "宿主 → guest 拉包"这条链路在传输被篡改时毫无察觉。
+///
+/// 生产入口是流式的 [`sha256_file`]；这个按字节版本是它的**测试基准**
+/// （拿公开测试向量对账），因此只在测试下编译。
+#[cfg(test)]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+    let mut s = String::with_capacity(64);
+    for b in digest.as_ref() {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// 计算文件的 SHA-256（分块读，大包不吃内存）。
+pub fn sha256_file(path: &Path) -> Result<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)
+        .with_context(|| format!("打不开文件：{}", path.display()))?;
+    let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        ctx.update(&buf[..n]);
+    }
+    let digest = ctx.finish();
+    let mut s = String::with_capacity(64);
+    for b in digest.as_ref() {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    Ok(s)
+}
+
 /// 预检最多读这么多字节 —— 只解析文件头，不需要读完。
 const MAX_PREFLIGHT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -750,6 +792,44 @@ pub fn terminfo_available(pkg: &Path, system_dirs: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// L-9：SHA-256 必须与 `sha256sum` 逐字节一致 —— 用公开测试向量钉住。
+    ///
+    /// 校验值写错比没有校验更糟：用户会以为"验过了"。所以这里钉死标准向量，
+    /// 而不是"自己算一遍再跟自己对"。
+    #[test]
+    fn sha256_matches_published_vectors() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        // 输出形态：小写、定长 64
+        let h = sha256_hex(b"x");
+        assert_eq!(h.len(), 64, "SHA-256 十六进制必须是 64 字符：{h}");
+        assert!(
+            h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "必须是小写十六进制：{h}"
+        );
+    }
+
+    /// 文件哈希要与"同一份字节的哈希"一致，且能跨内部读缓冲边界。
+    #[test]
+    fn sha256_file_matches_byte_hash() {
+        let dir = tmp("sha-file");
+        let p = dir.join("x.bin");
+        let data = vec![0xA5u8; 200 * 1024]; // 跨 64KiB 分块
+        std::fs::write(&p, &data).unwrap();
+        assert_eq!(sha256_file(&p).unwrap(), sha256_hex(&data));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("aether-apps-test-{tag}"));

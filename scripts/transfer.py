@@ -59,7 +59,10 @@ def upload(c, local_abs, remote):
         if rc != 0:
             raise RuntimeError(f"base64 通道失败 rc={rc}: {stderr.read().decode(errors='replace')}")
     got = s.stat(remote).st_size
-    assert got == len(data), (got, len(data))
+    # 显式检查而不是 assert：`python -O` 会把 assert 整条剥掉，
+    # 于是上传完整性校验会**静默消失**（2026-10-02 审计 L-6）
+    if got != len(data):
+        raise RuntimeError(f"上传长度不符：远端 {got} 字节 / 本地 {len(data)} 字节（{remote}）")
 
 
 for round_no in range(4):

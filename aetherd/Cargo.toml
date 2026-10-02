@@ -13,3 +13,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 ureq = { version = "2", features = ["json"] }
+# SHA-256 用于**应用包完整性校验**（`aetherd app verify`，2026-10-02 审计 L-9：
+# 服务端一直在发 X-SHA256，而文档化的 guest 流程从来没用过它）。
+# 选 ring 是因为它**本来就在依赖树里**（ureq→rustls→ring），直接依赖不引入新代码；
+# 而且自己实现 SHA-256 属于"不要手搓密码学"的禁忌区。
+ring = "0.17"

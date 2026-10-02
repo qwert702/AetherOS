@@ -1,4 +1,4 @@
-﻿# scripts/setup-vm.ps1 — AetherOS 开发虚拟机自动化（Windows 宿主）
+# scripts/setup-vm.ps1 — AetherOS 开发虚拟机自动化（Windows 宿主）
 #
 # ⚠️ 本文件必须以「UTF-8 with BOM」保存（仓库里唯一的 .ps1）：
 #    Windows PowerShell 5.1 对**无 BOM** 的 .ps1 按 ANSI 解码，中文字符串会被拆坏，
@@ -77,8 +77,19 @@ if (-not (& $VBox list vms | Select-String $VMName)) {
 
 # 4. 无人值守安装 + 5. 启动
 Info "启动无人值守安装（装完自动重启进系统）"
-& $VBox unattended install $VMName --iso=$IsoPath --user=$VmUser --password=$VMPassword `
-    --full-user-name="Aether Builder" --hostname=aether-build `
-    --install-additions --time-zone=Asia/Shanghai --unattended=install
+# 口令**不放在命令行**（审计 L-8）：命令行参数会被同机其它进程读到
+# （Windows 上 `Get-CimInstance Win32_Process` 就能看到完整 CommandLine），
+# 也会留在各种日志/历史里。VBoxManage 支持 --password-file，这里写临时文件传进去，
+# 用完立即删除；文件放在用户目录下（默认 ACL 只有本人可读）。
+$pwFile = Join-Path $WorkDir "unattend.pw"
+try {
+    # 结尾不加换行：VBoxManage 会把整份内容当口令
+    [System.IO.File]::WriteAllText($pwFile, $VMPassword, (New-Object System.Text.UTF8Encoding($false)))
+    & $VBox unattended install $VMName --iso=$IsoPath --user=$VmUser --password-file=$pwFile `
+        --full-user-name="Aether Builder" --hostname=aether-build `
+        --install-additions --time-zone=Asia/Shanghai --unattended=install
+} finally {
+    Remove-Item -Force $pwFile -ErrorAction SilentlyContinue
+}
 & $VBox startvm $VMName --type headless
 Info "完成。VM 安装完毕后: 共享项目文件夹 → VM 内运行 platform/build-iso.sh"

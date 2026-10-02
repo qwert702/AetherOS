@@ -380,6 +380,37 @@ fn run_app(args: &[String]) -> Result<()> {
             println!("（新开一个 shell，或跑 `aetherd app link`，就能直接敲 `{}`）", a.manifest.id);
             Ok(())
         }
+        Some("verify") => {
+            // 应用包完整性校验（审计 L-9）：`serve-apps.py` 回 X-SHA256，
+            // 但在此之前文档化的流程里**没人校验** —— 从宿主拉包等于盲信。
+            // 用法：aetherd app verify <文件> [--sha256 <期望值>]
+            //   给了期望值 → 不符即非零退出；没给 → 打印算出来的哈希供人工比对。
+            let file = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "用法: aetherd app verify <文件> [--sha256 <期望值>]"
+                ))?;
+            let want = args
+                .iter()
+                .position(|a| a == "--sha256")
+                .and_then(|i| args.get(i + 1))
+                .map(|s| s.trim().to_ascii_lowercase());
+            let got = apps::sha256_file(std::path::Path::new(file))?;
+            println!("SHA256({file}) = {got}");
+            match want {
+                None => {
+                    println!("（未给 --sha256：请与宿主回显的 X-SHA256 逐字比对）");
+                    Ok(())
+                }
+                Some(w) if w == got => {
+                    println!("校验通过：与期望值一致");
+                    Ok(())
+                }
+                Some(w) => Err(anyhow::anyhow!(
+                    "校验失败：期望 {w}，实得 {got} —— **不要**解包安装，重新下载"
+                )),
+            }
+        }
         Some("remove") => {
             let id = args
                 .get(1)
@@ -407,6 +438,7 @@ fn run_app(args: &[String]) -> Result<()> {
                 "aetherd app —— 应用管理（见 aetherd/src/apps.rs）\n\n用法:\n  \
                  aetherd app list                列出已装应用\n  \
                  aetherd app install <包目录>    安装（目录里要有 app.json）\n  \
+                 aetherd app verify <文件> [--sha256 <期望值>]   校验下载的应用包（先校验再解包）\n  \
                  aetherd app remove <id>         卸载（进回收站，不是直接删）\n  \
                  aetherd app link [目录]         把已装应用挂进 PATH（/init 开机调用）\n\n\
                  安装目录: {}（可用 AETHER_APPS_DIR 覆盖）\n\
