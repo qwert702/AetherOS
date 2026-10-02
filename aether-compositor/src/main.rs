@@ -487,9 +487,9 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                     // 「网络」页：重启网络服务 —— 唯一一个真正**改系统**的动作（P4.4）。
                     // 走 aetherd（ServiceControl）转 init，合成器不直接碰系统。
-                    if matches!(hit, settings::SettingsHit::RestartNetwork) {
-                        control_service(ai_tx.clone(), "network", aether_ipc::ServiceAction::Restart);
-                        toast = Some(("正在重启网络服务…".to_string(), Instant::now()));
+                    if let settings::SettingsHit::RestartService(unit) = hit {
+                        control_service(ai_tx.clone(), unit, aether_ipc::ServiceAction::Restart);
+                        toast = Some((format!("正在重启服务 {unit}…"), Instant::now()));
                     }
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
                     if matches!(hit, settings::SettingsHit::ToggleDark) {

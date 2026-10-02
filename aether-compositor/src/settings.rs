@@ -189,12 +189,14 @@ pub enum SettingsHit {
     MouseSpeed(i32),
     /// **动作类**：打开内建应用（序号与 `main.rs::open_app` 一致）
     OpenApp(usize),
-    /// **动作类**：重启网络服务。
+    /// **动作类**：重启一个系统服务（参数是 `aether-ops` 的单元名）。
     ///
-    /// 这是"设置里真正能**改**系统"的第一个动作（P4.4）：走 `Request::ServiceControl`
+    /// 这是"设置里真正能**改**系统"的能力（P4.4）：走 `Request::ServiceControl`
     /// 交给 aetherd，再由它转给 init —— **不新增 IPC 变体**（协议里本来就有），
-    /// 也不在合成器里直接碰系统（那是 aetherd/init 的职责）。
-    RestartNetwork,
+    /// 也不在合成器里直接碰系统（那是 aetherd / init 的职责）。
+    ///
+    /// 单元名由调用点给出（见 `draw.rs` 的各页），目前有 `network` 与 `aetherd`。
+    RestartService(&'static str),
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -248,7 +250,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
         // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序），
         // 放这里只是为了让 `apply_hit` 对枚举保持穷尽（漏一个变体会编译不过）。
-        SettingsHit::OpenApp(_) | SettingsHit::RestartNetwork => {}
+        SettingsHit::OpenApp(_) | SettingsHit::RestartService(_) => {}
     }
 }
 
@@ -403,5 +405,28 @@ mod tests {
         apply_hit(&mut s, &mut page, SettingsHit::Page(9999));
         assert_eq!(page, enabled, "越界页索引必须被忽略");
         let _ = start;
+    }
+}
+
+#[cfg(test)]
+mod restart_action_tests {
+    use super::*;
+
+    /// 动作类命中**只**产生副作用（发 IPC），不得改动任何设置状态。
+    ///
+    /// 这条测的是"点了重启不会顺手改配置"——设置项与当前页都必须原样不动。
+    #[test]
+    fn restart_hit_is_an_action_not_state() {
+        let mut st = Settings::default();
+        let before = st.clone();
+        let mut page = 3usize;
+        for unit in ["network", "aetherd"] {
+            apply_hit(&mut st, &mut page, SettingsHit::RestartService(unit));
+        }
+        assert_eq!(page, 3, "动作类命中不得切换设置页");
+        assert_eq!(st.tz_offset_min, before.tz_offset_min);
+        assert_eq!(st.clock_24h, before.clock_24h);
+        assert_eq!(st.dark_mode, before.dark_mode);
+        assert_eq!(st.mouse_speed_pct, before.mouse_speed_pct);
     }
 }

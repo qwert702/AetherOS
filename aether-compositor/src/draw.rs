@@ -2283,7 +2283,7 @@ fn draw_settings_content(
             let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
             widgets::row(buf, w, h, act, "重启网络服务", Some("断开后重新连接（经 aetherd 转交 init）"),
                          widgets::States::at(act, mouse), Some(tr));
-            hits.push((act, SettingsHit::RestartNetwork));
+            hits.push((act, SettingsHit::RestartService("network")));
             ry += 50;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
                     "配置项本身仍是只读；改动类操作一律经 aetherd 执行。",
@@ -2426,6 +2426,12 @@ fn draw_settings_content(
             }
             ry += 10;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32, "模型与密钥由 aetherd 管理，不经过合成器进程。", font::CAPTION, color::text_dim(), 0.8);
+            ry += 28;
+            // 第二个"能改系统"的动作（P4.4）：AI 卡住时把 aetherd 重启一次
+            let ai_act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(buf, w, h, ai_act, "重启 AI 服务", Some("aetherd 重启后由 init 拉起（会话会中断）"),
+                         widgets::States::at(ai_act, mouse), Some(tr));
+            hits.push((ai_act, SettingsHit::RestartService("aetherd")));
         }
         "关于" => {
             tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, "AetherOS", font::TITLE, color::text(), 0.98);
