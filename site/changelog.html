@@ -90,6 +90,26 @@
 <ul>
   <li>需要"改"而不只是"看"的能力（改网络配置、改权限策略）才需要新 IPC</li>
 </ul>
+<h2 id="">九、更正：第八节的"走查覆盖"<strong>没做成</strong>（已撤回）</h2>
+<p>用户反馈："你展示的 3 张图片都是同一张"。<strong>用户是对的。</strong></p>
+<h3>我的自检为什么没发现</h3>
+<p>第八节里我用 <strong>SHA256</strong> 自检三张图不同 —— 但差异<strong>全在设置窗口之外</strong>（背景窗口/光标区域）。</p>
+<p>裁剪到设置窗口矩形 (280,150)-(780,530) 后复测：</p>
+<table><tbody>
+  <tr><td>page</td><td>窗口内哈希</td></tr>
+  <tr><td>0（外观）</td><td><code>002eceac2004</code></td></tr>
+  <tr><td>1（时钟与时区）</td><td><code>dc376c29293e</code></td></tr>
+  <tr><td><strong>2（输入）～ 8</strong></td><td><code>7250eb30303b</code>（<strong>全部相同</strong>）</td></tr>
+</tbody></table>
+<p>即：<strong>page ≥ 2 全部渲染成 page 2</strong>。三张"基线"名不副实，已撤回（图 + 走查条目 + 演示参数）。</p>
+<h3>学到的（已写进检查方法）</h3>
+<p><strong>"文件不同"不等于"内容不同"</strong>：视觉回归的判据必须是<strong>限定在目标控件矩形内</strong>的像素差异，</p>
+<p>而不是整图哈希 —— 整图哈希会被目标区域之外的噪声（光标、时钟、背景窗口）污染。</p>
+<h3>待查线索（下一次从这里开始）</h3>
+<p><code>draw_settings_content</code> 里 <code>PAGES.get(page)</code> 取标题、<strong>没有夹取</strong>（draw.rs:2176），</p>
+<p>但实测 page ≥ 2 渲染结果与 page 2 完全一致 —— 说明<strong>页值在到达该函数之前就被固定成了 2</strong>，</p>
+<p>或者 match 里存在比我的分支<strong>更早命中</strong>的宽泛分支。下一步：</p>
+<p>在 <code>--shot</code> 分支里确认传给 <code>render_frame</code> 的 <code>settings_page</code> 实际取值（而不是看代码"应该"传什么）。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>

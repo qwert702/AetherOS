@@ -56,6 +56,12 @@ SHOTS: list[tuple[list[str], str]] = [
     # 默认桌面（P4.1）：无窗口 + 桌面图标（文件管理/终端/系统设置）
     (["--shot", "2", "--desktop-only", "--theme", "dark"], "host-ui-desktop-clean.png"),
     (["--shot", "2", "--desktop-only", "--theme", "light"], "host-ui-light-desktop-clean.png"),
+    # 设置中心各页（P4.2/P4.3）：此前只有单测、没有视觉基线。
+    # 校验方式见提交信息：**必须裁剪到设置窗口的页面区** (815,350)-(1264,644) 比较，
+    # 用整图哈希或猜的窗口位置都会得出错误结论。
+    (["--shot", "2", "--settings", "--settings-page", "5", "--theme", "light"], "host-ui-light-settings-net.png"),
+    (["--shot", "2", "--settings", "--settings-page", "6", "--theme", "light"], "host-ui-light-settings-apps.png"),
+    (["--shot", "2", "--settings", "--settings-page", "7", "--theme", "light"], "host-ui-light-settings-privacy.png"),
 ]
 
 #: 固定"当前时间"（对应 `text::now_utc_secs` 的 `AETHER_FAKE_UTC` 钩子）。
