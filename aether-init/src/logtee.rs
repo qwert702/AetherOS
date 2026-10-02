@@ -94,6 +94,8 @@ pub fn sanitize_for_display(input: &[u8]) -> Vec<u8> {
     }
     out
 }
+
+/// 打开（必要时先轮转）服务日志文件。全程容错：拿不到文件就只走控制台。
 fn open_log(unit: &str) -> Option<std::fs::File> {
     let path = format!("{LOG_DIR}/{unit}.log");
     if let Ok(meta) = std::fs::metadata(&path) {
@@ -203,6 +205,8 @@ pub fn tee_child(unit: &str, child: &mut Child) {
             let mut log = log;
             let mut console = console;
             let mut written: u64 = 0;
+            // 文件侧是否已失败（只报一次，避免刷屏）
+            let mut log_broken = false;
             loop {
                 match pipe.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -212,8 +216,22 @@ pub fn tee_child(unit: &str, child: &mut Child) {
                         // 同一个日志还会被合成器的日志页显示、被 AI 读走。
                         let clean = sanitize_for_display(&buf[..n]);
                         if let Some(f) = log.as_mut() {
-                            let _ = f.write_all(&clean);
-                            written += n as u64;
+                            // 写失败**不能静默**（对抗审查发现）：持久分区一旦因
+                            // `errors=remount-ro` 转只读，`let _ =` 会让文件日志悄悄停写，
+                            // 而控制台照旧 —— 用户以为日志还在记。
+                            // 这里报一次（`log_broken` 去重）并放弃文件侧，控制台继续。
+                            if let Err(e) = f.write_all(&clean) {
+                                if !log_broken {
+                                    log_broken = true;
+                                    eprintln!(
+                                        "[aether-init] 警告：{unit} 的日志写入失败（{e}）—— \
+                                         文件日志已停止，仅控制台可见（分区是否已转只读？）"
+                                    );
+                                }
+                                drop(log.take());
+                            } else {
+                                written += n as u64;
+                            }
                         }
                         // **运行期也要轮转**：只在打开时检查的话，一个连续运行数周的
                         // 服务会一路写下去，8MB 上限根本不会生效。

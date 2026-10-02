@@ -171,6 +171,26 @@ pub fn resolve_uid(passwd: &str, user: &str) -> Option<u32> {
     })
 }
 
+/// 从 `/etc/passwd` 里取该用户的**主组 gid**（第 4 个字段）。
+///
+/// 为什么不能用 uid 兜底（代码审查发现）：`/etc/passwd` 的第 4 字段才是主组的
+/// 权威来源；拿 uid 当 gid 只会在 uid 恰好等于某个无关组的 gid 时"看起来成功"，
+/// 实际把服务放进一个错误的组。查不到就返回 None，由调用方决定怎么办。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn resolve_primary_gid(passwd: &str, user: &str) -> Option<u32> {
+    if user.parse::<u32>().is_ok() {
+        return None; // 数字 uid 没有 passwd 条目可查，交由调用方回退
+    }
+    passwd.lines().find_map(|line| {
+        let f: Vec<&str> = line.split(':').collect();
+        if f.len() >= 4 && f[0] == user {
+            f[3].parse::<u32>().ok()
+        } else {
+            None
+        }
+    })
+}
+
 /// 从 `/etc/group` 文本里解析组名 → gid（纯函数）。数字直接当 gid 用。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn resolve_gid(groups: &str, group: &str) -> Option<u32> {
@@ -227,7 +247,8 @@ pub fn load_dir(dir: &Path) -> Result<(Vec<ServiceSpec>, Vec<String>)> {
 mod tests {
     use super::*;
 
-    /// **随镜像发布**的服务里，`essential: true` 必须同时 `restart: true`。    ///
+    /// **随镜像发布**的服务里，`essential: true` 必须同时 `restart: true`。
+    ///
     /// 为什么值得一条断言：`restart: false` 的语义在 2026-09-19（`a0f1268` 的 P1-3
     /// "重启策略以服务定义为唯一事实来源"）被改成了**"没人接管"** —— 在那之前
     /// ops 会给 `restart:false` 的服务兜底。而 `compositor.json` 是 09-12 按旧语义
@@ -286,6 +307,20 @@ mod tests {
         assert_eq!(resolve_gid(groups, "wheel"), Some(10));
         assert_eq!(resolve_gid(groups, "9"), Some(9));
         assert_eq!(resolve_gid(groups, "nope"), None);
+
+        // 主组必须取 /etc/passwd 的第 4 字段（不能拿 uid 兜底）
+        assert_eq!(resolve_primary_gid(passwd, "aether"), Some(1000));
+        assert_eq!(resolve_primary_gid(passwd, "root"), Some(0));
+        assert_eq!(resolve_primary_gid(passwd, "nobody"), None);
+        assert_eq!(
+            resolve_primary_gid(passwd, "1000"),
+            None,
+            "数字 uid 没有 passwd 条目，应返回 None 让调用方回退"
+        );
+        // 主组与 uid 不同时必须取主组（这正是"uid 兜底"会出错的情形）
+        let split = "svc:x:1000:2000::/:/bin/sh\n";
+        assert_eq!(resolve_uid(split, "svc"), Some(1000));
+        assert_eq!(resolve_primary_gid(split, "svc"), Some(2000));
     }
 
     /// M-5：**随镜像发布**的服务必须显式声明运行用户。

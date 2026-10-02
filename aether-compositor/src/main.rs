@@ -179,11 +179,18 @@ fn tty_log(msg: &str) {
     }
 }
 
-/// 净化一段要写进终端的文本：丢弃 ESC 序列与除 `\n\r\t` 外的控制字符。
+/// 净化一段要写进终端的文本：丢弃 ESC 序列、C0 与 **C1** 控制字符。
 ///
 /// 与 `aether-init::logtee::sanitize_for_display` 同一套规则（那个在另一个 crate，
-/// 不能直接复用；两处都有各自的单测）。
-#[cfg(target_os = "linux")]
+/// 不能直接复用；**两处都有各自的单测** —— 这里的测试在 `mod tests` 里）。
+///
+/// 这里是**字符级**（输入已是合法 UTF-8），所以 C1 区（U+0080–U+009F）可以安全丢弃：
+/// `\u{9b}` 就是 8 位 CSI、`\u{9d}` 是 8 位 OSC。字节级那份不能这么做 ——
+/// 直接丢 0x80–0x9F 的**字节**会把中文（UTF-8 续字节落在 0x80–0xBF）切碎。
+///
+/// 非 Linux 平台不写 `/dev/tty0`（没有 VGA 文本控制台），故允许 dead_code ——
+/// 但**测试照跑**（测试在 `mod tests` 里，Windows 上也会验证它）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn sanitize_for_tty(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -218,7 +225,8 @@ fn sanitize_for_tty(input: &str) -> String {
                 None => {}
             },
             '\n' | '\r' | '\t' => out.push(c),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {}
+            // C0（含 DEL）与 C1 一律丢弃
+            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => {}
             c => out.push(c),
         }
     }
@@ -3478,6 +3486,42 @@ fn snap_now(desktop: &mut Desktop, lay: Layout) {
 #[cfg(test)]
 mod control_center_tests {
     use super::*;
+
+    /// L-14 回归：合成器的 `read_line_capped` 边界（与 aetherd 那份同一套规则）。
+    #[test]
+    fn read_line_capped_boundaries() {
+        const MAX: usize = 16;
+        let read = |s: &str| {
+            let mut r = std::io::BufReader::new(std::io::Cursor::new(s.as_bytes().to_vec()));
+            read_line_capped(&mut r, MAX)
+        };
+        let exact = "a".repeat(MAX as usize - 1) + "\n";
+        assert!(read(&exact).is_ok(), "恰好 MAX 且带换行应通过");
+        assert!(read(&"a".repeat(MAX as usize)).is_err(), "无换行的满额行必须报错");
+        assert!(read(&("a".repeat(MAX as usize) + "\n")).is_err(), "超过 MAX 必须被拒");
+        assert_eq!(read("").unwrap(), "");
+    }
+
+    /// L-13 回归：写进 VGA 控制台的文本必须过滤转义序列。
+    ///
+    /// 这条此前**零测试**（对抗审查指出注释自称"有单测"与事实不符）——
+    /// 现在补上，并把 C1 区（U+0080–U+009F，即 8 位 CSI/OSC）也纳入。
+    #[test]
+    fn sanitize_for_tty_strips_escapes_and_c1() {
+        // CSI / OSC / 其它 C0 / DEL
+        assert_eq!(sanitize_for_tty("\x1b[31m红\x1b[0m"), "红");
+        assert_eq!(sanitize_for_tty("\x1b]0;标题\x07后"), "后");
+        assert_eq!(sanitize_for_tty("a\x07b\x00c\x7fd"), "abcd");
+        // C1 区（字符级：这里是合法 UTF-8 的 U+009B / U+009D）。
+        // 注意语义：**丢掉引导字节即可** —— 剩下的 `31m`/`0;x` 是惰性文本，
+        // 终端不会把没有引导符的字节当序列。所以断言的是"引导符不在了"。
+        assert_eq!(sanitize_for_tty("a\u{9b}31mb"), "a31mb");
+        assert_eq!(sanitize_for_tty("a\u{9d}0;x\u{07}b"), "a0;xb");
+        // 必须保留：换行/回车/制表/中文/emoji
+        assert_eq!(sanitize_for_tty("l1\nl2\r\n\t中🚀"), "l1\nl2\r\n\t中🚀");
+        // 半截转义序列不该吃掉后面的内容
+        assert_eq!(sanitize_for_tty("正常\x1b"), "正常");
+    }
 
     /// 控制中心的点击规则（三条）。刻意只测**不落盘**的动作（输入法切换、打开窗口），
     /// 避免单测去写 `/var/lib/aether`。

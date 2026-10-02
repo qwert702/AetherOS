@@ -45,9 +45,16 @@ fn accept_loop<S: DuplexStream + Send + 'static>(
         };
         if active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
             eprintln!("[aether-init] 连接数已达上限（{MAX_CONNECTIONS}），拒绝新连接");
+            // 拒绝也要节流：否则对端狂连会把控制台与日志刷爆（代码审查指出）
+            std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         }
-        stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
+        // 读超时是"连接数上限"的前提：设不上就说明这条连接可能永久占住一个槽位。
+        // 因此**失败即关闭**（原来 `.ok()` 静默吞掉，恰好把防线本身吞了）。
+        if let Err(e) = stream.set_read_timeout(Some(IDLE_TIMEOUT)) {
+            eprintln!("[aether-init] 无法设置读超时（{e}），直接关闭该连接");
+            continue;
+        }
         let manager = manager.clone();
         let active = active.clone();
         active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -167,14 +174,31 @@ impl DuplexStream for std::os::unix::net::UnixStream {
     }
 }
 
+/// 读一行请求，**按行**限长（2026-10-02 审计 I-10 的完整性修复）。
+///
+/// 原来用 `BufReader::take(MAX_LINE_BYTES)`：`take` 是**连接级累计**上限 ——
+/// 正常的长连接累计读满 64KB 就被静默关闭（与"对端正常关闭"不可区分），
+/// 而单条超长行不报错、被切成多段逐段 decode 失败。改成按行判：
+/// 超长行显式报错断开，正常连接不再有累计上限。
+fn read_line_capped<R: BufRead + ?Sized>(reader: &mut R, max: u64) -> std::io::Result<String> {
+    let mut line = String::new();
+    let n = (&mut *reader).take(max).read_line(&mut line)?;
+    if n as u64 >= max && !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("请求行超过 {max} 字节上限"),
+        ));
+    }
+    Ok(line)
+}
+
 fn handle_conn<S: DuplexStream>(stream: S, manager: Arc<Mutex<Manager>>) -> anyhow::Result<()> {
     let mut writer = stream.try_clone_stream()?;
-    // take() 限制单次 read_line 的读取量：超长行不会撑爆内存
-    let mut reader = BufReader::new(stream).take(MAX_LINE_BYTES);
-    let mut line = String::new();
+    let mut reader = BufReader::new(stream);
+    let mut line: String;
     loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        line = read_line_capped(&mut reader, MAX_LINE_BYTES)?;
+        if line.is_empty() {
             return Ok(());
         }
         let resp = match decode::<Request>(&line) {

@@ -48,17 +48,23 @@ pub const MANIFEST_NAME: &str = "app.json";
 /// `X-SHA256` 头，但**文档化的 guest 安装流程从来没用过它** —— 也就是说
 /// "宿主 → guest 拉包"这条链路在传输被篡改时毫无察觉。
 ///
+/// 把摘要渲染成小写十六进制（两处都要用，抽出来避免两份实现漂移 —— 代码审查指出）。
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        // 写 String 不会失败（fmt::Write for String 的 Err 是 Infallible），
+        // 用 `let _ =` 只是为了满足 `write!` 的 Result 返回。
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
 /// 生产入口是流式的 [`sha256_file`]；这个按字节版本是它的**测试基准**
 /// （拿公开测试向量对账），因此只在测试下编译。
 #[cfg(test)]
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
-    let mut s = String::with_capacity(64);
-    for b in digest.as_ref() {
-        use std::fmt::Write as _;
-        let _ = write!(s, "{b:02x}");
-    }
-    s
+    hex_lower(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
 }
 
 /// 计算文件的 SHA-256（分块读，大包不吃内存）。
@@ -75,13 +81,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
         }
         ctx.update(&buf[..n]);
     }
-    let digest = ctx.finish();
-    let mut s = String::with_capacity(64);
-    for b in digest.as_ref() {
-        use std::fmt::Write as _;
-        let _ = write!(s, "{b:02x}");
-    }
-    Ok(s)
+    Ok(hex_lower(ctx.finish().as_ref()))
 }
 
 /// 预检最多读这么多字节 —— 只解析文件头，不需要读完。

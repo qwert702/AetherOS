@@ -677,4 +677,158 @@ exit=0
 
 ---
 
+## 附录 E：全量处置表（后续批次 E–H 之后）
+
+> 本附录是**整份报告所有发现**的最终处置状态。附录 C/D 记录的是当时那一刻的状态，
+> 这里给出收尾后的完整账。提交对应：
+> `ec0ce9a`（E·交付链）/ `f987264`（F·安装器与镜像）/ `83ca7ab`（G·进程与 IPC）/
+> `f8902cf`（H·收尾）。
+>
+> ⚠️ 全程遵守一条硬约束：**只做代码级修复与本地验证，不对真实机器、真实磁盘或生产主机
+> 执行安装、刷写、部署**。因此凡涉及真机的验证（装机、持久分区、串口控制台、VPS 部署）
+> 一律标注为"未实机验证"，代码修复本身不依赖这些操作。
+
+### 高危（6 条）
+
+| 编号 | 状态 | 提交 | 说明与残余 |
+|---|---|---|---|
+| H-1 UI 密钥泄露链 | ✅ 已修 | A | 密钥迁 `/run/aether/ui.key` + `READ_DENY_SUBPATHS` 拒绝；实测复现前后对照 |
+| H-2 剪贴板闸门绕过 | ✅ 已修 | A + G | 单一判定表 + `read_file` 纳入；两处入口共用同一函数 |
+| H-3 `/var` 挂载无身份校验 | ✅ 已修 | D + F + H | 卷标 → **只读探测安装标记** → fsck → rw 挂载；`nodev,nosuid,errors=remount-ro`（`errors` 是 H 批次加的）。残余：判据可伪造（需能预置介质），彻底修法要安全启动/TPM |
+| H-4 日志/审计符号链接 | ✅ 已修 | D + 后续 | logtee `O_NOFOLLOW`；审计写入同样加符号链接预检 |
+| H-5 部署脚本 AutoAddPolicy | ✅ **代码已修**（未部署） | E | TOFU 主机密钥 + 默认非 root + 默认密钥认证 + `sudo -n` 提权（8 处）。**没有对生产机执行过部署** |
+| H-6 安装器先 dd 后校验 | ⚠️ 代码已修，**产物待重建** | B + E + F | 校验前置 + `build-iso.sh` 补 isohybrid 与自检（B）+ 产出 `.sha256`（E）+ 安装标记与镜像基线（F）。已发布的 v0.1.0 资产实测仍非 isohybrid ⇒ 装机要等重新构建上传 |
+
+### 中危（17 条）
+
+| 编号 | 状态 | 提交 | 说明与残余 |
+|---|---|---|---|
+| M-1 审计明文 | ✅ 已修 | A + 后续 + H | 执行路径 + 拒绝路径 + stderr 一路脱敏；入口收敛为 `Gate::audit_call(&Value)`；**H 起改为默认脱敏**（未登记字段一律脱敏） |
+| M-2 审计文件权限 | ✅ 已修 | A + 后续 | 0600/0700，且 chmod 不再跟随符号链接 |
+| M-3 PID 1 不回落救援 | ✅ 已修 | B | `pid1_or_rescue() -> !`，类型系统兜住"永不返回" |
+| M-4 空口令/串口即 root | ✅ 已修（含上锁开关） | F | `/etc/issue` + 启动横幅明确写出；构建时设 `AETHER_ROOT_PW_HASH` 即需登录。**未在真机验证登录行为** |
+| M-5 服务全 root | ✅ 机制落地 | G | `ServiceSpec.user/groups` + exec 前 setgid→setuid + 解析单测；5 个服务**显式**声明 `root` 并有测试钉住。诚实说明：当前 5 个确实都需要 root，本步产出是机制与可见性 |
+| M-6 ops 偏移不推进 | ✅ 已修 | F | 按字节读 + 有损解码，坏字节不再让文件永久失明。该测试本身**没有平台门**，是整个 `aether-ops` crate 在 Windows 上不参与编译（`ServiceStatus` 少字段），所以本机不执行 —— 由 CI 的 Linux 任务覆盖 |
+| M-7 `--disk` 未规范化 | ✅ 已修 | F | `canonicalize_disk` + `same_device`（含回归测试） |
+| M-8 不擦盘 / 骨架缺 apps | ✅ 已修 | F | `--wipe`（默认关）+ 每次 `wipefs -a` + 骨架补 `apps` |
+| M-9 构建链无校验 | ✅ 已修 | E | `--locked` + Buildroot 压缩包 TOFU 哈希对账 + 产出 ISO `.sha256` |
+| M-10 nginx 安全头静默失效 | ✅ 已修 | B + 后续 | 片段 include + 部署后回读响应；**自检不达标现在会 `sys.exit(1)`** |
+| M-11 ISO 无校验 | ✅ 已修 | B + C + 后续 | 脚本内置哈希 + `release.json` 单一来源 + "脚本哈希 == 发布资产"门禁 |
+| M-12 `summary()` panic | ✅ 已修 | A | 按字符取末 4 位 + 多字节用例 |
+| M-13 粘贴即执行 | ⚠️ 代码已修，**待真机确认** | B + G | 控制字符剥离 + 括号粘贴；镜像加 bash（**注意：`BR2_PACKAGE_BASH` 需要同时开 `BR2_PACKAGE_BUSYBOX_SHOW_OTHERS`，否则 kconfig 会丢掉它** —— 已补）且 compositor 优先选它。busybox 的 2004 支持**未实机验证** |
+| M-14 VT 参数无上限 | ✅ 已修 | D | `MAX_CSI_PARAMS = 32` |
+| M-15 宽字符越界 | ✅ 已修 | D | `cells.get_mut(idx + 1)` |
+| M-16 PTY 继承环境 | ✅ 已修 | D | `env_clear()` + 显式白名单 |
+| M-17 注册先发密钥 | ✅ 已修 | D + 后续 + H | 客户端默认只走 0600 Unix socket 且**不回退 TCP**；socket 建不起来时 aetherd **直接失败退出**（不再静默降级）。残余：**aether-init 侧有** `SO_PEERCRED`（L-3），**aetherd 侧没有** —— 因为它的 socket 已经是 0600 root-only，在没有用户模型之前该检查恒真、收益为零 |
+
+### 低危（16 条）
+
+| 编号 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| L-1 日志无脱敏全量 tee | ✅ 已修 | G | `sanitize_for_display`（CSI/OSC/C0/DEL），文件与控制台都净化，8 项单测。**字节级那份不丢 C1 字节**（0x80–0x9F）—— 那会把中文的 UTF-8 续字节切碎；字符级那份（`sanitize_for_tty`）会丢 C1，因为那里输入已是合法 UTF-8。两条理由都写在代码里 |
+| L-2 ops 跟随符号链接 | ✅ 已修 | G | `symlink_metadata` 判定后跳过 |
+| L-3 init IPC 无对端校验/无上限 | ✅ 已修 | G | `SO_PEERCRED`（fail-closed）+ 连接上限 16 + 读超时 + accept 失败不空转 |
+| L-4 特权二进制未 strip | ✅ 已修 | H | `[profile.release] strip = "symbols"`。代价：`RUST_BACKTRACE=1` 退化为纯地址（panic 消息本身不受影响，它用的是编译期字符串）；"靠 debug 版复现"还要求构建环境一致 |
+| L-5 `mkapp.py` 路径穿越 | ✅ 已修 | 后续 | `valid_app_id` / `valid_rel_path` + 15 项 selftest |
+| L-6 用 assert 做完整性校验 | ✅ 已修 | E | 5 个脚本改为显式判断 + 抛错（`-O` 下不再静默消失） |
+| L-7 QMP/VNC 无认证 | ✅ 已修（QMP 侧） | E | QMP 本就是 Unix socket，补 `chmod 600`；VNC 保持只绑回环 —— **不加口令**是因为 VNC 经典认证基于 DES（本项目禁用），已在脚本里写明理由 |
+| L-8 VM 口令走命令行 | ✅ 已修 | E | 改 `--password-file` + 临时文件，用完即删 |
+| L-9 `X-SHA256` 无人校验 | ✅ 已修 | E + H | 新增 `aetherd app verify`（ring）+ 文档流程改为"先校验再解包"；与 `sha256sum` 逐字节一致（公开向量测试 + 运行时实测）。**H 起不给 `--sha256` 会按用法错误退出（码 2）** —— 否则"没校验"的退出码 0 会被脚本当成通过 |
+| L-10 站点链接未校验协议 | ✅ 已修 | E | 协议白名单 + 拒绝引号/控制字符；新增 12 项 `--selftest` |
+| L-11 `scripts/` ACL 过宽 | ⚠️ **只记录，未修** | — | 这是**宿主环境**问题（Windows ACL），仓库里改不了；需在机器上 `icacls` 收紧。已在此表登记 |
+| L-12 dd 无 `conv=fsync` | ✅ 已修 | F | 加上（"dd 成功"不再只代表进了页缓存） |
+| L-13 /dev/tty0 未过滤转义 | ✅ 已修 | G + 审查后 | `sanitize_for_tty`（并纳入 C1）；**此前注释自称"两处都有各自的单测"与事实不符** —— 现已补测试（`sanitize_for_tty_strips_escapes_and_c1`） |
+| L-14 6 处 read_line 无上限 | ✅ 已修 | G + 审查后 | `read_line_capped`（1MiB）+ AI 回复 4MiB 上限；边界（恰好上限 / 上限+1 / 带不带换行）**此前零测试**，现已补两份（合成器与 aetherd） |
+| L-15 PTY O_CLOEXEC/fcntl/SIGHUP | ✅ 已修 | G | 三项全改（含 PID 复用防护） |
+| L-16 Wayland 会话层无限 | ✅ 已修（未接线代码） | G | 跨读重组（16KB 缓冲 < 64KB 消息）+ 连接上限 16 + 对象表上限 512。`destroy` 清理仍未做（对象表已有上限，不再无界） |
+
+### 信息级（10 条）
+
+| 编号 | 状态 | 说明 |
+|---|---|---|
+| I-1 服务白名单是编译期枚举（正面） | — | 无需处置 |
+| I-2 busybox 04755 setuid | ✅ 已修 | 新增 Buildroot 后处理脚本去掉 setuid 位（镜像无普通用户，不需要它） |
+| I-3 `/etc/inittab` 兜底 root shell | ⚠️ 部分 | `/init` 缺失是"系统已坏"的路径，保留 shell 是有意的救援设计；已通过 `/etc/issue` 与启动横幅明确"控制台即 root"，并提供上锁开关（同 M-4）。**未实机验证** |
+| I-4 镜像指纹仍是 Buildroot | ✅ 已修 | 后处理写入 hostname / os-release |
+| I-5 无 sshd/防火墙/SELinux/更新通道 | ⚠️ 记录 | 属产品范围决策（要不要远程管理、要不要强制访问控制、要不要更新通道），不在本轮 |
+| I-6 `AETHER_BIND` 可暴露 IPC | ✅ 已修 | 非回环需再显式设 `AETHER_ALLOW_REMOTE_IPC=1`，否则拒绝启动。**诚实说明**：这是"两个环境变量门"，不是交互式确认 —— 能改环境的人也能改第二个变量；它的价值是把"手滑暴露"变成"必须刻意两次"，并让启动日志留下明确记录 |
+| I-7 ipc-protocol 文档与实现不符 | ✅ 已修 | 文档改为"双通道（socket 优先 + TCP 备用）" |
+| I-8 安装器注释称 isohybrid 但构建无此步 | ✅ 已修 | `build-iso.sh` 已补该步骤，注释与实现一致 |
+| I-9 `auto_approve_below` 是 pub | ✅ 已修 | 转私有 + 只读访问器，并在启动日志打印实际阈值 |
+| I-10 `take()` 是连接级累计上限 | ✅ 已修 | H + 审查后 | 改为按行限长（`read_line_capped`）。**代码审查指出 H 只修了 aetherd 与合成器两处**，`aether-init`（PID 1）仍是连接级累计 —— 现已一并改掉，三处一致 |
+
+### 仍标注"未实机验证"的清单（不得当作已验证）
+
+1. 装机全流程（含新的卷标/标记/fsck/挂载选项）—— 需构建机 + 虚拟盘。
+2. `/var` 持久分区的实际挂载行为与 `errors=remount-ro` 生效。
+3. 串口/控制台登录行为与 `AETHER_ROOT_PW_HASH` 上锁效果。
+4. 括号粘贴在 bash 下的实际表现（M-13）。
+5. `aetherd` 的 musl 交叉编译（ring 需要 musl-gcc）；其 Unix socket 代码用 API 探针在
+   可检查的 crate 上验证过，但**未在目标机实跑**。
+6. 生产部署脚本的全部改动（H-5）—— 按约束**没有执行任何部署**。
+7. CI 工作流（`.github/workflows/ci.yml`）本地无法验证，首次真跑可能立刻暴露
+   Linux 侧从未执行过的断言。
+
+---
+
+## 附录 F：第二遍独立审查（批次 E–H）的处置
+
+> 附录 E 写完后又做了一遍**独立对抗审查**（只读、不含修复方上下文）。它推翻了
+> 附录 E 里若干"✅"，也指出报告本身有夸大与事实错误。下表是逐条处置 ——
+> **本附录的结论优先于附录 E**（附录 E 保留原样，便于对照"当时以为的状态"）。
+
+### F.1 被推翻或需修正的修复（全部已改）
+
+| # | 发现 | 处置 |
+|---|---|---|
+| 1 | **`audit_args` 非对象参数整串明文**（中危·可利用）：模型可传字符串 `arguments`，`args.to_string()` 直接进审计与 stderr | ✅ 非对象参数一律脱敏（带长度与指纹），并加测试 |
+| 2 | **指纹可离线枚举**（低危）：无盐 FNV-1a + 精确长度 ⇒ 短秘密（PIN/口令片段）可字典校验 | ✅ 改为**进程级随机盐 + SHA-256 前 8 字节**；同一次运行内可关联，跨重启不可比对（有意取舍，已写明） |
+| 3 | **M-5 默认路径不清附加组**（机制失效）：`setgroups` 只在 `groups` 非空时调用 ⇒ 降权后仍是组 0 成员；多组只保留最后一个 | ✅ 先收集 gids 再一次 `setgroups(len, ptr)`（空列表即清空），组不存在则拒绝启动；`/etc/passwd` 读失败改为报错而不是静默空文本 |
+| 4 | **H-3 探测吞掉卸载失败**（可用性回归）：残留挂载点会让持久分区**永久挂不上**且无根因日志 | ✅ 探测前先清理、卸载失败即判定探测失败并打印原因；标记要求是**普通文件**（`is_file()` 跟随软链可被 `log/install-id -> boot.log` 骗过） |
+| 5 | **`/etc/shadow` 会进仓库**（中危·新引入）：`build-iso.sh` 把口令哈希写进**已被 git 跟踪**的 overlay 目录 | ✅ 改由 post-build 脚本写入**构建产物**（哈希经环境变量传递，不落仓库）；同时 `.gitignore` 加该路径 |
+| 6 | **I-10 只修了两处**：`aether-init` 仍是连接级累计 `take`（超长行静默截断、正常长连接被关） | ✅ 同样改成按行限长（三处一致） |
+| 7 | **`errors=remount-ro` 之后静默停写**：logtee 的 `let _ = write_all` 丢弃 EROFS，文件日志悄悄停止 | ✅ 写失败报一次（去重）并放弃文件侧、控制台继续；提示里点明"分区是否已转只读" |
+| 8 | **`same_device` 用路径比较**：设备别名（`/dev` 内 bind mount、hardlink）可绕过 | ✅ 改用 **`st_rdev` 设备号**比较（内核给的唯一标识），非设备节点才回退路径比较 |
+| 9 | **`resolve_bind` 回环判定是三个字面量**：`127.0.0.2`/`127.1` 等合法回环被误拒 | ✅ 解析成 `IpAddr` 后用 `is_loopback()`；解析不了按非回环处理（保守） |
+| 10 | **`sanitize_for_tty` 放行 C1 且零测试**（注释自称有单测，与事实不符） | ✅ 字符级实现改为同时丢弃 C1（U+0080–U+009F），移出 `cfg(linux)` 使其可测，并补测试。**字节级那份仍不丢 C1 字节** —— 那会把中文（UTF-8 续字节在 0x80–0xBF）切碎，已在代码里写明理由 |
+| 11 | **M-9 的 TOFU 可绕过**：对账被包在 `if [ ! -d buildroot-* ]` 里，解包目录存在即不对账 | ✅ 对账移到条件之外：只要 `br.tar.gz` 在就核对 |
+| 12 | **L-9 不给 `--sha256` 时返回 0**：文档说"校验通过才解包"，而退出码 0 会被脚本当成通过 | ✅ 不给期望值按用法错误处理（退出码 2），强制带期望值 |
+| 13 | **`.vps_known_hosts` 实际没进 `.gitignore`**（提交信息声称已加，但那次编辑失败了） | ✅ 已加，并用 `git check-ignore` 实测确认 |
+| 14 | **CI 不带 `--locked`**：`Cargo.lock` 漂移会被静默接受，与 M-9 的主张矛盾 | ✅ `gates.py` 的 build/test/musl 三步都加 `--locked` |
+| 15 | **构建脚本零门禁**：`post-build.sh` / `overlay/init` 不在任何检查里 | ✅ `gates.py` 新增 shell 语法检查（本机用 POSIX shell，Linux CI 用 `/bin/sh`）；musl 被跳过时改为醒目提示"这一步没有执行" |
+| 16 | **权限位未进 git**：`/init` 与 post-build 脚本在 git 里是 0644 —— 全新克隆后 `/init` **不可执行（引导失败）**、Buildroot 后处理脚本不可执行（构建失败） | ✅ 43 个 shell 脚本（含 `/init`、post-build、build-iso）在 git 索引里设为 0755 |
+
+### F.2 测试补强（针对"回滚不变红"）
+
+第二遍审查列出**至少 12 条修复在回滚时不会变红**。本附录处置后补了这些：
+
+| 补的测试 | 覆盖的修复 |
+|---|---|
+| `audit_args_redacts_unknown_string_fields_by_default`（含非对象参数、嵌套对象、数组、超长白名单字段、指纹一致性） | 默认脱敏的全部绕过路径 |
+| `read_line_capped_boundaries`（aetherd 与 compositor 各一份：恰好上限 / 上限+1 / 带不带换行 / 空输入） | L-14 与 I-10 的限长 |
+| `sanitize_for_tty_strips_escapes_and_c1` | L-13 |
+| `resolve_user_and_group_from_text`、`shipped_services_declare_their_user` | M-5 的解析与"必须声明" |
+| `persist_label_and_mount_opts_follow_contract`（含 `errors=remount-ro`、不含 `noexec`） | H-3 的挂载选项 |
+| `sha256_matches_published_vectors`（公开向量，非同源对比） | L-9 的算法正确性 |
+| 门禁负向测试（删汇总行 / 删文件行 / 新增文件未登记 / 站点非发布哈希 / 脚本哈希不符） | 门禁本身不是空转 |
+
+**仍然没有测试、只能靠人工审查的**（已在附录 E 的"未实机验证"清单里，这里补全）：
+`has_install_marker` 的三条失败分支、`spawn_with_logs` 的降权链路、
+`peer_uid`（SO_PEERCRED）、连接上限、`resolve_bind`（内含 `process::exit`，不可单测）、
+`aetherd app verify` 的 CLI 退出码分支、`post-build.sh` 的实际执行效果。
+
+### F.3 报告本身的更正（诚实性）
+
+* 附录 E 里 **I-6 的"二次确认"实际只是第二个环境变量**，不是交互确认 —— 已按实情改写；
+* **M-17 的残余表述**易被误读：`SO_PEERCRED` 在 **aether-init 侧有**、aetherd 侧没有；
+* **M-6 的"测试是 Linux 专属，本机不执行"**：该测试本身无 `#[cfg]` 门，
+  是**整个 crate** 在 Windows 上不参与编译 —— 结论相同，措辞已更正；
+* **L-4 的代价**补全：`strip = "symbols"` 会让 `RUST_BACKTRACE=1` 退化为纯地址，
+  "靠 debug 版复现"还要求构建环境一致；
+* **M-9 的 TOFU**不是密码学意义上的完整性保证（无签名），只是"变了就停"的对账；
+* 附录 E 当时**未提交**（只存在于工作区），第二遍审查据此判定"报告状态 ≠ 仓库状态"——
+  本轮已连同全部修复一起提交。
+
+---
+
 *本报告由代码审查 + 运行时实证生成。所有发现均给出 `文件:行号`；标注"未验证"的结论不得当作事实使用。*

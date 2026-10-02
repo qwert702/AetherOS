@@ -22,8 +22,7 @@ for p in "$TARGET/bin/busybox" "$TARGET/usr/bin/busybox"; do
     fi
 done
 
-echo "==> post-build: 写入系统指纹（不再是 Buildroot 默认值）"
-printf 'aether\n' > "$TARGET/etc/hostname"
+echo "==> post-build: 写入系统指纹（不再是 Buildroot 默认值）"printf 'aether\n' > "$TARGET/etc/hostname"
 cat > "$TARGET/etc/os-release" <<'EOF'
 NAME="AetherOS"
 ID=aetheros
@@ -38,6 +37,17 @@ EOF
 if [ ! -s "$TARGET/etc/issue" ]; then
     printf 'AetherOS 0.1 — 无账号体系，控制台访问即 root（详见 README「边界在哪」）\n' \
         > "$TARGET/etc/issue"
+fi
+
+# 认证基线（2026-10-02 审计 M-4）：口令哈希**只在构建产物里落盘**，不进仓库。
+# 为什么放在这里而不是 build-iso.sh 写 overlay：`platform/overlay/etc/` 已被 git
+# 跟踪，写在那里会让 /etc/shadow 出现在 `git status` 里（一次 git add -A 就入库）。
+if [ -n "${AETHER_ROOT_PW_HASH:-}" ]; then
+    printf 'root:%s:0:0:99999:7:::\n' "$AETHER_ROOT_PW_HASH" > "$TARGET/etc/shadow"
+    chmod 600 "$TARGET/etc/shadow"
+    echo "==> post-build: 已写入 root 口令哈希（镜像需要登录）"
+else
+    echo "==> post-build: root 无口令（Live 演示系统的刻意取舍，见 /etc/issue）"
 fi
 
 echo "==> post-build 完成"

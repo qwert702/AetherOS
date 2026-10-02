@@ -25,12 +25,15 @@ BR_EXT="$ROOT/platform/br2-external"
 # 出厂镜像 root **无口令**：控制台/串口拿到就是 root。对 Live 演示系统这是刻意的
 # （没有账号体系才谈得上"一条命令跑起来"），但必须**显式可见**，而且要有上锁的路：
 #   AETHER_ROOT_PW_HASH="$(openssl passwd -6)" platform/build-iso.sh
-# 设了就把哈希写进 /etc/shadow（0600），登录需要口令；没设就打一条醒目警告。
+# 设了就由 post-build.sh 写进镜像的 /etc/shadow（0600），登录需要口令。
+#
+# ⚠️ 口令哈希**不写进 overlay 目录**（对抗审查发现）：`platform/overlay/etc/` 已被
+# git 跟踪，写在那里会让 `/etc/shadow` 出现在 `git status` 里，一次 `git add -A`
+# 就把口令哈希提交进仓库（离线爆破素材）。改为把哈希经环境变量交给 Buildroot 的
+# post-build 脚本，只在**构建产物**里落盘。
 if [ -n "${AETHER_ROOT_PW_HASH:-}" ]; then
-    mkdir -p "$OVERLAY/etc"
-    printf 'root:%s:0:0:99999:7:::\n' "$AETHER_ROOT_PW_HASH" > "$OVERLAY/etc/shadow"
-    chmod 600 "$OVERLAY/etc/shadow"
-    echo "==> 认证基线：已写入 root 口令哈希（镜像需要登录）"
+    export AETHER_ROOT_PW_HASH
+    echo "==> 认证基线：root 口令哈希已交给 post-build 写入镜像（不会落进仓库）"
 else
     echo "!! 认证基线：出厂镜像 root 无口令 —— 控制台/串口拿到即 root。"
     echo "   这是 Live 演示系统的刻意取舍；要上锁请设 AETHER_ROOT_PW_HASH=\"\$(openssl passwd -6)\" 重新构建。"
@@ -76,12 +79,20 @@ cd "$BUILD"
 if [ ! -d "buildroot-$BR_VERSION" ]; then
     URL="https://buildroot.org/downloads/buildroot-$BR_VERSION.tar.gz"
     wget -q "$URL" -O br.tar.gz
-    # 工具链来源必须可对账（2026-10-02 审计 M-9）：此前是直接解包，下载到什么都用。
-    # 做法是 TOFU：第一次构建把哈希记下来，之后每次都对账，变了就停。
-    # （Buildroot 官方只发 .sign 的 GPG 签名，校验它需要导入构建机的 keyring，
-    #  对一台一次性构建机来说不如"首次记录 + 之后对账"实用。）
-    SUM_FILE="$BUILD/buildroot.sha256"
-    SUM_NOW="$(sha256sum br.tar.gz | awk '{print $1}')"
+    tar -xzf br.tar.gz
+fi
+
+# 工具链来源必须可对账（2026-10-02 审计 M-9）：此前是直接解包，下载到什么都用。
+# 做法是 TOFU：第一次构建把哈希记下来，之后每次都对账，变了就停。
+# （Buildroot 官方只发 .sign 的 GPG 签名，校验它需要导入构建机的 keyring，
+#  对一台一次性构建机来说不如"首次记录 + 之后对账"实用。）
+#
+# ⚠️ 这段**必须在 `if [ ! -d ... ]` 之外**（对抗审查发现）：原来它被包在"还没解包"
+# 的分支里，于是删掉解包目录之外的任何路径（比如解包目录已存在）都不会对账 ——
+# 只要压缩包还在，就能拿它绕过校验。现在只要 br.tar.gz 存在就核对。
+SUM_FILE="$BUILD/buildroot.sha256"
+if [ -f "$BUILD/br.tar.gz" ]; then
+    SUM_NOW="$(sha256sum "$BUILD/br.tar.gz" | awk '{print $1}')"
     if [ -f "$SUM_FILE" ]; then
         SUM_OLD="$(awk '{print $1}' "$SUM_FILE")"
         if [ "$SUM_OLD" != "$SUM_NOW" ]; then
@@ -96,7 +107,6 @@ if [ ! -d "buildroot-$BR_VERSION" ]; then
         echo "$SUM_NOW  buildroot-$BR_VERSION.tar.gz" > "$SUM_FILE"
         echo "    首次构建：已记录 Buildroot 压缩包哈希 $SUM_NOW → $SUM_FILE"
     fi
-    tar -xzf br.tar.gz
 fi
 cd "buildroot-$BR_VERSION"
 

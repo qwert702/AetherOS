@@ -21,6 +21,9 @@ jobs:
   gates:
     name: 门禁（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}
+    # 挂住的 job 会白烧默认 360 分钟（代码审查指出没设上限）：门禁本身最多几分钟，
+    # 30 分钟足够跑完（首次构建含依赖编译）。
+    timeout-minutes: 30
     strategy:
       fail-fast: false          # 两个平台各自出结论，一个红不代表另一个也红
       matrix:

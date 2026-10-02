@@ -308,8 +308,79 @@ def gate_files(stats: Sequence[CrateStat]) -> bool:
     return True
 
 
+def count_test_attrs(crate: str) -> int:
+    """数一个 crate 源码里 `#[test]` 属性的个数（含 Linux 专属用例）。"""
+    root = REPO_ROOT / crate
+    n = 0
+    for path in root.rglob("*.rs"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        n += sum(1 for line in text.splitlines() if line.strip() == "#[test]")
+    return n
+
+
+def gate_test_table(stats: Sequence[CrateStat]) -> bool:
+    """门禁：INDEX.md 的测试分布表必须与源码实测一致。
+
+    为什么值得一条门禁（代码审查发现）：那张表曾经**自相矛盾** ——
+    各行属性相加 415、合计行却写 403、`aether-ops` 写 15 而实测 14，
+    而它没有任何自动检查（`gen-site.py` 重测行数但不重测测试数）。
+
+    这里核对两件可算的事：① 每行属性数 == 源码里 `#[test]` 的个数；
+    ② 合计行的两列 == 各自求和。Windows 列是实跑结果，无法从源码推出，
+    因此**只核对合计**，并在表下方注明这一点。
+    """
+    text = INDEX_MD.read_text(encoding="utf-8")
+    rows: dict[str, tuple[int, int]] = {}
+    total: tuple[int, int] | None = None
+    for line in text.splitlines():
+        m = re.match(
+            r"^\|\s*`?([a-z\-]+)`?\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|", line
+        )
+        if not m:
+            continue
+        name, win, attrs = m.group(1), int(m.group(2)), int(m.group(3))
+        if name == "合计" or name.endswith("合计"):
+            continue
+        rows[name] = (win, attrs)
+        if name == "**合计**":
+            total = (win, attrs)
+    # 合计行是 `| **合计** | 399 | 418 |`：上面的正则抓不到 `**`，单独找
+    m = re.search(r"^\|\s*\*\*合计\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|", text, re.M)
+    if m:
+        total = (int(m.group(1)), int(m.group(2)))
+
+    if not rows:
+        print("[FAIL] INDEX.md 测试分布表：没解析到任何行（格式变了？）")
+        return False
+
+    ok = True
+    for crate, (_, attrs) in sorted(rows.items()):
+        actual = count_test_attrs(crate)
+        if attrs != actual:
+            print(f"[FAIL] INDEX.md 测试表：`{crate}` 声明 {attrs} 项 `#[test]`，实测 {actual}")
+            ok = False
+    if total is None:
+        print("[FAIL] INDEX.md 测试分布表：没找到合计行")
+        ok = False
+    else:
+        sum_win = sum(v[0] for v in rows.values())
+        sum_attrs = sum(v[1] for v in rows.values())
+        if total != (sum_win, sum_attrs):
+            print(
+                f"[FAIL] INDEX.md 测试表合计：声明 {total}，各行相加为 "
+                f"({sum_win}, {sum_attrs})"
+            )
+            ok = False
+    if ok:
+        print(f"[ OK ] INDEX.md 测试分布表：{len(rows)} 个 crate 的属性数与合计一致")
+    return ok
+
+
 def gate(stats: Sequence[CrateStat]) -> int:
-    """门禁：文档声明必须与实测一致（合计 + 逐 crate + 逐文件）。"""
+    """门禁：文档声明必须与实测一致（合计 + 逐 crate + 逐文件 + 测试表）。"""
     total_lines, total_files = totals(stats)
     ok = True
     for label, path, pattern in (
@@ -332,6 +403,7 @@ def gate(stats: Sequence[CrateStat]) -> int:
     # 逐 crate 与逐文件：合计对了不代表下面也对（这就是"虚假保证"的来源）
     ok = gate_crates(stats) and ok
     ok = gate_files(stats) and ok
+    ok = gate_test_table(stats) and ok
     return EXIT_OK if ok else EXIT_GATE_FAILED
 
 

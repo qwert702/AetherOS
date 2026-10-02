@@ -46,6 +46,13 @@ pub const PART_TYPE_LINUX: u8 = 0x83;
 pub const PERSIST_LABEL: &str = "AETHER";
 /// 持久化分区的挂载点（安装期）。
 pub const PERSIST_MNT: &str = "/mnt/aether-persist";
+
+/// 安装标记文件（相对持久分区根）。
+///
+/// **必须与 `aether-init::persist::INSTALL_MARKER` 保持一致** —— 写入侧（这里）与
+/// 识别侧（aether-init 只读探测）各有一份常量，改一边不改另一边就会让
+/// "装好了但重启后挂不上"。两处各有断言钉住字面量（`install_marker_matches_*`）。
+pub const INSTALL_MARKER: &str = "log/install-id";
 /// 重读分区表的 ioctl（仅 Linux）。
 #[cfg(target_os = "linux")]
 const BLKRRPART: libc::c_ulong = 0x125f;
@@ -139,9 +146,21 @@ pub fn canonicalize_disk(disk: &str) -> Result<String> {
 
 /// 两个路径是否指向同一个设备（用于"拒绝自读自写"）。
 ///
-/// 比较前各自 `canonicalize`：这样 `/dev//sr0`、`/dev/./sr0`、`/dev/disk/by-id/xxx`
-/// 都会收敛到同一个路径，字符串比较才有效（审计 M-7）。
+/// 用 **`st_rdev` 设备号**比较，而不是路径字符串（对抗审查发现）：
+/// 路径比较可被设备别名绕过 —— `mount --bind /dev/sr0 /dev/h/sr0` 或
+/// `ln /dev/sr0 /dev/h`（hardlink，`canonicalize` 不解析）都会让两条路径不同名
+/// 却指向同一个设备。设备号是内核给的唯一标识，绕不过去。
 pub fn same_device(a: &str, b: &str) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            // rdev 为 0 表示不是设备节点（普通文件）；那种情况仍按路径比较
+            if ma.rdev() != 0 || mb.rdev() != 0 {
+                return ma.rdev() == mb.rdev();
+            }
+        }
+    }
     let ca = std::fs::canonicalize(a).unwrap_or_else(|_| std::path::PathBuf::from(a));
     let cb = std::fs::canonicalize(b).unwrap_or_else(|_| std::path::PathBuf::from(b));
     ca == cb
@@ -374,8 +393,11 @@ fn setup_persist(disk: &str) -> Result<String> {
     // `apps` 必须在骨架里（审计 M-8）：`aetherd::apps::DEFAULT_DIR` 是 `/var/apps`，
     // 持久分区挂到 /var 之后这个目录就是"已装应用"的家。安装时建好它，
     // 用户装机后第一件事（装应用）才不会碰到"目录不存在"。
+    // 骨架目录必须建出来：写不进目录 = 后面的标记文件也写不了，
+    // 而"装机成功但重启后挂不上持久分区"是最难查的一类故障（代码审查指出）。
     for d in ["log", "diag", "lib", "tmp", "spool", "home", "apps"] {
-        std::fs::create_dir_all(format!("{PERSIST_MNT}/{d}")).ok();
+        std::fs::create_dir_all(format!("{PERSIST_MNT}/{d}"))
+            .map_err(|e| anyhow::anyhow!("创建 {PERSIST_MNT}/{d} 失败: {e}"))?;
     }
     // /var/run 在本系统里指向 /run（tmpfs）：持久分区上保持同样的软链，
     // 这样挂到 /var 后原有工具有正常的 pid 目录。
@@ -392,12 +414,17 @@ fn setup_persist(disk: &str) -> Result<String> {
     // aether-init 会先把候选分区只读挂起，确认 `log/install-id` 存在才改挂 rw。
     // 诚实边界：能写盘的人可以伪造它；它挡的是"误挂别人的分区"（双系统机器上
     // 把宿主机的根分区当成 /var），不是有物理访问权的攻击者 —— 后者要靠安全启动/TPM。
-    std::fs::write(format!("{PERSIST_MNT}/log/install-id"), format!("{ts}\n")).ok();
+    //
+    // 写失败**必须报错**（代码审查指出）：这个标记现在是启动侧识别分区的**唯一判据**，
+    // 写不进去却报"装机成功"，用户重启后会看到持久分区永远挂不上、而且毫无线索。
+    // 常量与 aether-init 侧一致（那边的 `INSTALL_MARKER` 有断言钉住字面量）。
+    std::fs::write(format!("{PERSIST_MNT}/{INSTALL_MARKER}"), format!("{ts}\n"))
+        .map_err(|e| anyhow::anyhow!("写入 {INSTALL_MARKER} 失败: {e} —— 持久分区将无法被识别"))?;
     std::fs::write(
         format!("{PERSIST_MNT}/boot.log"),
         format!("{ts} 安装完成（分区 {node_s}）\n"),
     )
-    .ok();
+    .map_err(|e| anyhow::anyhow!("写入 boot.log 失败: {e}"))?;
 
     // 6. 卸载（交给下次启动的 aether-init 挂到 /var）
     let _ = Command::new("/bin/umount").arg(PERSIST_MNT).status();
@@ -525,6 +552,19 @@ mod tests {
     #[test]
     fn persist_label_matches_init_convention() {
         assert_eq!(PERSIST_LABEL, "AETHER");
+    }
+
+    /// 安装标记路径必须与 `aether-init::persist::INSTALL_MARKER` 一致。
+    ///
+    /// 为什么值得一条断言（代码审查发现）：这个路径此前在写入侧是**裸字面量**，
+    /// 而它现在决定"重启后能不能认出持久分区"。两侧各钉一次字面量，
+    /// 于是"只改一侧"必然让那一侧变红。
+    #[test]
+    fn install_marker_matches_init_convention() {
+        assert_eq!(INSTALL_MARKER, "log/install-id");
+        // 必须是相对路径且落在 log/ 下（识别侧按分区根拼接）
+        assert!(!INSTALL_MARKER.starts_with('/'), "标记应是相对路径");
+        assert!(INSTALL_MARKER.starts_with("log/"), "标记应在 log/ 下");
     }
 
     /// 造一个与真实 isohybrid 镜像一致的 MBR：第 1 项类型 0x17、0..59392 扇区。

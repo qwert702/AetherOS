@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-10-02（复核自 git 历史 + 代码实测）· 源码 **26,768 行**
+生成时间：2026-10-02（复核自 git 历史 + 代码实测）· 源码 **27,163 行**
 （7 个 crate，45 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
@@ -10,14 +10,14 @@
 
 | crate | 行数 | 文件 | 职责 |
 |---|---|---|---|
-| `aether-compositor` | 16,545 | 22 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 4,489 视觉层 / `main.rs` 4,061 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
-| `aetherd` | 6,345 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
-| `aether-init` | 1,995 | 6 | PID 1 与服务管理 |
-| `aether-ops` | 788 | 3 | AI 运维：日志监控 + 故障诊断 |
-| `aether-install` | 732 | 1 | 磁盘安装器（isohybrid 整盘写入） |
+| `aether-compositor` | 16,605 | 22 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 4,489 视觉层 / `main.rs` 4,061 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
+| `aetherd` | 6,477 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
+| `aether-init` | 2,155 | 6 | PID 1 与服务管理 |
+| `aether-ops` | 791 | 3 | AI 运维：日志监控 + 故障诊断 |
+| `aether-install` | 772 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 352 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **26,768** | **45** | |
+| **合计** | **27,163** | **45** | |
 
 > 口径：2026-10-02 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -69,14 +69,14 @@ Aether/
 - 函数：`encode`（JSON+换行）/ `decode`（NDJSON 帧）
 - ⚠️ 新增 `Request` 变体是**权限模型的敏感动作**：剪贴板这条路（P1-1）就曾因走变体而绕过 `Gate`。新变体必须有对应的门槛测试（见 `server.rs::ipc_gating_tests`）
 
-### aether-compositor（合成器，16,545 行 / 22 文件）
+### aether-compositor（合成器，16,605 行 / 22 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/main.rs` (4,145) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
+| `src/main.rs` (4,189) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
 | `src/draw.rs` (4,489) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、**双模色板**（`color::*()` 函数 + 模式原子量，`--theme light\|dark`，默认明亮）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、壁纸双模（深色=结构化极光带 + 颗粒，明亮=近白底 + 四角粉彩柔光团）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐/Wayland surface 窗口内容、BMP 导出 |
 | `src/vt.rs` (871) | **VT/ANSI 解析器**（跨平台纯逻辑，29 项单测）：转义序列状态机、屏幕缓冲、滚屏、光标 |
 | `src/term.rs` (613) | 终端胶合层：Linux 走真 PTY；开发机喂真实 ANSI 脚本走同一解析/渲染路径。渲染**逐格绝对定位**（比例字体不能靠字符串推进） |
-| `src/pty.rs` (235 Linux) | PTY 打开/读写（Windows 无法验证，刻意保持薄） |
+| `src/pty.rs` (244 Linux) | PTY 打开/读写（Windows 无法验证，刻意保持薄） |
 | `src/input.rs` (551, 键位翻译跨平台) | evdev 输入后端：键盘/鼠标原始事件 → UI 事件；`Mods` 修饰键跟踪；`NavKey` 导航语义。**2026-09-29 修复**：布局快捷键从"裸数字 1–4"改为 **Alt+1–4** —— 裸数字当全局快捷键会让 1–4 在任何输入框里都打不出来（终端里 `wget http://10.0.2.2/...` 会被敲成 `10.0...`），这条是靠真机注入按键测出来的 |
 | `src/textview.rs` (292) | 2.4 文本视图共享状态：`TextCursor`（**字符级**索引，中文安全）+ `ScrollView`（夹取只有一份）+ `nav_action`（导航键→语义动作，唯一映射） |
 | `src/ime.rs` (449) | 2.3 中文输入法（最小可用）：**自建词表 ~100 条**（体积可忽略、无许可问题）+ 拼音状态机（前缀匹配/数字选词/空格提交/上下选择/退格）。`Ctrl+Space` 切换、**默认关**；无候选时拼音原样上屏（不丢字） |
@@ -88,24 +88,24 @@ Aether/
 | `src/layout.rs` (185) | 布局引擎：`Layout::{Float,TwoCol,ThreeCol,Monocle}`、平铺目标矩形计算、拖拽边缘吸附 `Snap::{Left,Right,Top}` |
 | `src/fbdev.rs` (405 Linux) | framebuffer 打开/上屏（stride 对齐、复用缓冲） |
 | `src/wayland/mod.rs` (39) | 3.1 spike 入口（**未接入生产路径**，见 `docs/PHASE3-DECISION-2026-09-28.md`） |
-| `src/wayland/wire.rs` (475) | 线协议编解码（消息头、字节序、截断必须报错） |
+| `src/wayland/wire.rs` (476) | 线协议编解码（消息头、字节序、截断必须报错） |
 | `src/wayland/protocol.rs` (259) | 12 个接口的**请求表 + 事件签名表**（索引即 opcode；事件必须用事件签名编码） |
 | `src/wayland/object.rs` (199) | 对象表（id → 接口/版本，跨会话一致） |
 | `src/wayland/session.rs` (897) | 协议状态机：**只吃字节、吐事件**（与传输分离，开发机可完整测）→ registry/bind/surface/shm/xdg/ack/map 全流程 |
 | `src/wayland/shm.rs` (229) | `wl_shm` 像素读取（offset/stride/format → RGBA 纯逻辑；XRGB8888 字节序专项测试） |
-| `src/wayland/server.rs` (193 Linux) | Unix socket 服务端 + 每连接一线程（fd 的 `SCM_RIGHTS` 收包**待真机验证**） |
+| `src/wayland/server.rs` (199 Linux) | Unix socket 服务端 + 每连接一线程（fd 的 `SCM_RIGHTS` 收包**待真机验证**） |
 
 - 常量：`WIDTH=1280`、`HEIGHT=760`、设计尺寸全部收口在 `theme::metric`
 - 与 aetherd 交互：`query_aether`（后台线程连 `/run/aetherd.sock`，发 `Request::Chat`，收 ChatChunk[含 channel]/Action/NeedsConfirmation）；只有显式 `AETHER_IPC_TCP=1` 才改走 TCP 7311
 - 顶栏 AI 三态：`AiStatus::{Local,Cloud,Offline}`（本地青/云端紫/离线灰），由 ChatChunk.channel 驱动
 
-### aetherd（AI 中枢，6,345 行 / 11 文件）
+### aetherd（AI 中枢，6,477 行 / 11 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/tools.rs` (1,659) | 工具系统：`registry`（**15 个工具**，见下）、`execute` 管线（闸门→审计→执行）、罐头探针（命令全为编译期常量）、写白名单 **写 ⊆ 读**（有测试守着） |
+| `src/tools.rs` (1,735) | 工具系统：`registry`（**15 个工具**，见下）、`execute` 管线（闸门→审计→执行）、罐头探针（命令全为编译期常量）、写白名单 **写 ⊆ 读**（有测试守着） |
 | `src/apps.rs` (1,291) | **应用安装**：清单校验、目录安装、卸载（进回收站）、**安装前预检**。2026-09-29 增强：预检改为**递归依赖闭包**（只查第一层会漏「libA→libB 缺 libB」）、新增 **terminfo 检查**（curses 程序缺终端条目会直接报 `Error opening terminal`）、新增**拦截包内 glibc 家族**（混用两套 libc 必撞 `GLIBC_PRIVATE`）、**库名路径穿越防护**（`DT_NEEDED` 是外部输入，含分隔符的名字一律不认）；包装脚本同时设 `LD_LIBRARY_PATH` 与 `TERMINFO_DIRS`。包格式、打包器与边界见 `docs/APP-PACKAGES.md` |
-| `src/main.rs` (699) | 入口：`chat` / `serve` / `config` / **`app`** 四组子命令；`serve` 启动时把已装应用挂进 `/usr/local/bin` |
-| `src/server.rs` (815) | `serve`：**Unix socket `/run/aetherd.sock`（0600）与 TCP 127.0.0.1:7311 双监听**（同一段请求处理逻辑，每连接一线程，连接数/行长上限 + 读写超时）；`handle_chat` 先快速意图后 LLM，Action/确认必须先于 done 发送；`ipc_gating_tests` 把"每个 `Request` 变体都过闸门"固化成回归测试 |
+| `src/main.rs` (705) | 入口：`chat` / `serve` / `config` / **`app`** 四组子命令；`serve` 启动时把已装应用挂进 `/usr/local/bin` |
+| `src/server.rs` (865) | `serve`：**Unix socket `/run/aetherd.sock`（0600）与 TCP 127.0.0.1:7311 双监听**（同一段请求处理逻辑，每连接一线程，连接数/行长上限 + 读写超时）；`handle_chat` 先快速意图后 LLM，Action/确认必须先于 done 发送；`ipc_gating_tests` 把"每个 `Request` 变体都过闸门"固化成回归测试 |
 | `src/perm.rs` (518) | 权限闸门 `Gate`：`Level::{L0..L3}`、`judge` 裁决、`audit` 审计日志（**带轮转**）；`Approvals` 一次性确认令牌表（128 位、绑定 tool+参数、5 分钟、用后即废） |
 | `src/trash.rs` (414) | 回收站：条目数 + 总字节 + 存活天数**三重上限**；恢复不覆盖、挡路径穿越 |
 | `src/modelcfg.rs` (268) | 模型配置持久化：优先级**环境变量 > 文件 > 默认**；损坏回退默认；`summary()` 脱敏；启用条件"有 Key **或** 有 Base URL"（支持自建网关） |
@@ -130,15 +130,15 @@ Aether/
 - 环境变量：`AETHER_API_KEY`/`AETHER_API_BASE`/`AETHER_MODEL`（云端 GLM）、`AETHER_LOCAL_URL`/`AETHER_LOCAL_MODEL`/`AETHER_LOCAL_ONLY`、`AETHER_BIND`（调试用，出厂不设）
 - 端口/socket：`/run/aetherd.sock`（aetherd 默认）、7311（aetherd TCP 备用）、11434（Ollama 默认）
 
-### aether-init（PID 1，1,995 行 / 6 文件）
+### aether-init（PID 1，2,155 行 / 6 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/manager.rs` (502) | 状态机 + 拓扑排序（DFS 环检测）+ 指数退避重启（2^n × 500ms，封顶 6 步，稳定 60s 计数归零）+ 僵尸收割（waitpid(-1) 含孤儿）。**只有 `restart: true` 的服务才会被拉起**（`manager.rs` 的 `if svc.spec.restart`） |
-| `src/unit.rs` (325) | 服务单元：`KnownService` 白名单（network/aetherd/compositor/ops/getty/noop）、`spawn_command` 字面量命令（无注入面）、`ServiceSpec`、`load_dir`。含不变量测试 `shipped_essential_services_must_be_restartable` |
+| `src/manager.rs` (522) | 状态机 + 拓扑排序（DFS 环检测）+ 指数退避重启（2^n × 500ms，封顶 6 步，稳定 60s 计数归零）+ 僵尸收割（waitpid(-1) 含孤儿）。**只有 `restart: true` 的服务才会被拉起**（`manager.rs` 的 `if svc.spec.restart`） |
+| `src/unit.rs` (360) | 服务单元：`KnownService` 白名单（network/aetherd/compositor/ops/getty/noop）、`spawn_command` 字面量命令（无注入面）、`ServiceSpec`、`load_dir`。含不变量测试 `shipped_essential_services_must_be_restartable` |
 | `src/main.rs` (232) | 入口：`--pid1` / `--dry-run`；监督循环（200ms tick） |
-| `src/ipc.rs` (247) | 服务控制通道：Linux Unix socket 0600（root-only）/ 开发态 TCP 7312 |
-| `src/logtee.rs` (329) | 服务 stdout/stderr → /var/log/aether/<unit>.log（8MB 轮转）+ 控制台 tee |
-| `src/persist.rs` (360) | 持久化分区挂载（卷标 AETHER 候选盘列表 → /var）+ boot.log 启动记录 |
+| `src/ipc.rs` (271) | 服务控制通道：Linux Unix socket 0600（root-only）/ 开发态 TCP 7312 |
+| `src/logtee.rs` (347) | 服务 stdout/stderr → /var/log/aether/<unit>.log（8MB 轮转）+ 控制台 tee |
+| `src/persist.rs` (423) | 持久化分区挂载（卷标 AETHER 候选盘列表 → /var）+ boot.log 启动记录 |
 
 > **`essential: true` 必须同时 `restart: true`** —— 这条不变量有测试守着（2026-09-28 新增）。
 > 起因是一次**跨提交的语义漂移**：`compositor.json` 的 `restart: false` 是 09-12 设的，
@@ -152,15 +152,15 @@ Aether/
 > "服务状态查询失败（No such file or directory）"的假故障。启动序列**持锁**执行，
 > 让这期间到达的 IPC 请求排队到 boot 完成。实机串口日志可验证：socket 行必须早于"自启动序列"行。
 
-### aether-install（磁盘安装器，732 行 / 1 文件）
+### aether-install（磁盘安装器，772 行 / 1 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/main.rs` (732) | isohybrid dd 整盘安装：防呆校验（块设备/容量/`--yes`/禁自读自写）→ **装机前置校验镜像是否 isohybrid**（H-6，避免先毁盘后报错）→ MBR 持久化分区规划（>2TB 放弃、不覆盖既有分区）→ mkfs.ext4 + /var 骨架 + 引导记录 |
+| `src/main.rs` (772) | isohybrid dd 整盘安装：防呆校验（块设备/容量/`--yes`/禁自读自写）→ **装机前置校验镜像是否 isohybrid**（H-6，避免先毁盘后报错）→ MBR 持久化分区规划（>2TB 放弃、不覆盖既有分区）→ mkfs.ext4 + /var 骨架 + 引导记录 |
 
-### aether-ops（AI 运维，788 行 / 3 文件，Linux 常驻）
+### aether-ops（AI 运维，791 行 / 3 文件，Linux 常驻）
 | 文件 | 内容 |
 |---|---|
-| `src/monitor.rs` (459) | 决策核心（纯函数带测试）：指标解析、服务状态、`plan` 自愈决策（restart 标记/essential 告警/冷却）、`scan_new_lines` 日志字面量扫告警（**只命中字面量罐头，不猜语义**） |
+| `src/monitor.rs` (462) | 决策核心（纯函数带测试）：指标解析、服务状态、`plan` 自愈决策（restart 标记/essential 告警/冷却）、`scan_new_lines` 日志字面量扫告警（**只命中字面量罐头，不猜语义**） |
 | `src/main.rs` (175) | 巡检主循环：15s/轮，冷却 20 轮，心跳/告警/诊断报告落盘 |
 | `src/diagnose.rs` (154) | 诊断报告组装（纯函数带测试）：事件 + 现场 + 行动 + 日志尾部 |
 
@@ -249,7 +249,9 @@ Buildroot 的模型是构建期定死、运行期不改系统，所以 opkg/apt/
 | `scripts/bmp2png.py` | `--shot` 产物 BMP→PNG（仅标准库，供目视走查；**勿包成 .sh 调用**，见 ui-design-handover §11） |
 | `scripts/png-crop.py` | 走查图裁剪 + 整数倍放大（1:1 检查边框/字重/图标比例） |
 | `scripts/archive-ui-shots.py` | **归档走查图工具**：重建 `docs/host-ui-*.png` 全部 **19 张**；`--check` 为视觉回归门禁（屏蔽时钟/AI 光标非确定区，差异 > 0.02% 即失败） |
-| `scripts/repo-stats.py` | **规模口径唯一来源**：逐 crate / 逐文件行数与文件数（口径 = `Cargo.toml` 的 workspace 成员 + `wc -l` 语义）。`--per-file` 出逐文件表，`--check` 比对 README/INDEX/roadmap 里声明的合计，不一致即非零退出（**可当门禁**） |
+| `scripts/repo-stats.py` | **规模口径唯一来源**：逐 crate / 逐文件行数与文件数（口径 = `Cargo.toml` 的 workspace 成员 + `wc -l` 语义）。`--per-file` 出逐文件表，`--check` 比对 README/INDEX/roadmap 里声明的合计**与测试分布表**，不一致即非零退出（**可当门禁**） |
+| `scripts/gates.py` | **本地门禁入口**（2026-10-02 新增）：一条命令跑完 cargo build/test（`--locked`）+ 6 crate musl 检查 + 规模门禁 + 站点门禁 + 打包器/站点生成器自检 + 构建脚本 shell 语法 + Python 语法。`--fast` 跳过 cargo 三件套；`--online` 允许联网。任一失败即非零退出（超时 124 / 缺命令 127 也算失败） |
+| `.github/workflows/ci.yml` | **CI**（2026-10-02 新增）：ubuntu + windows 两平台跑 `gates.py --online`，ubuntu 侧额外 `cargo test -- --nocapture` —— 这是 `#[cfg(unix)]`/`cfg(linux)` 断言**第一次真的被执行**（此前在 Windows 开发机上从不运行）。**本地无法验证 CI 本身** |
 | `scripts/mkapp.py` | **应用打包器**（2026-09-29 新增）：把市面上的 Linux 程序打成 AetherOS 能装的包 —— 递归解析 ELF 依赖、**跳过 glibc 家族**、只收镜像里没有的库、按 `.gnu.version_r`/`.gnu.version_d` **校验符号版本**（含"镜像里的库版本符号对不上"这种坑）、按需带上 terminfo，产出包目录 + `.aep`（未压缩 tar）。`--check` 只回答"能不能跑"，`--selftest` 是解析器自测（17 项，跨平台可跑） |
 | `scripts/serve-apps.py` | **只读分发服务**（2026-09-29 新增）：宿主起 HTTP 把 `dist/apps/*.aep` 喂给 guest（QEMU 用户态网络里宿主就是 `10.0.2.2`）。只实现 GET/HEAD、路径规范化防穿越、默认只绑回环、打印 sha436 供核对 |
 | `docs/PHASE3-DECISION-2026-09-28.md` | Phase 3（Wayland）决策框架：本轮不做的理由与条件、**放弃条件** |
@@ -307,7 +309,7 @@ cargo run -p aetherd -- config --show                           # 模型配置�
 cargo run -p aetherd -- config --api-key K --cloud-base URL      # 配置云端（也支持自建网关）
 cargo run -p aether-init -- --dry-run ./platform/overlay/etc/aether/services  # 服务监督自检
 python scripts/e2e-permission-confirm.py                        # 权限链路端到端（先起 aetherd serve）
-cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 395 项，分布见「测试分布」）
+cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 399 项，分布见「测试分布」）
 
 # ⚠️ 改了 cfg(target_os="linux") 的代码后必须交叉检查：Windows 构建会整段屏蔽那些路径
 cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether-compositor -p aether-init -p aether-ops -p aether-install -p aether-ipc -p aether-shell
@@ -349,7 +351,7 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
   空格提交 / 退格删拼音，**未被 IME 吃掉的字符才送 PTY**（`3a34f49`）；Esc 取消拼字同轮接上
 - ⚠️ 终端里的中文输入**只做过编译与源码级确认，没有实机键盘交互验证**（`--shot` 出静态帧，测不了输入）
 
-## 测试分布（2026-10-02 实测：**Windows 395 全绿；Windows 侧 0 警告，musl 侧 6/7 crate 0 警告**）
+## 测试分布（2026-10-02 实测：**Windows 399 全绿；Windows 侧 0 警告，musl 侧 6/7 crate 0 警告**）
 
 > **Linux 侧未实测。** 本机是 Windows，跑不了 Linux 二进制。此前文档里的
 > **358 / 333 是静态推算**，两者互相矛盾且都无法复现，已删除（2026-10-02 安全审计）。
@@ -365,14 +367,18 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
 
 | crate | Windows（实测） | 全平台 `#[test]` 属性 | 备注 |
 |---|---|---|---|
-| `aether-compositor` | 234 | 235 | `fbdev.rs` 是 Linux 专属模块，其中 1 项在 Windows 不参与 |
-| `aetherd` | 119 | 122 | 3 项是 Linux/unix 专属（`read_file` 目标机策略、审计文件 0600）|
+| `aether-compositor` | 236 | 237 | `fbdev.rs` 是 Linux 专属模块，其中 1 项在 Windows 不参与 |
+| `aetherd` | 120 | 123 | 3 项是 Linux/unix 专属（`read_file` 目标机策略、审计文件 0600）|
 | `aether-init` | 23 | 24 | 1 项为 unix 专属（日志符号链接拒绝）；含 `shipped_essential_services_must_be_restartable`（见下） |
-| `aether-ops` | 0 | 15 | 整个 crate 是 Linux 专属，Windows 不参与 |
-| `aether-install` | 12 | 12 | 含 `has_mbr_detects_isohybrid_and_rejects_plain_iso`（H-6 回归）|
+| `aether-ops` | 0 | 14 | 整个 crate 是 Linux 专属，Windows 不参与 |
+| `aether-install` | 13 | 13 | 含 `has_mbr_detects_isohybrid_and_rejects_plain_iso`（H-6 回归）|
 | `aether-ipc` | 7 | 7 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **395** | **403** | 差值 18 = 只在 Linux 上运行的用例 |
+| **合计** | **399** | **418** | 差值 19 = 只在 Linux/unix 上运行的用例 |
+
+> 这张表由 `scripts/repo-stats.py --check` 核对：**属性列逐 crate 与源码实测比对**、
+> 合计行与各列求和比对（代码审查发现过它自相矛盾且无人看守）。
+> Windows 列是实跑结果（`cargo test --workspace`），无法从源码推出，故只核对合计。
 
 跑 Linux 侧的方式：在构建机上 `cargo test --workspace --offline --no-fail-fast`
 （Rust 不在 SSH 非交互 PATH 里，用 `/home/aether/.cargo/bin/cargo`）。

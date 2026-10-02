@@ -16,6 +16,12 @@ preview.png
 
 # 构建机 SSH 主机密钥记录（TOFU，每台机器不同）
 scripts/.vm_known_hosts
+# 生产部署的主机密钥记录（同上；2026-10-02 审计 H-5 引入，提交信息里声称已加但当时没落地）
+scripts/.vps_known_hosts
+
+# 认证基线：口令哈希只应出现在构建产物里，绝不入库（2026-10-02 审计 M-4 加固）
+/platform/overlay/etc/shadow
+platform/overlay/etc/shadow
 
 # AI 助手本地权限配置（各人环境不同，靠全局 ignore 不可靠）
 .claude/settings.local.json

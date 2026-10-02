@@ -399,8 +399,14 @@ fn run_app(args: &[String]) -> Result<()> {
             println!("SHA256({file}) = {got}");
             match want {
                 None => {
-                    println!("（未给 --sha256：请与宿主回显的 X-SHA256 逐字比对）");
-                    Ok(())
+                    // **不给期望值就是"没校验"**（对抗审查发现）：原来返回 0，
+                    // 而文档流程写的是"校验通过才解包" —— 退出码 0 会被脚本当成通过。
+                    // 现在按用法错误处理（退出码 2），强制调用方带上期望值。
+                    eprintln!(
+                        "用法错误：必须给 --sha256 <期望值> 才算校验（现在只打印了哈希）。\n\
+                         期望值来自宿主：serve-apps.py 的 X-SHA256 响应头。"
+                    );
+                    std::process::exit(2);
                 }
                 Some(w) if w == got => {
                     println!("校验通过：与期望值一致");

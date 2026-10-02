@@ -28,6 +28,16 @@ mod imp {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
+    /// 同时连接的客户端上限（2026-10-02 审计 L-16）：此前每来一个连接就 push 一个
+    /// `Session` 并起一条线程，**没有上限** —— 本机任何进程都能把合成器（root）的
+    /// 线程与内存吃光。取 16：一个桌面上同时说话的 Wayland 客户端不会有这么多，
+    /// 而这个数字**与 aetherd 的 32 不是同一口径**（aetherd 面向本机所有工具连接，
+    /// 合成器只面向桌面客户端，后者更小是刻意的）。
+    const MAX_WAYLAND_CONNS: usize = 16;
+
+    /// 跨读待解析缓冲的上限（超过即认定对端在灌垃圾，断开）。
+    const MAX_PENDING: usize = 1024 * 1024;
+
     // `imp` 是 server 的**子模块**，所以这里必须写全路径 ——
     // `super::object` 只到 server，够不到 wayland 的兄弟模块
     use crate::wayland::object::DISPLAY_ID;
@@ -82,15 +92,13 @@ mod imp {
     fn accept_loop(listener: UnixListener, sessions: Arc<Mutex<Vec<Session>>>) {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
-            // 连接上限（2026-10-02 审计 L-16）：此前每来一个连接就 push 一个 Session
-            // 并起一条线程，**没有上限** —— 本机任何进程都能把合成器（root）的
-            // 线程与内存吃光。上限与 aetherd 的口径一致。
-            const MAX_WAYLAND_CONNS: usize = 16;
             // 占一个槽位；连接线程之后一直写这个索引
             let idx = match sessions.lock() {
                 Ok(mut g) => {
                     if g.len() >= MAX_WAYLAND_CONNS {
                         eprintln!("[wayland] 连接数已达上限（{MAX_WAYLAND_CONNS}），拒绝新连接");
+                        // 拒绝也要节流：否则对端狂连会把控制台与日志刷爆
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                         continue;
                     }
                     g.push(Session::new());
@@ -116,8 +124,6 @@ mod imp {
         let mut buf = [0u8; 16384];
         // 跨读残留（不足一条完整消息的尾巴），见 complete_prefix_len 的说明
         let mut pending: Vec<u8> = Vec::new();
-        /// 残留缓冲上限：超过就说明对端在灌垃圾，直接断开（防内存增长）
-        const MAX_PENDING: usize = 1024 * 1024;
         loop {
             let n = match stream.read(&mut buf) {
                 Ok(0) => break, // 客户端正常关闭

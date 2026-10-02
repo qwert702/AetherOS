@@ -28,6 +28,12 @@ BR2_TARGET_ROOTFS_ISO9660_BOOT_MENU="$(BR2_EXTERNAL_AETHER_PATH)/isolinux.cfg"
 
 # 用户态基础（最小集；图形栈后加）
 BR2_PACKAGE_BUSYBOX=y
+# ⚠️ bash 在 Buildroot 里属于 "show others" 包（busybox 已提供 sh）：
+# `package/bash/Config.in` 写着 `depends on BR2_PACKAGE_BUSYBOX_SHOW_OTHERS`。
+# **没有这一行，kconfig 会直接丢掉 BR2_PACKAGE_BASH**（构建末尾只报一句
+# "was set but is not valid"），于是镜像里没有 bash、M-13 的括号粘贴安全路径
+# 继续空转 —— 而文档已经宣称它生效了。代码审查核对过上游 2024.02.1 的 Config.in。
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
 # bash：**不是"想要"，是终端粘贴安全的需要**（2026-10-02 审计 M-13）。
 # 合成器的安全粘贴路径依赖程序声明支持括号粘贴（DECSET 2004）——那是 readline 的特性，
 # busybox 的 ash 不实现；只有 busybox 时，粘贴多行文本会退回"换行即回车"（逐行执行），

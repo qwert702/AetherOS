@@ -9,8 +9,8 @@
 
 | | |
 |---|---|
-| **规模** | 合计 26,768 行 Rust / 45 个源文件 / 7 个 crate（2026-10-02 实测） |
-| **验证** | 395 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **规模** | 合计 27,163 行 Rust / 45 个源文件 / 7 个 crate（2026-10-02 实测） |
+| **验证** | 399 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 38.5 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](docs/host-ui-light-desktop.png)
@@ -33,7 +33,7 @@
   外泄路径是用**两个假 LLM 端点 + canary 文件**端到端证明的（13 字输入、两次读文件，
   云端端点确实收到了 canary），修复后的行为由 `router` 的两条单测钉住。
 - **连字体都自己带。** 桌面用 **Noto Sans CJK SC 子集**（GB2312 + 拉丁 + 标点，约 5.7 MB，**含真粗体**）—— 不是「粗体=正文字体」的伪粗。
-- **可验证，而不是"我觉得没问题"。** 除 395 项单测外，还有 19 张归档走查图的**逐像素回归门禁**
+- **可验证，而不是"我觉得没问题"。** 除 399 项单测外，还有 19 张归档走查图的**逐像素回归门禁**
   （差异 > 0.02% 即失败）、12 小时 43 分的稳定性长跑（3053 轮巡检：服务退出 0 / 自动重启 0 /
   panic 0，内存无泄漏趋势）、四轮代码审查且**未修项归零**。
 - **真能装应用。** 在没有任何包管理器的系统上做了自己的应用包格式（清单 + 依赖预检），
@@ -50,7 +50,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
 cargo run -p aether-compositor -- --theme dark     # 深空主题
 cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试（Windows 395 项，见「测试与验证」）
+cargo test --workspace                             # 单元测试（Windows 399 项，见「测试与验证」）
 ```
 
 构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
@@ -204,11 +204,11 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
-| `aether-compositor/` | 16,545 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
-| `aetherd/` | 6,345 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
-| `aether-init/` | 1,995 | PID 1 与服务管理 | M3 |
-| `aether-ops/` | 788 | AI 运维与自修复 | M5 |
-| `aether-install/` | 732 | 磁盘安装器 | M6 |
+| `aether-compositor/` | 16,605 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
+| `aetherd/` | 6,477 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
+| `aether-init/` | 2,155 | PID 1 与服务管理 | M3 |
+| `aether-ops/` | 791 | AI 运维与自修复 | M5 |
+| `aether-install/` | 772 | 磁盘安装器 | M6 |
 | `aether-ipc/` | 352 | 全系统 IPC 协议 | M0 |
 | `aether-shell/` | 11 | 占位骨架 | M2 |
 | `platform/` | — | Buildroot 外部树、rootfs overlay、ISO 打包 | M3 |
@@ -242,14 +242,23 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
   `denied_by_user` / `rejected_no_ui`），超 8 MB 轮转，写失败显式告警而不是静默丢弃
 - `read_file` 和 `clipboard_read` 标记为敏感输出，其结果强制本地推理、不上云
 
+**与安全默认值相关的开关**（都要显式设，且都会在启动日志里留下记录）：
+
+| 环境变量 | 默认 | 作用 | 为什么默认关 |
+|---|---|---|---|
+| `AETHER_IPC_TCP=1` | 关 | 客户端允许走 TCP 7311 注册 UI 通道 | TCP 上客户端**无法验证对端**（谁抢到端口谁就收到 UI 密钥）；默认走 0600 的 Unix socket |
+| `AETHER_BIND=<addr>` | `127.0.0.1` | 改 IPC 监听地址 | —（回环以外的地址会被拒绝） |
+| `AETHER_ALLOW_REMOTE_IPC=1` | 关 | 允许 `AETHER_BIND` 绑非回环地址 | IPC **没有用户级认证**，暴露到网络等于把"以 root 读写文件"交出去。**这是第二道门，不是交互确认**：能改环境的人也能改它 —— 它的价值是把"手滑暴露"变成"必须刻意两次" |
+| `AETHER_ALLOW_TCP_ONLY=1` | 关 | Unix socket 建不起来时降级为"仅 TCP"继续跑 | 合成器只连 socket、不回退 TCP ⇒ 桌面会失去确认/剪贴板/服务控制，而用户只看得到一行日志。默认直接失败退出（码 3），让问题可见 |
+
 ![L3 权限确认](docs/host-ui-light-confirm.png)
 
 ## 测试与验证
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 395 项全绿（2026-10-02 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
-| 编译警告 | 两个目标都是 0 条 |
+| 单元测试 | Windows 399 项全绿（2026-10-02 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
+| 编译警告 | Windows 侧 0 条；musl 侧 0 条但**只覆盖 6/7 crate**（`aetherd` 受 ring 交叉编译限制查不了，见上） |
 | 视觉回归 | 19 张归档走查图逐像素比对，当前 19/19 零差异 |
 | 代码审查 | 四轮全量 / 增量审查，问题全部修复（未修项归零）；结论总集见 [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |
 | 端到端 | 权限链路、安装器、QEMU QMP 键鼠注入 + 截图 |

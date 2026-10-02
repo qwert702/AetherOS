@@ -333,17 +333,44 @@ pub fn is_sensitive_output(name: &str) -> bool {
     registry().iter().any(|t| t.name == name && t.sensitive_output)
 }
 
-/// 非密码学指纹（FNV-1a 64 位）：只用于在审计日志里**关联同一次内容**
-/// （例如"这两条记录写的是同一份数据"），不参与任何安全判定，因此不需要抗碰撞。
-fn fingerprint(s: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = FNV_OFFSET;
-    for b in s.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
+/// 脱敏时留下的**加盐**指纹（16 位十六进制）。
+///
+/// 为什么不能再用无盐哈希（对抗审查发现）：原来用无盐 FNV-1a + 精确字节长度，
+/// 对短秘密（PIN、口令片段）构成**离线字典校验** —— 而审计日志恰好会被 AI 以 root
+/// 读走。加盐后：同一次运行内"同一内容指纹相同"（可追溯性保留），但没法离线枚举。
+///
+/// 盐是**进程级随机值**（首次使用时生成）：不落盘、不进日志，因此跨重启不可比对
+/// —— 这是有意的取舍：跨重启的"是不是同一份"能力，换掉了"日志被读走即可枚举短秘密"。
+fn fingerprint(s: &str) -> String {
+    use std::sync::OnceLock;
+    static SALT: OnceLock<[u8; 16]> = OnceLock::new();
+    let salt = SALT.get_or_init(|| {
+        use ring::rand::SecureRandom;
+        let mut buf = [0u8; 16];
+        match ring::rand::SystemRandom::new().fill(&mut buf) {
+            Ok(()) => buf,
+            Err(e) => {
+                // 取不到随机数就退化为时间盐，并**明确说出去**（不假装有盐）
+                eprintln!("[aetherd] 警告：审计指纹盐生成失败（{e}），退化为时间盐");
+                let t = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                buf[..8].copy_from_slice(&t.to_le_bytes());
+                buf
+            }
+        }
+    });
+    let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    ctx.update(salt);
+    ctx.update(s.as_bytes());
+    let digest = ctx.finish();
+    let mut out = String::with_capacity(16);
+    for b in &digest.as_ref()[..8] {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{b:02x}");
     }
-    h
+    out
 }
 
 /// 工具参数的**审计表示**：敏感字段脱敏，其余原样。
@@ -359,6 +386,11 @@ fn fingerprint(s: &str) -> u64 {
 /// `pub` 是因为**所有**写审计的地方都要用它（执行路径、用户拒绝路径……）：
 /// 只在其中一处脱敏等于没脱敏（自查时发现 `ConfirmCancel` 漏了）。
 ///
+/// 第一个参数是工具名：**当前不参与脱敏**（审计行本身已经带了工具名），
+/// 保留它是为了调用点可读、以及将来要按工具调整规则时不必改签名。
+/// 参数名写成 `_tool` 而不是 `tool` + `let _ = tool;` —— 后者会让"这个参数没用"
+/// 这件事靠一行 no-op 掩饰（代码审查指出注释还描述了未实现的行为）。
+///
 /// ## 判定方式：**默认脱敏**，而不是"点名脱敏"
 ///
 /// 代码审查指出：原来是"字段名黑名单"（只脱敏 clipboard_write.text / file_write.content），
@@ -367,7 +399,7 @@ fn fingerprint(s: &str) -> u64 {
 /// 其余字符串值一律脱敏。判据是"字段名在白名单里 **且** 值不太长"，
 /// 这样既不会把 `{"path":"/etc/x"}` 这种有用的追溯信息抹掉，
 /// 也不会因为将来加了 `note`/`payload` 之类的字段而漏。
-pub fn audit_args(tool: &str, args: &serde_json::Value) -> String {
+pub fn audit_args(_tool: &str, args: &serde_json::Value) -> String {
     /// 可以原样记录的字段名（都是"标识/位置/枚举"类，不含用户内容）。
     ///
     /// 清单来自工具注册表实际用到的键（`action/app/confirm/disk/entry/from/id/
@@ -380,31 +412,50 @@ pub fn audit_args(tool: &str, args: &serde_json::Value) -> String {
     /// 白名单字段也超过这个长度就脱敏（防止有人把内容塞进 `path` 这种字段）。
     const MAX_SAFE_LEN: usize = 256;
 
-    let Some(obj) = args.as_object() else {
-        return args.to_string();
-    };
-    let mut redacted = args.clone();
-    let Some(obj_mut) = redacted.as_object_mut() else {
-        return args.to_string();
-    };
-    for (k, v) in obj.iter() {
-        let Some(s) = v.as_str() else { continue };
-        let safe = SAFE_FIELDS.contains(&k.as_str()) && s.chars().count() <= MAX_SAFE_LEN;
-        if safe {
-            continue;
+    /// 递归脱敏：**嵌套结构也要走同一套规则**。
+    ///
+    /// 只处理顶层的话，`{"options": {"content": "…"}}` 这种嵌套写法就能绕过
+    /// （而"绕过"在日志里看不出来）。当前工具还没用嵌套参数，
+    /// 但这条规则的整个意义就是"将来加字段不用再想一遍"。
+    fn redact(v: &serde_json::Value, key: &str) -> serde_json::Value {
+        match v {
+            serde_json::Value::String(s) => {
+                let safe = SAFE_FIELDS.contains(&key) && s.chars().count() <= MAX_SAFE_LEN;
+                if safe {
+                    v.clone()
+                } else {
+                    serde_json::Value::String(format!(
+                        "<已脱敏：{} 字节，指纹 {}>",
+                        s.len(),
+                        fingerprint(s)
+                    ))
+                }
+            }
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.iter().map(|(k, val)| (k.clone(), redact(val, k))).collect(),
+            ),
+            serde_json::Value::Array(items) => {
+                // 数组元素沿用"父键"的判定：`{"paths": ["/a", "/b"]}` 里的字符串
+                // 该不该保留取决于键名 `paths`，而不是元素下标。
+                serde_json::Value::Array(items.iter().map(|val| redact(val, key)).collect())
+            }
+            other => other.clone(),
         }
-        obj_mut.insert(
-            k.clone(),
-            serde_json::Value::String(format!(
-                "<已脱敏：{} 字节，指纹 {:016x}>",
-                s.len(),
-                fingerprint(s)
-            )),
-        );
     }
-    // 工具名单独带上：只看一行日志时，"哪个工具"比参数更重要
-    let _ = tool;
-    redacted.to_string()
+
+    let Some(map) = args.as_object() else {
+        // **非对象参数也要脱敏**（对抗审查发现）：参数来自模型输出，
+        // `"arguments": "\"Hunter2\""` 会让 args 变成 Value::String，
+        // 原来直接 `to_string()` 就把明文写进了审计与 stderr（→ aetherd.log）。
+        return format!(
+            "<已脱敏（非对象参数）：{} 字节，指纹 {}>",
+            args.to_string().len(),
+            fingerprint(&args.to_string())
+        );
+    };
+    let redacted: serde_json::Map<String, serde_json::Value> =
+        map.iter().map(|(k, v)| (k.clone(), redact(v, k))).collect();
+    serde_json::Value::Object(redacted).to_string()
 }
 
 /// 工具执行结果。
@@ -1061,6 +1112,31 @@ mod tests {
         let long = serde_json::json!({ "path": "x".repeat(300) });
         let s2 = audit_args("read_file", &long);
         assert!(!s2.contains(&"x".repeat(300)), "超长的白名单字段也必须脱敏：{s2}");
+
+        // **嵌套结构也要走同一套规则**：只处理顶层的话，嵌套一层就能绕过
+        let nested = serde_json::json!({
+            "options": { "content": "嵌套里的秘密" },
+            "list": ["/ok/path", "列表里的秘密内容"],
+        });
+        let s3 = audit_args("file_write", &nested);
+        assert!(!s3.contains("嵌套里的秘密"), "嵌套对象里的字符串必须脱敏：{s3}");
+        assert!(!s3.contains("列表里的秘密内容"), "数组元素里的字符串必须脱敏：{s3}");
+
+        // 非对象参数也必须脱敏（对抗审查：模型可以传字符串 arguments）
+        let scalar = serde_json::json!("Hunter2-明文口令");
+        let s4 = audit_args("read_file", &scalar);
+        assert!(!s4.contains("Hunter2-明文口令"), "非对象参数不得明文入日志：{s4}");
+        assert!(s4.contains("已脱敏"), "非对象参数应标明已脱敏：{s4}");
+
+        // 指纹必须**加盐**：同一进程内可关联，但不得是"无盐短哈希"（可离线枚举）
+        let a = audit_args("clipboard_write", &serde_json::json!({"text": "same"}));
+        let b = audit_args("clipboard_write", &serde_json::json!({"text": "same"}));
+        assert_eq!(a, b, "同内容在同一次运行内应得到同指纹（可追溯性）");
+        assert_eq!(
+            a.matches("指纹 ").count(),
+            1,
+            "脱敏后应带一个指纹：{a}"
+        );
     }
 
     /// M-1 回归：审计参数必须脱敏 —— 剪贴板明文与写入内容都不得逐字落盘。

@@ -1,4 +1,3 @@
-\n
 AetherOS 0.1 — 这是一个**没有账号体系**的 Live 演示系统。
 
   控制台（含串口）拿到就是 root：出厂镜像的 root 口令为空。
@@ -9,4 +8,6 @@ AetherOS 0.1 — 这是一个**没有账号体系**的 Live 演示系统。
   重新构建（见 platform/build-iso.sh 与 README「边界在哪」）。
 
   细节与残余风险见 docs/SECURITY-AUDIT-2026-10-02.md（M-4）。
-\n
+
+  ⚠️ 本文件里**不要**写字面量 `\n`：getty/agetty 会把它展开成主机名
+  （代码审查发现原来的首尾两行会变成两行主机名，而不是空行）。

@@ -170,7 +170,8 @@ pub fn complete_prefix_len(buf: &[u8]) -> usize {
 }
 
 /// 从字节流头部读出 (object_id, opcode, size)。不校验 size 是否越界。
-pub fn peek_header(buf: &[u8]) -> Result<(u32, u16, usize), WireError> {    if buf.len() < 8 {
+pub fn peek_header(buf: &[u8]) -> Result<(u32, u16, usize), WireError> {
+    if buf.len() < 8 {
         return Err(WireError::ShortHeader);
     }
     let object_id = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);

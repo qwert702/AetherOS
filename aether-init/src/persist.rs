@@ -64,6 +64,13 @@ pub const INSTALL_MARKER: &str = "log/install-id";
 #[cfg(target_os = "linux")]
 const PROBE_MNT: &str = "/run/aether-persist-probe";
 
+/// 探测用外部命令（mount/umount）的超时。
+///
+/// PID 1 **不能**被一次卡住的挂载拖停：设备异常时 `mount` 可能长时间不返回，
+/// 而服务监督与救援控制台都在同一个进程里。15 秒对正常设备绰绰有余。
+#[cfg(target_os = "linux")]
+const MOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// 只读探测：分区里有没有安装标记。
 ///
 /// 为什么必须是**只读**挂载（2026-10-02 审计 H-3 残余）：ext4 在 rw 挂载时会重放
@@ -74,21 +81,77 @@ const PROBE_MNT: &str = "/run/aether-persist-probe";
 /// 诚实边界：能写盘的人可以伪造卷标与标记。它挡的是**误挂**
 /// （双系统机器上把宿主机的根分区当 /var），不是有物理访问权的攻击者 ——
 /// 后者要靠安全启动/TPM，不在本系统当前能力范围内。
+/// 带超时地跑一条外部命令，返回是否成功。
+///
+/// **为什么必须有超时**（代码审查发现）：这段代码跑在 PID 1 里。设备挂起或
+/// `/bin/mount` 卡住时，一次无超时的 `status()` 会把整个服务监督与救援控制台
+/// 一起拖停 —— 那是"为了挂个日志盘把系统搭进去"。超时后杀掉子进程并按失败处理。
+///
+/// 用 `spawn` + 轮询 `try_wait`（100ms 粒度）而不是 `status()`：标准库没有
+/// "带超时的 wait"，而轮询在这里的代价可以忽略（只在启动时跑一两次）。
+#[cfg(target_os = "linux")]
+fn run_with_timeout(cmd: &str, args: &[&str], timeout: std::time::Duration) -> bool {
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    eprintln!("[aether-init] {cmd} 超过 {timeout:?} 未返回，已终止");
+                    let _ = child.kill(); // 杀不掉也只能放弃（下面 wait 会立刻返回）
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                eprintln!("[aether-init] 等待 {cmd} 失败：{e}");
+                return false;
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn has_install_marker(dev: &str) -> bool {
     if std::fs::create_dir_all(PROBE_MNT).is_err() {
         return false;
     }
-    let mounted = std::process::Command::new("/bin/mount")
-        .args(["-t", "ext4", "-o", "ro,nodev,nosuid,noexec", dev, PROBE_MNT])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    // 先尝试卸载：上一次探测如果异常中断（进程被杀），挂载点会残留，
+    // 那样 mount 会直接失败 → 永远认不出持久分区（可用性回归）。
+    // 卸载失败**不阻断**（可能本来就没挂），只当清理。
+    let _ = run_with_timeout("/bin/umount", &[PROBE_MNT], MOUNT_TIMEOUT);
+    let mounted = run_with_timeout(
+        "/bin/mount",
+        &["-t", "ext4", "-o", "ro,nodev,nosuid,noexec", dev, PROBE_MNT],
+        MOUNT_TIMEOUT,
+    );
     if !mounted {
         return false;
     }
-    let found = std::path::Path::new(PROBE_MNT).join(INSTALL_MARKER).is_file();
-    let _ = std::process::Command::new("/bin/umount").arg(PROBE_MNT).status();
+    let marker = std::path::Path::new(PROBE_MNT).join(INSTALL_MARKER);
+    // 必须是**普通文件**，且不能是符号链接（对抗审查发现）：分区里放一个
+    // `log/install-id -> boot.log` 就能骗过 `is_file()`（它跟随链接）。
+    let found = std::fs::symlink_metadata(&marker)
+        .map(|md| md.file_type().is_file())
+        .unwrap_or(false);
+    // 卸载必须成功：否则 rw 挂载会失败（EBUSY），而我们又报"不是我们的分区"，
+    // 用户看到的是"持久化没了"却查不出原因。卸载失败时把它当成"探测失败"（保守）。
+    let unmounted = run_with_timeout("/bin/umount", &[PROBE_MNT], MOUNT_TIMEOUT);
+    if !unmounted {
+        println!("[aether-init] 警告：探测挂载点 {PROBE_MNT} 卸载失败 —— 本次不挂载持久分区");
+        return false;
+    }
     found
 }
 

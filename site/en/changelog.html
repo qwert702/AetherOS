@@ -295,6 +295,54 @@
 <ul>
   <li>中英文 README 结构对齐（英文版补上「边界在哪」整节），全仓库规模/测试数字统一为实测值。</li>
 </ul>
+<h2 id="e-h">十七、安全审计：剩余项已处置（同日，后续批次 E–H）</h2>
+<p>第一轮修复之后又做了四批，把报告里<strong>剩下的每一条</strong>都处置了（处置表见</p>
+<p><a href="../docs/SECURITY-AUDIT-2026-10-02.md"><code>docs/SECURITY-AUDIT-2026-10-02.md</code></a> 附录 E，</p>
+<p>其中三条"只记录/部分"、三条"代码已修但产物或真机待确认"的边界见附录 E 末尾清单）。</p>
+<p>约束：<strong>只改代码、只做本地验证，不对真实机器/真实磁盘/生产主机执行安装、刷写或部署。</strong></p>
+<h3>用户能感知的变化</h3>
+<ul>
+  <li><strong>终端粘贴在出厂镜像里真的安全了</strong>：镜像加了 <code>bash</code>（括号粘贴是 readline 的特性，</li>
+</ul>
+<p>  busybox 的 ash 不实现），合成器优先选它 —— 之前那条"安全路径"在默认 shell 上其实是空转的。</p>
+<ul>
+  <li><strong>服务定义现在必须写明以哪个用户运行</strong>（<code>"user": "root"</code>）。当前 5 个服务确实都需要 root，</li>
+</ul>
+<p>  但这条信息从此是<strong>可见的依赖</strong>，而不是靠读代码猜。</p>
+<ul>
+  <li><strong>镜像不再自称 Buildroot</strong>：hostname / os-release / 登录横幅都改成 AetherOS；</li>
+</ul>
+<p>  启动时会明确提示"本镜像无账号体系，控制台访问即 root"（要上锁的镜像：</p>
+<p>  构建时设 <code>AETHER_ROOT_PW_HASH</code>）。</p>
+<ul>
+  <li><strong><code>busybox</code> 的 setuid 位去掉了</strong>：镜像里没有普通用户，保留它只是白送一个提权面。</li>
+  <li><strong>安装到磁盘更安全</strong>：目标路径会先规范化（<code>/dev//vda</code> 这类写法不能再绕过"拒绝自读自写"）；</li>
+</ul>
+<p>  写入用 <code>conv=fsync</code>；<code>--wipe</code> 可选整盘清零；每次都会清掉旧文件系统签名；</p>
+<p>  持久分区挂载加了"出错转只读"。</p>
+<ul>
+  <li><strong>应用包可以校验了</strong>：新增 <code>aetherd app verify &lt;文件&gt; --sha256 &lt;期望值&gt;</code>，</li>
+</ul>
+<p>  与 <code>sha256sum</code> 结果一致（有公开测试向量钉住）。文档里的安装流程也改成"先校验再解包"。</p>
+<ul>
+  <li><strong>IPC 不再可能被一个环境变量暴露到网络</strong>：非回环监听需要显式二次确认。</li>
+  <li><strong>日志与控制台输出会过滤转义序列</strong>：服务打印的 <code>\x1b[…</code> 不能再清屏、藏光标、改标题。</li>
+</ul>
+<h3>工程与交付</h3>
+<ul>
+  <li><strong>新增 CI</strong>（<code>.github/workflows/ci.yml</code>）+ 本地门禁入口 <code>scripts/gates.py</code>：</li>
+</ul>
+<p>  一条命令跑完全部检查。<strong>Linux 任务的意义</strong>是把 <code>#[cfg(unix)]</code>/<code>cfg(linux)</code> 的断言</p>
+<p>  第一次真的执行起来 —— 此前它们在 Windows 开发机上从不运行，却被当作"已验证"。</p>
+<ul>
+  <li><strong>构建链可对账</strong>：<code>cargo build --locked</code>；Buildroot 压缩包首次记录哈希、之后每次比对；</li>
+</ul>
+<p>  构建结束产出 <code>aetheros-0.1-amd64.iso.sha256</code>。</p>
+<ul>
+  <li><strong>发布产物更小更干净</strong>：release 构建去掉符号表（<code>strip = "symbols"</code>）。</li>
+  <li><strong>部署脚本（H-5）</strong>：主机密钥首次记录、之后严格校验（TOFU）；默认不再用 root 直连、</li>
+</ul>
+<p>  默认要求密钥认证；需要 root 的步骤走 <code>sudo -n</code>。<strong>本轮没有对生产机执行任何部署。</strong></p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>

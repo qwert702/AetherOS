@@ -323,20 +323,40 @@ fn spawn_with_logs(spec: &ServiceSpec) -> Result<Child> {
         use std::os::unix::process::CommandExt; // pre_exec
         let user = spec.user.clone();
         let groups = spec.groups.clone();
-        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
-        let groupdb = std::fs::read_to_string("/etc/group").unwrap_or_default();
+        // 读不到权限库就**报错**，不要 `unwrap_or_default()` 静默变成空文本
+        // （对抗审查发现：那样只会报"指定了不存在的用户"，根因被掩盖）。
+        let passwd = std::fs::read_to_string("/etc/passwd")
+            .map_err(|e| anyhow::anyhow!("服务 {name} 需要降权到「{user}」，但读不到 /etc/passwd：{e}"))?;
+        let groupdb = std::fs::read_to_string("/etc/group")
+            .map_err(|e| anyhow::anyhow!("服务 {name} 需要降权到「{user}」，但读不到 /etc/group：{e}"))?;
         let uid = crate::unit::resolve_uid(&passwd, &user)
             .ok_or_else(|| anyhow::anyhow!("服务 {name} 指定了不存在的用户「{user}」"))?;
-        let gid = crate::unit::resolve_gid(&groupdb, &user).unwrap_or(uid);
+        // 主组：**先看 /etc/passwd 的第 4 字段**（权威来源），再看同名组，都没有就报错。
+        // 不用 uid 兜底 —— 那会在 uid 恰好等于某个无关组 gid 时"静默成功"（代码审查指出）。
+        let gid = crate::unit::resolve_primary_gid(&passwd, &user)
+            .or_else(|| crate::unit::resolve_gid(&groupdb, &user))
+            .ok_or_else(|| {
+                anyhow::anyhow!("服务 {name} 的用户「{user}」没有主组（/etc/passwd 第 4 字段与 /etc/group 都查不到）")
+            })?;
         unsafe {
             command.pre_exec(move || {
-                // 附加组：失败即报错（宁可不启动，也不要以错误的权限跑）
+                // **附加组必须先清空**（自查发现的漏洞）：`setgid` 只改主组，
+                // 不动的附加组会**原样继承** —— 从 root 降权时，子进程仍是组 0 的成员，
+                // 于是"降权"只挡住了属主权限，组权限照旧。`setgroups(0, _)` 是标准做法。
+                let mut gids: Vec<libc::gid_t> = Vec::new();
                 for g in &groups {
-                    if let Some(gid) = crate::unit::resolve_gid(&groupdb, g) {
-                        if libc::setgroups(1, &gid) != 0 {
-                            return Err(std::io::Error::last_os_error());
+                    match crate::unit::resolve_gid(&groupdb, g) {
+                        Some(gid) => gids.push(gid),
+                        None => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::NotFound,
+                                format!("附加组不存在: {g}"),
+                            ))
                         }
                     }
+                }
+                if libc::setgroups(gids.len(), gids.as_ptr()) != 0 {
+                    return Err(std::io::Error::last_os_error());
                 }
                 if libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
                     return Err(std::io::Error::last_os_error());

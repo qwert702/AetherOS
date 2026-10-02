@@ -225,10 +225,13 @@ impl LogWatch {
             // 不跟随符号链接（2026-10-02 审计 L-2）：日志目录里放一个
             // `aetherd.log -> /etc/shadow`，就会让 ops 把目标文件的内容读进
             // 诊断报告并落到 /var/diag。用 symlink_metadata 判"路径本身"的类型。
-            if let Ok(md) = std::fs::symlink_metadata(&path) {
-                if md.file_type().is_symlink() {
-                    continue;
-                }
+            //
+            // 取不到元数据时**也跳过**（代码审查指出原来这里是 fail-open）：
+            // "读不到类型"与"不是符号链接"是两件事，而这一层的取舍是宁可漏读一个日志，
+            // 也不要冒读进任意文件的风险。
+            match std::fs::symlink_metadata(&path) {
+                Ok(md) if !md.file_type().is_symlink() => {}
+                _ => continue,
             }
             let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue };
             if path.extension().and_then(|e| e.to_str()) != Some("log") || name == skip {

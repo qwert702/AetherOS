@@ -19,6 +19,15 @@ const MAX_CONNECTIONS: usize = 32;
 /// 单连接空闲读超时：半开连接不永久占用线程。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// 退出码：拒绝监听非回环地址（`AETHER_BIND` 指向网络但没有二次确认）。
+///
+/// 用命名常量而不是裸数字（代码审查指出）：启动脚本/服务定义要靠退出码区分
+/// "配置被安全策略拒绝"与"真的启动失败"，裸 `2`/`3` 让人只能去读源码。
+const EXIT_REMOTE_IPC_DENIED: i32 = 2;
+/// 退出码：Unix socket 建不起来且没有显式允许"仅 TCP"（见 `serve()` 里的说明）。
+#[cfg(unix)]
+const EXIT_UNIX_SOCKET_UNAVAILABLE: i32 = 3;
+
 /// aetherd 的 Unix socket 路径（定义在协议 crate 里，两侧共用）。
 ///
 /// **默认通道**：socket 由文件权限兜底（`/run` 属 root，socket 0600），因此
@@ -122,7 +131,14 @@ fn spawn_unix_listener(shared: Arc<Shared>) -> std::io::Result<()> {
 /// 而"脚本没设"不是技术保证，只是纪律。
 fn resolve_bind() -> String {
     let bind = std::env::var("AETHER_BIND").unwrap_or_else(|_| "127.0.0.1".into());
-    let loopback = matches!(bind.as_str(), "127.0.0.1" | "::1" | "localhost");
+    // 回环判定用**解析后的 IP**，而不是三个字面量（对抗审查发现）：
+    // `127.0.0.2`、`127.1`、`[::1]` 都是合法回环写法，字面量匹配会把它们误判成
+    // "非回环"而拒绝启动（可用性误伤）。主机名解析不了时按非回环处理（保守）。
+    let loopback = bind
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false);
     if !loopback {
         if std::env::var("AETHER_ALLOW_REMOTE_IPC").as_deref() != Ok("1") {
             eprintln!(
@@ -132,7 +148,7 @@ fn resolve_bind() -> String {
             eprintln!(
                 "         确实需要（例如隔离网络里调试）请**显式**设 AETHER_ALLOW_REMOTE_IPC=1"
             );
-            std::process::exit(2);
+            std::process::exit(EXIT_REMOTE_IPC_DENIED);
         }
         eprintln!(
             "[aetherd] ⚠ 警告：正在监听 {bind}（非回环）—— IPC 无认证，请确认网络可信"
@@ -186,7 +202,7 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
                 "         合成器只连 socket、不回退 TCP，继续跑等于桌面失去确认/剪贴板/服务控制。"
             );
             eprintln!("         开发机调试可显式设 AETHER_ALLOW_TCP_ONLY=1");
-            std::process::exit(3);
+            std::process::exit(EXIT_UNIX_SOCKET_UNAVAILABLE);
         }
     }
 
@@ -649,6 +665,40 @@ mod ipc_gating_tests {
         let gate = Gate::new(std::env::temp_dir().join("aether_clipboard_audit_test.log"));
         let approvals = Approvals::new();
         handle_request(line, &cfg, &gate, &approvals, "test-key", is_ui)
+    }
+
+    /// I-10 回归：按行限长必须**精确** —— 恰好上限、上限+1、带不带换行四种组合。
+    ///
+    /// 这条此前零测试（对抗审查指出"限长是无测试的断言"）。边界错一个字节，
+    /// 要么把合法长行拒掉，要么让超长行漏过。
+    #[test]
+    fn read_line_capped_boundaries() {
+        const MAX: u64 = 16;
+        let read = |s: &str| {
+            let mut r = std::io::BufReader::new(std::io::Cursor::new(s.as_bytes().to_vec()));
+            read_line_capped(&mut r, MAX)
+        };
+
+        // 恰好 MAX 字节且带换行 → 通过（不能误判为超长）
+        let exact = "a".repeat(MAX as usize - 1) + "\n";
+        assert_eq!(exact.len() as u64, MAX);
+        assert!(read(&exact).is_ok(), "恰好 MAX 且带换行应通过");
+
+        // MAX-1 字节带换行 → 通过
+        let shorter = "a".repeat(MAX as usize - 2) + "\n";
+        assert!(read(&shorter).is_ok());
+
+        // MAX 字节但**没有换行**（被截断）→ 必须报错
+        let truncated = "a".repeat(MAX as usize);
+        let e = read(&truncated).expect_err("无换行的满额行必须报错");
+        assert!(e.to_string().contains("上限"), "错误信息应说明上限：{e}");
+
+        // MAX+1 字节带换行 → 换行落在上限之后 → 必须报错
+        let over = "a".repeat(MAX as usize) + "\n";
+        assert!(read(&over).is_err(), "超过 MAX 的行必须被拒");
+
+        // 空输入（对端关闭）→ 空串，不报错
+        assert_eq!(read("").unwrap(), "");
     }
 
     #[test]

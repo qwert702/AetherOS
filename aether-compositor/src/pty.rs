@@ -126,19 +126,28 @@ impl Pty {
                 Ok(())
             });
         }
-        let child = cmd.spawn()?;
+        let mut child = cmd.spawn()?;
 
         // 5) 主端设非阻塞：主循环每帧只"取走现有数据"，绝不阻塞渲染
         //
         // fcntl 的返回值必须检查（审计 L-15）：F_GETFL 失败返回 -1，
         // 拿 -1 去 `| O_NONBLOCK` 会把标志位写成一堆垃圾；F_SETFL 失败则意味着
         // 主端仍是阻塞的 —— 而整个渲染循环建立在"它不阻塞"的前提上。
+        //
+        // 失败时**必须回收已经 fork 出来的 shell**（代码审查指出）：直接 `return Err`
+        // 会留下一个没人管、也没人 wait 的 root 子进程。
         let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
         if flags < 0 {
-            return Err(io::Error::last_os_error());
+            let e = io::Error::last_os_error();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
         }
         if unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(io::Error::last_os_error());
+            let e = io::Error::last_os_error();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
         }
 
         let mut pty = Pty { master, child, reaped: false };
