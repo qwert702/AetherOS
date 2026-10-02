@@ -168,10 +168,26 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
         shared.gate.auto_approve_below()
     );
 
-    // Unix socket 优先通道（0600）。建不起来只告警：TCP 还在，服务不该因此停摆。
+    // Unix socket 优先通道（0600）。
+    //
+    // 建不起来**不再静默降级**（代码审查 2.4）：合成器只连 socket、**不回退 TCP**，
+    // 所以"只剩 TCP"意味着桌面失去 L2+ 确认、剪贴板、服务控制 —— 而用户只会看到
+    // 一行日志。要么显式声明"我只要 TCP"（开发机调试），要么直接失败退出让问题可见。
     #[cfg(unix)]
     if let Err(e) = spawn_unix_listener(shared.clone()) {
-        eprintln!("[aetherd] 警告：Unix socket 建立失败（{e}）—— 只剩 TCP 通道，客户端会拒绝经它注册");
+        if std::env::var("AETHER_ALLOW_TCP_ONLY").as_deref() == Ok("1") {
+            eprintln!(
+                "[aetherd] 警告：Unix socket 建立失败（{e}）—— 已按 AETHER_ALLOW_TCP_ONLY=1 \
+                 仅提供 TCP 通道"
+            );
+        } else {
+            eprintln!("[aetherd] 致命：Unix socket 建立失败（{e}）");
+            eprintln!(
+                "         合成器只连 socket、不回退 TCP，继续跑等于桌面失去确认/剪贴板/服务控制。"
+            );
+            eprintln!("         开发机调试可显式设 AETHER_ALLOW_TCP_ONLY=1");
+            std::process::exit(3);
+        }
     }
 
     for stream in listener.incoming() {
@@ -252,9 +268,27 @@ impl Drop for ActiveGuard<'_> {
     }
 }
 
+/// 读一行请求，**按行**限长（2026-10-02 审计 I-10）。
+///
+/// 原来用 `BufReader::take(MAX_LINE_BYTES)`：`take` 作用在读取器上，是**连接级累计**
+/// 上限 —— 一条连接累计读满 1MB 后被静默关闭（正常的长连接、多轮对话会莫名断开），
+/// 而单条超长行反而不受这个限制约束（它在累计到 1MB 之前就能把内存吃满）。
+/// 改成按行判：超长行报错断开，正常连接不再有累计上限。
+fn read_line_capped<R: BufRead + ?Sized>(reader: &mut R, max: u64) -> std::io::Result<String> {
+    let mut line = String::new();
+    let n = (&mut *reader).take(max).read_line(&mut line)?;
+    if n as u64 >= max && !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("请求行超过 {max} 字节上限"),
+        ));
+    }
+    Ok(line)
+}
+
 /// 处理一条连接（TCP 与 Unix socket 共用）。
 ///
-/// `reader`/`writer` 是同一连接的两个句柄：读端要 `take()` 限长，写端要逐条 flush，
+/// `reader`/`writer` 是同一连接的两个句柄：读端按行限长，写端逐条 flush，
 /// 用一对句柄而不是一个 `TcpStream`，是为了两种传输走同一段逻辑。
 /// 读超时由调用方在底层 stream 上设置（两种 stream 的设置方法一致，但不是同一类型）。
 fn handle_conn<R: Read, W: Write>(
@@ -265,16 +299,14 @@ fn handle_conn<R: Read, W: Write>(
     approvals: &Approvals,
     ui_key: &str,
 ) -> anyhow::Result<()> {
-    // 注意：`take()` 作用在整个 reader 生命周期上，是**连接级累计**上限而非单行上限
-    // （见代码审查 P2-17）。此处保留该行为以约束 Approvals 的内存增长。
-    let mut reader = BufReader::new(reader).take(MAX_LINE_BYTES);
+    let mut reader = BufReader::new(reader);
     let mut writer = writer;
-    let mut line = String::new();
+    let mut line: String;
     // 本连接是否已注册为 UI 通道：只有已注册通道能兑现确认令牌（P1-8）
     let mut is_ui = false;
     loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        line = read_line_capped(&mut reader, MAX_LINE_BYTES)?;
+        if line.is_empty() {
             return Ok(()); // 对端关闭
         }
         for resp in handle_request(&line, cfg, gate, approvals, ui_key, &mut is_ui) {

@@ -358,28 +358,52 @@ fn fingerprint(s: &str) -> u64 {
 ///
 /// `pub` 是因为**所有**写审计的地方都要用它（执行路径、用户拒绝路径……）：
 /// 只在其中一处脱敏等于没脱敏（自查时发现 `ConfirmCancel` 漏了）。
+///
+/// ## 判定方式：**默认脱敏**，而不是"点名脱敏"
+///
+/// 代码审查指出：原来是"字段名黑名单"（只脱敏 clipboard_write.text / file_write.content），
+/// 于是**新增一个携带内容的字段就会漏** —— 而"漏"这件事在审计里看不出来。
+/// 现在反过来：只有**明确认定为安全**的短字段（路径、id、枚举名等）原样保留，
+/// 其余字符串值一律脱敏。判据是"字段名在白名单里 **且** 值不太长"，
+/// 这样既不会把 `{"path":"/etc/x"}` 这种有用的追溯信息抹掉，
+/// 也不会因为将来加了 `note`/`payload` 之类的字段而漏。
 pub fn audit_args(tool: &str, args: &serde_json::Value) -> String {
-    /// (工具名, 需要脱敏的字段)。
-    const SENSITIVE_FIELDS: &[(&str, &[&str])] = &[
-        ("clipboard_write", &["text"]),
-        ("file_write", &["content"]),
+    /// 可以原样记录的字段名（都是"标识/位置/枚举"类，不含用户内容）。
+    ///
+    /// 清单来自工具注册表实际用到的键（`action/app/confirm/disk/entry/from/id/
+    /// layout/path/probe/scope/to` 等）—— **不含** `content`/`text`，
+    /// 那两个就是这条规则要挡的东西。
+    const SAFE_FIELDS: &[&str] = &[
+        "path", "dir", "from", "to", "id", "name", "tool", "unit", "action", "scope",
+        "disk", "confirm", "entry", "app", "session_id", "approval", "probe", "layout",
     ];
-    let Some((_, fields)) = SENSITIVE_FIELDS.iter().find(|(t, _)| *t == tool) else {
+    /// 白名单字段也超过这个长度就脱敏（防止有人把内容塞进 `path` 这种字段）。
+    const MAX_SAFE_LEN: usize = 256;
+
+    let Some(obj) = args.as_object() else {
         return args.to_string();
     };
     let mut redacted = args.clone();
-    let Some(obj) = redacted.as_object_mut() else {
+    let Some(obj_mut) = redacted.as_object_mut() else {
         return args.to_string();
     };
-    for field in *fields {
-        let Some(v) = obj.get_mut(*field) else { continue };
-        let raw = v.as_str().unwrap_or_default();
-        *v = serde_json::Value::String(format!(
-            "<已脱敏：{} 字节，指纹 {:016x}>",
-            raw.len(),
-            fingerprint(raw)
-        ));
+    for (k, v) in obj.iter() {
+        let Some(s) = v.as_str() else { continue };
+        let safe = SAFE_FIELDS.contains(&k.as_str()) && s.chars().count() <= MAX_SAFE_LEN;
+        if safe {
+            continue;
+        }
+        obj_mut.insert(
+            k.clone(),
+            serde_json::Value::String(format!(
+                "<已脱敏：{} 字节，指纹 {:016x}>",
+                s.len(),
+                fingerprint(s)
+            )),
+        );
     }
+    // 工具名单独带上：只看一行日志时，"哪个工具"比参数更重要
+    let _ = tool;
     redacted.to_string()
 }
 
@@ -1014,6 +1038,29 @@ mod tests {
         // 只读探针不应被误判（否则桌面状态查询会被无谓地挡住）
         assert!(!requires_trusted_channel("sys_info"));
         assert!(!requires_trusted_channel("sys_probe"));
+    }
+
+    /// 默认脱敏（代码审查建议的治本改法）：**没登记为安全的字符串字段一律脱敏**。
+    ///
+    /// 旧实现是"点名脱敏"（只认 clipboard_write.text / file_write.content），
+    /// 于是将来新增一个携带内容的字段就会漏 —— 而"漏"在审计里看不出来。
+    /// 这条测试用**一个当前不存在的字段名**来钉住新语义。
+    #[test]
+    fn audit_args_redacts_unknown_string_fields_by_default() {
+        let args = serde_json::json!({
+            "path": "/tmp/x",              // 白名单 → 保留（追溯需要）
+            "future_field": "尚未存在的秘密内容", // 不在白名单 → 必须脱敏
+            "nested": { "a": 1 },          // 非字符串 → 原样
+        });
+        let s = audit_args("read_file", &args);
+        assert!(s.contains("/tmp/x"), "白名单字段应保留：{s}");
+        assert!(!s.contains("尚未存在的秘密内容"), "未登记字段必须默认脱敏：{s}");
+        assert!(s.contains("nested"), "非字符串字段应保留：{s}");
+
+        // 白名单字段也要有长度上限：否则可以把内容塞进 `path` 绕过脱敏
+        let long = serde_json::json!({ "path": "x".repeat(300) });
+        let s2 = audit_args("read_file", &long);
+        assert!(!s2.contains(&"x".repeat(300)), "超长的白名单字段也必须脱敏：{s2}");
     }
 
     /// M-1 回归：审计参数必须脱敏 —— 剪贴板明文与写入内容都不得逐字落盘。

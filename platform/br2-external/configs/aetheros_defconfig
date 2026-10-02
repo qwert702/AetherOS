@@ -7,6 +7,9 @@ BR2_x86_64=y
 
 # 系统配置
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_AETHER_PATH)/../overlay"
+# 后处理（2026-10-02 审计 I-2/I-4）：去掉 busybox 的 setuid 位、写入 AetherOS 系统指纹。
+# 见 platform/br2-external/board/aether/post-build.sh 里的理由说明。
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_AETHER_PATH)/board/aether/post-build.sh"
 # /init 由 overlay 提供（shell 脚本，exec aether-init --pid1）
 BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y
 

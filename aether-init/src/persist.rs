@@ -42,9 +42,13 @@ pub const VAR_DIRS: [&str; 3] = ["/var/log/aether", "/var/diag", "/var/tmp"];
 /// `nodev`（设备节点）与 `nosuid`（setuid/setgid 位）才是这一层真正需要的两个约束：
 /// 它们挡掉"用持久分区提权"，而不影响正常程序执行。
 ///
+/// `errors=remount-ro`（2026-10-02 审计收尾）：文件系统出错时**转只读**而不是继续写。
+/// 日志/审计盘上一旦发生结构性错误，继续写只会扩大损坏面；转只读后系统仍能跑
+/// （日志退化为不可写，`aether-init` 会提示），用户有机会把数据抢救出来。
+///
 /// 残余风险（已知、有理由）：该分区可写且可执行 ⇒ 能往它写的人可以留持久化代码。
 /// 但"能写"已经要求 root（或经 AI 的 L2 确认写白名单），所以在当前单用户模型下不构成升级路径。
-pub const PERSIST_MOUNT_OPTS: &str = "nodev,nosuid";
+pub const PERSIST_MOUNT_OPTS: &str = "nodev,nosuid,errors=remount-ro";
 
 /// fsck 退出码 ≥ 此值表示"有未纠正的错误"（e2fsck 语义：4 = 未修复，8 = 操作错误）。
 const FSCK_UNCORRECTED_CODE: i32 = 4;
@@ -341,11 +345,16 @@ mod tests {
         for want in ["nodev", "nosuid"] {
             assert!(opts.contains(&want), "挂载选项缺少 {want}：{PERSIST_MOUNT_OPTS}");
         }
+        // 出错转只读：继续写只会扩大损坏面
+        assert!(
+            opts.contains(&"errors=remount-ro"),
+            "挂载选项缺少 errors=remount-ro：{PERSIST_MOUNT_OPTS}"
+        );
         // **不能有 noexec**：/var/apps 上的已装应用要能 execve（见常量文档）
         assert!(
             !opts.contains(&"noexec"),
             "不能加 noexec —— 它会让 /var/apps 里已装的应用无法运行：{PERSIST_MOUNT_OPTS}"
         );
-        assert_eq!(opts.len(), 2, "不应有意外选项：{PERSIST_MOUNT_OPTS}");
+        assert_eq!(opts.len(), 3, "不应有意外选项：{PERSIST_MOUNT_OPTS}");
     }
 }
