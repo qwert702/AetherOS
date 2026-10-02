@@ -414,10 +414,11 @@ def main(argv: list[str]) -> int:
         sys.exit("没有 site/data.json —— 先跑 python scripts/gen-site.py --refresh")
 
     if refresh:
-        DATA.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8", newline="\n")
-        print("  data.json:", " ".join(f"{k}={v}" for k, v in data.items()
-                                      if k in ("version", "iso_size", "rust_lines", "tests")))
+        # **不在这里写 data.json**：页面渲染在下面（第 428 行起），而补丁靠
+        # "上次值（data.json）→ 本次值"。若先落盘再渲染，一旦渲染这步失败
+        # （典型：解释器缺 Pillow，图片与页面渲染被跳过），data.json 记的是新值、
+        # 页面还是旧值，下次运行"上次值 → 本次值"就恒等，补丁**永不触发** ——
+        # 站点从此再也更新不了，而且看不出原因。改为渲染+自检通过后再落盘（见函数末尾）。
         build_images(data)
         write_generated(data)
 
@@ -432,6 +433,23 @@ def main(argv: list[str]) -> int:
             if not check:
                 page.write_text(want, encoding="utf-8", newline="\n")
                 print("  渲染", page.relative_to(ROOT))
+
+    # —— refresh 路径：渲染完成后**先自检、再落盘 data.json** ——
+    #
+    # 自检判据与 `--check` 的"真门禁"一致：本次的值必须真的出现在页面上。
+    # 不通过就**不写 data.json**，从而保住"上次值 → 本次值"的锚点，下次运行还能把补丁打上。
+    # 这样即使某次渲染失败（缺 Pillow 等），站点也不会陷入"再也更新不了"的状态。
+    if refresh and not check:
+        idx = ROOT / "site" / "index.html"
+        text = idx.read_text(encoding="utf-8") if idx.exists() else ""
+        miss = [k for k in ("rust_lines", "tests") if str(data.get(k, "")) not in text]
+        if miss:
+            print("[FAIL] 页面没拿到本次值 %s —— **不写 data.json**（保住补丁锚点，可重跑修复）" % miss)
+            return 1
+        DATA.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8", newline="\n")
+        print("  data.json:", " ".join(f"{k}={v}" for k, v in data.items()
+                                      if k in ("version", "iso_size", "rust_lines", "tests")))
 
     if check:
         if drift:

@@ -111,6 +111,32 @@
 <p>但实测 page ≥ 2 渲染结果与 page 2 完全一致 —— 说明<strong>页值在到达该函数之前就被固定成了 2</strong>，</p>
 <p>或者 match 里存在比我的分支<strong>更早命中</strong>的宽泛分支。下一步：</p>
 <p>在 <code>--shot</code> 分支里确认传给 <code>render_frame</code> 的 <code>settings_page</code> 实际取值（而不是看代码"应该"传什么）。</p>
+<h2 id="">十、更正第九节：走查覆盖<strong>其实是有效的</strong>（我上一条判断错了）</h2>
+<p>第九节说"三张图其实是同一页" —— <strong>那个结论是错的</strong>，错在<strong>我裁错了区域</strong>。</p>
+<h3>真相</h3>
+<p>用探针打印走查时每个窗口的真实矩形，拿到关键事实：</p>
+<p>```</p>
+<p>i=3 kind=Settings  rect=(647,350,617,294)  floating=true</p>
+<p>```</p>
+<p><strong>设置窗口在 (647,350)，不是我假设的 (280,150)</strong> —— 我按错误矩形裁剪，</p>
+<p>自然量到"窗口内 0.00% 差异"，于是误判为同一页。</p>
+<p>用<strong>真实页面区</strong> (815,350)-(1264,644)（窗口去掉 168px 侧栏）复测四张图：</p>
+<table><tbody>
+  <tr><td>图</td><td>页面区哈希</td></tr>
+  <tr><td>网络</td><td><code>e58b441735b3</code></td></tr>
+  <tr><td>应用</td><td><code>d29124b6f9cf</code></td></tr>
+  <tr><td>权限与隐私</td><td><code>2442e9ca78ab</code></td></tr>
+  <tr><td>外观（默认）</td><td><code>ce9201abcb68</code></td></tr>
+</tbody></table>
+<p><strong>四者两两不同</strong> ✓ —— 三页确实各自渲染，视觉基线成立。</p>
+<h3>为什么肉眼会觉得"是同一张"</h3>
+<p>三页版式相同（标题 + 若干行文字），差异只占整图 1.7%–2.1%（就是文字本身的面积）。</p>
+<p><strong>"看起来像"不等于"内容相同"</strong> —— 反过来，"哈希不同"也<strong>不足以</strong>证明内容不同；</p>
+<p>判据必须是<strong>在目标控件真实矩形内</strong>比较像素，而矩形要<strong>用探针实测</strong>，不能凭代码推断。</p>
+<h3>探针还顺带发现的干扰源</h3>
+<p><code>--settings</code> 会多开一个窗口，<code>snap_now</code> 因窗口数变化<strong>重排演示桌面</strong></p>
+<p>（<code>Music</code> 从 617×602 变成 617×294）。所以拿"带 settings"和"不带 settings"的图对比，</p>
+<p>差异里混着<strong>布局变化</strong>，不能直接当页面差异。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>
