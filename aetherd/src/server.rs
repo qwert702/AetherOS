@@ -532,11 +532,39 @@ fn handle_request(
             vec![Response::ConfigReloading]
         }
         Request::SysInfo { .. } => vec![Response::SysInfo(sys_report())],
-        Request::ServiceControl { unit, action } => vec![Response::ServiceAck {
-            unit,
-            ok: false,
-            message: format!("服务控制 {action:?} 将在 M3 aether-init 就绪后生效"),
-        }],
+        Request::ServiceControl { unit, action } => {
+            // 服务控制是"改系统状态"，与剪贴板/配置重载同一门槛：**必须**由已注册的
+            // UI 通道发起。此前这里是个桩（直接回 ok:false + "M3 就绪后生效"），
+            // 于是合成器的「重启服务」永远失败且原因是一句陈旧占位文案。
+            if !*is_ui {
+                audit_or_warn(gate, "service_control", Level::L2, verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝服务控制：本连接未注册为 UI 通道");
+                return vec![Response::Error {
+                    code: 403,
+                    message: "服务控制必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            // 审计参数走 audit_call（Gate 内部统一脱敏）：服务名与动作都是安全字段，
+            // 但仍走同一条路径，避免"新增一处直接落盘"的口子。
+            let args = serde_json::json!({ "unit": unit, "action": format!("{action:?}") });
+            match crate::control_init_service(&unit, action) {
+                Ok(message) => {
+                    if let Err(e) = gate.audit_call("service_control", Level::L2, &args, verdict::ALLOWED) {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 服务控制成功：{unit} {action:?} —— {message}");
+                    vec![Response::ServiceAck { unit, ok: true, message }]
+                }
+                Err(e) => {
+                    // 失败也留痕：审计要能回答"有没有人试图重启服务、结果如何"
+                    if let Err(e2) = gate.audit_call("service_control", Level::L2, &args, verdict::FAILED) {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 服务控制失败：{unit} {action:?} —— {e}");
+                    vec![Response::ServiceAck { unit, ok: false, message: format!("{e}") }]
+                }
+            }
+        }
     }
 }
 
@@ -665,6 +693,56 @@ mod ipc_gating_tests {
         let gate = Gate::new(std::env::temp_dir().join("aether_clipboard_audit_test.log"));
         let approvals = Approvals::new();
         handle_request(line, &cfg, &gate, &approvals, "test-key", is_ui)
+    }
+
+    /// 批次 I 回归：服务控制**必须**由已注册的 UI 通道发起。
+    ///
+    /// 此前这里是个不校验身份的桩（谁连上都能调，且永远回 ok:false）——
+    /// 现在真的会去改系统服务，所以身份门槛是安全属性，不是形式。
+    #[test]
+    fn service_control_requires_registered_ui_channel() {
+        let mut not_ui = false;
+        let out = handle_line(
+            &aether_ipc::encode(&Request::ServiceControl {
+                unit: "network".into(),
+                action: aether_ipc::ServiceAction::Restart,
+            }),
+            &mut not_ui,
+        );
+        assert!(
+            matches!(&out[0], Response::Error { code: 403, .. }),
+            "未注册连接必须 403，实际：{out:?}"
+        );
+        assert!(!not_ui, "拒绝请求不应把连接升级为 UI 通道");
+    }
+
+    /// 批次 I 回归：服务控制**不再假装成功**。
+    ///
+    /// 关键断言是"那句陈旧占位文案不能再出现" —— 桩的实现会回
+    /// `ok:false, "…将在 M3 aether-init 就绪后生效"`，而 aether-init 早就存在。
+    /// 非 Linux（本机单测）走"没有 init 通道"的诚实失败；Linux CI 上若连不上
+    /// init 也是失败路径。两种情况都要求：要么成功，要么给出**真实原因**。
+    #[test]
+    fn service_control_reports_real_result_not_placeholder() {
+        let mut is_ui = true;
+        let out = handle_line(
+            &aether_ipc::encode(&Request::ServiceControl {
+                unit: "network".into(),
+                action: aether_ipc::ServiceAction::Status,
+            }),
+            &mut is_ui,
+        );
+        let Response::ServiceAck { ok, message, unit } = &out[0] else {
+            panic!("期望 ServiceAck，实际：{out:?}");
+        };
+        assert_eq!(unit, "network", "ack 必须带回单元名");
+        assert!(
+            !message.contains("M3"),
+            "不得再回那句陈旧占位文案（说明又变回桩了）：{message}"
+        );
+        if !*ok {
+            assert!(!message.trim().is_empty(), "失败必须给出原因，不能是空话");
+        }
     }
 
     /// I-10 回归：按行限长必须**精确** —— 恰好上限、上限+1、带不带换行四种组合。

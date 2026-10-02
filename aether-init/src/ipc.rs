@@ -17,8 +17,11 @@ fn lock_ok(manager: &Mutex<Manager>) -> std::sync::MutexGuard<'_, Manager> {
 }
 
 /// 服务控制 socket 路径（Linux）。PID 1 边界，仅 root 可连。
+///
+/// 值来自协议 crate（`aether_ipc::INIT_SOCKET_PATH`）——连接侧（aetherd / aether-ops）
+/// 用的是同一个常量，不再各写一份字面量（批次 I 收拢）。
 #[cfg(target_os = "linux")]
-pub const SOCKET_PATH: &str = "/run/aether-init.sock";
+pub const SOCKET_PATH: &str = aether_ipc::INIT_SOCKET_PATH;
 
 /// 同时服务的连接数上限（PID 1 的线程池必须封顶：服务控制通道被打满 = 系统不可控）。
 const MAX_CONNECTIONS: usize = 16;

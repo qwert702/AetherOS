@@ -156,6 +156,17 @@ pub const DEFAULT_PORT: u16 = 7311;
 /// aether-init 服务控制（PID 1）的监听端口。
 pub const INIT_PORT: u16 = 7312;
 
+/// aether-init 服务控制通道的 Unix socket 路径（Linux，0600 root-only）。
+///
+/// 同 `UNIX_SOCKET_PATH` 的理由：**连接侧与监听侧必须一致**。此前这个字面量
+/// 在三个 crate 里各写了一份（`aether-init/src/ipc.rs`、`aetherd/src/main.rs`、
+/// `aether-ops`），任何一处改动都会变成"连不上"这种最难查的故障。
+/// 2026-10-02 功能批次 I 收拢到这里（协议 crate 是"跨组件契约"的家）。
+///
+/// 权限由 aether-init 在 bind 后设为 0600，且 `peer_uid` 只接受 root/同 uid ——
+/// 因此"谁能改系统服务"由内核保证，不依赖调用方自觉。
+pub const INIT_SOCKET_PATH: &str = "/run/aether-init.sock";
+
 /// aetherd 的 Unix socket 路径（**默认通道**，0600）。
 ///
 /// 放在协议 crate 里而不是各组件各写一遍：aetherd（监听侧）与合成器（连接侧）

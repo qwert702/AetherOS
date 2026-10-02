@@ -603,11 +603,33 @@ fn tool_sys_info(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
             #[cfg(not(target_os = "linux"))]
             {
                 let _ = scope;
-                Ok("内存: 预览环境暂无 /proc，接入系统服务后填充（M3 aether-init）".into())
+                // 如实说明"这个平台没有 /proc"，而不是拿一句占位文案糊过去
+                Ok("内存: 本平台没有 /proc（开发机预览），无真实数据".into())
             }
         }
-        "services" => Ok("运行中服务: aetherd, aether-compositor（M3 后由 aether-init 提供）".into()),
-        other => Ok(format!("范围 {other} 的真实数据将在 M3/M5 接入系统服务后提供")),
+        // **必须是真实数据**（2026-10-02 功能批次 I 修正）：
+        // 此前这里返回硬编码的 "aetherd, aether-compositor（M3 后由 aether-init 提供）" ——
+        // 那是一句**编造的服务列表**：AI 会把它当作事实汇报给用户，而真实运行的服务
+        // 可能完全不同（比如 ops 挂了、compositor 没起来）。现在查 aether-init 的
+        // 真实状态；查不到就如实说查不到（不编、不猜）。
+        "services" => {
+            let report = crate::collect_sys_report();
+            if report.services.is_empty() {
+                return Ok("运行中服务: 取不到（aether-init 未响应）".into());
+            }
+            let lines: Vec<String> = report
+                .services
+                .iter()
+                .map(|s| {
+                    let pid = s.pid.map(|p| format!(" pid={p}")).unwrap_or_default();
+                    format!("{} {:?}{pid}", s.unit, s.state)
+                })
+                .collect();
+            Ok(format!("运行中服务（{} 个）: {}", lines.len(), lines.join(", ")))
+        }
+        other => Ok(format!(
+            "未知范围 {other}；可用范围: memory、services、cpu、disk"
+        )),
     }
 }
 
@@ -1250,6 +1272,47 @@ mod tests {
         let r = execute(&gate(), &mut ctx, "sys_probe", &serde_json::json!({"probe":"format_everything"}), true);
         let err = r.unwrap_err().to_string();
         assert!(err.contains("未知探针"));
+    }
+
+    /// 批次 I 回归：`sys_info` 不得返回**编造**的服务列表或占位文案。
+    ///
+    /// 此前 `scope=services` 返回硬编码的 "aetherd, aether-compositor（M3 后由
+    /// aether-init 提供）" —— AI 会把它当事实讲给用户，而真实运行的服务可能完全不同。
+    /// 现在的规矩：拿得到就报真实数据，拿不到就说拿不到。
+    #[test]
+    fn sys_info_services_never_fabricates() {
+        let mut ctx = ToolCtx::default();
+        let out = execute(&gate(), &mut ctx, "sys_info", &serde_json::json!({"scope":"services"}), true)
+            .expect("sys_info services 应可执行");
+        let ExecOutcome::Done(out) = out else {
+            panic!("sys_info 应返回 Done");
+        };
+        assert!(
+            !out.contains("M3"),
+            "不得再出现占位文案（说明又变回硬编码了）：{out}"
+        );
+        // 非 Linux（本机单测）没有 init 通道 → 必须如实说取不到，而不是编一个列表
+        #[cfg(not(target_os = "linux"))]
+        assert!(out.contains("取不到"), "拿不到数据时要如实说明：{out}");
+        // Linux 上要么给真实服务，要么明说取不到 —— 两者都不含编造内容
+        #[cfg(target_os = "linux")]
+        assert!(
+            out.contains("运行中服务") || out.contains("取不到"),
+            "Linux 上应是真实列表或如实说明：{out}"
+        );
+    }
+
+    /// 批次 I 回归：未知 scope 要**列出可用值**，而不是承诺"以后会提供"。
+    #[test]
+    fn sys_info_unknown_scope_lists_valid_values() {
+        let mut ctx = ToolCtx::default();
+        let out = execute(&gate(), &mut ctx, "sys_info", &serde_json::json!({"scope":"weather"}), true)
+            .expect("未知 scope 也应给可读回复");
+        let ExecOutcome::Done(out) = out else {
+            panic!("sys_info 应返回 Done");
+        };
+        assert!(out.contains("memory") && out.contains("services"), "应列出可用范围：{out}");
+        assert!(!out.contains("M3") && !out.contains("M5"), "不得再承诺以后提供：{out}");
     }
 
     #[test]

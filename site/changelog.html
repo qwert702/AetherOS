@@ -342,6 +342,43 @@
   <li><strong>部署脚本（H-5）</strong>：主机密钥首次记录、之后严格校验（TOFU）；默认不再用 root 直连、</li>
 </ul>
 <p>  默认要求密钥认证；需要 root 的步骤走 <code>sudo -n</code>。<strong>本轮没有对生产机执行任何部署。</strong></p>
+<h2 id="i">十八、功能缺口开始动工（同日，批次 I：地基）</h2>
+<p>按 <a href="../docs/FEATURE-GAPS-2026-10-02.md"><code>docs/FEATURE-GAPS-2026-10-02.md</code></a> 的 26 条缺口清单开工。</p>
+<p>第一批是<strong>地基</strong>（后面每一批都要踩在它上面），重点是先修掉一个"文档没说、但会让后面全白做"的硬伤。</p>
+<h3>修掉一个硬伤：设置里的「重启服务」其实是假的</h3>
+<p><code>aetherd</code> 收到 <code>ServiceControl</code> 时<strong>从不转发给 aether-init</strong>，而是直接回一句</p>
+<p><code>"服务控制 … 将在 M3 aether-init 就绪后生效"</code> —— 而 aether-init 早就在运行了。</p>
+<p>于是合成器设置里的「重启网络服务 / 重启 AI 服务」<strong>必然失败</strong>，</p>
+<p>且失败原因是一句陈旧占位文案。这正是本仓库最忌讳的"看着做了其实没做"。</p>
+<p>现在真的转发：已注册 UI 通道 → aetherd → <code>/run/aether-init.sock</code> → 服务动作，</p>
+<p><strong>成功与失败都落审计</strong>（<code>allowed</code> / <code>failed</code>），失败原因原样带回（不包装成成功）。</p>
+<p>非 Linux 平台如实回"没有 aether-init 控制通道"，不假装成功。</p>
+<h3>不再编造系统信息</h3>
+<p><code>sys_info</code> 的 <code>services</code> 范围此前返回<strong>硬编码的假服务列表</strong></p>
+<p>（<code>"aetherd, aether-compositor（M3 后由 aether-init 提供）"</code>）—— AI 会把它当事实讲给用户，</p>
+<p>而真实运行的服务可能完全不同。现在查 aether-init 的真实状态；查不到就明说"取不到"。</p>
+<p>未知范围也不再承诺"以后提供"，而是<strong>列出可用范围</strong>。</p>
+<h3>顺手收拢一处会漂的契约</h3>
+<p><code>/run/aether-init.sock</code> 这个路径此前在<strong>三个 crate 里各写了一份字面量</strong></p>
+<p>（aether-init 监听侧、aetherd、aether-ops）—— 任何一处改动都会变成"连不上"这类最难查的故障。</p>
+<p>按协议 crate 里已有的做法（<code>UNIX_SOCKET_PATH</code> / <code>UI_KEY_PATH</code>）收拢为</p>
+<p><code>aether_ipc::INIT_SOCKET_PATH</code> 单一来源。</p>
+<h3>设置持久化扩展（为后面几批铺路）</h3>
+<p><code>settings.json</code> 新增 5 个字段：壁纸、界面缩放、默认打开方式、提示音开关、界面语言。</p>
+<p>两条设计约束：</p>
+<ul>
+  <li>新字段全部是<strong>下标/小整数</strong>而不是字符串 —— <code>Settings</code> 是 <code>Copy</code>，且这些值本来就该可枚举</li>
+</ul>
+<p>  （内置集合 + 下标），顺带挡住"设置文件里写任意字符串"的无效状态；</p>
+<ul>
+  <li><strong>旧设置文件必须能读</strong>（缺键走默认、越界夹取/吸附），有回归测试钉住 ——</li>
+</ul>
+<p>  用户手里的 <code>settings.json</code> 可能是上个版本写的。</p>
+<h3>验证</h3>
+<p><code>cargo build --all-targets --locked</code> <strong>0 警告</strong>；<code>cargo test</code> <strong>406 项全绿</strong></p>
+<p>（+6：服务控制鉴权与真实性、<code>sys_info</code> 不编造 ×2、设置兼容与吸附 ×2 等）；</p>
+<p>6 crate musl <strong>0 警告</strong>；文档门禁三层 + 测试分布表全过；规模 27,543 行 / 45 文件。</p>
+<p><strong>未实机验证</strong>：aetherd→aether-init 的真实转发要在目标机上跑（本机是 Windows，没有 init 通道）。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>

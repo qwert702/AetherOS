@@ -607,10 +607,66 @@ fn query_init_services() -> anyhow::Result<Vec<aether_ipc::ServiceStatus>> {
     }
 }
 
-/// aether-init 服务控制通道路径（与 aether-init/ipc.rs 保持一致）。
+/// aether-init 服务控制通道路径。
+///
+/// 值来自协议 crate（`aether_ipc::INIT_SOCKET_PATH`）——监听侧与所有连接侧共用
+/// 同一个常量（2026-10-02 批次 I 收拢；此前三个 crate 各写了一份字面量）。
 #[cfg(target_os = "linux")]
 fn aether_init_socket() -> &'static str {
-    "/run/aether-init.sock"
+    aether_ipc::INIT_SOCKET_PATH
+}
+
+/// 请求 aether-init 启动/停止/重启一个服务，返回 init 的 ack 文案。
+///
+/// **为什么必须真的转发**（2026-10-02 功能批次 I）：此前 `aetherd` 的
+/// `Request::ServiceControl` 是个桩，直接回
+/// `ok:false, "服务控制 ... 将在 M3 aether-init 就绪后生效"` —— 而 aether-init
+/// 早就在运行了。于是合成器设置里的「重启网络服务」**永远失败**，
+/// 而且失败原因是句陈旧的占位文案（"看着做了其实没做"）。
+///
+/// 与 `aether-ops::monitor::service_control` 同一套路（那边用于自愈重启）：
+/// 连 0600 的 init socket → 发请求 → 读一行响应。超时 8 秒（与 ops 一致：
+/// 重启服务要等旧进程退出，比普通查询慢）。
+#[cfg(target_os = "linux")]
+pub(crate) fn control_init_service(
+    unit: &str,
+    action: aether_ipc::ServiceAction,
+) -> anyhow::Result<String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    let mut stream = UnixStream::connect(aether_init_socket())
+        .map_err(|e| anyhow::anyhow!("连不上 aether-init（{e}）—— 服务控制不可用"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(8))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(8))).ok();
+    stream.write_all(
+        aether_ipc::encode(&aether_ipc::Request::ServiceControl {
+            unit: unit.to_string(),
+            action,
+        })
+        .as_bytes(),
+    )?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    match aether_ipc::decode::<aether_ipc::Response>(&line)? {
+        aether_ipc::Response::ServiceAck { ok: true, message, .. } => Ok(message),
+        // init 明确说"失败"：把它的原因原样带回，不包装成成功
+        aether_ipc::Response::ServiceAck { message, .. } => Err(anyhow::anyhow!(message)),
+        aether_ipc::Response::Error { message, .. } => Err(anyhow::anyhow!(message)),
+        _ => Err(anyhow::anyhow!("aether-init 返回了意外响应")),
+    }
+}
+
+/// 非 Linux（开发机单测/预览）：没有 PID 1 控制通道。
+///
+/// 返回**明确的错误**而不是假装成功 —— 这一层的规矩是"做不到就说做不到"。
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn control_init_service(
+    _unit: &str,
+    _action: aether_ipc::ServiceAction,
+) -> anyhow::Result<String> {
+    anyhow::bail!("本平台没有 aether-init 控制通道（仅 Linux 提供）")
 }
 
 /// 汇总真实系统状态：/proc 内存/运行时长 + aether-init 服务列表。

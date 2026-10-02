@@ -30,6 +30,11 @@ const TZ_MAX: i32 = 14 * 60;
 ///
 /// 刻意保持**小而可持久化**：每加一个字段都要能被 `from_json` 容错、被设置界面渲染、
 /// 被门禁测到。宁可少，不要放进去实现不了的东西（"能点但没用"是本项目明令禁止的）。
+///
+/// **为什么新字段都是下标/小整数而不是 `String`**（2026-10-02 功能批次 I）：
+/// `Settings` 是 `Copy`（全仓大量按值传递），塞一个 `String` 会引发连锁改动；
+/// 而"壁纸""默认应用""语言"本来就该是**可枚举**的（内置集合 + 下标），
+/// 用下标既保持 `Copy`，又天然挡住了"设置文件里写任意字符串"这类无效状态。
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Settings {
     /// 时区偏移（分钟）。默认 +8（产品默认面向中文用户）。
@@ -47,6 +52,40 @@ pub struct Settings {
     /// 合成器原先对相对位移**硬编码 ×2**，在 VMware/真机上太快（用户实测反馈）；
     /// 默认改为 100（1:1），用户可在设置中心「输入」页调。
     pub mouse_speed_pct: i32,
+    /// 壁纸：内置壁纸表的下标（0 = 纯色）。越界由解析处夹取。
+    pub wallpaper: u8,
+    /// 界面缩放百分比，只能是 [`UI_SCALE_STEPS`] 里的值（解析时吸附到最近档）。
+    pub ui_scale_pct: u16,
+    /// 默认打开方式：内置应用下标（与 `main.rs::APP_TITLES` / `open_app` 一致）。
+    pub default_app: u8,
+    /// 提示音开关（批次 K 接音频；无音频设备时该项**无效果但可保存**，
+    /// 界面必须如实显示"无音频设备"而不是假装静音成功）。
+    pub notify_sound: bool,
+    /// 界面语言：0 = 中文，1 = English（下标，见 [`LOCALE_COUNT`]）。
+    pub locale: u8,
+}
+
+/// 界面缩放的允许档位。
+///
+/// 只有这三档：软件渲染下任意比例会产生半像素度量（字发虚、边框粗细不一），
+/// 而"能选但显示难看"比"只有三档"更伤。
+pub const UI_SCALE_STEPS: [u16; 3] = [100, 125, 150];
+
+/// 内置壁纸数量（下标 0..WALLPAPER_COUNT，0 = 纯色）。
+pub const WALLPAPER_COUNT: u8 = 6;
+
+/// 支持的界面语言数量（0 中文 / 1 English）。
+pub const LOCALE_COUNT: u8 = 2;
+
+/// 默认打开方式的可选数量 —— **直接引用内置应用表**，避免两处各写一个数字。
+pub const DEFAULT_APP_COUNT: u8 = crate::APP_TITLES.len() as u8;
+
+/// 把任意值吸附到最近的一档缩放（未知值不会留在设置里）。
+pub fn snap_scale(v: u16) -> u16 {
+    *UI_SCALE_STEPS
+        .iter()
+        .min_by_key(|s| s.abs_diff(v))
+        .unwrap_or(&100)
 }
 
 /// 鼠标速度允许范围。防止设置文件被改成 0（指针彻底不动）或天文数字。
@@ -62,6 +101,11 @@ impl Default for Settings {
             ime_default: false,
             dark_mode: false,
             mouse_speed_pct: 100,
+            wallpaper: 0,
+            ui_scale_pct: 100,
+            default_app: 0,
+            notify_sound: true,
+            locale: 0,
         }
     }
 }
@@ -102,10 +146,30 @@ impl Settings {
         if let Some(n) = v.get("mouse_speed_pct").and_then(Value::as_i64) {
             s.mouse_speed_pct = (n as i32).clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX);
         }
+        // 批次 I 新增字段：**旧文件没有这些键 → 保持默认**（向后兼容），
+        // 越界值一律夹取/吸附 —— 设置文件是可以被手工改的，不能信任它的内容。
+        if let Some(n) = v.get("wallpaper").and_then(Value::as_u64) {
+            s.wallpaper = (n as u8).min(WALLPAPER_COUNT.saturating_sub(1));
+        }
+        if let Some(n) = v.get("ui_scale_pct").and_then(Value::as_u64) {
+            s.ui_scale_pct = snap_scale(n as u16);
+        }
+        if let Some(n) = v.get("default_app").and_then(Value::as_u64) {
+            s.default_app = (n as u8).min(DEFAULT_APP_COUNT.saturating_sub(1));
+        }
+        if let Some(b) = v.get("notify_sound").and_then(Value::as_bool) {
+            s.notify_sound = b;
+        }
+        if let Some(n) = v.get("locale").and_then(Value::as_u64) {
+            s.locale = (n as u8).min(LOCALE_COUNT.saturating_sub(1));
+        }
         s
     }
 
     /// 序列化（带 schema 版本号，便于以后迁移时判断）。
+    ///
+    /// 版本号保持 1：批次 I 只是**追加**字段，旧二进制读新文件会忽略未知键、
+    /// 新二进制读旧文件走默认值 —— 两个方向都兼容，没有需要迁移的语义变化。
     pub fn to_json(&self) -> String {
         let v = json!({
             "version": 1,
@@ -115,6 +179,11 @@ impl Settings {
             "ime_default": self.ime_default,
             "dark_mode": self.dark_mode,
             "mouse_speed_pct": self.mouse_speed_pct,
+            "wallpaper": self.wallpaper,
+            "ui_scale_pct": self.ui_scale_pct,
+            "default_app": self.default_app,
+            "notify_sound": self.notify_sound,
+            "locale": self.locale,
         });
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
@@ -277,8 +346,58 @@ mod tests {
             ime_default: true,
             dark_mode: true,
             mouse_speed_pct: 150,
+            // 批次 I 新字段也一起过一遍往返（漏了就会在"存了没生效"这类 bug 里翻车）
+            wallpaper: 3,
+            ui_scale_pct: 125,
+            default_app: 2,
+            notify_sound: false,
+            locale: 1,
         };
         assert_eq!(Settings::from_json(&s.to_json()), s);
+    }
+
+    /// 批次 I 回归：**旧设置文件必须能读**（新字段走默认），新字段越界必须被夹取。
+    ///
+    /// 设置文件是可被手工改的（甚至可能是上个版本写的），所以两类容错都要有：
+    /// 缺键 → 默认；越界/类型错 → 夹取或回落。缺任何一类都会让用户遇到
+    /// "改了设置，重启后界面崩了/比例是 137% 这种鬼值"。
+    #[test]
+    fn new_fields_are_backward_compatible_and_clamped() {
+        // 旧文件（只有批次 I 之前的键）→ 新字段取默认，旧字段照旧生效
+        let old = r#"{"version":1,"tz_offset_min":-330,"dark_mode":true,"mouse_speed_pct":150}"#;
+        let s = Settings::from_json(old);
+        assert_eq!(s.tz_offset_min, -330, "旧字段仍要生效");
+        assert!(s.dark_mode);
+        assert_eq!(s.wallpaper, Settings::default().wallpaper, "缺键应取默认");
+        assert_eq!(s.ui_scale_pct, 100);
+        assert!(s.notify_sound);
+        assert_eq!(s.locale, 0);
+
+        // 越界夹取：壁纸/默认应用/语言按下标上限，缩放吸附到最近档
+        assert_eq!(Settings::from_json(r#"{"wallpaper": 99}"#).wallpaper, WALLPAPER_COUNT - 1);
+        assert_eq!(Settings::from_json(r#"{"default_app": 99}"#).default_app, DEFAULT_APP_COUNT - 1);
+        assert_eq!(Settings::from_json(r#"{"locale": 9}"#).locale, LOCALE_COUNT - 1);
+        assert_eq!(Settings::from_json(r#"{"ui_scale_pct": 137}"#).ui_scale_pct, 125, "吸附到最近档");
+        assert_eq!(Settings::from_json(r#"{"ui_scale_pct": 1}"#).ui_scale_pct, 100);
+        assert_eq!(Settings::from_json(r#"{"ui_scale_pct": 9999}"#).ui_scale_pct, 150);
+        // 类型不对 → 回落默认（而不是 panic 或取到 0）
+        assert_eq!(Settings::from_json(r#"{"wallpaper": "花"}"#).wallpaper, 0);
+        assert_eq!(Settings::from_json(r#"{"notify_sound": "是"}"#).notify_sound, true);
+    }
+
+    /// 缩放的允许档位只有三档，且 `snap_scale` 必须覆盖整条数轴（不产生越界值）。
+    #[test]
+    fn ui_scale_snaps_to_declared_steps_only() {
+        for v in [0u16, 1, 99, 100, 101, 112, 113, 124, 125, 126, 137, 149, 150, 151, 60000] {
+            let got = snap_scale(v);
+            assert!(
+                UI_SCALE_STEPS.contains(&got),
+                "snap_scale({v}) = {got} 不在允许档位里"
+            );
+        }
+        // 最近档语义：112 更接近 100，113 更接近 125
+        assert_eq!(snap_scale(112), 100);
+        assert_eq!(snap_scale(113), 125);
     }
 
     #[test]
@@ -317,6 +436,12 @@ mod tests {
             ime_default: false,
             dark_mode: true,
             mouse_speed_pct: 60,
+            // 非默认值：真正验证"写进去→读出来"包含批次 I 的新字段
+            wallpaper: 4,
+            ui_scale_pct: 150,
+            default_app: 1,
+            notify_sound: false,
+            locale: 1,
         };
         s.save(path).expect("写设置应当成功（父目录会自动建）");
         assert_eq!(Settings::load(path, 8 * 60), s, "写进去什么，读出来就该是什么");

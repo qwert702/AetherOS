@@ -18,9 +18,13 @@ use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
-/// aether-init 服务控制 socket（与 aether-init/ipc.rs 保持一致）。
+/// aether-init 服务控制 socket。
+///
+/// 值来自协议 crate（`aether_ipc::INIT_SOCKET_PATH`）：监听侧（aether-init）与
+/// 所有连接侧（aetherd / aether-ops）共用同一个常量，避免三处字面量漂开
+/// （2026-10-02 批次 I 收拢）。
 #[cfg(target_os = "linux")]
-pub const INIT_SOCKET: &str = "/run/aether-init.sock";
+pub const INIT_SOCKET: &str = aether_ipc::INIT_SOCKET_PATH;
 
 /// 巡检间隔（秒）。
 #[cfg(target_os = "linux")]
