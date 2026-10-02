@@ -247,4 +247,4 @@
 终端拖选复制、终端内的中文输入 —— 这三项 QMP 注入可用，但需要截图判读，未做；
 W5 的 `SCM_RIGHTS` fd 收包（需真机 + 一个真实 Wayland 客户端）；写操作白名单的
 **端到端**路径（`file_write` 过闸门后才会走路径校验，需要 UI 通道密钥，即
-`/var/log/aether/ui.key`）；门禁 1a 的 8 小时长跑。
+`/run/aether/ui.key`）；门禁 1a 的 8 小时长跑。

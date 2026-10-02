@@ -14,6 +14,11 @@
 //!
 //! 仍未解决：IPC 尚无用户级认证（M4 规划），所以"能读到 `ui.key` 的本机进程"仍可读写。
 //! 这是"提高门槛"，不是完整的多方授权。
+//!
+//! 2026-10-02 审计（H-2）补上了第 3 条的漏口：门槛此前只加在
+//! `Request::ClipboardGet/Set` 两个变体上，而同一份数据经
+//! `ToolCall{tool:"clipboard_read"}` 仍可拿到（实测：同一未注册连接走协议端点 403、
+//! 走工具路径成功）。现在两个入口共用 `tools::TRUSTED_CHANNEL_TOOLS` 判定。
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};

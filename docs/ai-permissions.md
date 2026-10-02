@@ -51,12 +51,21 @@
    但令牌本身**不等于放行权**——只有**已注册的 UI 通道**能兑现它。
 
    - 客户端连接后先发 `Request::RegisterUi { key }`；密钥来自 `AETHER_UI_KEY` 环境变量，
-     或 aetherd 首次启动时生成并写入 `/var/log/aether/ui.key`（Unix 下 0600）
+     或 aetherd 首次启动时生成并写入 `/run/aether/ui.key`（Unix 下 0600）
    - 未注册连接：既不会收到确认令牌（L2+ 请求被直接 403），也不能兑现令牌（403）
+   - **资源敏感的工具按资源判，不按入口判**：剪贴板读写（`clipboard_read` /
+     `clipboard_write`）无论走 `Request::ClipboardGet/Set` 还是 `Request::ToolCall`
+     都要求已注册通道；判定表只有 `tools::TRUSTED_CHANNEL_TOOLS` 一处
+     （2026-10-02 审计 H-2：此前只堵了协议端点，工具路径仍可读写）
    - 因此"任何能连上 7311 的进程都能自助放行"不再成立
 
    诚实边界：这挡不住**能读到密钥文件**的本机进程。IPC 尚无用户级认证（M4 规划），
    所以它是"提高门槛 + 让确认方成为服务端可断言的事实"，不是完整的多方授权。
+
+   > 2026-10-02 审计补充（H-1）：密钥文件曾放在 `/var/log/aether/`，而该目录
+   > **在 `read_file` 的读取白名单内** —— 于是"任意本机进程 → ToolCall(read_file)
+   > → 取走密钥 → 注册 UI → 自我确认 L3"是一条完整链路（已实测复现）。
+   > 现在密钥迁到 `/run/aether/`，且 `read_file` 的凭证类拒绝清单包含 `ui.key`。
 
 5. **拒绝是服务端的事实**：用户在确认卡片上点"拒绝"时，合成器会发送
    `Request::ConfirmCancel { token }`。服务端据此撤销令牌、落 `denied_by_user` 审计，

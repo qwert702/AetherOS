@@ -104,9 +104,21 @@ impl ModelConfig {
     ///
     /// 这个摘要会经 IPC 回到合成器（可能显示在界面上），所以不能带 Key。
     pub fn summary(&self) -> serde_json::Value {
+        // 按**字符**取末 4 位，不能按字节。
+        //
+        // 旧写法 `&k[k.len() - 4..]` 是按字节切片：Key 里只要含一个多字节字符
+        // （中文、emoji），索引就可能落在字符中间而 panic。2026-10-02 审计 M-12
+        // 已复现：key = "密钥ab" → `byte index 4 is not a char boundary`。
         let key_hint = match self.api_key.as_deref() {
-            Some(k) if k.len() > 4 => format!("****{}", &k[k.len() - 4..]),
-            Some(_) => "****".to_string(),
+            Some(k) => {
+                let chars = k.chars().count();
+                if chars > 4 {
+                    let tail: String = k.chars().skip(chars - 4).collect();
+                    format!("****{tail}")
+                } else {
+                    "****".to_string()
+                }
+            }
             None => "(未配置)".to_string(),
         };
         serde_json::json!({
@@ -216,6 +228,27 @@ mod tests {
         assert!(!short.summary().to_string().contains("\"ab\""), "短 Key 也不该原样出现");
         let none = ModelConfig::default();
         assert!(none.summary().to_string().contains("未配置"));
+    }
+
+    /// M-12 回归：含多字节字符的 Key 不得 panic，且脱敏仍然正确。
+    ///
+    /// 旧实现按字节切片（`&k[k.len() - 4..]`），"密钥ab" 会 panic —— 一个
+    /// 配置里写中文的 Key（或粘贴时带进中文）就能让 `aetherd config` 崩掉。
+    #[test]
+    fn summary_handles_multibyte_key_without_panic() {
+        for k in ["密钥ab", "中文密钥", "abc🔑", "a密钥", "🔑🔑🔑🔑🔑"] {
+            let cfg = ModelConfig { api_key: Some(k.into()), ..Default::default() };
+            let s = cfg.summary().to_string();
+            assert!(!s.contains(k), "Key {k:?} 不该原样出现在摘要里");
+            assert!(s.contains("****"), "Key {k:?} 应被脱敏：{s}");
+        }
+        // 末 4 位是**字符**而不是字节：5 个字符的 Key 保留后 4 个
+        let cfg = ModelConfig { api_key: Some("中文密钥x".into()), ..Default::default() };
+        assert!(
+            cfg.summary().to_string().contains("****文密钥x"),
+            "应保留末 4 个字符：{}",
+            cfg.summary()
+        );
     }
 
     /// 空字段不落盘（配置文件保持可读，不塞一堆 null）。

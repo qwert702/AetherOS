@@ -5,19 +5,21 @@
   2. ./target/debug/aetherd serve      # 监听 127.0.0.1:7311
   3. python scripts/e2e-permission-confirm.py
 
-UI 通道密钥：优先 AETHER_UI_KEY 环境变量，否则读 /var/log/aether/ui.key
+UI 通道密钥：优先 AETHER_UI_KEY 环境变量，否则读 /run/aether/ui.key
 （aetherd 首次启动时生成）。
 
-验证的语义（对应 docs/ai-permissions.md 与代码审查 P0-4 / P1-8 / P1-9）：
+验证的语义（对应 docs/ai-permissions.md 与代码审查 P0-4 / P1-8 / P1-9 / H-2）：
   1. 已注册 UI 通道、无令牌的 L3 ToolCall → NeedsConfirmation（含等级/回显目标/后果/令牌）
   2. 已注册通道带令牌重发                → 放行到工具体（非权限拦截）
   3. 重复使用同一令牌                    → 403（一次性）
   4. 用令牌但篡改参数                    → 403（令牌绑定参数）
-  5. 无令牌的 L1 工具                    → 照常执行，不受确认机制影响
+  5. 无令牌的 L1 工具（desktop）         → 照常执行，不受确认机制影响
   6. **未注册连接带令牌兑现**            → 403（令牌绑定确认方；P1-8 回归断言）
   7. **未注册连接触发 L2+**              → 403（不下发令牌）
   8. **用户拒绝后令牌被撤销**            → ConfirmCancelled，且该令牌不可再兑现（P1-9 回归）
   9. **拒绝后同一操作再次请求**          → 直接拒绝，不再弹确认（Denied 可达）
+ 10. **未注册连接经 ToolCall 读剪贴板**  → 403（H-2 回归：闸门必须按资源判，不能按入口变体判）
+ 11. **已注册通道仍可写剪贴板**          → 成功（反向断言，防"一律拒绝"式作弊）
 """
 import json
 import os
@@ -35,7 +37,7 @@ def ui_key():
     if k:
         return k
     try:
-        with open("/var/log/aether/ui.key", encoding="utf-8") as f:
+        with open("/run/aether/ui.key", encoding="utf-8") as f:
             k = f.read().strip()
         return k or None
     except OSError:
@@ -56,7 +58,7 @@ def rpc(reqs, register=True):
         reg = json.loads(f.readline())
         if reg.get("type") != "ui_registered":
             s.close()
-            raise SystemExit(f"UI 通道注册失败（{reg}）；请确认 AETHER_UI_KEY 或 /var/log/aether/ui.key")
+            raise SystemExit(f"UI 通道注册失败（{reg}）；请确认 AETHER_UI_KEY 或 /run/aether/ui.key")
     for r in reqs:
         f.write(json.dumps(r) + "\n")
         f.flush()
@@ -83,7 +85,7 @@ def check(name, cond, detail):
 
 def main():
     if not KEY:
-        print("找不到 UI 通道密钥：请设置 AETHER_UI_KEY 或确认 aetherd 已生成 /var/log/aether/ui.key")
+        print("找不到 UI 通道密钥：请设置 AETHER_UI_KEY 或确认 aetherd 已生成 /run/aether/ui.key")
         return 1
 
     # 1. 已注册通道、无令牌 → 必须拦下并下发结构化确认请求
@@ -159,6 +161,30 @@ def main():
     p = r.get("payload", {})
     denied = r["type"] == "tool_result" and not p.get("ok") and "DENIED" in (p.get("output") or "")
     check("9 拒绝后同操作直接 Denied", denied, f"实得 {r}")
+
+    # 10. H-2 回归：未注册连接不得经**工具路径**读写剪贴板。
+    #     协议端点（clipboard_get/set）早已 403，但 ToolCall 路径此前是开着的 ——
+    #     闸门按"入口变体"手写就必然漏掉等价入口（2026-10-02 审计实测复现）。
+    r = rpc([toolcall({}, tool="clipboard_read")], register=False)[0]
+    check(
+        "10 未注册连接不得经 ToolCall 读剪贴板",
+        r["type"] == "error" and r["payload"].get("code") == 403,
+        f"实得 {r}",
+    )
+    r = rpc([toolcall({"text": "e2e"}, tool="clipboard_write")], register=False)[0]
+    check(
+        "10a 未注册连接不得经 ToolCall 写剪贴板",
+        r["type"] == "error" and r["payload"].get("code") == 403,
+        f"实得 {r}",
+    )
+
+    # 11. 反向断言：已注册通道仍可写剪贴板 —— 否则上面的门禁可以靠"一律拒绝"作弊
+    r = rpc([toolcall({"text": "e2e"}, tool="clipboard_write")])[0]
+    check(
+        "11 已注册通道仍可写剪贴板",
+        r["type"] == "tool_result" and r["payload"].get("ok") is True,
+        f"实得 {r}",
+    )
 
     print()
     print("结果：", "全部通过" if not fails else f"失败 {len(fails)} 项: {fails}")

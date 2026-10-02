@@ -18,8 +18,16 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 /// 单连接空闲读超时：半开连接不永久占用线程。
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
-/// UI 通道密钥的落盘位置（与审计日志同目录，随持久化分区跨重启保留）。
-const UI_KEY_PATH: &str = "/var/log/aether/ui.key";
+/// UI 通道密钥的落盘位置。
+///
+/// **为什么从 `/var/log/aether/` 迁到 `/run/aether/`**（2026-10-02 审计 H-1）：
+/// 旧位置正好在 `read_file` 的读取白名单里，于是"任意本机进程 → ToolCall(read_file)
+/// → 取走密钥 → 注册为 UI 通道 → 自我确认 L3"是一条完整链路（已实测复现）。
+/// `/run/aether` 同样是白名单根，所以真正的拦截靠 `tools::READ_DENY_SUBPATHS`
+/// 里的 `ui.key`；迁址是第二道防线，同时让"密钥"与"日志"在语义上分开
+/// （审计日志目录是给人看的，密钥不是）。
+/// `/run` 是 ramfs：密钥每次开机重新生成，不再跨重启残留。
+const UI_KEY_PATH: &str = "/run/aether/ui.key";
 
 pub fn serve(cfg: Config) -> anyhow::Result<()> {
     // 只听回环；宿主调试需要 hostfwd 直连时，由调试脚本显式注入 AETHER_BIND=0.0.0.0，
@@ -65,12 +73,17 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
 
 /// 解析 UI 通道密钥（P1-8）。
 ///
-/// 优先级：`AETHER_UI_KEY` 环境变量 > `<审计目录>/ui.key` > 生成并落盘。
+/// 优先级：`AETHER_UI_KEY` 环境变量 > `/run/aether/ui.key` > 生成并落盘。
 /// 生成时在 Unix 下收紧为 0600。
 ///
-/// 诚实边界：这挡不住**能读到该文件**的本机进程。但它把"谁能兑现确认令牌"
-/// 从"任何能连 7311 的进程"收窄到"能读到密钥的进程"，并让"确认方"成为
-/// 服务端可以断言的事实——这正是原实现完全缺失的那一环。
+/// 诚实边界：这挡不住**能读到该文件**的本机进程（例如 root 起的终端）。
+/// 但它把"谁能兑现确认令牌"从"任何能连 7311 的进程"收窄到"能读到密钥的进程"，
+/// 并让"确认方"成为服务端可以断言的事实。
+///
+/// 2026-10-02 审计（H-1）修正了一个被推翻的前提：原实现假设"读 0600 的 root 文件
+/// 需要特权"，但本进程自己的 `read_file` 工具（L0、免确认、对未注册连接开放）
+/// 正好能代读它 —— 于是攻击面没有收窄。现在 `tools::READ_DENY_SUBPATHS` 明确
+/// 拒绝 `ui.key`，密钥本身也移出了日志目录。
 fn resolve_ui_key() -> String {
     if let Ok(k) = std::env::var("AETHER_UI_KEY") {
         let k = k.trim().to_string();
@@ -207,6 +220,21 @@ fn handle_request(
         }
         Request::Chat { session_id, text } => handle_chat(&session_id, &text, cfg, gate, approvals, *is_ui),
         Request::ToolCall { tool, arguments, approval, .. } => {
+            // 闸门的第一道：**资源敏感的工具**（剪贴板读写）必须由已注册的 UI 通道发起。
+            //
+            // 为什么加在这里（2026-10-02 审计 H-2）：P1-1 的修复把门槛加在
+            // `ClipboardGet/Set` 两个 `Request` 变体上，而同一份数据经
+            // `ToolCall{tool:"clipboard_read"}` 照样能拿到 —— 实测同一连接
+            // 走协议端点 403、走工具路径成功。所以门槛必须按**资源**判，
+            // 不能按**入口变体**判；判定表只有 `tools::TRUSTED_CHANNEL_TOOLS` 一处。
+            if tools::requires_trusted_channel(&tool) && !*is_ui {
+                audit_or_warn(gate, &tool, tool_level(&tool), verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝 {tool}：该工具读写用户环境数据，必须由已注册的 UI 通道发起");
+                return vec![Response::Error {
+                    code: 403,
+                    message: format!("「{tool}」读写用户环境数据，必须由已注册的 UI 通道发起"),
+                }];
+            }
             // 是否"已授权"只能由服务端签发的令牌证明；且**只有已注册的 UI 通道**
             // 能兑现它——令牌本身不再等价于放行权（P1-8）。
             let approved = match &approval {
@@ -369,7 +397,9 @@ fn handle_chat(
     }
 
     // 未命中快速意图：交给 LLM agent（可能较慢，连接线程阻塞在此处即可）
-    match crate::agent_run(cfg, gate, text) {
+    // `is_ui` 一路传下去：agent 可能调起"需要可信通道"的工具（剪贴板），
+    // 未注册连接发起的对话不得通过 LLM 绕过这道闸门（2026-10-02 审计 H-2）。
+    match crate::agent_run(cfg, gate, text, is_ui) {
         Ok(outcome) => {
             let mut out = Vec::new();
             for a in outcome.actions {
@@ -567,6 +597,53 @@ mod ipc_gating_tests {
         assert!(
             matches!(out[0], Response::SysInfo(_)),
             "只读的 sys_info 不应要求注册，实得 {out:?}"
+        );
+    }
+
+    /// H-2 回归：**工具路径**同样受可信通道约束。
+    ///
+    /// 这条是 2026-10-02 审计的实测结论固化：同一份剪贴板数据，走协议端点 403，
+    /// 走 `ToolCall` 此前却成功 —— 闸门按入口变体手写，就必然漏掉等价入口。
+    /// 上面 `request_variants_are_gated` 只覆盖 `Request` 变体，**覆盖不到这个漏口**，
+    /// 所以必须单独钉一条。
+    #[test]
+    fn tool_call_clipboard_requires_registered_ui() {
+        let _g = lock();
+        // 未注册连接：读、写都被拒
+        for (name, tool, args) in [
+            ("clipboard_read", "clipboard_read", serde_json::json!({})),
+            ("clipboard_write", "clipboard_write", serde_json::json!({"text": "x"})),
+        ] {
+            let mut is_ui = false;
+            let out = handle_line(
+                &aether_ipc::encode(&Request::ToolCall {
+                    session_id: "gate-test".into(),
+                    tool: tool.into(),
+                    arguments: args,
+                    approval: None,
+                }),
+                &mut is_ui,
+            );
+            assert!(
+                out.iter().any(|r| matches!(r, Response::Error { code: 403, .. })),
+                "{name} 在未注册连接下必须 403，实得 {out:?}"
+            );
+        }
+
+        // 反向断言：已注册通道仍可用（防"一律拒绝"式作弊）
+        let mut is_ui = true;
+        let out = handle_line(
+            &aether_ipc::encode(&Request::ToolCall {
+                session_id: "gate-test".into(),
+                tool: "clipboard_write".into(),
+                arguments: serde_json::json!({"text": "已注册通道可写"}),
+                approval: None,
+            }),
+            &mut is_ui,
+        );
+        assert!(
+            out.iter().any(|r| matches!(r, Response::ToolResult { ok: true, .. })),
+            "已注册通道写剪贴板应成功，实得 {out:?}"
         );
     }
 }

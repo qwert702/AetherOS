@@ -1004,7 +1004,10 @@ fn scan_disks() -> Vec<(String, u64)> {
     out
 }
 
-/// UI 通道密钥（P1-8）：与 aetherd 同源 —— 环境变量优先，否则读审计目录下的 ui.key。
+/// UI 通道密钥（P1-8）：与 aetherd 同源 —— 环境变量优先，否则读 `/run/aether/ui.key`。
+///
+/// 路径在 2026-10-02 安全审计（H-1）中从 `/var/log/aether/` 迁出：旧位置在
+/// `read_file` 的读取白名单内，任意本机进程可用 AI 工具把密钥取走。
 fn ui_key() -> Option<String> {
     if let Ok(k) = std::env::var("AETHER_UI_KEY") {
         let k = k.trim().to_string();
@@ -1012,7 +1015,7 @@ fn ui_key() -> Option<String> {
             return Some(k);
         }
     }
-    std::fs::read_to_string("/var/log/aether/ui.key")
+    std::fs::read_to_string("/run/aether/ui.key")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -1026,7 +1029,7 @@ fn ui_key() -> Option<String> {
 fn register_ui(stream: &mut TcpStream, reader: &mut BufReader<TcpStream>) -> anyhow::Result<()> {
     let key = ui_key().ok_or_else(|| {
         anyhow::anyhow!(
-            "未找到 UI 通道密钥（设置 AETHER_UI_KEY，或确认 aetherd 已生成 /var/log/aether/ui.key）"
+            "未找到 UI 通道密钥（设置 AETHER_UI_KEY，或确认 aetherd 已生成 /run/aether/ui.key）"
         )
     })?;
     stream.write_all(aether_ipc::encode(&Request::RegisterUi { key }).as_bytes())?;

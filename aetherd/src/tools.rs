@@ -303,12 +303,75 @@ pub fn registry() -> Vec<Tool> {
     ]
 }
 
+/// 必须由**已注册的 UI 通道**发起的工具名单（单一事实来源）。
+///
+/// 为什么需要它：第四轮审查（P1-1）把剪贴板的门槛加在 `Request::ClipboardGet/Set` 上，
+/// 但同一份数据经 `Request::ToolCall{tool:"clipboard_read"}` 也能拿到 —— 闸门按
+/// "入口变体"手写，就必然漏掉等价入口。2026-10-02 安全审计（H-2）已实测复现：
+/// 同一条未注册连接走协议端点返回 403、走工具路径却成功读回剪贴板明文。
+///
+/// 判定依据是**资源敏感度**而不是工具等级：这些工具读写的是"用户环境里的数据"，
+/// L1 的自动放行只对"已确认身份的调用方"成立。
+const TRUSTED_CHANNEL_TOOLS: &[&str] = &["clipboard_read", "clipboard_write"];
+
+/// 按名字查询该工具是否需要可信通道（`agent_run` 与 `server::ToolCall` 共用同一条判定）。
+pub fn requires_trusted_channel(name: &str) -> bool {
+    TRUSTED_CHANNEL_TOOLS.contains(&name)
+}
+
 /// 该工具的输出是否含用户数据（文件内容）。
 ///
 /// agent 循环据此置位"敏感上下文"：其结果一旦进入 messages，
 /// 后续轮次强制走本地通道（P0-4b）。
 pub fn is_sensitive_output(name: &str) -> bool {
     registry().iter().any(|t| t.name == name && t.sensitive_output)
+}
+
+/// 非密码学指纹（FNV-1a 64 位）：只用于在审计日志里**关联同一次内容**
+/// （例如"这两条记录写的是同一份数据"），不参与任何安全判定，因此不需要抗碰撞。
+fn fingerprint(s: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// 工具参数的**审计表示**：敏感字段脱敏，其余原样。
+///
+/// 为什么必须脱敏（2026-10-02 审计 M-1）：审计日志此前落的是 `args.to_string()`，
+/// 于是 `clipboard_write` 的 `text`（剪贴板里常是刚复制的密码）与 `file_write` 的
+/// `content`（可能是密钥文件全文）**逐字进了日志**。而审计日志长期保留、且
+/// `/var/log/aether` 在读取白名单里 —— 等于给敏感数据开了第二个泄露面。
+///
+/// 保留长度 + 指纹，是为了不牺牲可追溯性：仍能回答"写的是不是同一份内容""多大"。
+/// 注意 `NeedsConfirmation` 发给 UI 的 `arguments` **不脱敏** —— 用户要看到自己批准的是什么。
+fn audit_args(tool: &str, args: &serde_json::Value) -> String {
+    /// (工具名, 需要脱敏的字段)。
+    const SENSITIVE_FIELDS: &[(&str, &[&str])] = &[
+        ("clipboard_write", &["text"]),
+        ("file_write", &["content"]),
+    ];
+    let Some((_, fields)) = SENSITIVE_FIELDS.iter().find(|(t, _)| *t == tool) else {
+        return args.to_string();
+    };
+    let mut redacted = args.clone();
+    let Some(obj) = redacted.as_object_mut() else {
+        return args.to_string();
+    };
+    for field in *fields {
+        let Some(v) = obj.get_mut(*field) else { continue };
+        let raw = v.as_str().unwrap_or_default();
+        *v = serde_json::Value::String(format!(
+            "<已脱敏：{} 字节，指纹 {:016x}>",
+            raw.len(),
+            fingerprint(raw)
+        ));
+    }
+    redacted.to_string()
 }
 
 /// 工具执行结果。
@@ -333,7 +396,7 @@ pub fn execute(gate: &Gate, ctx: &mut ToolCtx, name: &str, args: &Value, approve
     let Some(tool) = registry().into_iter().find(|t| t.name == name) else {
         bail!("未知工具: {name}");
     };
-    let args_str = args.to_string();
+    let args_str = audit_args(name, args);
     let verdict = gate.judge(name, tool.level, args, approved);
     let verdict_str = match &verdict {
         Verdict::Allowed => verdict::ALLOWED,
@@ -486,6 +549,14 @@ const READ_ALLOWED_ROOTS: &[&str] = &[
 const READ_ALLOWED_ROOTS: &[&str] = &["C:/Users", "C:/Temp"];
 
 /// 即使在白名单根之内，也拒绝的凭证类子路径（家目录下的私钥/令牌）。
+///
+/// `ui.key` 是 2026-10-02 安全审计补上的（高危 H-1）：UI 通道密钥此前落在
+/// `/var/log/aether/ui.key`，而 `/var/log/aether` **正好在读取白名单里** ——
+/// 于是 `read_file`（L0、免确认、不要求已注册）就成了"任意本机进程取走 UI 密钥"
+/// 的现成工具，拿到密钥即可注册为 UI 通道并自我确认 L3 操作。
+/// 密钥文件本身是 0600，但"以 root 运行的 aetherd 代读"绕过了文件权限。
+///
+/// 双保险：这里拒绝（拦读取路径）+ `server::UI_KEY_PATH` 已迁到 `/run/aether/`。
 const READ_DENY_SUBPATHS: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -496,6 +567,10 @@ const READ_DENY_SUBPATHS: &[&str] = &[
     "id_ecdsa",
     ".netrc",
     ".git-credentials",
+    // UI 通道密钥：拿到它 = 拿到"自我确认 L2/L3"的能力
+    "ui.key",
+    // 云端 API Key 与其它 aether 私有凭据（model.json 亦为 0600，同样不该由 AI 代读）
+    "model.json",
 ];
 
 /// 写操作的允许根：比读更窄。
@@ -896,6 +971,96 @@ mod tests {
 
     fn gate() -> Gate {
         Gate::for_test()
+    }
+
+    /// 门禁：新增工具必须显式做"是否需要可信通道"分类。
+    ///
+    /// 用清单而不是结构体字段，是为了不改 17 处工具字面量；代价是编译器不强制，
+    /// 因此由这条测试兜住 —— 新增工具后不登记就会红（H-2 的根因正是"分类不完整"）。
+    #[test]
+    fn every_tool_is_classified_for_trusted_channel() {
+        const NOT_TRUSTED: &[&str] = &[
+            "file_write", "file_delete", "file_rename", "trash_list", "trash_restore",
+            "sys_info", "read_file", "sys_probe", "desktop", "install_disk",
+            "app_list", "app_install", "app_remove",
+        ];
+        let names: Vec<&str> = registry().iter().map(|t| t.name).collect();
+        for n in &names {
+            assert!(
+                requires_trusted_channel(n) || NOT_TRUSTED.contains(n),
+                "工具 {n} 未分类：请加入 TRUSTED_CHANNEL_TOOLS 或 NOT_TRUSTED"
+            );
+        }
+        assert_eq!(
+            names.len(),
+            TRUSTED_CHANNEL_TOOLS.len() + NOT_TRUSTED.len(),
+            "分类表与注册表数量不一致（新增或删除了工具？）"
+        );
+        // 剪贴板两个端点必须被判定为需要可信通道；只读探针不应被误判
+        assert!(requires_trusted_channel("clipboard_read"));
+        assert!(requires_trusted_channel("clipboard_write"));
+        assert!(!requires_trusted_channel("read_file"));
+    }
+
+    /// M-1 回归：审计参数必须脱敏 —— 剪贴板明文与写入内容都不得逐字落盘。
+    #[test]
+    fn audit_args_redacts_clipboard_and_file_content() {
+        const SECRET: &str = "用户刚复制的密码：Hunter2-AETHER";
+        let clip = serde_json::json!({"text": SECRET});
+        let s = audit_args("clipboard_write", &clip);
+        assert!(!s.contains(SECRET), "剪贴板明文不得进审计：{s}");
+        assert!(s.contains("已脱敏"), "应标明已脱敏：{s}");
+        assert!(s.contains(&format!("{} 字节", SECRET.len())), "应保留长度：{s}");
+
+        let file = serde_json::json!({"path": "/tmp/a.txt", "content": "-----BEGIN KEY-----"});
+        let s = audit_args("file_write", &file);
+        assert!(!s.contains("BEGIN KEY"), "写入内容不得进审计：{s}");
+        assert!(s.contains("/tmp/a.txt"), "非敏感字段应保留：{s}");
+
+        // 非敏感工具原样保留（否则审计会失去可追溯性）
+        let probe = serde_json::json!({"probe": "uname"});
+        assert_eq!(audit_args("sys_probe", &probe), probe.to_string());
+        // 同一内容 → 同一指纹（可关联）；不同内容 → 不同指纹
+        let a = audit_args("clipboard_write", &serde_json::json!({"text": "same"}));
+        let b = audit_args("clipboard_write", &serde_json::json!({"text": "same"}));
+        let c = audit_args("clipboard_write", &serde_json::json!({"text": "other"}));
+        assert_eq!(a, b, "同内容应得到同指纹");
+        assert_ne!(a, c, "不同内容应得到不同指纹");
+    }
+
+    /// H-1 回归：UI 密钥与云端 API Key 都不得被 AI 读取。
+    ///
+    /// 这条链的后果是"任意本机进程自取密钥 → 自注册 UI 通道 → 自我确认 L3"。
+    /// 分两层：凭证类判定是纯函数（与平台无关），入口层则必须用**本平台白名单内**
+    /// 的路径，否则报的是"不在允许范围"而不是"凭证类"，测不到真正想测的那一层。
+    #[test]
+    fn credential_paths_including_ui_key_are_rejected() {
+        for p in [
+            "/var/log/aether/ui.key",
+            "/run/aether/ui.key",
+            "/etc/aether/model.json",
+            "/home/u/.ssh/id_rsa",
+        ] {
+            assert!(is_credential_path(std::path::Path::new(p)), "{p} 应被判为凭证类");
+        }
+
+        #[cfg(target_os = "linux")]
+        let cases = ["/var/log/aether/ui.key", "/run/aether/ui.key", "/etc/aether/model.json"];
+        #[cfg(not(target_os = "linux"))]
+        let cases = ["C:/Users/x/ui.key", "C:/Temp/model.json"];
+
+        for p in cases {
+            let policy = check_read_policy(std::path::Path::new(p), p)
+                .expect_err(&format!("{p} 必须被策略拒绝"))
+                .to_string();
+            assert!(policy.contains("凭证类"), "{p} 策略实得: {policy}");
+
+            let mut ctx = ToolCtx::default();
+            let err = execute(&gate(), &mut ctx, "read_file", &serde_json::json!({"path": p}), false)
+                .expect_err(&format!("{p} 入口必须被拒绝"))
+                .to_string();
+            assert!(err.contains("凭证类"), "{p} 入口实得: {err}");
+        }
     }
 
     #[test]

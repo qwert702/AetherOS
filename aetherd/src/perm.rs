@@ -87,9 +87,19 @@ fn deny_key(tool: &str, args: &serde_json::Value) -> String {
 
 impl Gate {
     /// 审计日志固定在 /var/log/aether/（持久化分区挂载点），跨重启保留。
+    ///
+    /// 权限：审计日志含工具参数（路径、探针名等），虽已对剪贴板/文件内容脱敏
+    /// （见 `tools::audit_args`），仍不该让同机其它用户读到 —— 目录 0700、文件 0600。
+    /// 2026-10-02 审计 M-2：此前两者都靠 umask（推定 0644），与 `ui.key`/`model.json`
+    /// 的显式 0600 不一致。
     pub fn new(audit_path: PathBuf) -> Self {
         if let Some(parent) = audit_path.parent() {
             let _ = std::fs::create_dir_all(parent);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
         }
         Self {
             audit_path,
@@ -150,10 +160,20 @@ impl Gate {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.audit_path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).append(true);
+        // 只在**创建**时生效；已存在的旧文件（历史上按 umask 建的可能更宽）下面再收一次。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&self.audit_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
         writeln!(f, "{ts}\t{level}\t{tool}\t{args}\t{verdict}")
     }
 
@@ -406,6 +426,28 @@ mod tests {
         assert!(path.exists(), "审计文件应被创建");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("clipboard_get"), "实得 {content:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M-2：审计日志与它的目录必须是属主独占（0600 / 0700）。
+    ///
+    /// 只在 Unix 上可测（Windows 没有 POSIX 权限位），因此这条在开发机上是
+    /// "编译期存在、运行期不执行" —— 构建机/目标机上才会真正跑。
+    #[cfg(unix)]
+    #[test]
+    fn audit_file_and_dir_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("aether_audit_perm_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("aether-audit.log");
+        let g = Gate::new(path.clone());
+        g.audit("read_file", Level::L0, "{}", "allowed").expect("审计应成功");
+
+        let file_mode = std::fs::metadata(&path).expect("文件应存在").permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "审计文件应为 0600，实得 {file_mode:o}");
+        let dir_mode = std::fs::metadata(&dir).expect("目录应存在").permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "审计目录应为 0700，实得 {dir_mode:o}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

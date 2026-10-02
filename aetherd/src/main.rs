@@ -113,7 +113,16 @@ pub(crate) struct AgentOutcome {
 
 /// Agent 主循环：最多 MAX_ROUNDS 轮工具调用。
 /// 返回最终回答 + LLM 产生的桌面行为队列（经 IPC Action 下发合成器）。
-pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<AgentOutcome> {
+///
+/// `trusted_channel`：本次对话是否来自**已注册的 UI 通道**。需要可信通道的工具
+/// （剪贴板读写）在未注册连接上直接拒绝 —— 否则"让模型去调 clipboard_read"
+/// 就成了绕过 `Request::ToolCall` 闸门的旁路（2026-10-02 审计 H-2）。
+pub(crate) fn agent_run(
+    cfg: &Config,
+    gate: &Gate,
+    user_text: &str,
+    trusted_channel: bool,
+) -> Result<AgentOutcome> {
     const MAX_ROUNDS: usize = 4;
     let local_ok = llm::local_available(&cfg.local.base_url);
     let mut ctx = tools::ToolCtx::default();
@@ -189,6 +198,22 @@ pub(crate) fn agent_run(cfg: &Config, gate: &Gate, user_text: &str) -> Result<Ag
             let args: serde_json::Value = serde_json::from_str(raw_args).unwrap_or(serde_json::json!({}));
 
             eprintln!("[aetherd] 工具调用: {name} {args}");
+            // 需要可信通道的工具（剪贴板）：未注册连接发起的对话一律拒绝。
+            // 仍要补一条 tool 消息 —— OpenAI 兼容协议要求每个 tool_call.id 都有对应结果，
+            // 否则下一轮请求直接 400。
+            if tools::requires_trusted_channel(&name) && !trusted_channel {
+                eprintln!("[aetherd] 拒绝 {name}：本对话连接未注册为 UI 通道");
+                messages.push(llm::Message {
+                    role: "tool".into(),
+                    content: format!(
+                        "[工具错误] 「{name}」读写用户环境数据，需要已注册的 UI 通道；本次对话未注册，已拒绝"
+                    ),
+                    tool_calls: None,
+                    tool_call_id: if id.is_empty() { None } else { Some(id) },
+                    name: Some(name),
+                });
+                continue;
+            }
             // L2+ 工具需用户确认：中断本轮 agent，把结构化确认请求上抛给 UI。
             // 继续把"需确认"当普通工具结果喂回模型，只会让它编造一个"已执行"的回答。
             let result = match tools::execute(gate, &mut ctx, &name, &args, false) {
@@ -257,7 +282,7 @@ fn main() -> Result<()> {
             }
             let cfg = config_from_env();
             let gate = Gate::new(PathBuf::from("/var/log/aether/aether-audit.log"));
-            let out = agent_run(&cfg, &gate, &text).context("agent 运行失败")?;
+            let out = agent_run(&cfg, &gate, &text, false).context("agent 运行失败")?;
             if let Some(p) = out.pending {
                 // CLI 无 UI 通道：说明需确认及原因，退出码 3 供脚本区分
                 eprintln!(
