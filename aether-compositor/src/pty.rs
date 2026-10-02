@@ -18,10 +18,30 @@ use std::time::Duration;
 pub struct Pty {
     master: File,
     child: Child,
+    /// 子进程是否已被回收（见 `Drop` 里的 PID 复用说明）
+    reaped: bool,
 }
 
-/// 默认 shell。用绝对路径避免 PATH 差异（PID 1 环境里 PATH 由 /init 设置）。
-const SHELL: &str = "/bin/sh";
+/// 默认 shell 的回退值。用绝对路径避免 PATH 差异（PID 1 环境里 PATH 由 /init 设置）。
+const SHELL_FALLBACK: &str = "/bin/sh";
+
+/// 支持括号粘贴的 shell（首选）。
+const SHELL_PREFERRED: &str = "/bin/bash";
+
+/// 选一个 shell：**优先 bash**，没有就退回 `/bin/sh`。
+///
+/// 为什么（2026-10-02 审计 M-13）：终端粘贴的安全路径依赖"程序主动声明支持
+/// 括号粘贴（DECSET 2004）"—— 那是 readline 的特性，**busybox 的 ash 不实现**。
+/// 镜像里只有 busybox 时，粘贴多行文本就会走"换行即回车"的老路（逐行执行），
+/// 而这条路径正是 M-13 想消除的场景。镜像已加 `BR2_PACKAGE_BASH=y`；
+/// 这里再做一次存在性判断，好让"没有 bash 的旧镜像"仍然能用。
+fn default_shell() -> &'static str {
+    if std::path::Path::new(SHELL_PREFERRED).exists() {
+        SHELL_PREFERRED
+    } else {
+        SHELL_FALLBACK
+    }
+}
 
 /// 交给终端会话的 PATH。
 ///
@@ -42,7 +62,13 @@ impl Pty {
     /// 开一对 PTY 并 exec shell。`cols`/`rows` 决定 shell 看到的窗口大小。
     pub fn spawn(cols: u16, rows: u16, cwd: Option<&str>) -> io::Result<Pty> {
         // 1) 开主端（不把它当控制终端，控制终端由子进程的 slave 承担）
-        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+        //
+        // O_CLOEXEC（2026-10-02 审计 L-15）：不设的话这个 fd 会被子进程继承，
+        // 于是"终端里跑的任何程序"都持有一个 PTY 主端句柄 —— 关掉它并不会让
+        // 会话真正结束，而且多一层可被利用的句柄泄漏。
+        let master = unsafe {
+            libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC)
+        };
         if master < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -69,7 +95,7 @@ impl Pty {
         //
         // 用 Command + pre_exec 而不是手写 fork：手写 fork 在**多线程**进程里
         // （合成器有输入/AI 线程）后只能调 async-signal-safe 函数，容易埋雷。
-        let mut cmd = Command::new(SHELL);
+        let mut cmd = Command::new(default_shell());
         // **env_clear + 显式白名单**，不要继承合成器的环境。
         //
         // 为什么（2026-10-02 审计 M-16）：合成器以 root 运行，而 UI 通道密钥的约定是
@@ -103,10 +129,19 @@ impl Pty {
         let child = cmd.spawn()?;
 
         // 5) 主端设非阻塞：主循环每帧只"取走现有数据"，绝不阻塞渲染
+        //
+        // fcntl 的返回值必须检查（审计 L-15）：F_GETFL 失败返回 -1，
+        // 拿 -1 去 `| O_NONBLOCK` 会把标志位写成一堆垃圾；F_SETFL 失败则意味着
+        // 主端仍是阻塞的 —— 而整个渲染循环建立在"它不阻塞"的前提上。
         let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
-        unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
 
-        let mut pty = Pty { master, child };
+        let mut pty = Pty { master, child, reaped: false };
         pty.resize(cols, rows);
         Ok(pty)
     }
@@ -172,7 +207,12 @@ impl Pty {
     /// 子进程是否已退出；退出则返回状态码（只在第一次返回 Some）。
     pub fn try_wait(&mut self) -> Option<i32> {
         match self.child.try_wait() {
-            Ok(Some(st)) => Some(st.code().unwrap_or(-1)),
+            Ok(Some(st)) => {
+                // 记下"已经回收"（审计 L-15）：回收后再按 pid 发信号有**PID 复用**风险 ——
+                // 那个 pid 可能已经属于别人的进程。
+                self.reaped = true;
+                Some(st.code().unwrap_or(-1))
+            }
             _ => None,
         }
     }
@@ -180,10 +220,16 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // 关掉主端会让 shell 收到 SIGHUP；再显式 kill 一次兜底，避免留下孤儿进程
-        let pid = self.child.id() as libc::pid_t;
-        unsafe { libc::kill(pid, libc::SIGHUP) };
-        let _ = self.child.kill();
+        // 关掉主端会让 shell 收到 SIGHUP；再显式 kill 一次兜底，避免留下孤儿进程。
+        //
+        // 但如果子进程**已经被 wait 回收**，就不要再 kill（审计 L-15）：
+        // `Child::id()` 返回的是当初的 pid，进程没了之后这个 pid 可能已被系统复用，
+        // 一个 SIGHUP 会打到无关进程上。先 try_wait 确认还活着再动手。
+        if !self.reaped && self.child.try_wait().ok().flatten().is_none() {
+            let pid = self.child.id() as libc::pid_t;
+            unsafe { libc::kill(pid, libc::SIGHUP) };
+            let _ = self.child.kill();
+        }
         let _ = self.child.wait();
     }
 }

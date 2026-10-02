@@ -38,6 +38,14 @@ pub struct ObjectTable {
     next_client_id: u32,
 }
 
+/// 对象数量上限（2026-10-02 审计 L-16）。
+///
+/// 客户端可以无限 `get_registry` / `create_surface` / `create_pool`…，
+/// 而对象表**没有上限**（`destroy` 也还没清理）—— 于是一个本机进程就能让
+/// 合成器（root）的内存一路涨上去。512 远大于正常客户端需要的对象数
+/// （一个画矩形的 spike 客户端用不到 20 个），越界直接拒。
+pub const MAX_OBJECTS: usize = 512;
+
 impl Default for ObjectTable {
     fn default() -> Self {
         Self::new()
@@ -57,8 +65,15 @@ impl ObjectTable {
     ///
     /// 重复 id 会**覆盖**（协议上不该发生；覆盖而不是 panic，是因为恶意客户端
     /// 可以用它来打崩合成器 —— 而合成器 `restart:false`，崩一次桌面就没了）。
-    pub fn insert(&mut self, id: u32, interface: &'static str, version: u32, data: u64) {
+    ///
+    /// 超过 [`MAX_OBJECTS`] 时**拒绝插入**并返回 false（审计 L-16）：
+    /// 调用方据此回协议错误，而不是默默把内存涨上去。
+    pub fn insert(&mut self, id: u32, interface: &'static str, version: u32, data: u64) -> bool {
+        if !self.map.contains_key(&id) && self.map.len() >= MAX_OBJECTS {
+            return false;
+        }
         self.map.insert(id, Object { interface, version, data });
+        true
     }
 
     pub fn get(&self, id: u32) -> Option<Object> {

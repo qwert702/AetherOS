@@ -222,6 +222,14 @@ impl LogWatch {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            // 不跟随符号链接（2026-10-02 审计 L-2）：日志目录里放一个
+            // `aetherd.log -> /etc/shadow`，就会让 ops 把目标文件的内容读进
+            // 诊断报告并落到 /var/diag。用 symlink_metadata 判"路径本身"的类型。
+            if let Ok(md) = std::fs::symlink_metadata(&path) {
+                if md.file_type().is_symlink() {
+                    continue;
+                }
+            }
             let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue };
             if path.extension().and_then(|e| e.to_str()) != Some("log") || name == skip {
                 continue;

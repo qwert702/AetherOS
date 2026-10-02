@@ -16,8 +16,8 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 
 | | |
 |---|---|
-| **Scale** | 26,095 lines of Rust / 45 source files / 7 crates (measured 2026-10-02) |
-| **Verification** | 390 unit tests green · 0 compiler warnings on Windows and on 6/7 crates for musl (`aetherd` cannot be cross-checked because of ring) · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
+| **Scale** | 26,680 lines of Rust / 45 source files / 7 crates (measured 2026-10-02) |
+| **Verification** | 394 unit tests green · 0 compiler warnings on Windows and on 6/7 crates for musl (`aetherd` cannot be cross-checked because of ring) · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
 | **Artifact** | bootable ISO ≈ 38.5 MB, tested booting in QEMU, VirtualBox and VMware |
 
 ## What makes it unusual
@@ -25,7 +25,7 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 - **The whole user space is home-grown.** The compositor rasterizes in software over `fbdev` and needs no GPU; the VT/ANSI parser, the PTY glue layer, the Chinese input method, PID 1, the IPC protocol and the disk installer are all first-party code. None of the seven crates is glued together from an existing desktop stack.
 - **The AI is a first-class part of the system, not a chat window.** `aetherd` runs as a daemon and exposes 15 tools that actually operate the machine. Simple commands are answered by an offline rule-based intent channel (**no model call at all**); only complex requests reach an LLM, which is routed locally or to the cloud according to privacy and complexity.
 - **The permission model is the most carefully designed part of the system.** Four authorization levels (L0–L3), one-time confirmation tokens bound to both the tool and its arguments (5-minute expiry, single use), six distinct audit verdicts, and a rejection cooldown. The key invariant is **sensitive output is pinned local**: once `read_file` or `clipboard_read` results enter the context, every later round of that conversation stays on-device and never goes to the cloud. This was not inferred — the exfiltration path was demonstrated end to end with **two fake LLM endpoints and a canary file** (a 13-character input and two file reads, with the canary indeed arriving at the cloud endpoint), and the fixed behavior is pinned by two `router` unit tests.
-- **Verifiable, not "looks fine to me".** Beyond the 390 unit tests there is a **per-pixel regression gate over 19 archived walkthrough images** (fails on more than 0.02% difference), a 12 h 43 m stability soak (3,053 patrol rounds: 0 service exits, 0 restarts, 0 panics, no memory leak trend), and four full code-review rounds with **zero unresolved findings**.
+- **Verifiable, not "looks fine to me".** Beyond the 394 unit tests there is a **per-pixel regression gate over 19 archived walkthrough images** (fails on more than 0.02% difference), a 12 h 43 m stability soak (3,053 patrol rounds: 0 service exits, 0 restarts, 0 panics, no memory leak trend), and four full code-review rounds with **zero unresolved findings**.
 - **It really installs applications.** On a system with no package manager at all, it ships its own application package format (manifest + dependency preflight). Installed programs are immediately callable from `/usr/local/bin`, **an icon appears in the Dock**, and clicking it opens a terminal and runs the program.
 
 ## Quick start
@@ -188,10 +188,10 @@ aether-ops patrol ─▶ init service status + /var/log/aether ─▶ self-heali
 
 | Directory | Lines | Description | Milestone |
 |---|---|---|---|
-| `aether-compositor/` | 16,318 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
-| `aetherd/` | 6,223 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
-| `aether-init/` | 1,679 | PID 1 and service management | M3 |
-| `aether-ops/` | 780 | AI operations and self-healing | M5 |
+| `aether-compositor/` | 16,545 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
+| `aetherd/` | 6,266 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
+| `aether-init/` | 1,986 | PID 1 and service management | M3 |
+| `aether-ops/` | 788 | AI operations and self-healing | M5 |
 | `aether-install/` | 732 | Disk installer | M6 |
 | `aether-ipc/` | 352 | System-wide IPC protocol | M0 |
 | `aether-shell/` | 11 | Placeholder skeleton | M2 |
@@ -226,7 +226,7 @@ A few invariants hold this together:
 
 | Method | Status |
 |---|---|
-| Unit tests | 390 green on Windows (measured 2026-10-02, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
+| Unit tests | 394 green on Windows (measured 2026-10-02, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
 | Compiler warnings | 0 on Windows; 0 on the 6 crates that can be musl-checked (`aetherd` cannot: ring needs x86_64-linux-musl-gcc) |
 | Visual regression | 19 archived walkthrough images compared pixel by pixel, currently 19/19 with zero difference |
 | Code review | Four full and incremental review rounds, every finding fixed (zero unresolved); the consolidated report is [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |

@@ -166,12 +166,91 @@ const HEIGHT: usize = 760;
 
 /// 把一行诊断写到 VGA 文本控制台（/dev/tty0）。
 /// VBox 等环境的串口不可用时，这是唯一能在屏幕上看到启动失败原因的通路。
+///
+/// 内容**必须过滤控制字符**（2026-10-02 审计 L-13）：`msg` 里可能带 IPC 来源字符串
+/// 或错误信息，而这些是外部可控的 —— 原样写进真终端就是转义序列注入
+/// （清屏、藏光标、改标题），在一个"救援用"的通路上尤其糟糕。
 #[cfg(target_os = "linux")]
 fn tty_log(msg: &str) {
     use std::io::Write;
+    let clean = sanitize_for_tty(msg);
     if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/dev/tty0") {
-        let _ = write!(f, "\r\n[AETHER compositor] {msg}\r\n");
+        let _ = write!(f, "\r\n[AETHER compositor] {clean}\r\n");
     }
+}
+
+/// 净化一段要写进终端的文本：丢弃 ESC 序列与除 `\n\r\t` 外的控制字符。
+///
+/// 与 `aether-init::logtee::sanitize_for_display` 同一套规则（那个在另一个 crate，
+/// 不能直接复用；两处都有各自的单测）。
+#[cfg(target_os = "linux")]
+fn sanitize_for_tty(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    // CSI：参数/中间字节后跟终止字节（0x40..=0x7E）
+                    for c2 in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c2) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    // OSC：吃到 BEL 或 ESC \
+                    while let Some(c2) = chars.next() {
+                        if c2 == '\x07' {
+                            break;
+                        }
+                        if c2 == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            },
+            '\n' | '\r' | '\t' => out.push(c),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// 单条 IPC 响应行的长度上限（与 aetherd 的 `MAX_LINE_BYTES` 对齐）。
+///
+/// 2026-10-02 审计 L-14：合成器里 6 处 `read_line` 都没有上限 ——
+/// `BufRead::read_line` 是"对端发多少读多少"，一个失控的对端（或模型返回了
+/// 超大 JSON）就能让**以 root 运行的合成器**把内存吃光。
+const MAX_IPC_LINE: usize = 1024 * 1024;
+
+/// AI 回复累计长度上限（多轮 ChatChunk 拼起来的总量）。
+const MAX_CHAT_BYTES: usize = 4 * 1024 * 1024;
+
+/// 读一行 IPC 响应，**带长度上限**：超限即报错断开，而不是继续吃内存。
+///
+/// EOF 时返回空串（与 `read_line` 的行为一致，调用方按空串判结束）。
+fn read_line_capped<R: BufRead + ?Sized>(
+    reader: &mut R,
+    max: usize,
+) -> std::io::Result<String> {
+    let mut line = String::new();
+    let n = (&mut *reader).take(max as u64).read_line(&mut line)?;
+    if n as usize >= max && !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("IPC 响应超过 {max} 字节上限，已断开"),
+        ));
+    }
+    Ok(line)
 }
 
 /// 启动安装线程（按钮/键盘共用）；返回是否真正启动。
@@ -1137,8 +1216,7 @@ fn register_ui(stream: &mut IpcStream, reader: &mut BufReader<IpcStream>) -> any
         )
     })?;
     stream.write_all(aether_ipc::encode(&Request::RegisterUi { key }).as_bytes())?;
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+    let line = read_line_capped(reader, MAX_IPC_LINE)?;
     match aether_ipc::decode::<Response>(&line)? {
         Response::UiRegistered => Ok(()),
         Response::Error { message, .. } => anyhow::bail!("UI 通道注册失败：{message}"),
@@ -1160,8 +1238,7 @@ fn cancel_confirm(token: &str) {
             let mut reader = BufReader::new(stream.try_clone()?);
             register_ui(&mut stream, &mut reader)?;
             stream.write_all(aether_ipc::encode(&Request::ConfirmCancel { token }).as_bytes())?;
-            let mut line = String::new();
-            reader.read_line(&mut line)?;
+            let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
             match aether_ipc::decode::<Response>(&line)? {
                 Response::ConfirmCancelled { .. } => Ok(()),
                 Response::Error { message, .. } => anyhow::bail!("{message}"),
@@ -1214,8 +1291,7 @@ fn send_tool_call(
     register_ui(&mut stream, &mut reader)?;
     let req = Request::ToolCall { session_id: "shell-preview".into(), tool, arguments, approval };
     stream.write_all(aether_ipc::encode(&req).as_bytes())?;
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+    let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
     match aether_ipc::decode::<Response>(&line)? {
         Response::ToolResult { ok, output, .. } => {
             let _ = tx.send(AiEvent::ToolDone { ok, output, origin });
@@ -1252,19 +1328,28 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
         stream.write_all(
             aether_ipc::encode(&Request::Chat { session_id: "shell-preview".into(), text }).as_bytes(),
         )?;
-        let mut line = String::new();
+        // 响应行在循环里读（每轮覆盖），这里不预置初值 —— 预置了反而会得到
+        // "赋值后从未读取"的警告，而且容易让人以为它有意义。
+        let mut line: String;
         let mut reply = String::new();
         let mut action: Option<(String, serde_json::Value)> = None;
         let mut confirm: Option<ConfirmRequest> = None;
         // 最后一条 ChatChunk 携带的推理通道（"local"/"cloud"），决定顶栏三态
         let mut channel: Option<String> = None;
         loop {
-            line.clear();
-            if reader.read_line(&mut line)? == 0 {
+            line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
+            if line.is_empty() {
                 break;
             }
             match aether_ipc::decode::<Response>(&line) {
                 Ok(Response::ChatChunk { delta, done, channel: ch, .. }) => {
+                    // 累计上限（审计 L-14）：模型可以一直吐，合成器不能一直吃
+                    if reply.len() + delta.len() > MAX_CHAT_BYTES {
+                        anyhow::bail!(
+                            "AI 回复超过 {} 字节上限，已中止本轮（防内存耗尽）",
+                            MAX_CHAT_BYTES
+                        );
+                    }
                     reply.push_str(&delta);
                     if let Some(c) = ch {
                         channel = Some(c);
@@ -3258,8 +3343,7 @@ fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether
             stream.write_all(
                 aether_ipc::encode(&Request::ServiceControl { unit: unit.to_string(), action }).as_bytes(),
             )?;
-            let mut line = String::new();
-            reader.read_line(&mut line)?;
+            let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
             serde_json::from_str::<Response>(line.trim()).map_err(|e| anyhow::anyhow!("解析响应失败: {e}"))
         };
         let ev = match run() {
@@ -3300,8 +3384,8 @@ fn sync_clipboard_to_daemon(text: String) {
             // 因密钥不匹配而拒绝。此前这里是"连上就发"，对端身份完全不校验。
             register_ui(&mut stream, &mut reader)?;
             stream.write_all(aether_ipc::encode(&Request::ClipboardSet { text }).as_bytes())?;
-            let mut line = String::new();
-            reader.read_line(&mut line)?;
+            // 读掉一条响应（内容用不上，但必须消费掉才符合"一问一答"的协议）
+            read_line_capped(&mut reader, MAX_IPC_LINE)?;
             Ok(())
         };
         let _ = run();

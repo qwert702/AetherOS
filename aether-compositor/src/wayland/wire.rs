@@ -147,9 +147,30 @@ impl Message {
     }
 }
 
+/// 缓冲区里"完整消息"的总长度（跨读重组用）。
+///
+/// 为什么需要它（2026-10-02 审计 L-16）：读缓冲是 16KB，而单条 wl 消息的 `size`
+/// 是 16 位、以字节计（上限约 64KB）。此前服务端每读到多少就把整块交给
+/// `Session::handle`，于是**一条大消息被 TCP 分段就必然解析失败**，连接被判协议错误
+/// 后断开 —— 表现为"客户端随机连不上"，且只在传大消息时出现。
+///
+/// 按消息头的 `size` 逐条推进，返回完整前缀的长度；不完整的尾巴留在缓冲里等下一次读。
+/// 头部坏掉（size < 8 或非 4 的倍数）时停止推进，把这一块留给 `decode` 去报协议错误。
+pub fn complete_prefix_len(buf: &[u8]) -> usize {
+    let mut off = 0;
+    while off + 8 <= buf.len() {
+        let word = u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
+        let size = (word >> 16) as usize;
+        if size < 8 || size % 4 != 0 || off + size > buf.len() {
+            break;
+        }
+        off += size;
+    }
+    off
+}
+
 /// 从字节流头部读出 (object_id, opcode, size)。不校验 size 是否越界。
-pub fn peek_header(buf: &[u8]) -> Result<(u32, u16, usize), WireError> {
-    if buf.len() < 8 {
+pub fn peek_header(buf: &[u8]) -> Result<(u32, u16, usize), WireError> {    if buf.len() < 8 {
         return Err(WireError::ShortHeader);
     }
     let object_id = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
@@ -274,6 +295,37 @@ mod tests {
         assert_eq!(bytes.len(), 8);
         let (id, op, size) = peek_header(&bytes).unwrap();
         assert_eq!((id, op, size), (7, 3, 8));
+    }
+
+    /// L-16 回归：跨读重组 —— 大消息被切开时必须等齐再解析，而不是报协议错误。
+    #[test]
+    fn complete_prefix_len_waits_for_whole_messages() {
+        // 两条消息：一条 8 字节（空参数），一条带 8 字节参数 → 16 字节
+        let a = Message { object_id: 2, opcode: 0, args: vec![] }.encode("");
+        let b = Message { object_id: 2, opcode: 1, args: vec![Arg::Uint(1), Arg::Int(2)] }
+            .encode("ui");
+        assert_eq!(a.len(), 8);
+        assert_eq!(b.len(), 16);
+
+        // 完整的两条 → 全部可解析
+        let both: Vec<u8> = [a.clone(), b.clone()].concat();
+        assert_eq!(complete_prefix_len(&both), 24);
+
+        // 只读到了第一条 + 第二条的前半 → 只能解析第一条
+        let partial: Vec<u8> = [a.clone(), b[..6].to_vec()].concat();
+        assert_eq!(complete_prefix_len(&partial), 8, "半条消息不能算完整");
+
+        // 只读到第一条的一部分 → 一条都不完整
+        assert_eq!(complete_prefix_len(&a[..5]), 0);
+
+        // 头部坏掉（size 非 4 的倍数）→ 停在坏消息处，交给 decode 报错
+        let mut bad = a.clone();
+        bad[4..8].copy_from_slice(&((9u32) << 16).to_le_bytes()); // size=9
+        assert_eq!(complete_prefix_len(&bad), 0);
+
+        // 空缓冲 / 不足 8 字节
+        assert_eq!(complete_prefix_len(&[]), 0);
+        assert_eq!(complete_prefix_len(&[0u8; 7]), 0);
     }
 
     #[test]

@@ -124,6 +124,17 @@ pub struct ServiceSpec {
     /// 开机自启
     #[serde(default = "default_autostart")]
     pub autostart: bool,
+    /// 以哪个用户运行（用户名或数字 uid）。
+    ///
+    /// **为什么要有这个字段**（2026-10-02 审计 M-5）：此前所有服务都以 root 运行，
+    /// 而"哪个服务真的需要 root"从代码里看不出来 —— 一旦某个服务被攻破，
+    /// 就是整机沦陷。现在**必须显式声明**：写 `"user": "root"` 表示"确认它需要 root"，
+    /// 省略则默认 root 并会在启动日志里提示（不改变现有行为，但让依赖变得可见）。
+    #[serde(default = "default_user")]
+    pub user: String,
+    /// 附加组（可选）。留空表示只用该用户的主组。
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 fn default_restart() -> bool {
@@ -132,6 +143,48 @@ fn default_restart() -> bool {
 
 fn default_autostart() -> bool {
     true
+}
+
+/// 默认用户：root（与既有行为一致）。
+fn default_user() -> String {
+    "root".to_string()
+}
+
+/// 从 `/etc/passwd` 文本里解析用户名 → uid（纯函数，便于单测）。
+///
+/// 数字直接当 uid 用（允许 `"user": "1000"`）；找不到返回 None。
+/// 格式：`name:x:uid:gid:gecos:home:shell`
+///
+/// 非 Linux 平台不调用它（降权只在真机上做），故允许 dead_code。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn resolve_uid(passwd: &str, user: &str) -> Option<u32> {
+    if let Ok(n) = user.parse::<u32>() {
+        return Some(n);
+    }
+    passwd.lines().find_map(|line| {
+        let f: Vec<&str> = line.split(':').collect();
+        if f.len() >= 3 && f[0] == user {
+            f[2].parse::<u32>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// 从 `/etc/group` 文本里解析组名 → gid（纯函数）。数字直接当 gid 用。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn resolve_gid(groups: &str, group: &str) -> Option<u32> {
+    if let Ok(n) = group.parse::<u32>() {
+        return Some(n);
+    }
+    groups.lines().find_map(|line| {
+        let f: Vec<&str> = line.split(':').collect();
+        if f.len() >= 3 && f[0] == group {
+            f[2].parse::<u32>().ok()
+        } else {
+            None
+        }
+    })
 }
 
 impl ServiceSpec {
@@ -174,8 +227,7 @@ pub fn load_dir(dir: &Path) -> Result<(Vec<ServiceSpec>, Vec<String>)> {
 mod tests {
     use super::*;
 
-    /// **随镜像发布**的服务里，`essential: true` 必须同时 `restart: true`。
-    ///
+    /// **随镜像发布**的服务里，`essential: true` 必须同时 `restart: true`。    ///
     /// 为什么值得一条断言：`restart: false` 的语义在 2026-09-19（`a0f1268` 的 P1-3
     /// "重启策略以服务定义为唯一事实来源"）被改成了**"没人接管"** —— 在那之前
     /// ops 会给 `restart:false` 的服务兜底。而 `compositor.json` 是 09-12 按旧语义
@@ -212,6 +264,47 @@ mod tests {
         assert_eq!(spec.validate().unwrap(), KnownService::AetherD);
         assert!(spec.restart);
         assert!(spec.autostart);
+        // 省略 user 时默认 root（与既有行为一致），不是空串 —— 空串会让
+        // spawn_with_logs 的降权判断与"root"分支都走不到，语义含糊。
+        assert_eq!(spec.user, "root", "省略 user 必须默认 root");
+    }
+
+    /// M-5 回归：uid/gid 解析是纯函数，必须能吃下真实的 /etc/passwd 形态。
+    #[test]
+    fn resolve_user_and_group_from_text() {
+        let passwd = "root:x:0:0:root:/root:/bin/sh\n\
+                      aether:x:1000:1000:Aether:/home/aether:/bin/sh\n\
+                      broken:x:notanumber:0::/:/bin/sh\n";
+        assert_eq!(resolve_uid(passwd, "root"), Some(0));
+        assert_eq!(resolve_uid(passwd, "aether"), Some(1000));
+        assert_eq!(resolve_uid(passwd, "1001"), Some(1001), "数字应直接当 uid");
+        assert_eq!(resolve_uid(passwd, "nobody"), None);
+        assert_eq!(resolve_uid(passwd, "broken"), None, "uid 非数字应返回 None");
+
+        let groups = "root:x:0:\naether:x:1000:\nwheel:x:10:aether\n";
+        assert_eq!(resolve_gid(groups, "aether"), Some(1000));
+        assert_eq!(resolve_gid(groups, "wheel"), Some(10));
+        assert_eq!(resolve_gid(groups, "9"), Some(9));
+        assert_eq!(resolve_gid(groups, "nope"), None);
+    }
+
+    /// M-5：**随镜像发布**的服务必须显式声明运行用户。
+    ///
+    /// 不声明也能跑（默认 root），但"哪个服务真的需要 root"就从代码里消失了 ——
+    /// 而这条信息正是最小权限改造的起点。这里钉住"每个服务都写了 user"。
+    #[test]
+    fn shipped_services_declare_their_user() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../platform/overlay/etc/aether/services");
+        for p in std::fs::read_dir(&dir).expect("服务目录应可读").flatten() {
+            let text = std::fs::read_to_string(p.path()).unwrap();
+            let spec: ServiceSpec = serde_json::from_str(&text).unwrap();
+            assert!(
+                !spec.user.is_empty(),
+                "{} 没有声明 user —— 请显式写 \"user\": \"root\" 或实际用户",
+                p.path().display()
+            );
+        }
     }
 
     #[test]

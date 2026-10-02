@@ -1,1 +1,1 @@
-{"name": "ops", "deps": ["aetherd"], "restart": true}
+{"name": "ops", "deps": ["aetherd"], "restart": true, "user": "root"}

@@ -312,6 +312,40 @@ fn spawn_with_logs(spec: &ServiceSpec) -> Result<Child> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // 最小权限：`user` 不是 root 时，在 exec 之前 setgid/setuid（2026-10-02 审计 M-5）。
+    //
+    // 为什么放在 pre_exec：这必须是"fork 之后、exec 之前"的最后一个动作 ——
+    // 在那之前降权会让子进程还没 exec 就失去读日志目录/写管道的权限。
+    // 组先于用户设置（setgid 之后再 setuid，否则就没有权限改组了）。
+    #[cfg(target_os = "linux")]
+    if spec.user != "root" && !spec.user.is_empty() {
+        use std::os::unix::process::CommandExt; // pre_exec
+        let user = spec.user.clone();
+        let groups = spec.groups.clone();
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        let groupdb = std::fs::read_to_string("/etc/group").unwrap_or_default();
+        let uid = crate::unit::resolve_uid(&passwd, &user)
+            .ok_or_else(|| anyhow::anyhow!("服务 {name} 指定了不存在的用户「{user}」"))?;
+        let gid = crate::unit::resolve_gid(&groupdb, &user).unwrap_or(uid);
+        unsafe {
+            command.pre_exec(move || {
+                // 附加组：失败即报错（宁可不启动，也不要以错误的权限跑）
+                for g in &groups {
+                    if let Some(gid) = crate::unit::resolve_gid(&groupdb, g) {
+                        if libc::setgroups(1, &gid) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                }
+                if libc::setgid(gid) != 0 || libc::setuid(uid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
     let mut child = command
         .spawn()
         .map_err(|e| anyhow::anyhow!("启动 {name} 失败: {e}"))?;

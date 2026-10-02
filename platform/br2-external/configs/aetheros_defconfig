@@ -25,6 +25,12 @@ BR2_TARGET_ROOTFS_ISO9660_BOOT_MENU="$(BR2_EXTERNAL_AETHER_PATH)/isolinux.cfg"
 
 # 用户态基础（最小集；图形栈后加）
 BR2_PACKAGE_BUSYBOX=y
+# bash：**不是"想要"，是终端粘贴安全的需要**（2026-10-02 审计 M-13）。
+# 合成器的安全粘贴路径依赖程序声明支持括号粘贴（DECSET 2004）——那是 readline 的特性，
+# busybox 的 ash 不实现；只有 busybox 时，粘贴多行文本会退回"换行即回车"（逐行执行），
+# 而这条路径正是 M-13 要消除的场景。代价约 +1MB 镜像体积。
+# compositor 会优先选 /bin/bash（见 aether-compositor/src/pty.rs::default_shell）。
+BR2_PACKAGE_BASH=y
 BR2_PACKAGE_E2FSPROGS=y
 BR2_TARGET_SYSLINUX=y
 BR2_TARGET_SYSLINUX_ISOLINUX=y

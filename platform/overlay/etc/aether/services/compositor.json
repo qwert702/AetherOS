@@ -1,1 +1,1 @@
-{"name": "compositor", "deps": ["network", "aetherd"], "essential": true, "restart": true}
+{"name": "compositor", "deps": ["network", "aetherd"], "essential": true, "restart": true, "user": "root"}

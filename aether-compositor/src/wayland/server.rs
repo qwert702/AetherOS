@@ -82,9 +82,17 @@ mod imp {
     fn accept_loop(listener: UnixListener, sessions: Arc<Mutex<Vec<Session>>>) {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
+            // 连接上限（2026-10-02 审计 L-16）：此前每来一个连接就 push 一个 Session
+            // 并起一条线程，**没有上限** —— 本机任何进程都能把合成器（root）的
+            // 线程与内存吃光。上限与 aetherd 的口径一致。
+            const MAX_WAYLAND_CONNS: usize = 16;
             // 占一个槽位；连接线程之后一直写这个索引
             let idx = match sessions.lock() {
                 Ok(mut g) => {
+                    if g.len() >= MAX_WAYLAND_CONNS {
+                        eprintln!("[wayland] 连接数已达上限（{MAX_WAYLAND_CONNS}），拒绝新连接");
+                        continue;
+                    }
                     g.push(Session::new());
                     g.len() - 1
                 }
@@ -95,16 +103,37 @@ mod imp {
         }
     }
 
+    /// 缓冲区里"完整消息"的总长度（跨读重组）。
+    ///
+    /// 实现放在 `wire`（纯逻辑，可在开发机上单测）；这里只做转发，
+    /// 让 server 这一层继续保持"只做字节搬运"。
+    fn complete_prefix_len(buf: &[u8]) -> usize {
+        crate::wayland::wire::complete_prefix_len(buf)
+    }
+
     fn handle_conn(mut stream: UnixStream, sessions: Arc<Mutex<Vec<Session>>>, idx: usize) {
         let mut session = Session::new();
         let mut buf = [0u8; 16384];
+        // 跨读残留（不足一条完整消息的尾巴），见 complete_prefix_len 的说明
+        let mut pending: Vec<u8> = Vec::new();
+        /// 残留缓冲上限：超过就说明对端在灌垃圾，直接断开（防内存增长）
+        const MAX_PENDING: usize = 1024 * 1024;
         loop {
             let n = match stream.read(&mut buf) {
                 Ok(0) => break, // 客户端正常关闭
                 Ok(n) => n,
                 Err(_) => break,
             };
-            let events = match session.handle(&buf[..n]) {
+            pending.extend_from_slice(&buf[..n]);
+            if pending.len() > MAX_PENDING {
+                eprintln!("[wayland] 待解析缓冲超过 {MAX_PENDING} 字节，断开连接");
+                break;
+            }
+            let complete = complete_prefix_len(&pending);
+            if complete == 0 {
+                continue; // 还没凑够一条完整消息，继续读
+            }
+            let events = match session.handle(&pending[..complete]) {
                 Ok(ev) => ev,
                 Err(e) => {
                     // 协议错误：按协议回 wl_display.error 再断开。
@@ -122,6 +151,7 @@ mod imp {
                     break;
                 }
             };
+            pending.drain(..complete);
             // 把会话状态同步出去（渲染主循环每帧读它）
             if let Ok(mut g) = sessions.lock() {
                 if idx < g.len() {

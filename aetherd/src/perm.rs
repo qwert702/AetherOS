@@ -37,14 +37,25 @@ impl fmt::Display for Level {
 pub struct Gate {
     /// 审计日志路径（追加写）
     audit_path: PathBuf,
-    /// 测试/无人值守模式下，允许的最高自动通过等级
-    pub auto_approve_below: Level,
+    /// 允许的最高自动通过等级。
+    ///
+    /// **私有**（2026-10-02 审计 I-9）：此前是 `pub` 字段，任何模块都能
+    /// `gate.auto_approve_below = Level::L3` 把闸门整体拆掉，而审计日志里
+    /// 看不出"是谁改的、什么时候改的"。现在只能通过构造器设定，外部只读。
+    auto_approve_below: Level,
     /// 被用户**明确拒绝**过的操作指纹 → 拒绝时刻。
     ///
     /// 存在意义：让"用户拒绝了"成为服务端的一个持久事实。在此之前，
     /// 合成器的"拒绝"只是本地 UI 状态（不发 IPC），服务端既不撤销令牌，
     /// 也不知道发生过拒绝，`Verdict::Denied` 因此永远不可达。
     denied: Mutex<HashMap<String, Instant>>,
+}
+
+impl Gate {
+    /// 当前自动放行阈值（只读）。
+    pub fn auto_approve_below(&self) -> Level {
+        self.auto_approve_below
+    }
 }
 
 /// 用户拒绝后，同一操作在此时长内不再重复询问（直接 Denied）。

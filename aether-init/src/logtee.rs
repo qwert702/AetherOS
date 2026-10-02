@@ -30,7 +30,70 @@ fn rotate_in(dir: &str, unit: &str) -> bool {
     std::fs::rename(&cur, &old).is_ok()
 }
 
-/// 打开（必要时先轮转）服务日志文件。全程容错：打不开只丢文件侧。
+/// 把一段服务输出净化成"可以安全显示"的文本。
+///
+/// 为什么必须做（2026-10-02 审计 L-1）：服务输出是**外部可控**的（任何打印到
+/// stdout 的程序都能决定内容），而它会被原样 tee 到 `/dev/console`（真终端），
+/// 也会被合成器的日志页显示、被 AI 读走。一个 `\x1b]0;标题\x07` 能改终端标题、
+/// `\x1b[2J` 能清屏、`\x1b[?25l` 能把光标藏起来 —— 在救援控制台上这是实打实的
+/// 干扰手段（用户以为系统死了）。
+///
+/// 规则：丢弃 C0 控制字符（保留 `\n` `\r` `\t`）与 DEL，并把 CSI/OSC 序列整体吃掉；
+/// UTF-8 多字节（≥0x80）原样保留，所以中文日志不受影响。
+pub fn sanitize_for_display(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b == 0x1B {
+            // ESC：吃掉整个转义序列
+            i += 1;
+            match input.get(i) {
+                Some(b'[') => {
+                    // CSI：参数字节 0x30..=0x3F、中间字节 0x20..=0x2F，终止字节 0x40..=0x7E
+                    i += 1;
+                    while i < input.len() {
+                        let c = input[i];
+                        i += 1;
+                        if (0x40..=0x7E).contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(b']') => {
+                    // OSC：吃到 BEL 或 ST(ESC \)
+                    i += 1;
+                    while i < input.len() {
+                        let c = input[i];
+                        if c == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if c == 0x1B && input.get(i + 1) == Some(&b'\\') {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                Some(_) => i += 1, // 两字节转义序列
+                None => break,
+            }
+            continue;
+        }
+        if b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t') {
+            i += 1; // 其它 C0 控制字符
+            continue;
+        }
+        if b == 0x7F {
+            i += 1; // DEL
+            continue;
+        }
+        out.push(b);
+        i += 1;
+    }
+    out
+}
 fn open_log(unit: &str) -> Option<std::fs::File> {
     let path = format!("{LOG_DIR}/{unit}.log");
     if let Ok(meta) = std::fs::metadata(&path) {
@@ -144,8 +207,12 @@ pub fn tee_child(unit: &str, child: &mut Child) {
                 match pipe.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        // 净化后再落盘/上屏（审计 L-1）：服务输出外部可控，
+                        // 原样送进终端就是"转义序列注入"。文件侧也净化 ——
+                        // 同一个日志还会被合成器的日志页显示、被 AI 读走。
+                        let clean = sanitize_for_display(&buf[..n]);
                         if let Some(f) = log.as_mut() {
-                            let _ = f.write_all(&buf[..n]);
+                            let _ = f.write_all(&clean);
                             written += n as u64;
                         }
                         // **运行期也要轮转**：只在打开时检查的话，一个连续运行数周的
@@ -158,7 +225,7 @@ pub fn tee_child(unit: &str, child: &mut Child) {
                             written = 0;
                         }
                         if let Some(c) = console.as_mut() {
-                            let _ = c.write_all(&buf[..n]);
+                            let _ = c.write_all(&clean);
                         }
                     }
                 }
@@ -202,6 +269,27 @@ mod tests {
     fn rotate_missing_file_is_noop() {
         let dir = tmpdir("rot3");
         assert!(!rotate_in(&dir, "nope"), "没有日志时不应报告轮转成功");
+    }
+
+    /// L-1 回归：转义序列必须被吃掉，普通文本（含中文与换行）必须原样保留。
+    #[test]
+    fn sanitize_strips_escape_sequences_and_keeps_text() {
+        // 用 &str 转字节：Rust 的 b"..." 不允许非 ASCII 字面量
+        let s = |t: &str| String::from_utf8_lossy(&sanitize_for_display(t.as_bytes())).to_string();
+        // CSI（颜色/清屏/隐藏光标）
+        assert_eq!(s("\x1b[31m红色\x1b[0m"), "红色");
+        assert_eq!(s("\x1b[2J清屏了"), "清屏了");
+        assert_eq!(s("\x1b[?25l"), "");
+        // OSC（改标题）到 BEL 与到 ST 两种结尾
+        assert_eq!(s("\x1b]0;恶意标题\x07后面"), "后面");
+        assert_eq!(s("\x1b]0;恶意标题\x1b\\后面"), "后面");
+        // 其它 C0 与 DEL
+        assert_eq!(s("a\x07b\x00c\x7fd"), "abcd");
+        // 必须保留：换行、回车、制表、中文、emoji
+        assert_eq!(s("line1\nline2\r\n\t中🚀"), "line1\nline2\r\n\t中🚀");
+        // 半个转义序列（被 4096 分块截断）不该把后面的内容全吃掉
+        assert_eq!(s("\x1b[3"), "");
+        assert_eq!(s("正常\x1b"), "正常");
     }
 
     /// H-4 回归：日志路径是符号链接时**必须拒绝写**，而不是顺着链接写过去。

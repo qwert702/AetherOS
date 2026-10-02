@@ -114,10 +114,35 @@ fn spawn_unix_listener(shared: Arc<Shared>) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn serve(cfg: Config) -> anyhow::Result<()> {
-    // 只听回环；宿主调试需要 hostfwd 直连时，由调试脚本显式注入 AETHER_BIND=0.0.0.0，
-    // 出厂镜像（platform/overlay/init）不设置该变量
+/// 解析监听地址。**默认只听回环**；非回环需要显式二次确认（2026-10-02 审计 I-6）。
+///
+/// 为什么不能只靠"脚本里别设 0.0.0.0"：IPC 里**没有任何用户级认证** ——
+/// 谁连上来谁就能调 `read_file`（以 root 读 /home 下任意文件）、发 `ToolCall`、
+/// 甚至注册 UI 通道。一个环境变量就能把这个接口交给整个局域网，
+/// 而"脚本没设"不是技术保证，只是纪律。
+fn resolve_bind() -> String {
     let bind = std::env::var("AETHER_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let loopback = matches!(bind.as_str(), "127.0.0.1" | "::1" | "localhost");
+    if !loopback {
+        if std::env::var("AETHER_ALLOW_REMOTE_IPC").as_deref() != Ok("1") {
+            eprintln!(
+                "[aetherd] 拒绝监听 {bind}：IPC 没有用户级认证，非回环监听等于把\
+                 「以 root 读写文件」暴露给网络。"
+            );
+            eprintln!(
+                "         确实需要（例如隔离网络里调试）请**显式**设 AETHER_ALLOW_REMOTE_IPC=1"
+            );
+            std::process::exit(2);
+        }
+        eprintln!(
+            "[aetherd] ⚠ 警告：正在监听 {bind}（非回环）—— IPC 无认证，请确认网络可信"
+        );
+    }
+    bind
+}
+
+pub fn serve(cfg: Config) -> anyhow::Result<()> {
+    let bind = resolve_bind();
     let listener = TcpListener::bind((bind.as_str(), aether_ipc::DEFAULT_PORT))?;
     eprintln!(
         "[aetherd] IPC 服务已启动: {bind}:{} · 本地: {} · 云端: {}",
@@ -135,6 +160,13 @@ pub fn serve(cfg: Config) -> anyhow::Result<()> {
         ui_key: Arc::new(resolve_ui_key()),
         active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     });
+
+    // 把自动放行阈值打出来（审计 I-9 的配套）：闸门松紧是安全相关的状态，
+    // 应该能从启动日志里看出来，而不是只存在于代码里。
+    eprintln!(
+        "[aetherd] 权限闸门：自动放行低于 {:?}，其余需已注册 UI 通道确认",
+        shared.gate.auto_approve_below()
+    );
 
     // Unix socket 优先通道（0600）。建不起来只告警：TCP 还在，服务不该因此停摆。
     #[cfg(unix)]
