@@ -1,7 +1,17 @@
 # aether-ipc 协议草案 v0
 
-传输：Unix domain socket（`/run/aetherd.sock`），newline-delimited JSON。
-每个组件同时充当 client 和/或 server；消息类型定义于 `aether-ipc` crate。
+> ⚠️ **本文是 M0 的草案，不是现状依据**（2026-10-02 校正）。
+>
+> 传输**实际**是 **TCP `127.0.0.1:7311`**（aetherd；监听地址可用 `AETHER_BIND` 覆盖，
+> 出厂镜像不设置）。本文原先写的 `/run/aetherd.sock` 并不存在 —— 那个路径形态属于
+> **aether-init** 的控制通道（`/run/aether-init.sock`，0600，见 `aether-init/src/ipc.rs`）。
+>
+> 权威定义请看 `aether-ipc/src/lib.rs`：10 个 `Request` 变体、12 个 `Response` 变体；
+> 本文下面的表只是 M0 时的**最小子集**（缺 `RegisterUi` / `ConfirmCancel` /
+> `Clipboard*` / `ReloadConfig` 等后加的部分）。总览见 `INDEX.md`「组件与入口」。
+
+传输：newline-delimited JSON（NDJSON）。每个组件同时充当 client 和/或 server；
+消息类型定义于 `aether-ipc` crate。
 
 ## 请求（Request）
 

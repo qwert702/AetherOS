@@ -1,4 +1,4 @@
-[中文](README.md) | **English** · [**Download ISO (38.5 MB)**](https://github.com/qwert702/AetherOS/releases/latest) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/APP-PACKAGES.md)
+[中文](README.md) | **English** · [**Download ISO (38.5 MB)**](https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/APP-PACKAGES.md)
 
 # AetherOS
 
@@ -16,8 +16,8 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 
 | | |
 |---|---|
-| **Scale** | 24,491 lines of Rust / 45 source files / 7 crates (measured 2026-10-02) |
-| **Verification** | 370 unit tests green · 0 compiler warnings on both targets · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
+| **Scale** | 25,065 lines of Rust / 45 source files / 7 crates (measured 2026-10-02) |
+| **Verification** | 380 unit tests green · 0 compiler warnings on both targets · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
 | **Artifact** | bootable ISO ≈ 38.5 MB, tested booting in QEMU, VirtualBox and VMware |
 
 ## What makes it unusual
@@ -25,12 +25,12 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 - **The whole user space is home-grown.** The compositor rasterizes in software over `fbdev` and needs no GPU; the VT/ANSI parser, the PTY glue layer, the Chinese input method, PID 1, the IPC protocol and the disk installer are all first-party code. None of the seven crates is glued together from an existing desktop stack.
 - **The AI is a first-class part of the system, not a chat window.** `aetherd` runs as a daemon and exposes 15 tools that actually operate the machine. Simple commands are answered by an offline rule-based intent channel (**no model call at all**); only complex requests reach an LLM, which is routed locally or to the cloud according to privacy and complexity.
 - **The permission model is the most carefully designed part of the system.** Four authorization levels (L0–L3), one-time confirmation tokens bound to both the tool and its arguments (5-minute expiry, single use), six distinct audit verdicts, and a rejection cooldown. The key invariant is **sensitive output is pinned local**: once `read_file` or `clipboard_read` results enter the context, every later round of that conversation stays on-device and never goes to the cloud. This was not inferred — the exfiltration path was demonstrated end to end with **two fake LLM endpoints and a canary file** (a 13-character input and two file reads, with the canary indeed arriving at the cloud endpoint), and the fixed behavior is pinned by two `router` unit tests.
-- **Verifiable, not "looks fine to me".** Beyond the 370 unit tests there is a **per-pixel regression gate over 10 archived walkthrough images** (fails on more than 0.02% difference), a 12 h 43 m stability soak (3,053 patrol rounds: 0 service exits, 0 restarts, 0 panics, no memory leak trend), and four full code-review rounds with **zero unresolved findings**.
+- **Verifiable, not "looks fine to me".** Beyond the 380 unit tests there is a **per-pixel regression gate over 19 archived walkthrough images** (fails on more than 0.02% difference), a 12 h 43 m stability soak (3,053 patrol rounds: 0 service exits, 0 restarts, 0 panics, no memory leak trend), and four full code-review rounds with **zero unresolved findings**.
 - **It really installs applications.** On a system with no package manager at all, it ships its own application package format (manifest + dependency preflight). Installed programs are immediately callable from `/usr/local/bin`, **an icon appears in the Dock**, and clicking it opens a terminal and runs the program.
 
 ## Quick start
 
-No build machine at hand? Grab the prebuilt bootable ISO from the [latest release](https://github.com/qwert702/AetherOS/releases/latest) — it boots in QEMU, VirtualBox and VMware.
+No build machine at hand? Grab the prebuilt bootable ISO from the [latest release](https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso) — it boots in QEMU, VirtualBox and VMware.
 
 You do not need a virtual machine to preview the desktop:
 
@@ -41,7 +41,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # interactive preview (light theme by default)
 cargo run -p aether-compositor -- --theme dark     # deep-space theme
 cargo run -p aether-compositor -- --shot 2         # single-frame screenshot self-check
-cargo test --workspace                             # unit tests (334 on Windows, see "Testing and verification")
+cargo test --workspace                             # unit tests (380 on Windows, see "Testing and verification")
 ```
 
 Building the bootable ISO requires a Linux build host running Buildroot — see `platform/README.md`.
@@ -50,7 +50,7 @@ On a Windows development machine, add `--offline` to `cargo`, otherwise it stall
 ## What it does today
 
 - **Desktop** — four layouts (float / two-column / three-column / monocle), drag-to-edge snapping, window resizing, light and dark themes. Steady-state frame time was optimized from 91 ms down to **15.5 ms**.
-- **Terminal** — a real PTY, with a home-grown VT/ANSI parser (370 unit tests; pure logic, so it is testable on any platform).
+- **Terminal** — a real PTY, with a home-grown VT/ANSI parser (29 unit tests for the parser itself; pure logic, so it is testable on any platform).
 - **Chinese input** — a first-party input method with a ~100-entry dictionary (negligible size, no licensing burden), toggled with `Ctrl+Space`, and wired into both the AI command bar and the terminal.
 - **AI hub** — `aetherd` runs resident: intent → routing → tools (up to 4 rounds) → permission gate → audit.
 - **System** — `aether-init` runs as PID 1 with a service whitelist, topological ordering, exponential-backoff restarts and zombie reaping; a persistent partition; and a whole-disk installer.
@@ -155,12 +155,12 @@ aether-ops patrol ─▶ init service status + /var/log/aether ─▶ self-heali
 
 | Directory | Lines | Description | Milestone |
 |---|---|---|---|
-| `aether-compositor/` | 15,890 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
-| `aetherd/` | 5,565 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
-| `aether-init/` | 1,319 | PID 1 and service management | M3 |
+| `aether-compositor/` | 16,149 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
+| `aetherd/` | 5,912 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
+| `aether-init/` | 1,341 | PID 1 and service management | M3 |
 | `aether-ops/` | 736 | AI operations and self-healing | M5 |
-| `aether-install/` | 505 | Disk installer | M6 |
-| `aether-ipc/` | 334 | System-wide IPC protocol | M0 |
+| `aether-install/` | 579 | Disk installer | M6 |
+| `aether-ipc/` | 337 | System-wide IPC protocol | M0 |
 | `aether-shell/` | 11 | Placeholder skeleton | M2 |
 | `platform/` | — | Buildroot external tree, rootfs overlay, ISO packaging | M3 |
 | `scripts/` | — | Host-side development, walkthrough images, end-to-end verification | ongoing |
@@ -193,9 +193,9 @@ A few invariants hold this together:
 
 | Method | Status |
 |---|---|
-| Unit tests | 334 green on Windows (measured 2026-09-29); the Linux build also compiles and runs the Linux-only test targets, so its total is higher |
+| Unit tests | 380 green on Windows (measured 2026-10-02, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
 | Compiler warnings | 0 on both targets |
-| Visual regression | 10 archived walkthrough images compared pixel by pixel, currently 10/10 with zero difference |
+| Visual regression | 19 archived walkthrough images compared pixel by pixel, currently 19/19 with zero difference |
 | Code review | Four full and incremental review rounds, every finding fixed (zero unresolved); the consolidated report is [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |
 | End-to-end | Permission chain, installer, QEMU QMP keyboard/mouse injection plus screenshots |
 | In-VM self-healing | Killing the compositor inside QEMU makes init restart it and reinitialize display, fonts and input |

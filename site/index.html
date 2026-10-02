@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AetherOS — 用户态全部自研的桌面操作系统（Rust，ISO 38.5 MB）</title>
-<meta name="description" content="AetherOS：Linux 内核 + 全部自研的 Rust 用户态（PID 1、窗口合成器、终端、中文输入法、带权限闸门的 AI 中枢）。可引导 ISO 仅 38.5 MB，370 项测试全绿，QEMU / VirtualBox / VMware 实测开机，能安装并运行市面上的 Linux 软件。GPL-3.0 开源。">
+<meta name="description" content="AetherOS：Linux 内核 + 全部自研的 Rust 用户态（PID 1、窗口合成器、终端、中文输入法、带权限闸门的 AI 中枢）。可引导 ISO 仅 38.5 MB，380 项测试全绿，QEMU / VirtualBox / VMware 实测开机，能安装并运行市面上的 Linux 软件。GPL-3.0 开源。">
 <meta name="keywords" content="AetherOS,Rust 操作系统,自研用户态,开源操作系统,Linux 发行版,窗口合成器,compositor,init system,AI agent,权限闸门,Buildroot,osdev">
 <link rel="canonical" href="https://aether.cbnac.com/">
 <link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/">
@@ -15,7 +15,7 @@
 <meta property="og:locale:alternate" content="en_US">
 <meta property="og:url" content="https://aether.cbnac.com/">
 <meta property="og:title" content="AetherOS — 用户态全部自研的桌面操作系统">
-<meta property="og:description" content="Linux 内核 + 全部自研的 Rust 用户态。可引导 ISO 仅 38.5 MB，370 项测试全绿，能安装并运行市面上的 Linux 软件。">
+<meta property="og:description" content="Linux 内核 + 全部自研的 Rust 用户态。可引导 ISO 仅 38.5 MB，380 项测试全绿，能安装并运行市面上的 Linux 软件。">
 <meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -35,7 +35,7 @@
   "softwareVersion": "v0.1.0",
   "fileSize": "38.5 MB",
   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
-  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/latest",
+  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso",
   "codeRepository": "https://github.com/qwert702/AetherOS",
   "description": "Linux 内核 + 全部自研的 Rust 用户态桌面操作系统，含窗口合成器、终端、中文输入法与带逐工具权限闸门的 AI 中枢。",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" }
@@ -73,8 +73,8 @@
   </div>
   <div class="stats">
     <div><b>38.5 MB</b><span>可引导 ISO</span></div>
-    <div><b>24,491</b><span>行 Rust（45 个源文件）</span></div>
-    <div><b>370</b><span>项单元测试全绿</span></div>
+    <div><b>25,065</b><span>行 Rust（45 个源文件）</span></div>
+    <div><b>380</b><span>项单元测试全绿</span></div>
     <div><b>3</b><span>个虚拟化平台实测开机</span></div>
   </div>
 </div></header>
@@ -104,8 +104,8 @@
       <p>每一次工具调用都要过闸门，L2+ 操作弹确认框并记审计。架构是<strong>客户端 → 你自己的网关 → 各家模型</strong>，
          系统里不存放上游 API Key。</p></div>
     <div class="card"><h3>整个系统 38.5 MB</h3>
-      <p>可引导 ISO 小到能用一条命令跑起来；安装到虚拟磁盘后可脱离 ISO 独立引导。
-         两个目标 0 编译警告，17 张界面走查图逐像素回归。</p></div>
+      <p>可引导 ISO 小到能用一条命令跑起来。
+         两个目标 0 编译警告，19 张界面走查图逐像素回归。</p></div>
   </div>
 </div></section>
 
@@ -136,7 +136,7 @@
     <p class="sub" style="margin:0">到<a href="/download.html">下载页</a>取 ISO（38.5 MB）与 SHA256 校验和。</p></div></div>
   <div class="step"><div class="n">2</div><div>
     <h3>QEMU：一条命令</h3>
-<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-v0.1.0-amd64.iso -boot d</code></pre>
+<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
     <p class="sub" style="margin:0">VirtualBox / VMware 的图形化步骤见下载页。</p></div></div>
   <div class="step"><div class="n">3</div><div>
     <h3>想装到硬盘就点「安装」</h3>

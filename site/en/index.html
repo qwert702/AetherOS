@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AetherOS — a desktop OS whose userspace is written from scratch (Rust, 38.5 MB ISO)</title>
-<meta name="description" content="AetherOS: Linux kernel plus a from-scratch Rust userspace — PID 1, window compositor, terminal, Chinese IME and an AI hub with per-tool permission gating. Bootable ISO is only 38.5 MB, 370 tests passing, verified on QEMU / VirtualBox / VMware, and it installs real Linux software. GPL-3.0.">
+<meta name="description" content="AetherOS: Linux kernel plus a from-scratch Rust userspace — PID 1, window compositor, terminal, Chinese IME and an AI hub with per-tool permission gating. Bootable ISO is only 38.5 MB, 380 tests passing, verified on QEMU / VirtualBox / VMware, and it installs real Linux software. GPL-3.0.">
 <meta name="keywords" content="AetherOS,Rust operating system,hobby OS,from scratch userspace,Linux distribution,window compositor,init system,AI agent,permission gate,Buildroot,osdev">
 <link rel="canonical" href="https://aether.cbnac.com/en/">
 <link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/">
@@ -35,7 +35,7 @@
   "softwareVersion": "v0.1.0",
   "fileSize": "38.5 MB",
   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
-  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/latest",
+  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso",
   "codeRepository": "https://github.com/qwert702/AetherOS",
   "description": "A desktop operating system with a from-scratch Rust userspace: compositor, terminal, IME and an AI hub with per-tool permission gating, on top of the Linux kernel."
 }
@@ -72,8 +72,8 @@
   </div>
   <div class="stats">
     <div><b>38.5 MB</b><span>bootable ISO</span></div>
-    <div><b>24,491</b><span>lines of Rust (43 files)</span></div>
-    <div><b>370</b><span>unit tests passing</span></div>
+    <div><b>25,065</b><span>lines of Rust (43 files)</span></div>
+    <div><b>380</b><span>unit tests passing</span></div>
     <div><b>3</b><span>hypervisors verified</span></div>
   </div>
 </div></header>
@@ -104,8 +104,8 @@
       <p>Every tool call passes a gate; L2+ actions raise a confirmation dialog and are audited. The architecture is
          <strong>client → your own gateway → any model</strong>, so no upstream API keys live on the machine.</p></div>
     <div class="card"><h3>The whole system is 38.5 MB</h3>
-      <p>Small enough to boot with one command. Install it to a virtual disk and it boots standalone.
-         Zero compiler warnings on both targets, 17 UI screenshots regression-checked pixel by pixel.</p></div>
+      <p>Small enough to boot with one command.
+         Zero compiler warnings on both targets, 19 UI screenshots regression-checked pixel by pixel.</p></div>
   </div>
 </div></section>
 
@@ -126,7 +126,7 @@
   <h2>Boot it in three minutes</h2>
   <p class="sub">All you need is a hypervisor. Full steps (VirtualBox, VMware, checksums) are on the
     <a href="/en/download.html">download page</a>.</p>
-<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-v0.1.0-amd64.iso -boot d</code></pre>
+<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
   <div class="step"><div class="n">1</div><div><h3>Download the ISO</h3>
     <p class="sub" style="margin:0">38.5 MB, with a published SHA256.</p></div></div>
   <div class="step"><div class="n">2</div><div><h3>Boot it</h3>

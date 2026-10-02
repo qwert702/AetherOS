@@ -43,6 +43,9 @@ SITE = ROOT / "site"
 DATA = SITE / "data.json"
 IMG = SITE / "assets" / "img"
 ISO = ROOT / "aetheros-0.1-amd64.iso"
+#: 已发布产物的权威事实（人工维护）。存在时**优先于**本地 ISO —— 官网要描述的是
+#: 用户实际下载到的文件。见文件内 `_comment` 与 `collect()` 里的说明。
+RELEASE = SITE / "release.json"
 CHANGELOG = ROOT / "CHANGELOG.md"
 
 #: 从 docs/ 走查图转成站点图片（源 → 目标名）。源是仓库里已有的视觉基线，
@@ -76,6 +79,40 @@ def run(args: list[str]) -> str:
     return r.stdout or ""
 
 
+def count_archived_shots() -> int:
+    """数 `scripts/archive-ui-shots.py` 的 `SHOTS` 清单条数。
+
+    **口径是"被逐像素门禁覆盖的张数"，不是 `docs/` 目录里的文件数。**
+    两者会不一致（当前目录 20 张、清单 19 张，多出的 `host-ui-terminal-detail.png`
+    是没进清单的孤儿图），用文件数会宣称"比实际被门禁保护的更多" —— 那正是
+    这个项目最忌讳的"看起来做了 ≠ 真的做了"（2026-10-02 安全审计）。
+    """
+    path = ROOT / "scripts" / "archive-ui-shots.py"
+    if not path.is_file():
+        return 0
+    return len(
+        re.findall(r'^\s*\(\[.*?\],\s*"host-ui-[^"]+"\),\s*$', path.read_text(encoding="utf-8"), re.M)
+    )
+
+
+def load_release() -> dict | None:
+    """读 `site/release.json`（已发布产物的权威事实）。
+
+    不存在 → `None`（回退到"用本地构建产物"，兼容没有发布过的仓库）。
+    存在但**格式坏** → 直接报错退出，不静默回退：静默回退会让站点继续公布
+    错误的校验和，而那正是这次要修的问题（2026-10-02 安全审计）。
+    """
+    if not RELEASE.is_file():
+        return None
+    try:
+        data = json.loads(RELEASE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"[gen-site] {RELEASE} 不是合法 JSON：{exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"[gen-site] {RELEASE} 顶层必须是对象")
+    return data
+
+
 def measure(skip_tests: bool, previous: dict) -> dict:
     """从仓库实测出所有对外数字。"""
     d: dict = {}
@@ -102,8 +139,21 @@ def measure(skip_tests: bool, previous: dict) -> dict:
         total = sum(int(x) for x in re.findall(r"test result: ok\. (\d+) passed", out))
         d["tests"] = str(total) if total else previous.get("tests", "—")
 
-    # ISO：体积、校验和、构建日期（仓库根目录的构建产物）
-    if ISO.exists():
+    # —— ISO 事实：已发布产物优先 ——
+    #
+    # 为什么不是"永远用仓库根那份 ISO"：官网要回答的是"用户下载到的文件是什么"。
+    # 二者曾经不一致 —— Release 资产 40,327,168 字节 / sha256 7c50f481…，
+    # 本地工作区 ISO 40,359,936 字节 / sha256 43c53f4c…，于是下载页让人拿一个
+    # **对不上的哈希**去校验自己下载的文件（2026-10-02 安全审计发现）。
+    # 发布流程：重建 ISO → 上传 Release → 更新 site/release.json → --refresh。
+    rel = load_release()
+    if rel is not None:
+        for k in ("iso_bytes", "iso_size", "iso_sha256", "iso_date"):
+            if k in rel:
+                d[k] = rel[k]
+        d["release_tag"] = rel.get("tag", "")
+        d["release_asset"] = rel.get("asset", "")
+    elif ISO.exists():
         size = ISO.stat().st_size
         d["iso_bytes"] = size
         d["iso_size"] = f"{size / 1048576:.1f} MB"
@@ -116,11 +166,14 @@ def measure(skip_tests: bool, previous: dict) -> dict:
             ["git", "log", "-1", "--format=%ad", "--date=short"], capture_output=True,
             text=True, encoding="utf-8").stdout.strip()
     else:
-        # 没有本地构建产物时沿用上次实测值，绝不留空（页面不能出现 "— MB"）
+        # 既没有 release.json 也没有本地构建产物时沿用上次实测值，绝不留空
+        # （页面不能出现 "— MB"）
         for k in ("iso_bytes", "iso_size", "iso_sha256", "iso_date"):
             d[k] = previous.get(k, "—")
 
-    d["shots"] = str(len(list((ROOT / "docs").glob("host-ui-*.png"))))
+    # 走查图：以**视觉门禁清单**为准，不是目录文件数（见 count_archived_shots 的说明）
+    shots = count_archived_shots()
+    d["shots"] = str(shots) if shots else previous.get("shots", "—")
     d["repo"] = "github.com/qwert702/AetherOS"
     d["site"] = "aether.cbnac.com"
     d["generated"] = subprocess.run(["git", "log", "-1", "--format=%ad", "--date=short"],
@@ -478,10 +531,17 @@ def main(argv: list[str]) -> int:
         # 只比较"渲染结果 vs 磁盘"是不够的：两者可能同样陈旧（曾经就因此让线上数字冻结了
         # 23,694 行 / 356 项测试，而 --check 一直"通过"）。所以这里直接断言当前值在页面里。
         need = {
-            "index.html": ["rust_lines", "tests", "iso_size"],
-            "en/index.html": ["rust_lines", "tests", "iso_size"],
-            "download.html": ["iso_size", "iso_sha256"],
-            "en/download.html": ["iso_size", "iso_sha256"],
+            # shots 也纳入门禁：站点上那个数字曾是手写的 17，而实际门禁覆盖 19 张 ——
+            # 因为 patch_values 只在"上次值 ≠ 本次值"时才替换，常量一旦与 data.json
+            # 脱节就永远补不上（2026-10-02 审计，与 iso_bytes 同一类问题）。
+            "index.html": ["rust_lines", "tests", "iso_size", "shots"],
+            "en/index.html": ["rust_lines", "tests", "iso_size", "shots"],
+            # iso_bytes 也纳入门禁：它的字面量曾长期停在 40,351,744（与实测的
+            # 40,359,936 差 8,192 字节）而没人发现 —— 因为页面上的字节数是手写常量，
+            # 而 patch_values 只做"上次值 → 本次值"，常量一旦与 data.json 脱节就再也
+            # 补不上（2026-10-02 安全审计 I-2）。
+            "download.html": ["iso_size", "iso_bytes", "iso_sha256"],
+            "en/download.html": ["iso_size", "iso_bytes", "iso_sha256"],
         }
         for rel, keys in need.items():
             body = (SITE / rel).read_text(encoding="utf-8")

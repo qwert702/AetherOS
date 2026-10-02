@@ -17,16 +17,20 @@ ISO="${AETHER_ISO:-aetheros-0.1-amd64.iso}"
 MEM="${AETHER_MEM:-1024}"
 URL="https://github.com/qwert702/AetherOS/releases/download/${VERSION}/${ISO}"
 
-# 已发布 ISO 的 SHA256（与 site/data.json 的 iso_sha256 同源）。
+# 已发布 ISO 的 SHA256（与 site/release.json 同源）。
 #
 # 为什么必须校验（2026-10-02 审计 M-11）：这个脚本会把下载到的东西**当作完整
 # 操作系统在 QEMU 里引导**。下载链路上任何一环（Release CDN、代理、企业 TLS
 # 拦截设备）被替换，用户就会开一个攻击者构造的系统。而哈希本来就有、就公开在
 # 官网下载页上，没有理由不用。
 #
-# 换版本时同步更新；自建镜像用 AETHER_SHA256=<你的哈希> 覆盖；
-# 显式置空（AETHER_SHA256=）表示知情地跳过校验。
-SHA256="${AETHER_SHA256-43c53f4c8f8b16ebbd5e1a782b024d1fee1912015e0fc3c4c4e1c7481b1bd8aa}"
+# ⚠️ 这个值是 **Release 资产**的哈希（40,327,168 字节），不是仓库根目录那份本地
+# 构建产物的哈希 —— 两者确实不同（本地 40,359,936 字节）。2026-10-02 实际下载该
+# 资产复核过：大小与 sha256 均与 GitHub API 的 digest 一致。
+#
+# 换版本时同步更新 site/release.json 与本常量；自建镜像用 AETHER_SHA256=<你的哈希>
+# 覆盖；显式置空（AETHER_SHA256=）表示知情地跳过校验。
+SHA256="${AETHER_SHA256-7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb}"
 
 # 校验 $ISO 的 SHA256；通过返回 0，不通过返回 1。
 verify_iso() {
@@ -52,7 +56,9 @@ verify_iso() {
         echo "   期望    : $SHA256" >&2
         echo "   实得    : $actual" >&2
         echo "   可能原因: 下载被截断/被替换，或这是自建镜像（哈希不同属正常）。" >&2
-        echo "   自建镜像: AETHER_SHA256=<你的哈希> bash scripts/try-aether.sh" >&2
+        echo "             在仓库根目录跑本脚本时，那里的 ISO 是**本地构建产物**，" >&2
+        echo "             与 Release 资产哈希不同 —— 这也是常见原因。" >&2
+        echo "   自建/本地镜像: AETHER_SHA256=<你的哈希> bash scripts/try-aether.sh" >&2
         echo "   确认无误要跳过: AETHER_SHA256= bash scripts/try-aether.sh" >&2
         return 1
     fi
@@ -75,7 +81,7 @@ if [ -z "$QEMU" ]; then
   Windows         : winget install SoftwareFreedomConservancy.QEMU
                     —— 或者干脆不用 QEMU：下载 ISO 用 VirtualBox / VMware 挂载也能开
 
-  ISO 直链：https://github.com/qwert702/AetherOS/releases/latest
+  ISO 直链：https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso
 EOF
     exit 1
 fi

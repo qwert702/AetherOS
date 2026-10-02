@@ -1,6 +1,6 @@
 # AetherOS
 
-[**English**](README.en.md) · 中文 ｜ [**下载 ISO（38.5 MB）**](https://github.com/qwert702/AetherOS/releases/latest) ｜ [落地页](https://aether.cbnac.com/) ｜ [装软件指南](docs/APP-PACKAGES.md)
+[**English**](README.en.md) · 中文 ｜ [**下载 ISO（38.5 MB）**](https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso) ｜ [落地页](https://aether.cbnac.com/) ｜ [装软件指南](docs/APP-PACKAGES.md)
 
 **一个自研的操作系统**：Linux 内核 + 全自研 Rust 用户态 + AI 中枢。
 
@@ -9,8 +9,8 @@
 
 | | |
 |---|---|
-| **规模** | 合计 24,491 行 Rust / 45 个源文件 / 7 个 crate（2026-10-02 实测） |
-| **验证** | 370 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **规模** | 合计 25,065 行 Rust / 45 个源文件 / 7 个 crate（2026-10-02 实测） |
+| **验证** | 380 项单元测试全绿 · 两个目标 0 编译警告 · 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 38.5 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](docs/host-ui-light-desktop.png)
@@ -33,7 +33,7 @@
   外泄路径是用**两个假 LLM 端点 + canary 文件**端到端证明的（13 字输入、两次读文件，
   云端端点确实收到了 canary），修复后的行为由 `router` 的两条单测钉住。
 - **连字体都自己带。** 桌面用 **Noto Sans CJK SC 子集**（GB2312 + 拉丁 + 标点，约 5.7 MB，**含真粗体**）—— 不是「粗体=正文字体」的伪粗。
-- **可验证，而不是"我觉得没问题"。** 除 362 项单测外，还有 10 张归档走查图的**逐像素回归门禁**
+- **可验证，而不是"我觉得没问题"。** 除 380 项单测外，还有 19 张归档走查图的**逐像素回归门禁**
   （差异 > 0.02% 即失败）、12 小时 43 分的稳定性长跑（3053 轮巡检：服务退出 0 / 自动重启 0 /
   panic 0，内存无泄漏趋势）、四轮代码审查且**未修项归零**。
 - **真能装应用。** 在没有任何包管理器的系统上做了自己的应用包格式（清单 + 依赖预检），
@@ -50,7 +50,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
 cargo run -p aether-compositor -- --theme dark     # 深空主题
 cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试（Windows 362 项，见「测试与验证」）
+cargo test --workspace                             # 单元测试（Windows 380 项，见「测试与验证」）
 ```
 
 构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
@@ -84,6 +84,11 @@ cargo test --workspace                             # 单元测试（Windows 362 
 - **不支持 Wayland 客户端**：桌面走 `DRM → fbdev`。9 月 28 日起有一个自研 `wl_display` 子集 spike
   （线协议、对象表、`wl_shm` 像素读取、surface 接进渲染管线都做完了），但没接进生产路径
 - **AI 未接真实模型**：协议层已用双假端点验证（21 项断言），真模型待接
+- **装机（安装到磁盘）目前不可用**：整盘安装器要求 ISO 经过 `isohybrid` 处理，
+  而 v0.1.0 发布的那个 ISO **未经该处理**（实测首 512 字节无 MBR 签名）——安装器现在会
+  在**动目标盘之前**拒绝执行并说明原因。引导与 Live 桌面不受影响。
+  `platform/build-iso.sh` 已补上 isohybrid 步骤与自检，重新构建后装机可用
+  （见 [`docs/SECURITY-AUDIT-2026-10-02.md`](docs/SECURITY-AUDIT-2026-10-02.md) H-6）
 - `aether-shell` 是 11 行占位，Shell 职责暂时压在 compositor 里
 
 ## 装应用
@@ -196,12 +201,12 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
-| `aether-compositor/` | 15,890 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
-| `aetherd/` | 5,565 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
-| `aether-init/` | 1,319 | PID 1 与服务管理 | M3 |
+| `aether-compositor/` | 16,149 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
+| `aetherd/` | 5,912 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
+| `aether-init/` | 1,341 | PID 1 与服务管理 | M3 |
 | `aether-ops/` | 736 | AI 运维与自修复 | M5 |
-| `aether-install/` | 505 | 磁盘安装器 | M6 |
-| `aether-ipc/` | 334 | 全系统 IPC 协议 | M0 |
+| `aether-install/` | 579 | 磁盘安装器 | M6 |
+| `aether-ipc/` | 337 | 全系统 IPC 协议 | M0 |
 | `aether-shell/` | 11 | 占位骨架 | M2 |
 | `platform/` | — | Buildroot 外部树、rootfs overlay、ISO 打包 | M3 |
 | `scripts/` | — | 宿主开发、走查图、端到端验证脚本 | 持续 |
@@ -240,9 +245,9 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 362 项全绿（2026-09-29 实测）；Linux 358 为按 `aetherd` 增量推算，待构建机复核 |
+| 单元测试 | Windows 380 项全绿（2026-10-02 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
 | 编译警告 | 两个目标都是 0 条 |
-| 视觉回归 | 10 张归档走查图逐像素比对，当前 10/10 零差异 |
+| 视觉回归 | 19 张归档走查图逐像素比对，当前 19/19 零差异 |
 | 代码审查 | 四轮全量 / 增量审查，问题全部修复（未修项归零）；结论总集见 [`docs/archive/CODE-REVIEW-2026-09.md`](docs/archive/CODE-REVIEW-2026-09.md) |
 | 端到端 | 权限链路、安装器、QEMU QMP 键鼠注入 + 截图 |
 | 实机自愈 | QEMU 内 kill 掉合成器 → init 自动拉起并重新初始化显示/字体/输入 |

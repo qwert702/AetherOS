@@ -19,6 +19,16 @@
 
 *First public release. Bootable ISO verified on QEMU, VirtualBox and VMware; installable to a virtual disk and bootable from it.*
 
+**⚠️ 2026-10-02 更正**：上面"可安装到虚拟磁盘后独立引导"**对本版本发布的那个 ISO 不成立**。
+实测该资产（40,327,168 字节 / sha256 `7c50f481…`）首 512 字节无 MBR 签名，即**未经 `isohybrid` 处理**，
+不能 dd 到磁盘引导 —— 装机路径会失败。引导与 Live 桌面不受影响。构建脚本已补上 isohybrid 步骤与自检
+（`platform/build-iso.sh`），重新构建后装机才可用。详见 [`docs/SECURITY-AUDIT-2026-10-02.md`](docs/SECURITY-AUDIT-2026-10-02.md) 的 H-6。
+
+*Correction (2026-10-02): the disk-install claim does not hold for the ISO shipped with this release —
+it was measured to have no MBR signature (not isohybrid), so it cannot be written to a disk and booted.
+Booting and the live desktop are unaffected. The build script now applies isohybrid; a rebuilt ISO will
+support installation.*
+
 ### 系统内核之上，全部自研 / A userspace written from scratch
 
 - **PID 1**（`aether-init`）：服务编排、持久化分区、串口日志、故障自愈。

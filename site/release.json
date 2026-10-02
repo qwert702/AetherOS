@@ -1,0 +1,12 @@
+{
+  "_comment": "已发布产物的权威事实（人工维护）。gen-site.py 优先用它，而不是仓库根的本地构建产物 —— 官网要描述的是用户**实际下载到的那个文件**，不是本地工作区里的那份。两者曾经不一致：release 资产 40,327,168 字节 / sha256 7c50f481…，而本地 ISO 40,359,936 字节 / 43c53f4c…，于是下载页公布的校验和根本对不上用户下载的文件（2026-10-02 安全审计发现）。",
+  "_how_to_update": "发布新版本时（顺序不能反）：① 重建 ISO → ② 上传 Release 资产 → ③ 用 `sha256sum`/`Get-FileHash` 算出该资产的大小与哈希 → ④ 更新本文件 → ⑤ 跑 `python scripts/gen-site.py --refresh` 刷新站点。",
+  "tag": "v0.1.0",
+  "asset": "aetheros-0.1-amd64.iso",
+  "iso_bytes": 40327168,
+  "iso_size": "38.5 MB",
+  "iso_sha256": "7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb",
+  "iso_date": "2026-09-29",
+  "prerelease": true,
+  "_prerelease_note": "GitHub 的 /releases/latest 只返回**非预发布**版本。这个 Release 是 prerelease，所以任何指向 releases/latest 的链接都会 404 —— 站内与 README 必须用 /releases/tag/<tag>。"
+}
