@@ -341,6 +341,12 @@ pub enum SettingsHit {
     InstallApp(usize),
     /// 重新扫描商店目录（§5.11）。
     RefreshStore,
+    /// 立刻对一次时（§3.3）。
+    SyncTimeNow,
+    /// 切换待写入的时区名候选（§3.3）。
+    CycleTimezoneName,
+    /// 把待写入的时区名写进系统（§3.3）。
+    SetTimezoneNow,
     /// 切换到第 n 页
     Page(usize),
     /// 24 小时制开关
@@ -568,7 +574,11 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         | SettingsHit::RefreshPolicy
         // 「应用商店」的安装与重扫同理：要发 IPC，由事件循环处理。
         | SettingsHit::InstallApp(_)
-        | SettingsHit::RefreshStore => {}
+        | SettingsHit::RefreshStore
+        // §3.3 的三条同理：要发 IPC，由事件循环处理。
+        | SettingsHit::SyncTimeNow
+        | SettingsHit::CycleTimezoneName
+        | SettingsHit::SetTimezoneNow => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

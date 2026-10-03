@@ -44,6 +44,7 @@ mod policyview;
 mod spaces;
 mod setup;
 mod store;
+mod timeview;
 mod auth;
 mod i18n;
 mod lock;
@@ -831,6 +832,32 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
+                AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix } => {
+                    renderer.time.on_status(timezone, last_offset_ms, last_sync_unix);
+                }
+                AiEvent::TimeSynced { ok, message } => {
+                    if ok {
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        // 对完时再取一次状态：「上次偏移」那一行才会显示刚刚这次的结果
+                        fetch_time_status(ai_tx.clone());
+                    } else {
+                        renderer.time.on_failure(message.clone());
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                    }
+                }
+                AiEvent::TimezoneSet { ok, message } => {
+                    if ok {
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        // 写成功后重取状态：界面上的「系统时区」要跟着变成新名字
+                        fetch_time_status(ai_tx.clone());
+                        // 写成功后重取状态：界面上的「系统时区」要跟着变成新名字
+                        // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，
+                        // 不做「再取一次」（那要连 aetherd，而预览模式刻意不依赖 IPC/显示环境）
+                    } else {
+                        renderer.time.on_failure(message.clone());
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                    }
+                }
                 AiEvent::PolicyLoaded(entries) => {
                     renderer.policy.set_entries(entries);
                 }
@@ -1090,6 +1117,42 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                     // 导出审计日志（§5.2）：**动作类**，成功给出确切路径，
                     // 失败给出原因（不静默、不谎报"已导出"）
+                    // §3.3「时钟与时区」页：进入该页时取一次状态（否则显示不出系统时区与上次偏移）。
+                    if let settings::SettingsHit::Page(i) = hit {
+                        let is_clock = settings::PAGES
+                            .get(i)
+                            .map(|p| p.title == "时钟与时区")
+                            .unwrap_or(false);
+                        if is_clock && !renderer.time.loaded {
+                            // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，
+                        // 不做「再取一次」（那要连 aetherd，而预览模式刻意不依赖 IPC/显示环境）
+                        }
+                    }
+                    // §3.3：立即对时
+                    if let settings::SettingsHit::SyncTimeNow = hit {
+                        if renderer.time.pending {
+                            push_toast(&mut toast, &mut renderer.notifs, "上一步还没完成，请稍候".to_string(), notifications::Kind::Info);
+                        } else {
+                            renderer.time.mark_pending();
+                            sync_time_now(ai_tx.clone());
+                            push_toast(&mut toast, &mut renderer.notifs, "正在对时…".to_string(), notifications::Kind::Info);
+                        }
+                    }
+                    // §3.3：切换待写入的时区名（纯本地状态，不发 IPC）
+                    if let settings::SettingsHit::CycleTimezoneName = hit {
+                        renderer.time.cycle();
+                    }
+                    // §3.3：把时区写进系统
+                    if let settings::SettingsHit::SetTimezoneNow = hit {
+                        if renderer.time.pending {
+                            push_toast(&mut toast, &mut renderer.notifs, "上一步还没完成，请稍候".to_string(), notifications::Kind::Info);
+                        } else {
+                            let name = renderer.time.picked_name().to_string();
+                            renderer.time.mark_pending();
+                            write_timezone(ai_tx.clone(), name.clone());
+                            push_toast(&mut toast, &mut renderer.notifs, format!("正在写入系统时区：{name}"), notifications::Kind::Info);
+                        }
+                    }
                     // §5.3「工具权限」页：进入该页时**自动取一次**（否则会是空白，
                     // 用户不知道是没工具还是没加载）。
                     if let settings::SettingsHit::Page(i) = hit {
@@ -1739,6 +1802,25 @@ enum AiEvent {
     },
     /// 取/写权限策略失败。
     PolicyFailed(String),
+    /// 时间同步状态取回来了（§3.3）。
+    TimeStatus {
+        timezone: String,
+        last_offset_ms: i64,
+        last_sync_unix: i64,
+    },
+    /// 对时完成（或失败）。
+    ///
+    /// 不带偏移数值：服务端已经把它格式化进 `message`（如「偏移 12 ms · 已平滑调整」），
+    /// 界面要的是那句话；而"上次偏移"另由 `TimeStatus` 提供（那才是要显示在页面上的）。
+    TimeSynced {
+        ok: bool,
+        message: String,
+    },
+    /// 系统时区写入结果。
+    TimezoneSet {
+        ok: bool,
+        message: String,
+    },
 }
 
 /// 安装向导状态（仅 Live ISO 会话；run_fbdev 持有）。
@@ -3494,6 +3576,31 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
+                AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix } => {
+                    renderer.time.on_status(timezone, last_offset_ms, last_sync_unix);
+                }
+                AiEvent::TimeSynced { ok, message } => {
+                    if ok {
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        // 对完时再取一次状态：「上次偏移」那一行才会显示刚刚这次的结果
+                        // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，
+                        // 不做「再取一次」（那要连 aetherd，而预览模式刻意不依赖 IPC/显示环境）
+                    } else {
+                        renderer.time.on_failure(message.clone());
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                    }
+                }
+                AiEvent::TimezoneSet { ok, message } => {
+                    if ok {
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        // 写成功后重取状态：界面上的「系统时区」要跟着变成新名字
+                        // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，
+                        // 不做「再取一次」（那要连 aetherd，而预览模式刻意不依赖 IPC/显示环境）
+                    } else {
+                        renderer.time.on_failure(message.clone());
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                    }
+                }
                 AiEvent::PolicyLoaded(entries) => {
                     renderer.policy.set_entries(entries);
                 }
@@ -4696,6 +4803,74 @@ fn handle_dns_key(
         }
         _ => false,
     }
+}
+
+/// 取一次时间同步状态（§3.3）。与 `fetch_policy` 同一套路。
+#[cfg(target_os = "linux")]
+fn fetch_time_status(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let ev = match time_request(&Request::GetTimeStatus) {
+            Ok(Response::TimeStatus { timezone, last_offset_ms, last_sync_unix }) => {
+                AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix }
+            }
+            Ok(Response::Error { code, message }) => {
+                AiEvent::PolicyFailed(format!("读取时间状态被拒绝（{code}）：{message}"))
+            }
+            Ok(_) => AiEvent::PolicyFailed("读取时间状态：收到意外响应".into()),
+            Err(e) => AiEvent::PolicyFailed(format!("连接 aetherd 失败：{e}")),
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 立刻对一次时（§3.3）。服务端可能阻塞几秒（等 NTP 响应），所以放独立线程。
+#[cfg(target_os = "linux")]
+fn sync_time_now(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let ev = match time_request(&Request::SyncTime) {
+            // 只取 ok/message：偏移数值服务端已经写进 message（见 TimeSynced 的说明）
+            Ok(Response::TimeSync { ok, message, .. }) => AiEvent::TimeSynced { ok, message },
+            Ok(Response::Error { code, message }) => AiEvent::TimeSynced {
+                ok: false,
+                message: format!("被拒绝（{code}）：{message}"),
+            },
+            Ok(_) => AiEvent::TimeSynced { ok: false, message: "对时：收到意外响应".into() },
+            Err(e) => AiEvent::TimeSynced {
+                ok: false,
+                message: format!("连接 aetherd 失败：{e}"),
+            },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 把时区写进系统（§3.3）。
+#[cfg(target_os = "linux")]
+fn write_timezone(tx: mpsc::Sender<AiEvent>, name: String) {
+    std::thread::spawn(move || {
+        let ev = match time_request(&Request::SetTimezone { name }) {
+            Ok(Response::SettingAck { ok, message, .. }) => AiEvent::TimezoneSet { ok, message },
+            Ok(Response::Error { code, message }) => {
+                AiEvent::TimezoneSet { ok: false, message: format!("被拒绝（{code}）：{message}") }
+            }
+            Ok(_) => AiEvent::TimezoneSet { ok: false, message: "写时区：收到意外响应".into() },
+            Err(e) => AiEvent::TimezoneSet { ok: false, message: format!("连接 aetherd 失败：{e}") },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 发一个"时间类"请求并读回执（三个函数共用的那一段接线）。
+#[cfg(target_os = "linux")]
+fn time_request(req: &Request) -> anyhow::Result<Response> {
+    let mut stream = IpcStream::connect(Duration::from_secs(2))?;
+    // 对时要等网络（服务端最长几秒），给足读超时
+    stream.set_read_timeout(Some(Duration::from_secs(20))).ok();
+    let mut reader = BufReader::new(stream.try_clone()?);
+    register_ui(&mut stream, &mut reader)?;
+    stream.write_all(aether_ipc::encode(req).as_bytes())?;
+    let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
+    aether_ipc::decode::<Response>(&line)
 }
 
 /// 取一次权限策略（§5.3）。与 `set_dns` 同一套路：独立线程 + 超时 + 事件回执。

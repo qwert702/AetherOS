@@ -1559,6 +1559,8 @@ pub struct Renderer {
     pub setup: crate::setup::Setup,
     /// 「应用商店」页的状态（§5.11）。目录扫描只在进页面/点重扫时做，不每帧做。
     pub store: crate::store::StoreView,
+    /// 「时钟与时区」页的对时/系统时区状态（§3.3）。
+    pub time: crate::timeview::TimeView,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1878,6 +1880,7 @@ impl Renderer {
         policy: Default::default(),
         setup: Default::default(),
         store: Default::default(),
+        time: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -2075,7 +2078,7 @@ impl Renderer {
                 buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
                 &mut self.sidebar_hits, &mut self.crumb_hits,
-                self.settings, &self.dns, &self.policy, &self.store, self.settings_page, &mut self.settings_hits,
+                self.settings, &self.dns, &self.policy, &self.store, &self.time, self.settings_page, &mut self.settings_hits,
             );
         }
         mark!("windows");
@@ -2575,6 +2578,7 @@ fn draw_window(
     dns_field: &crate::settings::DnsField,
     policy: &crate::policyview::PolicyView,
     store: &crate::store::StoreView,
+    time: &crate::timeview::TimeView,
     settings_page: usize,
     settings_hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -2681,7 +2685,7 @@ fn draw_window(
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
         WinKind::Wayland => draw_wayland_content(buf, w, h, content, win.wayland.as_ref()),
         WinKind::Settings => draw_settings_content(
-            buf, w, h, content, mouse, tr, settings, dns_field, policy, store, settings_page, settings_hits,
+            buf, w, h, content, mouse, tr, settings, dns_field, policy, store, time, settings_page, settings_hits,
         ),
     }
 }
@@ -2704,6 +2708,8 @@ fn draw_settings_content(
     dns_field: &crate::settings::DnsField,
     policy: &crate::policyview::PolicyView,
     store: &crate::store::StoreView,
+    // 注：参数已到 13 个，该抽成一个 `PageCtx` 结构了（独立批次做，不混在本批里改）。
+    time: &crate::timeview::TimeView,
     page: usize,
     hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -3282,6 +3288,64 @@ fn draw_settings_content(
             tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, 42.0, font::CAPTION), "时区（半小时制）", font::CAPTION, color::text_dim(), 0.9);
             hits.push((back, SettingsHit::TzShift(-30)));
             hits.push((fwd, SettingsHit::TzShift(30)));
+
+            // ---- §3.3 对时与系统时区 ----
+            // 这里要分清两件事，否则用户会以为"我已经改好了"：
+            //   上面那行是**系统当前**时区，下面那行是**待写入**的候选名。
+            ry += 8;
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("时间同步", "Time sync"), Some(tr),
+            );
+            ry += 22;
+            let sync_line = time.sync_line(crate::i18n::lang());
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32, &sync_line,
+                font::CAPTION, color::text_dim(), 0.9,
+            );
+            ry += 26;
+            let r_sync = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf, w, h, r_sync,
+                crate::i18n::tr("立即对时", "Sync now"),
+                Some(crate::i18n::tr("向网络时间服务器查询一次（小幅平滑、大幅跳变）", "Query the network time server once")),
+                widgets::States::at(r_sync, mouse), Some(tr),
+            );
+            hits.push((r_sync, SettingsHit::SyncTimeNow));
+            ry += 46;
+
+            let sys_line = if time.system_tz.is_empty() {
+                crate::i18n::tr("系统时区：未知（读不到 /etc/timezone）", "System time zone: unknown").to_string()
+            } else {
+                format!("{}：{}", crate::i18n::tr("系统时区", "System time zone"), time.system_tz)
+            };
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32, &sys_line,
+                font::CAPTION, color::text_dim(), 0.9,
+            );
+            ry += 24;
+            let r_pick = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf, w, h, r_pick,
+                &format!("{}：{}", crate::i18n::tr("待写入时区", "Time zone to write"), time.picked_name()),
+                Some(crate::i18n::tr("点击切换候选（UTC / 上海 / 东京 / 新加坡 / 伦敦 / 巴黎 / 纽约 / 洛杉矶）",
+                                     "Click to cycle candidates")),
+                widgets::States::at(r_pick, mouse), Some(tr),
+            );
+            hits.push((r_pick, SettingsHit::CycleTimezoneName));
+            ry += 46;
+            let r_write = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf, w, h, r_write,
+                crate::i18n::tr("写入系统时区", "Write system time zone"),
+                Some(if time.already_system_timezone() {
+                    crate::i18n::tr("与系统当前一致（写入也是安全的）", "Already matches the system")
+                } else {
+                    crate::i18n::tr("写 /etc/localtime 与 /etc/timezone", "Writes /etc/localtime and /etc/timezone")
+                }),
+                widgets::States::at(r_write, mouse), Some(tr),
+            );
+            hits.push((r_write, SettingsHit::SetTimezoneNow));
         }
         "输入" => {
             let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
@@ -5351,7 +5415,7 @@ mod blit_tests {
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), page, &mut hits,
+           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(), page, &mut hits,
         );
 
         // 1) 命中区要齐：页面行 + 本页的真控件
@@ -5402,7 +5466,7 @@ mod blit_tests {
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), appear, &mut hits2,
+           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(), appear, &mut hits2,
         );
         assert!(
             hits2.iter().any(|(_, x)| matches!(x, H::ToggleDark)),
@@ -5491,7 +5555,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
+            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
             page,
             &mut hits,
         );
@@ -5589,7 +5653,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
+            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
             page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
@@ -5629,7 +5693,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
+            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
             page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
@@ -5670,7 +5734,7 @@ mod blit_tests {
                 &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
                 crate::settings::Settings::default(),
                 &crate::settings::DnsField::default(),
-                &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
+                &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
                 i, &mut hits,
             );
             assert!(
