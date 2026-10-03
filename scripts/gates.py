@@ -97,6 +97,11 @@ def main() -> int:
                       ["cargo", "build", "--workspace", "--all-targets", "--locked", *offline]))
         steps.append(("cargo test（Windows 上会跳过 unix 专属用例）",
                       ["cargo", "test", "--workspace", "--locked", *offline]))
+        # 自动 e2e（FEATURE-GAPS §4.1）：`--e2e` 是**无界面**动作运行器，
+        # 因此这一条在 Windows 上也能真跑（不像 GUI 走查图那样依赖图形环境）。
+        # 放在 cargo build 之后：它需要刚构建出来的合成器二进制。
+        steps.append(("自动 e2e（无界面动作运行器）",
+                      [PY, "scripts/e2e-ui-actions.py"]))
         # musl 目标不一定装了：装了才查（aetherd 因 ring 需要 musl-gcc，永远查不了）
         installed = subprocess.run(["rustup", "target", "list", "--installed"],
                                    capture_output=True, text=True).stdout
@@ -131,6 +136,9 @@ def main() -> int:
             steps.append((f"shell 语法：{script}", [sh, "-n", script]))
     else:
         print("⚠ 本机没有可用的 POSIX shell，跳过构建脚本语法检查（Linux CI 会跑）")
+    # e2e 的**判定逻辑**自检：不需要合成器、不需要真机，所以能进日常门禁。
+    # 真实 e2e 在完整模式跑（见上）；这一步保证"脚本本身没写错"。
+    steps.append(("自动 e2e 判定逻辑自检", [PY, "scripts/e2e-ui-actions.py", "--selftest"]))
     steps.append(("Python 语法检查", [PY, "-m", "py_compile", *[
         str(p.relative_to(ROOT)) for p in sorted((ROOT / "scripts").glob("*.py"))
     ]]))

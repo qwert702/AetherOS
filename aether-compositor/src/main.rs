@@ -1508,6 +1508,83 @@ fn send_tool_call(
     Ok(())
 }
 
+/// §4.1 自动 e2e：**无界面**执行一段动作脚本，逐条输出结果（JSONL）。
+///
+/// 为什么需要它：FEATURE-GAPS §4.1 说"现在每个功能都要人工点一次"，
+/// 于是所有验证都退化成"我看着没问题"，而 Linux 专属路径在开发机上根本跑不到。
+/// 这个运行器把"动作 → 结果"变成可脚本化、可比对的文本，
+/// 让 e2e 至少覆盖**不依赖真实显示与硬件**的那一半（布局 / 开窗 / 撤销 / 查询）。
+///
+/// 三条自我约束：
+/// 1. **只暴露真实动作**（`apply_action` 的那几个 + `undo` + `query`）——
+///    不新造"只在这个模式里存在"的动作，否则 e2e 通过而真实点击失败；
+/// 2. 非法输入（不是 JSON / 未知动作 / 参数不合法）**逐条如实报错并继续**，
+///    不整批中止 —— 一次跑完看到全部问题，比修一个跑一次省时间；
+/// 3. 输出是**机器可读**的 JSONL（Python 侧断言用），不是给人看的散文。
+fn run_e2e_script(
+    script: &str,
+    desktop: &mut Desktop,
+    undo: &mut UndoStack,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (idx, raw) in script.lines().enumerate() {
+        let lineno = idx + 1;
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let emit = |action: &str, ok: bool, result: &str, out: &mut Vec<String>| {
+            let res = serde_json::to_string(result).unwrap_or_else(|_| "\"\"".into());
+            out.push(format!(
+                "{{\"line\":{lineno},\"action\":\"{action}\",\"ok\":{ok},\"result\":{res}}}"
+            ));
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            emit("(parse)", false, "不是合法 JSON", &mut out);
+            continue;
+        };
+        let action = v.get("action").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        match action.as_str() {
+            // 查询：让脚本能**断言状态**（否则只能断言"动作返回了成功"）
+            "query" => {
+                let what = args.get("what").and_then(|w| w.as_str()).unwrap_or("");
+                match what {
+                    "layout" => emit("query", true, desktop.layout.label(), &mut out),
+                    "windows" => emit("query", true, &desktop.wins.len().to_string(), &mut out),
+                    "active" => emit("query", true, &desktop.active.to_string(), &mut out),
+                    // 窗口标题用连接符分隔：脚本据此判断"打开的是不是设置窗口"
+                    "titles" => {
+                        let names: Vec<&str> =
+                            desktop.wins.iter().map(|w| w.title.as_str()).collect();
+                        emit("query", true, &names.join("|"), &mut out)
+                    }
+                    other => emit(
+                        "query",
+                        false,
+                        &format!("未知查询「{other}」（可用：layout / windows / active / titles）"),
+                        &mut out,
+                    ),
+                }
+            }
+            "undo" => match undo_last(desktop, undo) {
+                Some(msg) => emit("undo", true, &msg, &mut out),
+                None => emit("undo", false, "没有可撤销的动作", &mut out),
+            },
+            _ => match apply_action(desktop, &action, &args, undo) {
+                Some(msg) => emit(&action, true, &msg, &mut out),
+                None => emit(
+                    &action,
+                    false,
+                    &format!("未知动作或参数不合法：{action}"),
+                    &mut out,
+                ),
+            },
+        }
+    }
+    out
+}
+
 /// 在后台线程里连接 aetherd、发送 Chat、收集响应直到 done。
 /// 每一步都打串口/控制台日志（QEMU TCG 下截图窗口太窄，日志是可靠诊断通路）。
 fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
@@ -2507,6 +2584,20 @@ fn main() -> anyhow::Result<()> {
         }
     };
     draw::theme::color::set_mode(mode);
+
+    // §4.1 自动 e2e：`--e2e` 从 stdin 读动作脚本，无界面执行后输出 JSONL 并退出。
+    // **必须排在 fbdev 分派之前**：这条路径不该需要显示设备（否则 CI 里跑不了）。
+    if argv.iter().any(|a| a == "--e2e") {
+        use std::io::Read;
+        let mut script = String::new();
+        std::io::stdin().read_to_string(&mut script)?;
+        let mut desktop = demo_desktop();
+        let mut undo = UndoStack::new();
+        for line in run_e2e_script(&script, &mut desktop, &mut undo) {
+            println!("{line}");
+        }
+        return Ok(());
+    }
 
     // AetherOS 系统内：直接绘制到 Linux framebuffer（无输入，演示桌面）
     #[cfg(target_os = "linux")]
@@ -5089,6 +5180,88 @@ mod wayland_sync_tests {
         assert!(r.is_none(), "未知应用应被拒绝");
         assert_eq!(d.wins.len(), n0, "不该开窗");
         assert_eq!(u.len(), 0, "被拒绝的动作不该进撤销栈");
+    }
+
+    /// §4.1：e2e 运行器的三条性质 —— 注释/空行忽略、真实动作可用、非法输入逐条报错不中止。
+    #[test]
+    fn e2e_runner_executes_real_actions_and_reports_each_line() {
+        let mut d = demo_desktop();
+        let mut u = UndoStack::new();
+        let script = r#"
+# 这是注释，应被忽略
+{"action":"query","args":{"what":"windows"}}
+{"action":"layout_set","args":{"layout":"monocle"}}
+{"action":"query","args":{"what":"layout"}}
+{"action":"open_app","args":{"app":"终端"}}
+{"action":"query","args":{"what":"windows"}}
+{"action":"undo"}
+{"action":"query","args":{"what":"windows"}}
+"#;
+        let out = run_e2e_script(script, &mut d, &mut u);
+        // 7 条有效动作（注释与空行不产生输出）
+        assert_eq!(out.len(), 7, "应逐条输出：{out:#?}");
+        // 每条都是带行号的 JSON
+        for l in &out {
+            assert!(l.starts_with("{\"line\":"), "应是 JSONL：{l}");
+            assert!(l.contains("\"ok\":"), "应带 ok 字段：{l}");
+        }
+        // 布局真的被改了：out[1] 是 layout_set 的结果，out[2] 是随后的查询
+        assert!(out[1].contains("布局"), "第 2 条应是改布局的结果：{}", out[1]);
+        assert!(
+            out[2].contains("独占堆叠"),
+            "查询应返回新布局（Monocle 的中文标签）：{}",
+            out[2]
+        );
+        assert!(out[5].contains("关掉"), "撤销开窗应说明关掉了窗口：{}", out[5]);
+
+        // **比较窗口数**（而不是靠索引猜）：开窗后变化，撤销后回到原值。
+        // 这样断言的是行为，不是输出的排列顺序 —— 后者改一下脚本就会错位。
+        let result_of = |l: &str| -> String {
+            serde_json::from_str::<serde_json::Value>(l)
+                .expect("输出应是合法 JSON")
+                .get("result")
+                .and_then(|r| r.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let before = result_of(&out[0]);
+        let opened = result_of(&out[4]);
+        let after_undo = result_of(&out[6]);
+        assert_ne!(before, opened, "开窗后窗口数应变化：{before} → {opened}");
+        assert_eq!(before, after_undo, "撤销后窗口数应回到原值：{before} vs {after_undo}");
+    }
+
+    /// §4.1：非法输入**逐条报错但不中止**（一次跑完看到全部问题，比修一个跑一次省时间）。
+    #[test]
+    fn e2e_runner_reports_bad_lines_without_aborting() {
+        let mut d = demo_desktop();
+        let mut u = UndoStack::new();
+        let script = r#"
+这不是 JSON
+{"action":"不存在的动作"}
+{"action":"query","args":{"what":"不存在的查询"}}
+{"action":"query","args":{"what":"windows"}}
+"#;
+        let out = run_e2e_script(script, &mut d, &mut u);
+        assert_eq!(out.len(), 4, "四条都应产生输出：{out:#?}");
+        assert!(out[0].contains("\"ok\":false") && out[0].contains("不是合法 JSON"), "{}", out[0]);
+        assert!(out[1].contains("\"ok\":false") && out[1].contains("未知动作"), "{}", out[1]);
+        assert!(out[2].contains("\"ok\":false") && out[2].contains("未知查询"), "{}", out[2]);
+        // 关键：错误之后仍继续执行，最后一条是成功的查询
+        assert!(out[3].contains("\"ok\":true"), "错误不应中止后续：{}", out[3]);
+    }
+
+    /// §4.1：`query titles` 让脚本能断言"打开的是哪一个窗口"，而不只是"开了个窗口"。
+    #[test]
+    fn e2e_query_titles_identifies_windows() {
+        let mut d = demo_desktop();
+        let mut u = UndoStack::new();
+        let script = r#"
+{"action":"open_app","args":{"app":"设置"}}
+{"action":"query","args":{"what":"titles"}}
+"#;
+        let out = run_e2e_script(script, &mut d, &mut u);
+        assert!(out[1].contains("设置"), "标题里应能看到设置窗口：{}", out[1]);
     }
 
 }
