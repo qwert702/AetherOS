@@ -46,7 +46,7 @@ ISO = ROOT / "aetheros-0.1-amd64.iso"
 #: 已发布产物的权威事实（人工维护）。存在时**优先于**本地 ISO —— 官网要描述的是
 #: 用户实际下载到的文件。见文件内 `_comment` 与 `collect()` 里的说明。
 RELEASE = SITE / "release.json"
-CHANGELOG = ROOT / "CHANGELOG.md"
+CHANGELOG = ROOT / "docs" / "CHANGELOG.md"
 
 #: 从 docs/ 走查图转成站点图片（源 → 目标名）。源是仓库里已有的视觉基线，
 #: 不复制进 site/ 以免二进制文件重复入库。

@@ -308,7 +308,7 @@ python scripts/e2e-permission-confirm.py   # 13 项断言
 ### 8.5 4.6 文档更新 ✅
 
 - `docs/roadmap.md`：按 git 历史与实测复核，M0–M6 全部勾选至完成态并补事实备注（smithay 未接入→fbdev 路径、Shell 职责由 compositor 承担、L2+ 确认链路、M5/M6 实测记录）；新增「UI 设计系统」章节
-- `docs/INDEX.md`：行数/组件表/测试分布/走查参数同步（7,500 行、65+17=82 项测试）
+- `INDEX.md`：行数/组件表/测试分布/走查参数同步（7,500 行、65+17=82 项测试）
 
 ### 8.6 遗留（需实机环境，未在本轮完成）
 

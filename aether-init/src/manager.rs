@@ -1,6 +1,6 @@
 //! 服务管理器：状态机 + 依赖排序 + 监督重启。
 //!
-//! 设计原则（对应 ARCHITECTURE.md ADR"小而美"）：
+//! 设计原则（对应 docs/ARCHITECTURE.md ADR"小而美"）：
 //! - 依赖只决定启动顺序（拓扑），不做按需激活
 //! - 监督策略简单可靠：restart 服务退出后指数退避重启
 //! - 进程启动只经 unit::KnownService::spawn_command() 的白名单字面量构造

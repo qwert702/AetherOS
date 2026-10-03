@@ -77,7 +77,7 @@ AI 中枢带逐工具权限闸门：每次工具调用都过闸门，L2+ 操作�
 
 **标题**：`用 Rust 写一个操作系统用户态：从 PID 1 到窗口合成器`
 
-**正文**：技术向，讲实现（可直接用 `docs/ARCHITECTURE.md`、`docs/HANDOVER.md` 的素材）：
+**正文**：技术向，讲实现（可直接用 `ARCHITECTURE.md`、`docs/HANDOVER.md` 的素材）：
 
 ```
 · 合成器为什么是"立即模式 + 直接写 framebuffer"，以及 5 层阴影怎么把帧率打到 91ms

@@ -61,7 +61,7 @@ On a Windows development machine, add `--offline` to `cargo`, otherwise it stall
 ## Boundaries (what does *not* work yet)
 
 Written down so nobody misuses it — not self-deprecation. The full list lives in
-[`docs/HANDOVER.md`](docs/HANDOVER.md) and the "known gaps" section of [`INDEX.md`](INDEX.md).
+[`docs/HANDOVER.md`](docs/HANDOVER.md) and the "known gaps" section of [`INDEX.md`](docs/INDEX.md).
 
 - **Stage**: every subsystem genuinely runs, but this is not yet a desktop that could replace
   your daily machine.
@@ -241,7 +241,7 @@ After changing anything under `cfg(target_os = "linux")`, you must also build fo
 
 | Document | Contents |
 |---|---|
-| [`INDEX.md`](INDEX.md) | Code index: components and entry points, per-file responsibilities, tool list, test distribution, keybindings, common commands |
+| [`INDEX.md`](docs/INDEX.md) | Code index: components and entry points, per-file responsibilities, tool list, test distribution, keybindings, common commands |
 | [`docs/roadmap.md`](docs/roadmap.md) | Milestones M0–M6 and known engineering gaps |
 | [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | Production-readiness checklist and its six hard gates (**6/6 met**) |
 | [`docs/ui-design-handover.md`](docs/ui-design-handover.md) | Authoritative visual design reference: design tokens, dual-mode themes, environment pitfalls |
@@ -249,7 +249,7 @@ After changing anything under `cfg(target_os = "linux")`, you must also build fo
 | [`docs/ai-permissions.md`](docs/ai-permissions.md) | The AI permission model |
 | [`docs/WRITE-OPS-2026-09-28.md`](docs/WRITE-OPS-2026-09-28.md) | Constraints on writable file operations |
 | [`docs/PHASE3-DECISION-2026-09-28.md`](docs/PHASE3-DECISION-2026-09-28.md) | Decision framework and exit criteria for Wayland |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Layering and ADRs (frozen at M0; see INDEX for current state) |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layering and ADRs (frozen at M0; see INDEX for current state) |
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | Handover report: measured results plus build and verification manual |
 | [`docs/archive/`](docs/archive/) | Historical snapshots (decision history, not a statement of current state) |
 

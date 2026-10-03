@@ -34,7 +34,7 @@ from typing import Pattern, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CARGO_TOML = REPO_ROOT / "Cargo.toml"
-INDEX_MD = REPO_ROOT / "INDEX.md"
+INDEX_MD = REPO_ROOT / "docs" / "INDEX.md"
 README_MD = REPO_ROOT / "README.md"
 ROADMAP_MD = REPO_ROOT / "docs" / "roadmap.md"
 

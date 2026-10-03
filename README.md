@@ -73,7 +73,7 @@ cargo test --workspace                             # 单元测试（Windows 444 
 ## 边界在哪
 
 写清楚是为了免得误用，不是自我否定 —— 完整清单见 [`docs/HANDOVER.md`](docs/HANDOVER.md)
-与 [`INDEX.md`](INDEX.md) 的「已知缺口」。
+与 [`INDEX.md`](docs/INDEX.md) 的「已知缺口」。
 
 - **阶段定位**：现在是"每个子系统都真跑通了"，还不是"能替代你桌面"。当日常系统用还早
 - **验证环境是虚拟机**：QEMU / VirtualBox / VMware 都实测过，稳定性也跑过 12 小时 43 分，
@@ -273,7 +273,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 文档 | 内容 |
 |---|---|
-| [`INDEX.md`](INDEX.md) | 代码索引：组件与入口、逐文件职责、工具清单、测试分布、键盘、常用命令 |
+| [`INDEX.md`](docs/INDEX.md) | 代码索引：组件与入口、逐文件职责、工具清单、测试分布、键盘、常用命令 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 里程碑 M0–M6，以及已知的工程质量缺口 |
 | [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（**6/6 全部达成**） |
 | [`docs/ui-design-handover.md`](docs/ui-design-handover.md) | 视觉设计的权威依据：设计令牌、双模主题、环境陷阱 |
@@ -281,7 +281,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 | [`docs/ai-permissions.md`](docs/ai-permissions.md) | AI 权限模型 |
 | [`docs/WRITE-OPS-2026-09-28.md`](docs/WRITE-OPS-2026-09-28.md) | 可写文件操作的约束 |
 | [`docs/PHASE3-DECISION-2026-09-28.md`](docs/PHASE3-DECISION-2026-09-28.md) | Wayland 的决策框架与放弃条件 |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | 分层与 ADR（M0 冻结稿，看现状请用 INDEX） |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层与 ADR（M0 冻结稿，看现状请用 INDEX） |
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | 交接报告：实测记录 + 构建/验证手册 |
 | [`docs/archive/`](docs/archive/) | 历史快照（决策历史，不作现状依据）：四轮审查总集、性能报告、旧版计划 |
 
