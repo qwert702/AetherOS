@@ -38,6 +38,7 @@ mod widgets;
 
 /// 用户设置的持久化与声明（P3 设置中心）：`/var/lib/aether/settings.json`。
 mod settings;
+mod sha512crypt;
 /// 网络状态（P4.2 设置中心「网络」页）：读内核真值（/sys/class/net、/proc/net/*），不新增 IPC。
 mod net;
 /// 审计日志（P4.3 设置中心「权限与隐私」页）：读 aetherd 的审计日志，只读展示，不新增 IPC。
