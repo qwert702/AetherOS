@@ -9,6 +9,8 @@
 //! 目标形态（M1 后期，Linux VM）：基于 smithay 的真正 Wayland 合成器。
 
 mod draw;
+// 通知历史（§3.2）：纯逻辑模块，接线在后续提交里做
+mod notifications;
 // 音频（提示音 + 音量）：纯逻辑可单测，实际播放走 alsa-utils 子进程（见模块说明）
 mod audio;
 #[cfg(target_os = "linux")]
@@ -1646,6 +1648,7 @@ fn apply_theme(renderer: &mut draw::Renderer, dark: bool) {
 ///
 /// 0 毫秒是会真的出现的（第一帧、或计时精度不足）：直接做除法会得到 `inf`，
 /// 界面上显示 "inf fps" 比不显示还糟 —— 所以显式判断并显示 0。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // 调用点在 Linux 专属循环里
 fn perf_hud_text(frame_ms: f32, rss: &str) -> String {
     let fps = if frame_ms > 0.0 { 1000.0 / frame_ms } else { 0.0 };
     format!("{frame_ms:.1} ms/帧（{fps:.0} fps） · 内存 {rss}")
@@ -1668,6 +1671,7 @@ fn rss_label() -> String {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn rss_label() -> String {
     "不可用（非 Linux：无 /proc）".into()
 }
