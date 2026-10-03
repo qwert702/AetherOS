@@ -494,6 +494,26 @@
 <h3>验证</h3>
 <p><code>cargo test</code> <strong>430 项</strong>（+3）；musl 0 警告；<code>gates.py</code> 10/10；规模 29,386 行 / 47 文件。</p>
 <p><strong>未实机验证</strong>：<code>fb0/blank</code> 在真机/VMware 上是否接受 "4"、息屏后能否被输入正常唤醒。</p>
+<h2 id="hud-2026-10-03-5-10">二十三、增强项：性能 HUD（2026-10-03，§5.10）</h2>
+<p>对应 FEATURE-GAPS §5.10「显示<strong>真实</strong>帧时间/内存，不造假数据」。</p>
+<h3>数据是真的，拿不到就写"不可用"</h3>
+<p>帧时间取<strong>上一帧</strong>耗时（本帧还没画完）；内存读 <code>/proc/self/statm</code> 的常驻页数。</p>
+<p>非 Linux（开发机预览）没有 <code>/proc</code>，HUD 就显示「不可用（非 Linux：无 /proc）」——</p>
+<p><strong>绝不编一个数字</strong>：HUD 的全部价值就在"数字是真的"，编一个等于把工具废掉。</p>
+<h3>三条自我约束</h3>
+<p>默认<strong>关</strong>（排障工具，不是常显装饰）；<strong>不登记命中区</strong>（不拦截点击）；</p>
+<p>画在 toast <strong>之前</strong>（不盖住用户正在看的提示）。</p>
+<h3>一个真实的边界：0 毫秒不能除零</h3>
+<p>帧时间为 0 会真的出现（第一帧、计时精度不足）。<code>1000.0 / 0.0</code> 得到 <code>inf</code>，</p>
+<p>显示 "inf fps" 比不显示还糟。抽成纯函数 <code>perf_hud_text()</code> 并显式判断 ——</p>
+<p>于是"0 毫秒显示 0 fps 而不是 inf"是<strong>可测</strong>的，不必靠眼睛在真机上撞见。</p>
+<h3>接线方式</h3>
+<p>HUD 文本作为 <code>Renderer::perf_text</code> 由主循环每帧喂进来，而不是绘制层自己从 settings</p>
+<p>现算：帧时间与内存只有主循环知道，绘制层去读 <code>/proc</code> 会让"画一帧"带上 IO。</p>
+<p>副作用是 <code>UiState</code> 的 4 处构造点都不用改（少一次机械改动 = 少一类遗漏）。</p>
+<h3>验证</h3>
+<p><code>cargo test</code> <strong>432 项</strong>（+2）；musl 0 警告；<code>gates.py</code> 10/10；规模 29,522 行 / 47 文件。</p>
+<p><strong>未实机验证</strong>：HUD 在真机上的观感、<code>/proc/self/statm</code> 数值是否与实际一致。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>
