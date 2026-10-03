@@ -45,6 +45,29 @@ BR2_TARGET_SYSLINUX=y
 BR2_TARGET_SYSLINUX_ISOLINUX=y
 BR2_TARGET_ROOTFS_ISO9660_ISOLINUX=y
 
+# ── 音频（2026-10-02 功能批次 K，FEATURE-GAPS §2.2）────────────────────────
+# 镜像里此前**完全没有音频栈**（检索 alsa/pulseaudio/pipewire 零命中）：
+# 没有提示音、没有音量控制、音乐应用无声。
+#
+# 设计取舍：**只做 libasound + alsa-utils，不引入 PulseAudio/PipeWire**。
+# 理由：本系统是单用户、无混音需求、追求镜像小；PulseAudio 会带来一整套守护进程
+# 与 D-Bus 依赖，而我们要的只是"播一个提示音 + 读写 Master 音量"。
+#
+# ⚠️ 依赖关系（bash 那次的教训：Buildroot 里漏一个依赖项，kconfig 会**静默丢弃**
+# 整个符号，只在构建末尾报一句 "was set but is not valid"）：
+#   alsa-utils 依赖 alsa-lib ⇒ 两行都要写，且 lib 在前。
+#   alsa-utils 在 2024.02 里是**按工具拆分的子选项**（aplay/amixer 各自一个符号），
+#   所以下面把用到的两个显式打开。
+#
+# **未验证**：这些符号名是按 Buildroot 2024.02.1 的 package/alsa-utils/Config.in
+# 记忆写的，本机没有 Buildroot 源码可核对（它由构建脚本下载）。构建机首次构建后
+# 必须确认两点：① 构建末尾**没有** "was set but is not valid" 告警；
+# ② 镜像里确实有 /usr/bin/aplay 与 /usr/bin/amixer（`ls` 一下）。
+BR2_PACKAGE_ALSA_LIB=y
+BR2_PACKAGE_ALSA_UTILS=y
+BR2_PACKAGE_ALSA_UTILS_APLAY=y
+BR2_PACKAGE_ALSA_UTILS_AMIXER=y
+
 # ── 运行期库底座（2026-09-29 追加）────────────────────────────────────────
 # 为什么加：实测镜像里只有 glibc 家族 + libgcc_s + e2fsprogs 的库，所以"市面上的
 # Linux 程序"几乎必然缺共享库而跑不起来（例：htop 需要 libncursesw/libtinfo/libnl）。

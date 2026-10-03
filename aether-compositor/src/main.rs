@@ -9,6 +9,8 @@
 //! 目标形态（M1 后期，Linux VM）：基于 smithay 的真正 Wayland 合成器。
 
 mod draw;
+// 音频（提示音 + 音量）：纯逻辑可单测，实际播放走 alsa-utils 子进程（见模块说明）
+mod audio;
 #[cfg(target_os = "linux")]
 mod fbdev;
 // 输入事件层：事件类型与键位翻译跨平台（可在开发机上单测），仅采集后端限 Linux
@@ -354,6 +356,15 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut ai_status = draw::AiStatus::Local;
     // 是否在等 AI 回复（指令条显示呼吸动效）
     let mut thinking = false;
+    // 音频（提示音 + 音量，批次 K）：**探测一次**，不在循环里反复探测
+    // （`refresh()` 会起子进程，每帧调用会把 CPU 吃光）
+    let audio = audio::Audio::probe();
+    tty_log(&format!(
+        "音频：{}（音量 {}%{}）",
+        audio.state().label(),
+        audio.volume_pct(),
+        if audio.muted() { "，已静音" } else { "" }
+    ));
 
     loop {
         let frame_start = Instant::now();
@@ -558,6 +569,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     };
                     thinking = false;
                     ai_reply = Some((text, draw::BubbleKind::Ai, Instant::now()));
+                    // 提示音（批次 K）：AI 回复完成 = 正反馈。可关（settings.notify_sound），
+                    // 无音频设备时 play() 自己会静默返回（界面上已经如实显示过了）
+                    if renderer.settings.notify_sound {
+                        audio.play(audio::Cue::Done);
+                    }
                 }
                 AiEvent::Error(text) => {
                     // aetherd 不可达/通道故障 → 顶栏转"AI 离线"（灰）
@@ -574,10 +590,20 @@ fn run_fbdev() -> anyhow::Result<()> {
                     tty_log(&format!("权限确认请求: {} L{}", req.tool, req.level));
                     thinking = false;
                     confirm = Some((*req, String::new()));
+                    // 提示音（批次 K）：确认卡片需要用户注意 —— 这是三种提示音里
+                    // 唯一"必须被听见"的一种（用户可能正在看别处）
+                    if renderer.settings.notify_sound {
+                        audio.play(audio::Cue::Confirm);
+                    }
                 }
                 AiEvent::ToolDone { ok, output, origin } => {
                     thinking = false;
                     let last = output.lines().last().unwrap_or("").to_string();
+                    // 失败要**听得出来**（批次 K）：与成功音不同音高/时长，
+                    // 这样用户不必盯着屏幕也知道"刚才那下没成"
+                    if !ok && renderer.settings.notify_sound {
+                        audio.play(audio::Cue::Error);
+                    }
                     match origin {
                         ConfirmOrigin::Installer => {
                             installer.running = false;
