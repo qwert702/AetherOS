@@ -4,7 +4,7 @@
 ## 为什么必须有生成器
 
 站点上的版本号、ISO 体积、代码行数、测试数**每周都在变**。手写必然漂移 ——
-本仓库已经吃过这个亏：`代码索引-2026-09-11.md` 曾落后 4,639 行、14 个文件，`视觉设计交接-2026-09-20.md`
+本仓库已经吃过这个亏：`代码索引（INDEX）-2026-09-11.md` 曾落后 4,639 行、14 个文件，`视觉设计交接（UI-DESIGN-HANDOVER）-2026-09-20.md`
 描述的还是重做前的视觉。所以页面里**只写占位符**，值由本脚本注入：
 
     <!--DATA:iso_size-->        →  38.5 MB
@@ -46,7 +46,7 @@ ISO = ROOT / "aetheros-0.1-amd64.iso"
 #: 已发布产物的权威事实（人工维护）。存在时**优先于**本地 ISO —— 官网要描述的是
 #: 用户实际下载到的文件。见文件内 `_comment` 与 `collect()` 里的说明。
 RELEASE = SITE / "release.json"
-CHANGELOG = ROOT / "docs" / "版本变更日志-2026-10-01.md"
+CHANGELOG = ROOT / "docs" / "版本变更日志（CHANGELOG）-2026-10-01.md"
 
 #: 从 docs/ 走查图转成站点图片（源 → 目标名）。源是仓库里已有的视觉基线，
 #: 不复制进 site/ 以免二进制文件重复入库。
@@ -187,7 +187,7 @@ def measure(skip_tests: bool, previous: dict) -> dict:
     return d
 
 
-# —— Markdown → HTML（只支持 版本变更日志-2026-10-01.md 用到的那一小撮语法）——
+# —— Markdown → HTML（只支持 版本变更日志（CHANGELOG）-2026-10-01.md 用到的那一小撮语法）——
 
 #: 允许的协议。**白名单**而不是黑名单：漏掉一个危险协议
 #: （`javascript:` / `data:` / `vbscript:`）就等于把 XSS 写进公开站点。
@@ -445,7 +445,7 @@ def render_page(path: Path, data: dict, changelog_html: str, previous: dict) -> 
     # 于是"写盘结果"与"下次重算结果"来回不一致 —— 门禁会反复红/绿，且历史记录被污染。
     if path.name != "changelog.html":
         text = patch_values(text, previous, data)  # 之后靠"上次值 → 本次值"
-    # 更新日志页的正文完全由 更新日志/ 与 版本变更日志-2026-10-01.md 决定 —— 每次整体重算
+    # 更新日志页的正文完全由 更新日志/ 与 版本变更日志（CHANGELOG）-2026-10-01.md 决定 —— 每次整体重算
     if path.name == "changelog.html":
         text = re.sub(
             r'(<div class="log">).*?(</div>\s*</div>\s*</section>)',
@@ -501,7 +501,7 @@ def build_changelog() -> str:
     """站点更新日志页的正文 = **每日更新日志**（新→旧）+ 版本发布说明（放最后 = 最早）。
 
     单一来源：日常改动只写 `更新日志/YYYY-MM-DD.md`（仓库既定约定，面向"你能看到的变化"），
-    版本级说明只写 `版本变更日志-2026-10-01.md`。两者都**不必为站点再维护一份** —— 这是这个生成器存在的理由。
+    版本级说明只写 `版本变更日志（CHANGELOG）-2026-10-01.md`。两者都**不必为站点再维护一份** —— 这是这个生成器存在的理由。
     """
     parts: list[str] = []
     daily = sorted((p for p in (ROOT / "更新日志").glob("*.md") if p.name != "README.md"),
@@ -511,7 +511,7 @@ def build_changelog() -> str:
     if CHANGELOG.exists():
         parts.append(render_changelog(CHANGELOG.read_text(encoding="utf-8")))
     if not parts:
-        sys.exit("既没有 更新日志/*.md 也没有 版本变更日志-2026-10-01.md —— 更新日志页没有来源")
+        sys.exit("既没有 更新日志/*.md 也没有 版本变更日志（CHANGELOG）-2026-10-01.md —— 更新日志页没有来源")
     return "\n".join(parts)
 
 

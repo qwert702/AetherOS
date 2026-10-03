@@ -7,7 +7,7 @@
     python scripts/repo-stats.py --check        # 门禁：与 README/INDEX/roadmap 声明的
                                                 # 合计、逐 crate、逐文件三层比对
 
-为什么要这个脚本：规模数字原本手写在 README.md / 代码索引-2026-09-11.md 里，每次提交都会漂
+为什么要这个脚本：规模数字原本手写在 README.md / 代码索引（INDEX）-2026-09-11.md 里，每次提交都会漂
 —— 2026-09-29 复核时 README 的 `aetherd` 行数与实测差了 1,130 行，合计差了 1,393 行。
 口径统一在这里，文档只引用不手抄。
 
@@ -34,15 +34,15 @@ from typing import Pattern, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CARGO_TOML = REPO_ROOT / "Cargo.toml"
-INDEX_MD = REPO_ROOT / "docs" / "代码索引-2026-09-11.md"
+INDEX_MD = REPO_ROOT / "docs" / "代码索引（INDEX）-2026-09-11.md"
 README_MD = REPO_ROOT / "README.md"
-ROADMAP_MD = REPO_ROOT / "docs" / "路线图与已知缺口-2026-09-05.md"
+ROADMAP_MD = REPO_ROOT / "docs" / "路线图与已知缺口（ROADMAP）-2026-09-05.md"
 
 EXIT_OK = 0
 EXIT_GATE_FAILED = 1
 EXIT_USAGE = 2
 
-# 代码索引-2026-09-11.md 的合计行： | **合计** | **20,949** | **41** | |
+# 代码索引（INDEX）-2026-09-11.md 的合计行： | **合计** | **20,949** | **41** | |
 DECL_INDEX: Pattern[str] = re.compile(
     r"\|\s*\*\*合计\*\*\s*\|\s*\*\*([\d,]+)\*\*\s*\|\s*\*\*([\d,]+)\*\*"
 )
@@ -50,11 +50,11 @@ DECL_INDEX: Pattern[str] = re.compile(
 DECL_README: Pattern[str] = re.compile(
     r"合计\s*([\d,]+)\s*行 Rust\s*/\s*([\d,]+)\s*个源文件"
 )
-# docs/路线图与已知缺口-2026-09-05.md 的规模行： 代码规模（2026-09-29 实测）：**20,949 行 / 41 个 .rs**（7 crate）
+# docs/路线图与已知缺口（ROADMAP）-2026-09-05.md 的规模行： 代码规模（2026-09-29 实测）：**20,949 行 / 41 个 .rs**（7 crate）
 DECL_ROADMAP: Pattern[str] = re.compile(
     r"代码规模（[^）]*）：\*\*([\d,]+) 行 / ([\d,]+) 个 \.rs\*\*"
 )
-# 代码索引-2026-09-11.md 的 crate 行： | `aether-compositor` | 16,149 | 22 | 职责… |
+# 代码索引（INDEX）-2026-09-11.md 的 crate 行： | `aether-compositor` | 16,149 | 22 | 职责… |
 DECL_CRATE_INDEX: Pattern[str] = re.compile(
     r"^\|\s*`(aether[\w-]+)`\s*\|\s*([\d,]+)\s*\|\s*([\d,]+)\s*\|", re.M
 )
@@ -62,9 +62,9 @@ DECL_CRATE_INDEX: Pattern[str] = re.compile(
 DECL_CRATE_README: Pattern[str] = re.compile(
     r"^\|\s*`(aether[\w-]+)/`\s*\|\s*([\d,]+)\s*\|", re.M
 )
-# 代码索引-2026-09-11.md 的 crate 小节标题： ### `aetherd`（AI 中枢，5,912 行 / 11 文件）
+# 代码索引（INDEX）-2026-09-11.md 的 crate 小节标题： ### `aetherd`（AI 中枢，5,912 行 / 11 文件）
 SECTION_INDEX: Pattern[str] = re.compile(r"^###\s+`?(aether[\w-]*)`?")
-# 代码索引-2026-09-11.md 的逐文件行： | `src/main.rs` (3,962) | 说明 |
+# 代码索引（INDEX）-2026-09-11.md 的逐文件行： | `src/main.rs` (3,962) | 说明 |
 # 末尾的分组用来兼容 `(170, Linux)` 这种"行数 + 平台注解"的写法。
 DECL_FILE_INDEX: Pattern[str] = re.compile(r"^\|\s*`([^`]+\.rs)`\s*\((\d[\d,]*)([^)]*)\)\s*\|")
 # 逐文件门禁最多打印多少条不一致（避免刷屏；总数仍会报出来）
@@ -158,7 +158,7 @@ def totals(stats: Sequence[CrateStat]) -> tuple[int, int]:
 
 
 def print_table(stats: Sequence[CrateStat], per_file: bool) -> None:
-    """打印 Markdown 表（可直接粘进 代码索引-2026-09-11.md）。"""
+    """打印 Markdown 表（可直接粘进 代码索引（INDEX）-2026-09-11.md）。"""
     total_lines, total_files = totals(stats)
     print("| crate | 行数 | 文件 |")
     print("|---|---|---|")
@@ -198,20 +198,20 @@ def gate_crates(stats: Sequence[CrateStat]) -> bool:
     head = INDEX_MD.read_text(encoding="utf-8").split("\n## ", 1)[0]
     index_rows = DECL_CRATE_INDEX.findall(head)
     if not index_rows:
-        print("[FAIL] 代码索引-2026-09-11.md: 没找到逐 crate 汇总表（表格式变了？）")
+        print("[FAIL] 代码索引（INDEX）-2026-09-11.md: 没找到逐 crate 汇总表（表格式变了？）")
         ok = False
     else:
         bad = 0
         for name, lines_s, files_s in index_rows:
             want = actual.get(name)
             if want is None:
-                print(f"[FAIL] 代码索引-2026-09-11.md: 汇总表里有未知 crate `{name}`")
+                print(f"[FAIL] 代码索引（INDEX）-2026-09-11.md: 汇总表里有未知 crate `{name}`")
                 bad += 1
                 continue
             got = (int(lines_s.replace(",", "")), int(files_s.replace(",", "")))
             if got != want:
                 print(
-                    f"[FAIL] 代码索引-2026-09-11.md: `{name}` 声明 {got[0]:,} 行 / {got[1]} 文件，"
+                    f"[FAIL] 代码索引（INDEX）-2026-09-11.md: `{name}` 声明 {got[0]:,} 行 / {got[1]} 文件，"
                     f"实测 {want[0]:,} 行 / {want[1]} 文件"
                 )
                 bad += 1
@@ -221,11 +221,11 @@ def gate_crates(stats: Sequence[CrateStat]) -> bool:
         listed = {r[0] for r in index_rows}
         missing = sorted(set(actual) - listed)
         if missing:
-            print(f"[FAIL] 代码索引-2026-09-11.md 汇总表漏了 {len(missing)} 个 crate：{missing}"
+            print(f"[FAIL] 代码索引（INDEX）-2026-09-11.md 汇总表漏了 {len(missing)} 个 crate：{missing}"
                   "（删掉一行不算通过）")
             bad += len(missing)
         if bad == 0:
-            print(f"[ OK ] 代码索引-2026-09-11.md 逐 crate：{len(index_rows)} 个 crate 全部一致（集合相等）")
+            print(f"[ OK ] 代码索引（INDEX）-2026-09-11.md 逐 crate：{len(index_rows)} 个 crate 全部一致（集合相等）")
         else:
             ok = False
 
@@ -292,19 +292,19 @@ def gate_files(stats: Sequence[CrateStat]) -> bool:
     # 正则匹配不上（该行静默脱管）这三种情况全都报 OK。这里要求两边集合相等。
     unchecked = sorted(set(actual) - seen)
     if unchecked:
-        print(f"[FAIL] 代码索引-2026-09-11.md 逐文件表漏了 {len(unchecked)} 个源文件（新增文件必须登记，"
+        print(f"[FAIL] 代码索引（INDEX）-2026-09-11.md 逐文件表漏了 {len(unchecked)} 个源文件（新增文件必须登记，"
               "格式也必须让正则认得出）：")
         for m in unchecked[:MAX_REPORTED_FILE_MISMATCHES]:
             print(f"        {m}")
         return False
     if mismatches:
-        print(f"[FAIL] 代码索引-2026-09-11.md 逐文件行数：{len(mismatches)} 条不一致（已核对 {checked} 条）")
+        print(f"[FAIL] 代码索引（INDEX）-2026-09-11.md 逐文件行数：{len(mismatches)} 条不一致（已核对 {checked} 条）")
         for m in mismatches[:MAX_REPORTED_FILE_MISMATCHES]:
             print(f"        {m}")
         if len(mismatches) > MAX_REPORTED_FILE_MISMATCHES:
             print(f"        …另有 {len(mismatches) - MAX_REPORTED_FILE_MISMATCHES} 条未列出")
         return False
-    print(f"[ OK ] 代码索引-2026-09-11.md 逐文件行数：{checked} 条全部一致")
+    print(f"[ OK ] 代码索引（INDEX）-2026-09-11.md 逐文件行数：{checked} 条全部一致")
     return True
 
 
@@ -322,7 +322,7 @@ def count_test_attrs(crate: str) -> int:
 
 
 def gate_test_table(stats: Sequence[CrateStat]) -> bool:
-    """门禁：代码索引-2026-09-11.md 的测试分布表必须与源码实测一致。
+    """门禁：代码索引（INDEX）-2026-09-11.md 的测试分布表必须与源码实测一致。
 
     为什么值得一条门禁（代码审查发现）：那张表曾经**自相矛盾** ——
     各行属性相加 415、合计行却写 403、`aether-ops` 写 15 而实测 14，
@@ -353,29 +353,29 @@ def gate_test_table(stats: Sequence[CrateStat]) -> bool:
         total = (int(m.group(1)), int(m.group(2)))
 
     if not rows:
-        print("[FAIL] 代码索引-2026-09-11.md 测试分布表：没解析到任何行（格式变了？）")
+        print("[FAIL] 代码索引（INDEX）-2026-09-11.md 测试分布表：没解析到任何行（格式变了？）")
         return False
 
     ok = True
     for crate, (_, attrs) in sorted(rows.items()):
         actual = count_test_attrs(crate)
         if attrs != actual:
-            print(f"[FAIL] 代码索引-2026-09-11.md 测试表：`{crate}` 声明 {attrs} 项 `#[test]`，实测 {actual}")
+            print(f"[FAIL] 代码索引（INDEX）-2026-09-11.md 测试表：`{crate}` 声明 {attrs} 项 `#[test]`，实测 {actual}")
             ok = False
     if total is None:
-        print("[FAIL] 代码索引-2026-09-11.md 测试分布表：没找到合计行")
+        print("[FAIL] 代码索引（INDEX）-2026-09-11.md 测试分布表：没找到合计行")
         ok = False
     else:
         sum_win = sum(v[0] for v in rows.values())
         sum_attrs = sum(v[1] for v in rows.values())
         if total != (sum_win, sum_attrs):
             print(
-                f"[FAIL] 代码索引-2026-09-11.md 测试表合计：声明 {total}，各行相加为 "
+                f"[FAIL] 代码索引（INDEX）-2026-09-11.md 测试表合计：声明 {total}，各行相加为 "
                 f"({sum_win}, {sum_attrs})"
             )
             ok = False
     if ok:
-        print(f"[ OK ] 代码索引-2026-09-11.md 测试分布表：{len(rows)} 个 crate 的属性数与合计一致")
+        print(f"[ OK ] 代码索引（INDEX）-2026-09-11.md 测试分布表：{len(rows)} 个 crate 的属性数与合计一致")
     return ok
 
 
@@ -384,9 +384,9 @@ def gate(stats: Sequence[CrateStat]) -> int:
     total_lines, total_files = totals(stats)
     ok = True
     for label, path, pattern in (
-        ("代码索引-2026-09-11.md", INDEX_MD, DECL_INDEX),
+        ("代码索引（INDEX）-2026-09-11.md", INDEX_MD, DECL_INDEX),
         ("README.md", README_MD, DECL_README),
-        ("docs/路线图与已知缺口-2026-09-05.md", ROADMAP_MD, DECL_ROADMAP),
+        ("docs/路线图与已知缺口（ROADMAP）-2026-09-05.md", ROADMAP_MD, DECL_ROADMAP),
     ):
         claimed = declared(path, pattern)
         if claimed is None:
@@ -412,7 +412,7 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="与 README.md / 代码索引-2026-09-11.md 声明的合计比对，不一致则非零退出",
+        help="与 README.md / 代码索引（INDEX）-2026-09-11.md 声明的合计比对，不一致则非零退出",
     )
     parser.add_argument("--per-file", action="store_true", help="额外打印逐文件行数")
     args = parser.parse_args(list(argv))

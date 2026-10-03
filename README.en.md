@@ -1,4 +1,4 @@
-[中文](README.md) | **English** · [**Download ISO (38.5 MB)**](https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/应用包格式-2026-09-28.md)
+[中文](README.md) | **English** · [**Download ISO (38.5 MB)**](https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
 
 # AetherOS
 
@@ -61,7 +61,7 @@ On a Windows development machine, add `--offline` to `cargo`, otherwise it stall
 ## Boundaries (what does *not* work yet)
 
 Written down so nobody misuses it — not self-deprecation. The full list lives in
-[`docs/交接报告-2026-09-11.md`](docs/交接报告-2026-09-11.md) and the "known gaps" section of [`代码索引-2026-09-11.md`](docs/代码索引-2026-09-11.md).
+[`docs/交接报告（HANDOVER）-2026-09-11.md`](docs/交接报告（HANDOVER）-2026-09-11.md) and the "known gaps" section of [`代码索引（INDEX）-2026-09-11.md`](docs/代码索引（INDEX）-2026-09-11.md).
 
 - **Stage**: every subsystem genuinely runs, but this is not yet a desktop that could replace
   your daily machine.
@@ -84,7 +84,7 @@ Written down so nobody misuses it — not self-deprecation. The full list lives 
   touching the target disk** and explains why. Booting and the live desktop are unaffected.
   `platform/build-iso.sh` now applies isohybrid with a self-check, so a rebuilt ISO will
   support installation (see
-  [`docs/报告/安全审计-2026-10-02.md`](docs/报告/安全审计-2026-10-02.md), finding H-6).
+  [`docs/报告/安全审计（SECURITY-AUDIT）-2026-10-02.md`](docs/报告/安全审计（SECURITY-AUDIT）-2026-10-02.md), finding H-6).
 - **No user accounts**: the shipped image has **no root password**, so console access
   (including serial) is root — a deliberate trade-off for a live demo system (stated in the
   boot banner and `/etc/issue`). To lock an image down, build with
@@ -111,7 +111,7 @@ After installation a wrapper script is generated in `/usr/local/bin`, so the pro
 | Dynamically linked, dependencies present in the image | runs |
 | Dynamically linked, dependencies missing | `error while loading shared libraries`; preflight lists exactly which ones |
 
-The image ships glibc 2.38 with backward compatibility, so a glibc version mismatch is rarely the problem; a missing `.so` is. The package format, manifest fields and limits are documented in [`docs/应用包格式-2026-09-28.md`](docs/应用包格式-2026-09-28.md).
+The image ships glibc 2.38 with backward compatibility, so a glibc version mismatch is rarely the problem; a missing `.so` is. The package format, manifest fields and limits are documented in [`docs/应用包格式（APP-PACKAGES）-2026-09-28.md`](docs/应用包格式（APP-PACKAGES）-2026-09-28.md).
 
 The system partition is read-only (ISO9660 plus an initramfs loaded entirely into memory). Only the ext4 partition mounted at `/var` is writable and survives a reboot.
 
@@ -148,27 +148,27 @@ htop
 
 > The screenshot at the top of this page is a real capture: a QEMU-hosted AetherOS desktop where the package was fetched with `wget`, installed with `aetherd app install`, and launched as `htop` — full TUI, CPU meters, memory, process table and the F1–F10 key bar.
 
-Details, rules and boundaries are in [`docs/应用包格式-2026-09-28.md`](docs/应用包格式-2026-09-28.md).
+Details, rules and boundaries are in [`docs/应用包格式（APP-PACKAGES）-2026-09-28.md`](docs/应用包格式（APP-PACKAGES）-2026-09-28.md).
 
 ## Architecture
 
 ```
 ┌────────────────────────────────────────────────┐
-│  aether-compositor + aether-shell (placeholder)│  desktop / top bar / Dock / AI command bar
-│    draw · layout · text · term(vt/pty)         │
-│    ime · textview · input · wayland(spike)     │
+aether-compositor + aether-shell (placeholder)│  desktop / top bar / Dock / AI command bar
+draw · layout · text · term(vt/pty)         │
+ime · textview · input · wayland(spike)     │
 ├────────────────────────────────────────────────┤
-│  aetherd          AI hub: intent → route → tool│  permission gate L0–L3 · audit
-│  aether-ops       AI ops: patrol → diagnose    │
+aetherd                                     AI hub: intent → route → tool│  permission gate L0–L3 · audit
+aether-ops                                  AI ops: patrol → diagnose    │
 ├────────────────────────────────────────────────┤
-│  aether-ipc       unified IPC (JSON / NDJSON)  │
+aether-ipc                                  unified IPC (JSON / NDJSON)  │
 ├────────────────────────────────────────────────┤
-│  aether-init      PID 1 / service management   │  musl static
-│  aether-install   whole-disk installer         │
+aether-init                                 PID 1 / service management   │  musl static
+aether-install                              whole-disk installer         │
 ├────────────────────────────────────────────────┤
-│  glibc · driver stack · firmware               │  mature open source
+glibc · driver stack · firmware             │  mature open source
 ├────────────────────────────────────────────────┤
-│  Linux kernel                                  │
+Linux kernel                                │
 └────────────────────────────────────────────────┘
 ```
 
@@ -199,11 +199,11 @@ aether-ops patrol ─▶ init service status + /var/log/aether ─▶ self-heali
 | `scripts/` | — | Host-side development, walkthrough images, end-to-end verification | ongoing |
 | `docs/` | — | Architecture, protocols, permission model, roadmap, review reports | ongoing |
 
-> Line counts drift with every commit, so do not copy them by hand: run `python scripts/repo-stats.py` for the authoritative numbers (same source as the per-file table in `代码索引-2026-09-11.md`; `--check` turns it into a gate).
+> Line counts drift with every commit, so do not copy them by hand: run `python scripts/repo-stats.py` for the authoritative numbers (same source as the per-file table in `代码索引（INDEX）-2026-09-11.md`; `--check` turns it into a gate).
 
 ## Permission model
 
-The AI can operate a real machine, so permissions are where most of the design effort went. The full design is in [`docs/AI权限模型-2026-09-05.md`](docs/AI权限模型-2026-09-05.md).
+The AI can operate a real machine, so permissions are where most of the design effort went. The full design is in [`docs/AI权限模型（AI-PERMISSIONS）-2026-09-05.md`](docs/AI权限模型（AI-PERMISSIONS）-2026-09-05.md).
 
 | Level | Behavior | Tools |
 |---|---|---|
@@ -229,39 +229,51 @@ A few invariants hold this together:
 | Unit tests | 444 green on Windows (measured 2026-10-02, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
 | Compiler warnings | 0 on Windows; 0 on the 6 crates that can be musl-checked (`aetherd` cannot: ring needs x86_64-linux-musl-gcc) |
 | Visual regression | 19 archived walkthrough images compared pixel by pixel, currently 19/19 with zero difference |
-| Code review | Four full and incremental review rounds, every finding fixed (zero unresolved); the consolidated report is [`docs/归档/代码审查总集-2026-09-29.md`](docs/归档/代码审查总集-2026-09-29.md) |
+| Code review | Four full and incremental review rounds, every finding fixed (zero unresolved); the consolidated report is [`docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md`](docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md) |
 | End-to-end | Permission chain, installer, QEMU QMP keyboard/mouse injection plus screenshots |
 | In-VM self-healing | Killing the compositor inside QEMU makes init restart it and reinitialize display, fonts and input |
-| Stability soak | 12 h 43 m of continuous uptime in QEMU: 3,053 patrol rounds, 0 service exits, 0 automatic restarts, 0 panics, stable memory (raw log `docs/证据/长跑日志-2026-09-28-12h43m.log.gz`) |
+| Stability soak | 12 h 43 m of continuous uptime in QEMU: 3,053 patrol rounds, 0 service exits, 0 automatic restarts, 0 panics, stable memory (raw log `docs/证据/长跑日志（SOAK）-2026-09-28-12h43m.log.gz`) |
 | Application installation | Verified on a live image: a static program installed under `/var/apps` runs from the guest terminal by name and shows up in the Dock |
 
 After changing anything under `cfg(target_os = "linux")`, you must also build for `--target x86_64-unknown-linux-musl` or test on a Linux machine — a Windows build excludes those code paths entirely, so errors and warnings in them are invisible on the development host.
 
 ## Where files live
 
-**Docs entry point**: [`docs/代码索引-2026-09-11.md`](docs/代码索引-2026-09-11.md).
+**Docs entry point**: [`docs/代码索引（INDEX）-2026-09-11.md`](docs/代码索引（INDEX）-2026-09-11.md).
 
 ```
 Aether/
-├── README.md / README.en.md      Entry points (the only .md files left at the repo root)
-├── docs/                         All documentation (also the GitHub Pages root)
-│   ├── 代码索引-2026-09-11.md                  Code index: size / per-file duties / test spread / commands
-│   ├── 架构与设计决策-2026-09-05.md           Layering and ADRs (frozen at M0)
-│   ├── 版本变更日志-2026-10-01.md              Version-level changes
-│   ├── 路线图与已知缺口-2026-09-05.md                Milestones and known gaps
-│   ├── 报告/                  Dated one-off artefacts (audits / plans / acceptance)
-│   ├── 发布/                   Release and outreach material
-│   └── 归档/                  Historical snapshots (history, not current truth)
-├── assets/                       Images (moved out of docs/ on 2026-10-03)
-│   ├── ui-archive/               Archived UI walkthrough shots (visual-regression baseline)
-│   ├── screenshots/              Real-machine screenshots (QEMU / VirtualBox / VMware)
-│   └── demo/                     Demo GIF and cover
-├── 更新日志/                     Dated work logs (named by the day work started)
-├── platform/                     Buildroot external tree + overlay + boot config
-├── scripts/                      Gates and tooling (`scripts/gates.py` is the entry point)
-└── aether-*/                     7 Rust crates (see docs/代码索引-2026-09-11.md)
+├── README.md / README.en.md                  Entry points (the only .md files left at the repo root)
+├── docs/                                     All documentation (also the GitHub Pages root)
+│   ├── 代码索引（INDEX）-2026-09-11.md       Code index: size / per-file duties / test spread / commands
+│   ├── 架构与设计决策（ARCHITECTURE）-2026-09-05.md  Layering and ADRs (frozen at M0)
+│   ├── 版本变更日志（CHANGELOG）-2026-10-01.md  Version-level changes
+│   ├── 路线图与已知缺口（ROADMAP）-2026-09-05.md  Milestones M0–M6 and known gaps
+│   ├── 交接报告（HANDOVER）-2026-09-11.md    Handover report: measurements + build/verify manual
+│   ├── 进程间通信协议（IPC-PROTOCOL）-2026-09-05.md  Inter-process protocol
+│   ├── AI权限模型（AI-PERMISSIONS）-2026-09-05.md  AI permission model (L0–L3)
+│   ├── 应用包格式（APP-PACKAGES）-2026-09-28.md  Application package format
+│   ├── 视觉设计交接（UI-DESIGN-HANDOVER）-2026-09-20.md  Authoritative visual design reference
+│   ├── 报告/                                 Dated one-off artefacts (audits / plans / acceptance)
+│   ├── 发布/                                 Release and outreach material
+│   ├── 归档/                                 Historical snapshots (history, **not current truth**)
+│   └── 证据/                                 Raw logs from soak runs and real-machine checks
+├── assets/                                   Images (**not** under docs/ — see below)
+│   ├── ui-archive/                           Archived UI walkthrough shots (visual-regression baseline, 20 files)
+│   ├── screenshots/                          Real-machine screenshots (QEMU / VirtualBox / VMware)
+│   └── demo/                                 Demo GIF and cover
+├── 更新日志/                                 Dated work logs (named by the day work started)
+├── platform/                                 Buildroot external tree + overlay + boot config
+├── scripts/                                  Gates and tooling (`scripts/gates.py` is the entry point)
+├── site/                                     Website (generated by `scripts/gen-site.py`; do not edit by hand)
+└── aether-*/                                 7 Rust crates (list in docs/代码索引（INDEX）-2026-09-11.md)
 ```
 
+> The date in a filename is the document's **first-commit date** (its birthday) and never
+> changes as the content is updated — that keeps links stable; use `git log` for "last updated".
+> Two files are deliberately not renamed: `.nojekyll` and `index.html` (GitHub Pages requires
+> those exact names — this is a constraint, not an oversight).
+>
 > Images live outside `docs/` on purpose: `docs/` doubles as the GitHub Pages root
 > (it holds `.nojekyll` and a redirect `index.html`), so mixing dozens of images into it
 > both buries the docs and publishes the images. Link rot is guarded by
@@ -271,16 +283,16 @@ Aether/
 
 | Document | Contents |
 |---|---|
-| [`代码索引-2026-09-11.md`](docs/代码索引-2026-09-11.md) | Code index: components and entry points, per-file responsibilities, tool list, test distribution, keybindings, common commands |
-| [`docs/路线图与已知缺口-2026-09-05.md`](docs/路线图与已知缺口-2026-09-05.md) | Milestones M0–M6 and known engineering gaps |
-| [`docs/报告/生产化计划-2026-09-28.md`](docs/报告/生产化计划-2026-09-28.md) | Production-readiness checklist and its six hard gates (**6/6 met**) |
-| [`docs/视觉设计交接-2026-09-20.md`](docs/视觉设计交接-2026-09-20.md) | Authoritative visual design reference: design tokens, dual-mode themes, environment pitfalls |
-| [`docs/应用包格式-2026-09-28.md`](docs/应用包格式-2026-09-28.md) | Application package format: how to build one, how to install it, how to read preflight, where the limits are |
-| [`docs/AI权限模型-2026-09-05.md`](docs/AI权限模型-2026-09-05.md) | The AI permission model |
-| [`docs/报告/可写文件操作-2026-09-28.md`](docs/报告/可写文件操作-2026-09-28.md) | Constraints on writable file operations |
-| [`docs/报告/第三阶段决策-2026-09-28.md`](docs/报告/第三阶段决策-2026-09-28.md) | Decision framework and exit criteria for Wayland |
-| [`架构与设计决策-2026-09-05.md`](docs/架构与设计决策-2026-09-05.md) | Layering and ADRs (frozen at M0; see INDEX for current state) |
-| [`docs/交接报告-2026-09-11.md`](docs/交接报告-2026-09-11.md) | Handover report: measured results plus build and verification manual |
+| [`代码索引（INDEX）-2026-09-11.md`](docs/代码索引（INDEX）-2026-09-11.md) | Code index: components and entry points, per-file responsibilities, tool list, test distribution, keybindings, common commands |
+| [`docs/路线图与已知缺口（ROADMAP）-2026-09-05.md`](docs/路线图与已知缺口（ROADMAP）-2026-09-05.md) | Milestones M0–M6 and known engineering gaps |
+| [`docs/报告/生产化计划（PRODUCTION-PLAN）-2026-09-28.md`](docs/报告/生产化计划（PRODUCTION-PLAN）-2026-09-28.md) | Production-readiness checklist and its six hard gates (**6/6 met**) |
+| [`docs/视觉设计交接（UI-DESIGN-HANDOVER）-2026-09-20.md`](docs/视觉设计交接（UI-DESIGN-HANDOVER）-2026-09-20.md) | Authoritative visual design reference: design tokens, dual-mode themes, environment pitfalls |
+| [`docs/应用包格式（APP-PACKAGES）-2026-09-28.md`](docs/应用包格式（APP-PACKAGES）-2026-09-28.md) | Application package format: how to build one, how to install it, how to read preflight, where the limits are |
+| [`docs/AI权限模型（AI-PERMISSIONS）-2026-09-05.md`](docs/AI权限模型（AI-PERMISSIONS）-2026-09-05.md) | The AI permission model |
+| [`docs/报告/可写文件操作（WRITE-OPS）-2026-09-28.md`](docs/报告/可写文件操作（WRITE-OPS）-2026-09-28.md) | Constraints on writable file operations |
+| [`docs/报告/第三阶段决策（PHASE3-DECISION）-2026-09-28.md`](docs/报告/第三阶段决策（PHASE3-DECISION）-2026-09-28.md) | Decision framework and exit criteria for Wayland |
+| [`架构与设计决策（ARCHITECTURE）-2026-09-05.md`](docs/架构与设计决策（ARCHITECTURE）-2026-09-05.md) | Layering and ADRs (frozen at M0; see INDEX for current state) |
+| [`docs/交接报告（HANDOVER）-2026-09-11.md`](docs/交接报告（HANDOVER）-2026-09-11.md) | Handover report: measured results plus build and verification manual |
 | [`docs/归档/`](docs/归档/) | Historical snapshots (decision history, not a statement of current state) |
 
 ## License

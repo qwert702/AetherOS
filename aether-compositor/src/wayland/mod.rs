@@ -2,7 +2,7 @@
 //!
 //! **路线：自研 `wl_display` 子集，而不是 smithay。**
 //!
-//! 理由（详见 `docs/报告/第三阶段决策-2026-09-28.md` §1.2）：
+//! 理由（详见 `docs/报告/第三阶段决策（PHASE3-DECISION）-2026-09-28.md` §1.2）：
 //! - **避开 Mesa 交叉编译到 musl 静态**这个最大的坑（smithay 通常要 EGL/GBM）
 //! - 可直接复用现有的 **evdev 输入层**（`input.rs`）—— 不需要 libinput/seatd
 //!

@@ -334,7 +334,7 @@ fn handle_conn<R: Read, W: Write>(
 
 /// 写一条审计，失败时打 stderr。
 ///
-/// `docs/AI权限模型-2026-09-05.md` 机制 2 承诺"审计写入失败不阻断执行，但**不允许静默
+/// `docs/AI权限模型（AI-PERMISSIONS）-2026-09-05.md` 机制 2 承诺"审计写入失败不阻断执行，但**不允许静默
 /// 零留痕**"。用 `let _ = gate.audit(...)` 恰恰就是静默 —— 磁盘满之后审计会停止，
 /// 而系统继续正常运行，没有任何人会发现。这里把它显式化。
 fn audit_or_warn(gate: &Gate, tool: &str, level: Level, verdict: &str) {
