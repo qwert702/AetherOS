@@ -3304,11 +3304,17 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 帧耗时基准：`--bench [N]` 连续渲染 N 帧并输出平均耗时（性能回归用）。
-    // 只测 CPU 侧绘制成本（Windows 无 /dev/fb0，上屏路径另计）。
-    #[cfg(not(target_os = "linux"))]
-    if let Some(pos) = args.iter().position(|a| a == "--bench") {
-        let n: u32 = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(120);
+    // 帧耗时基准：`--bench [N]` 连续渲染 N 帧，输出**平均/最差/P99**，并按阈值给退出码。
+    //
+    // 只测 **CPU 侧绘制成本**（不上屏）—— 这是门禁能稳定的前提：
+    // 上屏路径依赖真实显示设备，那种数字在 CI 里没有可比性。
+    //
+    // 它**刻意放在 fbdev 分支之前**（§4.2）：早先它排在后面且只编非 Linux，
+    // 于是 Linux CI 永远跑不到它 —— 一个"只在开发机上存在"的门禁等于没有门禁。
+    // 注意用 `argv` 而不是 `args`：后者只在非 Linux 分支里存在，而这批把本块挪到了
+    // 平台无关的位置 —— **musl 检查当场抓出来**（Windows 构建看不到这个作用域差异）。
+    if let Some(pos) = argv.iter().position(|a| a == "--bench") {
+        let n: u32 = argv.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(120);
         let shot_ime = ime::Ime::default();
         let mut buf = vec![0u32; WIDTH * HEIGHT];
         let mut desktop = demo_desktop();
@@ -3359,15 +3365,36 @@ fn main() -> anyhow::Result<()> {
         for _ in 0..3 {
             renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         }
-        let t0 = std::time::Instant::now();
+        // **逐帧计时**（不是"总时间 ÷ 帧数"）：门禁要的是"最差那一帧"，
+        // 而平均值会把偶发的长帧摊平 —— 用户感觉到的卡顿恰恰是长帧。
+        let mut per_frame: Vec<f64> = Vec::with_capacity(n as usize);
         for i in 0..n {
+            let t1 = std::time::Instant::now();
             renderer.render_frame(
                 &mut buf, WIDTH, HEIGHT, 1.2 + i as f32 * 0.016, &desktop, &ui, tr.as_ref(),
             );
             draw::draw_cursor(&mut buf, WIDTH, HEIGHT, 640.0, 400.0);
+            per_frame.push(t1.elapsed().as_secs_f64() * 1000.0);
         }
-        let el = t0.elapsed();
-        let per = el.as_secs_f64() * 1000.0 / n as f64;
+        // 平均值直接用逐帧计时求和（与分位数同一份数据，避免两套数字打架）
+        let per = if per_frame.is_empty() {
+            0.0
+        } else {
+            per_frame.iter().sum::<f64>() / per_frame.len() as f64
+        };
+        // 分位数：先排序再取（n 只有几百，不值得上选择算法）
+        let mut sorted = per_frame.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let worst = sorted.last().copied().unwrap_or(0.0);
+        let pick = |q: f64| -> f64 {
+            if sorted.is_empty() {
+                return 0.0;
+            }
+            let idx = ((sorted.len() as f64 - 1.0) * q).round() as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        };
+        let p50 = pick(0.50);
+        let p99 = pick(0.99);
         // 分帧生成：整屏行数 ÷ 每帧行数
         let bg_frames = (HEIGHT as f64 / draw::BG_ROWS_PER_FRAME as f64).ceil();
         println!("bench @ {WIDTH}x{HEIGHT}（两列 + 鼠标）");
@@ -3377,6 +3404,18 @@ fn main() -> anyhow::Result<()> {
         println!("  首帧（壁纸已就绪）: {first_ms:.2} ms");
         println!("  稳态 {n} 帧: 平均 {per:.2} ms/帧 → 上限 {:.0} fps", 1000.0 / per);
         println!("  理论 30fps 预算 33.3ms/帧，当前占用 {:.0}%", per / 33.3 * 100.0);
+        // §4.2 门禁看这三行：平均值会骗人，**P99 才是"会不会卡一下"**
+        println!("  逐帧分位: P50 {p50:.2} ms · **P99 {p99:.2} ms** · 最差 {worst:.2} ms");
+        // 阈值可由环境变量覆盖：CI 机器比开发机慢/吵，硬编码一个数会把门禁变成噪声源
+        let limit: f64 = std::env::var("AETHER_BENCH_MAX_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16.0);
+        if p99 > limit {
+            println!("  [FAIL] P99 {p99:.2} ms 超过阈值 {limit:.2} ms（AETHER_BENCH_MAX_MS 可调）");
+            std::process::exit(1);
+        }
+        println!("  [OK] P99 在阈值 {limit:.2} ms 之内");
         return Ok(());
     }
 

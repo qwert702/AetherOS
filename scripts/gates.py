@@ -102,6 +102,10 @@ def main() -> int:
         # 放在 cargo build 之后：它需要刚构建出来的合成器二进制。
         steps.append(("自动 e2e（无界面动作运行器）",
                       [PY, "scripts/e2e-ui-actions.py"]))
+        # 性能门禁（FEATURE-GAPS §4.2）：跑 `--bench` 看 P99 是否在一帧预算内。
+        # 需要刚构建出来的二进制，所以排在 cargo build 之后、与 e2e 同批。
+        steps.append(("性能门禁（P99 帧时间 ≤ 一帧预算）",
+                      [PY, "scripts/bench-gate.py"]))
         # musl 目标不一定装了：装了才查（aetherd 因 ring 需要 musl-gcc，永远查不了）
         installed = subprocess.run(["rustup", "target", "list", "--installed"],
                                    capture_output=True, text=True).stdout
@@ -139,6 +143,8 @@ def main() -> int:
     # e2e 的**判定逻辑**自检：不需要合成器、不需要真机，所以能进日常门禁。
     # 真实 e2e 在完整模式跑（见上）；这一步保证"脚本本身没写错"。
     steps.append(("自动 e2e 判定逻辑自检", [PY, "scripts/e2e-ui-actions.py", "--selftest"]))
+    # 性能门禁的判定逻辑同样自检：不需要合成器、不需要真机（阈值与解析都要能验）
+    steps.append(("性能门禁判定逻辑自检", [PY, "scripts/bench-gate.py", "--selftest"]))
     steps.append(("Python 语法检查", [PY, "-m", "py_compile", *[
         str(p.relative_to(ROOT)) for p in sorted((ROOT / "scripts").glob("*.py"))
     ]]))
