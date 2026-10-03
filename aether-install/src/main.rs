@@ -769,4 +769,44 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// H-6 的**时机**回归（审计 D.2 第 17 条：此前只能靠人工审查）。
+    ///
+    /// 断言"三道门在源码里出现在 dd 之前"。为什么需要它：
+    /// 这条修复的**价值全在顺序上** —— 同样的检查放在 dd 之后，目标盘已被覆盖、
+    /// 分区表已毁才发现起不来，用户拿到的是一块毁掉又起不来的盘，
+    /// 而程序还会报"安装完成"。后果太贵，不能只靠人记得。
+    ///
+    /// 用 `include_str!` 编译期嵌入源码扫描（不做运行期文件 IO）。
+    /// 回滚成"先 dd 再校验"会让这条立刻变红 —— 这正是它存在的意义。
+    #[test]
+    fn destructive_write_happens_after_all_gates() {
+        let src = include_str!("main.rs");
+        // 安装流程在 `fn main()` 里（本 crate 没有 `fn install`）；
+        // 作用域到测试模块之前为止 —— 这样扫描范围恰好是"会动目标盘的那段代码"。
+        let start = src.find("fn main() -> Result<()> {").expect("找不到 main");
+        let end = src[start..]
+            .find("#[cfg(test)]")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+
+        let dd = body
+            .find("Command::new(\"/bin/dd\")")
+            .expect("install 里应有 dd 调用（否则这条测试失去意义）");
+
+        for (marker, what) in [
+            ("if !yes", "确认门（--yes）"),
+            ("source_has_mbr()", "isohybrid 引导前提校验"),
+            ("same_device(", "目标盘不得是安装源"),
+        ] {
+            let at = body
+                .find(marker)
+                .unwrap_or_else(|| panic!("install 里找不到「{what}」（标记 {marker}）"));
+            assert!(
+                at < dd,
+                "「{what}」必须出现在 dd **之前** —— 现在在其后：目标盘会被毁掉才发现问题"
+            );
+        }
+    }
+
 }
