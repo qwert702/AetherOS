@@ -64,9 +64,9 @@ AI 指令条真实连通 aetherd（离线意图）、Action 端到端落地（AI
 
 | 环境 | 显卡控制器 | DRM 驱动 | 分辨率 | 截图 |
 |------|-----------|---------|--------|------|
-| QEMU | `-vga std` / `-vga virtio` | `bochs-drm` / `virtio-gpu` | 1280x800 | `docs/screenshot-desktop.png`、`docs/screenshot-m4-interactive.png` |
-| VirtualBox | `--graphicscontroller vboxvga` | `vboxvideo` | 1024x768 | `docs/screenshot-vbox.png` |
-| **VMware Workstation** | 默认 SVGA | `vmwgfx`（原生主场） | 1280x800 | `docs/screenshot-vmware.png` |
+| QEMU | `-vga std` / `-vga virtio` | `bochs-drm` / `virtio-gpu` | 1280x800 | `assets/screenshots/screenshot-desktop.png`、`assets/screenshots/screenshot-m4-interactive.png` |
+| VirtualBox | `--graphicscontroller vboxvga` | `vboxvideo` | 1024x768 | `assets/screenshots/screenshot-vbox.png` |
+| **VMware Workstation** | 默认 SVGA | `vmwgfx`（原生主场） | 1280x800 | `assets/screenshots/screenshot-vmware.png` |
 
 **VMware 已实测可用**（Workstation 17，绿色版在 `D:\CBN-HT\Desktop\asdf\`，
 VM 在 `D:\aether-vm\AetherOS-VMware\`）：vmwgfx modeset 成功、桌面完整渲染、
@@ -244,7 +244,7 @@ Windows PowerShell 5.1 对**无 BOM** 的 .ps1 按 ANSI 解码中文 → 字符�
   完成态绿色按钮"完成 · 重启后从磁盘引导"
 - 状态机在 compositor（`Installer`），安装走既有 IPC 工具通路（审计留痕、串口日志
   「安装器 → 请求/完成」）
-- 截图：`docs/screenshot-installer-wizard.png` / `docs/screenshot-installer-done.png`
+- 截图：`assets/screenshots/screenshot-installer-wizard.png` / `assets/screenshots/screenshot-installer-done.png`
 - **QMP 点击测试须知**：`input-send-event` 把 btn down+up 放同一批时，PS/2 设备层
   可能合并为"无变化"——guest 收不到任何按钮事件（慢速点击脚本
   `scripts/qmp-slow-click.py` 把 down/up 分隔 8s 注入，跨帧必中）。

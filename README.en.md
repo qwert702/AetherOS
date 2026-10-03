@@ -2,9 +2,9 @@
 
 # AetherOS
 
-![htop 3.3.0 from the Ubuntu 24.04 archive, running inside the AetherOS desktop](docs/screenshot-htop-app.png)
+![htop 3.3.0 from the Ubuntu 24.04 archive, running inside the AetherOS desktop](assets/screenshots/screenshot-htop-app.png)
 
-![Demo: pulling a package from the host, installing htop, and running it on the desktop](docs/demo-htop.gif)
+![Demo: pulling a package from the host, installing htop, and running it on the desktop](assets/demo/demo-htop.gif)
 
 *The clip above is a real screen capture (frames grabbed straight from QEMU, nothing edited):
 one line in the terminal — `wget -O- http://10.0.2.2/i|sh` — pulls a package from the host,
@@ -56,7 +56,7 @@ On a Windows development machine, add `--offline` to `cargo`, otherwise it stall
 - **System** — `aether-init` runs as PID 1 with a service whitelist, topological ordering, exponential-backoff restarts and zombie reaping; a persistent partition; and a whole-disk installer.
 - **AI operations** — `aether-ops` patrols every 15 seconds, restarts unhealthy services, and writes a diagnosis report to disk.
 
-![Chinese input method](docs/host-ui-light-ime.png)
+![Chinese input method](assets/ui-archive/host-ui-light-ime.png)
 
 ## Boundaries (what does *not* work yet)
 
@@ -84,7 +84,7 @@ Written down so nobody misuses it — not self-deprecation. The full list lives 
   touching the target disk** and explains why. Booting and the live desktop are unaffected.
   `platform/build-iso.sh` now applies isohybrid with a self-check, so a rebuilt ISO will
   support installation (see
-  [`docs/SECURITY-AUDIT-2026-10-02.md`](docs/SECURITY-AUDIT-2026-10-02.md), finding H-6).
+  [`docs/reports/SECURITY-AUDIT-2026-10-02.md`](docs/reports/SECURITY-AUDIT-2026-10-02.md), finding H-6).
 - **No user accounts**: the shipped image has **no root password**, so console access
   (including serial) is root — a deliberate trade-off for a live demo system (stated in the
   boot banner and `/etc/issue`). To lock an image down, build with
@@ -220,7 +220,7 @@ A few invariants hold this together:
 - **The audit log distinguishes six verdicts** (`allowed` / `failed` / `needs_confirmation` / `denied` / `denied_by_user` / `rejected_no_ui`), rotates past 8 MB, and raises an explicit warning if a write fails instead of dropping the record silently.
 - **`read_file` and `clipboard_read` are marked as sensitive output**, and their results force local inference — they never reach the cloud.
 
-![L3 permission confirmation](docs/host-ui-light-confirm.png)
+![L3 permission confirmation](assets/ui-archive/host-ui-light-confirm.png)
 
 ## Testing and verification
 
@@ -237,18 +237,48 @@ A few invariants hold this together:
 
 After changing anything under `cfg(target_os = "linux")`, you must also build for `--target x86_64-unknown-linux-musl` or test on a Linux machine — a Windows build excludes those code paths entirely, so errors and warnings in them are invisible on the development host.
 
+## Where files live
+
+**Docs entry point**: [`docs/INDEX.md`](docs/INDEX.md).
+
+```
+Aether/
+├── README.md / README.en.md      Entry points (the only .md files left at the repo root)
+├── docs/                         All documentation (also the GitHub Pages root)
+│   ├── INDEX.md                  Code index: size / per-file duties / test spread / commands
+│   ├── ARCHITECTURE.md           Layering and ADRs (frozen at M0)
+│   ├── CHANGELOG.md              Version-level changes
+│   ├── roadmap.md                Milestones and known gaps
+│   ├── reports/                  Dated one-off artefacts (audits / plans / acceptance)
+│   ├── launch/                   Release and outreach material
+│   └── archive/                  Historical snapshots (history, not current truth)
+├── assets/                       Images (moved out of docs/ on 2026-10-03)
+│   ├── ui-archive/               Archived UI walkthrough shots (visual-regression baseline)
+│   ├── screenshots/              Real-machine screenshots (QEMU / VirtualBox / VMware)
+│   └── demo/                     Demo GIF and cover
+├── 更新日志/                     Dated work logs (named by the day work started)
+├── platform/                     Buildroot external tree + overlay + boot config
+├── scripts/                      Gates and tooling (`scripts/gates.py` is the entry point)
+└── aether-*/                     7 Rust crates (see docs/INDEX.md)
+```
+
+> Images live outside `docs/` on purpose: `docs/` doubles as the GitHub Pages root
+> (it holds `.nojekyll` and a redirect `index.html`), so mixing dozens of images into it
+> both buries the docs and publishes the images. Link rot is guarded by
+> `scripts/check-links.py`, which resolves every local link and fails on any that break.
+
 ## Documentation
 
 | Document | Contents |
 |---|---|
 | [`INDEX.md`](docs/INDEX.md) | Code index: components and entry points, per-file responsibilities, tool list, test distribution, keybindings, common commands |
 | [`docs/roadmap.md`](docs/roadmap.md) | Milestones M0–M6 and known engineering gaps |
-| [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | Production-readiness checklist and its six hard gates (**6/6 met**) |
+| [`docs/reports/PRODUCTION-PLAN-2026-09-28.md`](docs/reports/PRODUCTION-PLAN-2026-09-28.md) | Production-readiness checklist and its six hard gates (**6/6 met**) |
 | [`docs/ui-design-handover.md`](docs/ui-design-handover.md) | Authoritative visual design reference: design tokens, dual-mode themes, environment pitfalls |
 | [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.md) | Application package format: how to build one, how to install it, how to read preflight, where the limits are |
 | [`docs/ai-permissions.md`](docs/ai-permissions.md) | The AI permission model |
-| [`docs/WRITE-OPS-2026-09-28.md`](docs/WRITE-OPS-2026-09-28.md) | Constraints on writable file operations |
-| [`docs/PHASE3-DECISION-2026-09-28.md`](docs/PHASE3-DECISION-2026-09-28.md) | Decision framework and exit criteria for Wayland |
+| [`docs/reports/WRITE-OPS-2026-09-28.md`](docs/reports/WRITE-OPS-2026-09-28.md) | Constraints on writable file operations |
+| [`docs/reports/PHASE3-DECISION-2026-09-28.md`](docs/reports/PHASE3-DECISION-2026-09-28.md) | Decision framework and exit criteria for Wayland |
 | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layering and ADRs (frozen at M0; see INDEX for current state) |
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | Handover report: measured results plus build and verification manual |
 | [`docs/archive/`](docs/archive/) | Historical snapshots (decision history, not a statement of current state) |

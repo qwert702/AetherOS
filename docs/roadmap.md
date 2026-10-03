@@ -3,7 +3,7 @@
 > 状态：M0–M6 **全部完成**（2026-09-21 复核，依据 git 历史 + 代码实测 + docs/HANDOVER.md）。
 > UI 设计系统 Step 1–4 + 视觉质量冲刺（§10）+ 双模主题（§12）完成，Step 5 仅剩实机重拍，见 docs/ui-design-handover.md。
 >
-> **生产力化清单见 `docs/PRODUCTION-PLAN-2026-09-28.md`**（09-27 版保留为决策历史）—— 五个阶段、每项带验收标准。
+> **生产力化清单见 `reports/PRODUCTION-PLAN-2026-09-28.md`**（09-27 版保留为决策历史）—— 五个阶段、每项带验收标准。
 > 「生产力」六个硬门禁：**6 / 6 全部达成**（2026-09-29 复核）。最后补上的是门禁 1，拆成 1a/1b：
 > **1a = 连续 12 小时 43 分不崩**（2026-09-28 21:46 → 09-29 10:30，要求 8 小时，超出 59%），
 > **1b = compositor 能自愈**（实机 kill 后 init 自动拉起）。长跑原始日志在 `docs/evidence/`。
@@ -37,7 +37,7 @@
 - [x] 布局切换 Toast 反馈 + AI 指令入口
 - [x] 多布局截图自检通过（--shot 1-4）
 - [ ] smithay/Wayland 后端未接入：桌面经 **DRM→fbdev→软件光栅化** 上屏（M3/M4 在 QEMU/VBox/VMware 实测闭环）。ADR-003 的"直写 DRM 后路"未走，未来需要真实 Wayland 客户端支持时再接入
-  - **2026-09-28 进展**：3.1 spike 已自研出 `wl_display` 子集（W1–W4 完成，W5 差 fd 收包），**未接生产路径**。见 `docs/PHASE3-DECISION-2026-09-28.md`
+  - **2026-09-28 进展**：3.1 spike 已自研出 `wl_display` 子集（W1–W4 完成，W5 差 fd 收包），**未接生产路径**。见 `reports/PHASE3-DECISION-2026-09-28.md`
 
 ## M2 — 自研 Shell 雏形 ✅（职责由 compositor 承担）
 - [x] 顶栏（品牌/菜单/AI 状态/时钟）、Dock（运行指示 + 打开应用）、AI 指令条
@@ -79,7 +79,7 @@
 - [x] 中文输入支持（2.3，2026-09-28 完成）：拼音 → 候选 → 上屏，自建词表 ~100 条，
       `Ctrl+Space` 切换、**默认关**。**指令条与终端都已接**（`feed_terminal` 收 `&mut ime`）。
       缺的只是**实机键盘交互验证**
-- [ ] 接入真实 LLM 验证模糊指令全链路：**协议层已完成**（双假端点 21 项断言，见 `docs/LLM-E2E-2026-09-28.md`），**真模型待接**。
+- [ ] 接入真实 LLM 验证模糊指令全链路：**协议层已完成**（双假端点 21 项断言，见 `reports/LLM-E2E-2026-09-28.md`），**真模型待接**。
       注：出厂架构是「客户端 → **自有网关** → 各家 AI」，系统里**不需要配直连上游的 Key**
 - 验收：自然语言操作整台"电脑" ✅（离线意图 + Action 端到端实测）
 
@@ -98,7 +98,7 @@
 - [x] 桌面安装向导：Live ISO Dock 图标 → 选盘 → 一键装机（与 AI 共用 L3 确认通路）
 - [x] aetherd `install_disk` 工具：路径白名单 + confirm 回显双确认（L3）
 - [ ] 品牌收尾：Logo / 开机动画 / 壁纸（docs/archive/image-gen-prompts.md 已有提示词，未落地）
-- [ ] 实机截图更新：docs/screenshot-*.png 需在真实 VM 重拍（见 ui-design-handover §4.5）
+- [ ] 实机截图更新：assets/screenshots/screenshot-*.png 需在真实 VM 重拍（见 ui-design-handover §4.5）
 - 验收：ISO 安装到虚拟硬盘，脱离 ISO 独立运行 ✅（无光驱纯磁盘引导 + 两轮重启实测）
 
 ## UI 设计系统（2026-09 追加，详见 docs/ui-design-handover.md）
@@ -108,11 +108,11 @@
 - [x] Step 4 L2+ 权限确认（协议 + 弹窗 UI + 三类气泡 + AI 三态 + 安装向导同通路）
 - [x] 视觉质量冲刺（handover §10）：结构化极光壁纸 + 颗粒、明度阶梯纵深、窗口标题栏分层、
       内容形态（文件网格/终端分色/音乐列表面板）、图标光照方向统一（9 轮 `--shot` 目视迭代）
-- [x] 界面走查：`cargo check` 零警告、`cargo test` 65 项全绿、主机走查图归档至 `docs/host-ui-*.png`
+- [x] 界面走查：`cargo check` 零警告、`cargo test` 65 项全绿、主机走查图归档至 `assets/ui-archive/host-ui-*.png`
 - [x] 双模主题（handover §12）：色板常量改模式函数（172 调用点）、明亮为默认（苹果风：近白底 + 四角粉彩、
       底座/窗口/纸面三级明度阶梯、悬浮层白玻璃、阴影轻度明确）、`--theme light|dark`
       —— 深色模式像素级零回归，明亮全状态走查通过
-- [ ] Step 5 剩余：VM 实机复看并重拍 `docs/screenshot-*.png`（P2，见 handover §4.5）
+- [ ] Step 5 剩余：VM 实机复看并重拍 `assets/screenshots/screenshot-*.png`（P2，见 handover §4.5）
 
 ### UI 重做（2026-09-29 ~ 09-30，用户要求"去 AI 味 + 要有设置中心"）
 - [x] **P0 去「AI 味」**（`e4e7d72`）：壁纸改**静态中性**（删除极光带/粉彩柔光团/颗粒/暗角）、
@@ -174,7 +174,7 @@
       输入框支持中间编辑、预览支持翻页
 - [x] **4.1 可写文件操作**（`86af525` + 回收站闭环 `f858bdc`）：**解锁门禁 2 与 6**。
       三个 L2 工具 + 回收站三重上限 + **写白名单比读窄**（`/etc/aether` 与 `/var/log/aether` 可读不可写，
-      分别防提权与灭证）；e2e 14/14 PASS。详见 `docs/WRITE-OPS-2026-09-28.md`
+      分别防提权与灭证）；e2e 14/14 PASS。详见 `reports/WRITE-OPS-2026-09-28.md`
 - [x] 归档走查图扩到 **10 张**（新增 IME 候选框深/明各一），`--check` 门禁 10/10 逐像素一致
 - [x] **3.1 Wayland spike W1–W4**（`6ad5226` → `9f5fda1`，+56 测试）：自研 `wl_display` 子集
       —— 线协议/对象表 → 12 接口协议表（索引即 opcode）→ `wl_shm` 像素读取 → surface 接进渲染管线。

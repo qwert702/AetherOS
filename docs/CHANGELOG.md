@@ -1,14 +1,14 @@
 # 版本发布说明
 
 > 这里是**版本级**的发布说明（首个公开版本 v0.1.0）。
-> **日常改动**记录在同目录的 [`更新日志/`](更新日志/) 里 —— 按日期一天一个文件。
+> **日常改动**记录在同目录的 [`更新日志/`](../更新日志/) 里 —— 按日期一天一个文件。
 >
 > 官网 `aether.cbnac.com/changelog.html` 由 `scripts/gen-site.py` 把两者一起渲染：
 > 先按日期**倒序**列出每日更新，再把本文档（最早的版本说明）放在最后。
 > **两个来源各只有一份，不重复维护。**
 >
 > This file holds **release-level** notes only. Day-to-day changes live in
-> [`更新日志/`](更新日志/) (one file per day). The generator renders both into the changelog page —
+> [`更新日志/`](../更新日志/) (one file per day). The generator renders both into the changelog page —
 > daily entries newest-first, then this file (the earliest) last.
 
 ---
@@ -22,7 +22,7 @@
 **⚠️ 2026-10-02 更正**：上面"可安装到虚拟磁盘后独立引导"**对本版本发布的那个 ISO 不成立**。
 实测该资产（40,327,168 字节 / sha256 `7c50f481…`）首 512 字节无 MBR 签名，即**未经 `isohybrid` 处理**，
 不能 dd 到磁盘引导 —— 装机路径会失败。引导与 Live 桌面不受影响。构建脚本已补上 isohybrid 步骤与自检
-（`platform/build-iso.sh`），重新构建后装机才可用。详见 [`docs/SECURITY-AUDIT-2026-10-02.md`](docs/SECURITY-AUDIT-2026-10-02.md) 的 H-6。
+（`platform/build-iso.sh`），重新构建后装机才可用。详见 [`reports/SECURITY-AUDIT-2026-10-02.md`](reports/SECURITY-AUDIT-2026-10-02.md) 的 H-6。
 
 *Correction (2026-10-02): the disk-install claim does not hold for the ISO shipped with this release —
 it was measured to have no MBR signature (not isohybrid), so it cannot be written to a disk and booted.

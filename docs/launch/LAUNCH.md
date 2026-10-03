@@ -36,7 +36,7 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 1. **发一次**（最重要，一次就能超过过去 24 天的总和）。文案见第四节。
 2. **录一段 20–40 秒的屏**（桌面启动 → 敲命令装 htop → htop 跑起来）。
    操作系统项目里**动图/视频的转化率远高于文字**。B 站 + YouTube 各发一份，README 顶部放 GIF。
-3. **社交预览图**：仓库 Settings → Social preview 上传一张（就用 `docs/screenshot-htop-app.png` 或落地页截图）。
+3. **社交预览图**：仓库 Settings → Social preview 上传一张（就用 `assets/screenshots/screenshot-htop-app.png` 或落地页截图）。
    别人在群里分享你的链接时，这张图决定有没有人点。
 4. **开启 GitHub Pages 并把地址填进 Homepage**：
    Settings → Pages → Source 选 `main` 分支的 `/docs` 目录 →
@@ -156,8 +156,8 @@ GitHub **没有内容推荐算法**（不像 B 站/抖音/YouTube 会把你推�
 
 | 顺序 | 动作 | 耗时 | 渠道 | 合理预期 |
 |---|---|---|---|---|
-| 0 | **设置社交预览图**（Settings → Social preview 传 `docs/demo-cover.png`） | 5 分钟 | — | 分享链接的点击率成倍提升（这是**零成本最高回报**的一步） |
-| 1 | 发 V2EX「分享创造」+ 知乎各一篇（文首放 `docs/demo-htop.gif`） | 1 小时 | 中文社区 | 首日 100–1000 UV，10–50 star |
+| 0 | **设置社交预览图**（Settings → Social preview 传 `assets/demo/demo-cover.png`） | 5 分钟 | — | 分享链接的点击率成倍提升（这是**零成本最高回报**的一步） |
+| 1 | 发 V2EX「分享创造」+ 知乎各一篇（文首放 `assets/demo/demo-htop.gif`） | 1 小时 | 中文社区 | 首日 100–1000 UV，10–50 star |
 | 2 | 录 3–5 分钟 B 站视频（用 GIF 的分镜当脚本），简介放仓库+Release | 2–4 小时 | B 站 | **唯一有推荐算法的渠道**，长尾流量，看封面/标题可能几千–几万播放 |
 | 3 | Show HN + r/rust + r/osdev（英文，美东上午发） | 2 小时 | 英文社区 | 上首页则 50–300 star；没上就是几十 UV |
 | 4 | 技术博客系列，每周 1 篇（见下） | 每周 2 小时 | 掘金/知乎/dev.to | 每篇都是一次独立分发，累积搜索长尾 |

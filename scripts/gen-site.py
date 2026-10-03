@@ -307,14 +307,21 @@ def build_images(d: dict) -> None:
         print("  警告：没有 Pillow，跳过图片生成（页面会引用不存在的图片）")
         return
     IMG.mkdir(parents=True, exist_ok=True)
+    # 图片来源目录（阶段 B 之后图片在 assets/ 下按类分放）：
+    # 逐个候选目录找，找不到才告警 —— 而不是写死一个目录、搬一次家就全缺图。
+    SRC_DIRS = (
+        ROOT / "assets" / "ui-archive",
+        ROOT / "assets" / "screenshots",
+        ROOT / "assets" / "demo",
+    )
     for src, dst in IMAGE_SOURCES.items():
-        p = ROOT / "docs" / src
-        if not p.exists():
+        p = next((d / src for d in SRC_DIRS if (d / src).exists()), None)
+        if p is None:
             print(f"  警告：缺图 {src}")
             continue
         im = Image.open(p).convert("RGB")
         im.save(IMG / f"{dst}.webp", "WEBP", quality=86, method=5)
-    gif = ROOT / "docs" / GIF_SOURCE
+    gif = ROOT / "assets" / "demo" / GIF_SOURCE
     if gif.exists():
         shutil.copy2(gif, IMG / GIF_SOURCE)
     make_og_cover(d, Image, ImageDraw, ImageFont)

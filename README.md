@@ -13,9 +13,9 @@
 | **验证** | 444 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 38.5 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
-![桌面（明亮主题）](docs/host-ui-light-desktop.png)
+![桌面（明亮主题）](assets/ui-archive/host-ui-light-desktop.png)
 
-![演示：从宿主拉包 → 安装 htop → 在桌面里运行](docs/demo-htop.gif)
+![演示：从宿主拉包 → 安装 htop → 在桌面里运行](assets/demo/demo-htop.gif)
 
 *上面这段是**真机录屏**（QEMU 逐帧抓取，未剪辑）：在终端敲一行
 `wget -O- http://10.0.2.2/i|sh`，从宿主拉下应用包，`aetherd` 装好 htop，再敲 `htop` 就在桌面里跑起来了。*
@@ -68,7 +68,7 @@ cargo test --workspace                             # 单元测试（Windows 444 
   持久化分区；整盘安装器
 - **AI 运维**：`aether-ops` 每 15 秒巡检，异常服务自动重启，故障诊断报告落盘
 
-![中文输入法](docs/host-ui-light-ime.png)
+![中文输入法](assets/ui-archive/host-ui-light-ime.png)
 
 ## 边界在哪
 
@@ -88,7 +88,7 @@ cargo test --workspace                             # 单元测试（Windows 444 
   而 v0.1.0 发布的那个 ISO **未经该处理**（实测首 512 字节无 MBR 签名）——安装器现在会
   在**动目标盘之前**拒绝执行并说明原因。引导与 Live 桌面不受影响。
   `platform/build-iso.sh` 已补上 isohybrid 步骤与自检，重新构建后装机可用
-  （见 [`docs/SECURITY-AUDIT-2026-10-02.md`](docs/SECURITY-AUDIT-2026-10-02.md) H-6）
+  （见 [`docs/reports/SECURITY-AUDIT-2026-10-02.md`](docs/reports/SECURITY-AUDIT-2026-10-02.md) H-6）
 - **没有账号体系**：出厂镜像 root **无口令**，控制台（含串口）拿到就是 root ——
   Live 演示系统的刻意取舍（启动横幅与 `/etc/issue` 都会写明）。要上锁的镜像：
   构建时设 `AETHER_ROOT_PW_HASH="$(openssl passwd -6)"` 重新构建（见 `platform/build-iso.sh`）
@@ -159,7 +159,7 @@ htop
 打包器跳过 glibc 家族、发现镜像那份 `libncursesw` 缺 `NCURSESW6_*` 版本符号于是改带宿主副本、
 另带 libnl×2 与 libtinfo，包约 1 MB；装完终端里直接敲 `htop` 即可。
 
-![htop 在 AetherOS 桌面里运行](docs/screenshot-htop-app.png)
+![htop 在 AetherOS 桌面里运行](assets/screenshots/screenshot-htop-app.png)
 
 > 上面这张是**真机实拍**（QEMU 里的 AetherOS 桌面）：从宿主 `wget` 拉包 → `aetherd app install`
 > → 敲 `htop` → 完整 TUI 出来（CPU 仪表 / 内存 / 进程表 / F1–F10 功能键栏）。
@@ -251,7 +251,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 | `AETHER_ALLOW_REMOTE_IPC=1` | 关 | 允许 `AETHER_BIND` 绑非回环地址 | IPC **没有用户级认证**，暴露到网络等于把"以 root 读写文件"交出去。**这是第二道门，不是交互确认**：能改环境的人也能改它 —— 它的价值是把"手滑暴露"变成"必须刻意两次" |
 | `AETHER_ALLOW_TCP_ONLY=1` | 关 | Unix socket 建不起来时降级为"仅 TCP"继续跑 | 合成器只连 socket、不回退 TCP ⇒ 桌面会失去确认/剪贴板/服务控制，而用户只看得到一行日志。默认直接失败退出（码 3），让问题可见 |
 
-![L3 权限确认](docs/host-ui-light-confirm.png)
+![L3 权限确认](assets/ui-archive/host-ui-light-confirm.png)
 
 ## 测试与验证
 
@@ -269,20 +269,61 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 改 `cfg(target_os = "linux")` 的代码之后必须跑 `--target x86_64-unknown-linux-musl`
 或到 Linux 机器上测。Windows 构建会整段屏蔽那些路径，编译错误和警告在开发机上一点都看不到。
 
+## 文件都在哪里
+
+**文档入口**：[`docs/INDEX.md`](docs/INDEX.md)（代码索引与现状）。
+
+```
+Aether/
+├── README.md / README.en.md      入口（中/英）—— 只有这两个 .md 留在根目录
+├── docs/                         全部文档（含 GitHub Pages 跳转页）
+│   ├── INDEX.md                  代码索引：规模 / 逐文件职责 / 测试分布 / 常用命令
+│   ├── ARCHITECTURE.md           分层与 ADR（M0 冻结稿）
+│   ├── CHANGELOG.md              版本级变更
+│   ├── roadmap.md                里程碑 M0–M6 与已知缺口
+│   ├── HANDOVER.md               交接报告：实测记录 + 构建/验证手册
+│   ├── ipc-protocol.md           进程间协议
+│   ├── ai-permissions.md         AI 权限模型（L0–L3）
+│   ├── APP-PACKAGES.md           应用包格式
+│   ├── ui-design-handover.md     视觉设计权威依据
+│   ├── reports/                  带日期的一次性产物（审计 / 计划 / 验收报告）
+│   ├── launch/                   发布与宣传素材
+│   ├── archive/                  历史快照（决策历史，**不作现状依据**）
+│   └── evidence/                 长跑与实测的原始日志
+├── assets/                       图片素材
+│   ├── ui-archive/               归档走查图（视觉回归门禁的基线，20 张）
+│   ├── screenshots/              实机截图（QEMU / VirtualBox / VMware）
+│   └── demo/                     演示 GIF 与封面
+├── 更新日志/                     按日期的工作日志（按**开工日**命名）
+├── platform/                     Buildroot 外部树 + overlay + 引导配置
+├── scripts/                      门禁与工具（`scripts/gates.py` 是总入口）
+├── site/                         官网（由 `scripts/gen-site.py` 生成，勿手改）
+└── aether-*/                     7 个 Rust crate（清单见 docs/INDEX.md）
+```
+
+> **图片为什么不在 `docs/` 里**：`docs/` 同时是 GitHub Pages 的根目录
+> （含 `.nojekyll` 与跳转页 `index.html`），把几十张图混在文档里既难找、也会被一起发布。
+> 现在素材统一放 `assets/`，文档目录只放文档。
+>
+> 链接不靠人眼维护：仓库里有 `scripts/check-links.py`，把每条本地链接解析成真实路径，
+> 断链即非零退出（这次整理就是靠它抓出 5 条因搬目录而静默失效的链接）。
+
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
 | [`INDEX.md`](docs/INDEX.md) | 代码索引：组件与入口、逐文件职责、工具清单、测试分布、键盘、常用命令 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 里程碑 M0–M6，以及已知的工程质量缺口 |
-| [`docs/PRODUCTION-PLAN-2026-09-28.md`](docs/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（**6/6 全部达成**） |
+| [`docs/reports/PRODUCTION-PLAN-2026-09-28.md`](docs/reports/PRODUCTION-PLAN-2026-09-28.md) | 生产力化清单与六个硬门禁（**6/6 全部达成**） |
 | [`docs/ui-design-handover.md`](docs/ui-design-handover.md) | 视觉设计的权威依据：设计令牌、双模主题、环境陷阱 |
 | [`docs/APP-PACKAGES.md`](docs/APP-PACKAGES.md) | 应用包格式：怎么做、怎么装、预检怎么读、边界在哪 |
 | [`docs/ai-permissions.md`](docs/ai-permissions.md) | AI 权限模型 |
-| [`docs/WRITE-OPS-2026-09-28.md`](docs/WRITE-OPS-2026-09-28.md) | 可写文件操作的约束 |
-| [`docs/PHASE3-DECISION-2026-09-28.md`](docs/PHASE3-DECISION-2026-09-28.md) | Wayland 的决策框架与放弃条件 |
+| [`docs/reports/WRITE-OPS-2026-09-28.md`](docs/reports/WRITE-OPS-2026-09-28.md) | 可写文件操作的约束 |
+| [`docs/reports/PHASE3-DECISION-2026-09-28.md`](docs/reports/PHASE3-DECISION-2026-09-28.md) | Wayland 的决策框架与放弃条件 |
 | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层与 ADR（M0 冻结稿，看现状请用 INDEX） |
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | 交接报告：实测记录 + 构建/验证手册 |
+| [`docs/reports/`](docs/reports/) | 带日期的一次性产物：功能缺口清单、安全审计、计划与验收报告 |
+| [`docs/launch/`](docs/launch/) | 发布与宣传素材（发布清单、文案模板） |
 | [`docs/archive/`](docs/archive/) | 历史快照（决策历史，不作现状依据）：四轮审查总集、性能报告、旧版计划 |
 
 ## 许可证

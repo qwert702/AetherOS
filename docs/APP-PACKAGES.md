@@ -218,7 +218,7 @@ htop
 
 **真机实拍**（QEMU 里的 AetherOS 桌面，完整链路一次跑通）：
 
-![htop 在 AetherOS 桌面里运行](screenshot-htop-app.png)
+![htop 在 AetherOS 桌面里运行](../assets/screenshots/screenshot-htop-app.png)
 
 guest 里只敲了一行：`wget -O- http://10.0.2.2/i|sh`（脚本内容就是 `wget` 包 → `tar xf` →
 `aetherd app install` → `aetherd app link`），终端原始输出：

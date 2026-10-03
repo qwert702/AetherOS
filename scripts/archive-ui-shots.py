@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""重建 / 校验 `docs/host-ui-*.png` 归档走查图。
+"""重建 / 校验 `assets/ui-archive/host-ui-*.png` 归档走查图。
 
 **为什么需要这个脚本**：归档图靠手敲命令重建，必然漏。这个坑已经踩过两次 ——
 视觉层改动提交后归档图没跟上，于是"像素级零回归"的结论建立在错误的基线上
@@ -31,7 +31,7 @@ import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DOCS = ROOT / "docs"
+DOCS = ROOT / "assets" / "ui-archive"
 
 # (走查参数, 归档文件名)
 SHOTS: list[tuple[list[str], str]] = [

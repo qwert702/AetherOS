@@ -36,7 +36,7 @@
 | **硬门禁** | **2.5 / 6** | **6 / 6** | 门禁 2 / 5 / 6 的阻塞项（4.1、2.3）**已于同日落地**；门禁 1 的 1b 同日达成、**1a 于 09-29 以 12 小时 43 分的长跑达成** —— 详见 §8 |
 | 归档图基线 | 落后 HEAD 2 提交、未比对 | **10/10 逐像素一致** | 跑过 `archive-ui-shots.py --check`，0 差异像素 |
 | 编译警告 | 零警告基线 | **3 条** | 新增于 3.1 spike（见 §11） |
-| 代码规模 | 本文未记 | **19,556 行 / 40 个 .rs** | 7 crate；口径见 `INDEX.md`（含"通配符会漏 `aetherd` 与二级子目录"的坑） |
+| 代码规模 | 本文未记 | **19,556 行 / 40 个 .rs** | 7 crate；口径见 `../INDEX.md`（含"通配符会漏 `aetherd` 与二级子目录"的坑） |
 
 > **§8 的门禁状态是本文最早失效的一节** —— 它的"校正后进度表"把门禁 5/6 标成 ❌"等 2.3 / 等 4.1"，
 > 而同一份文档的 Phase 2 / Phase 4 表格里 2.3 与 4.1 早已是 ✅，并且 4.1 那行明确写了"**解锁门禁 2 与 6**"。
@@ -70,7 +70,7 @@
 > **附带发现（文档层面）**：`docs/roadmap.md` 的 M3 节有一行 `验收：ISO 开机…` **重复出现两次**（第 55、56 行）；同节 M4 的工具清单仍写"罐头探针 + read_file + sys_info + desktop + install_disk"**5 个工具**，而实际已是 **7 个**（新增 `clipboard_read` / `clipboard_write`）。建议一并订正。
 >
 > **✅ 已于 2026-09-28 17:55 订正**：重复行已删；工具清单改为 **12 个**（4.1 又加了写三件与回收站两件）；
-> 同时 `INDEX.md` / `roadmap.md` / `ui-design-handover.md` 的规模、测试数与门禁数据一并复核 —— 详见本文 §0.1b。
+> 同时 `../INDEX.md` / `../roadmap.md` / `../ui-design-handover.md` 的规模、测试数与门禁数据一并复核 —— 详见本文 §0.1b。
 
 ---
 
@@ -149,7 +149,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 | 0.4 | 文件列表滚动 + 键盘导航 | ✅ | 家目录 76 项可翻到最后一页 | M |
 | 0.5 | 侧栏真实路径 + 面包屑 | ✅ | 点「图片」进 `~/Pictures`；点面包屑回该级 | M |
 | 0.6 ✅ | **首启模型配置向导** | ✅ **已完成（CLI 形态）** | 配置持久化到 `/etc/aether/model.json`（Unix 0600）+ 优先级**环境变量 > 文件 > 默认**；`aetherd config` CLI（参数式，可脚本化/可测试）；`ReloadConfig` IPC（要求已注册 UI 通道，受理后退出由 init 重启）。AI 条在"未配置"时给出明确引导。**图形向导未做** —— CLI 更适合无 TTY 场景，且可测；真机端到端待验 | M |
-| **0.7** | **真实 LLM 端到端验证** | 🟡 **协议层已验证** | `docs/LLM-E2E-2026-09-28.md`：双假端点 **21 项断言全过**，含 P0-4b 实证（本该上云的任务读到文件后被拉回本地）。**真模型未验证** —— 需本地 Ollama 或云端 API Key | M |
+| **0.7** | **真实 LLM 端到端验证** | 🟡 **协议层已验证** | `docs/reports/LLM-E2E-2026-09-28.md`：双假端点 **21 项断言全过**，含 P0-4b 实证（本该上云的任务读到文件后被拉回本地）。**真模型未验证** —— 需本地 Ollama 或云端 API Key | M |
 
 ### ★ 我的建议：把 0.6 / 0.7 提到 Phase 0 的最前面
 
@@ -176,7 +176,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 
 | # | 项 | 关键动作 | 验收 | 量 |
 |---|---|---|---|---|
-| 0.8 ✅ | **关键路径 panic 审计** | 逐行审 `draw.rs` / `input.rs` / `main.rs` 的索引与 `unwrap`；重点是**能被 PTY 输出或窗口尺寸触发的路径** | **已完成**：`docs/PANIC-AUDIT-2026-09-28.md`。发现并修复 **1 个 P2**（拖拽索引被其它路径关窗后失效 → 越界 panic → 桌面永久死掉）+ 2 处 P3 观察项。渲染/解析/布局路径索引层面干净 | M |
+| 0.8 ✅ | **关键路径 panic 审计** | 逐行审 `draw.rs` / `input.rs` / `main.rs` 的索引与 `unwrap`；重点是**能被 PTY 输出或窗口尺寸触发的路径** | **已完成**：`docs/reports/PANIC-AUDIT-2026-09-28.md`。发现并修复 **1 个 P2**（拖拽索引被其它路径关窗后失效 → 越界 panic → 桌面永久死掉）+ 2 处 P3 观察项。渲染/解析/布局路径索引层面干净 | M |
 
 **理由见 §8 门禁 1**：`compositor` 是 `essential: true` + `restart: false`，一次 panic = 桌面永久死掉。VT 解析器我已逐条验算无越界（见 `docs/archive/CODE-REVIEW-2026-09.md` §4.1），但**渲染与输入两个文件未审**。门禁 1 想要可信，这块必须先补。
 （✅ 2026-09-28 补记：`restart` 已改回 `true` 且实机验证通过，所以 0.8 不再是门禁 1 的前置 —— 但它本身仍是有效的审计工作，见 `PANIC-AUDIT-2026-09-28.md`。）
@@ -201,7 +201,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 
 所以：**AI（或提示注入）无法通过 Action 通道在终端里执行命令。** 它能做的最多是"打开一个终端窗口"，窗口里的命令仍需用户亲自输入。
 
-**这条边界目前是干净的，但它是本轮新增 PTY 之后最容易被无意打破的地方。** 将来任何人想加一个"AI 帮你跑条命令"的 action，都会在一行之内把 root shell 的执行权交给模型。**建议在 `apply_action` 上加一条注释把这个边界钉死**，并在 `ai-permissions.md` 里补一节写明。
+**这条边界目前是干净的，但它是本轮新增 PTY 之后最容易被无意打破的地方。** 将来任何人想加一个"AI 帮你跑条命令"的 action，都会在一行之内把 root shell 的执行权交给模型。**建议在 `apply_action` 上加一条注释把这个边界钉死**，并在 `../ai-permissions.md` 里补一节写明。
 
 ---
 
@@ -222,7 +222,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 ## 6. Phase 3 · 生态与图形（长期主线 · **本轮不做**）
 
 > **本轮不实施** —— 需 Linux 实机与 spike 结论，两者都不具备。
-> 决策框架（smithay vs 自研、**放弃条件**）见 `docs/PHASE3-DECISION-2026-09-28.md`。
+> 决策框架（smithay vs 自研、**放弃条件**）见 `docs/reports/PHASE3-DECISION-2026-09-28.md`。
 > ★ 其中 **3.3 的 damage 追踪部分不依赖 Wayland**，可在当前 fbdev 路径上立即开工 ——
 > 建议单独立项，不要绑在 3.1 后面。
 
@@ -242,7 +242,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 
 | # | 项 | 状态 | 我的补充 |
 |---|---|---|---|
-| 4.1 ✅ | **可写文件操作** | ✅ **已完成** | `docs/WRITE-OPS-2026-09-28.md`：三个 L2 工具 + 回收站（三重上限）+ **写白名单比读窄**（不含 aether 自身配置/日志）。e2e 14/14 PASS。**解锁门禁 2 与 6** |
+| 4.1 ✅ | **可写文件操作** | ✅ **已完成** | `docs/reports/WRITE-OPS-2026-09-28.md`：三个 L2 工具 + 回收站（三重上限）+ **写白名单比读窄**（不含 aether 自身配置/日志）。e2e 14/14 PASS。**解锁门禁 2 与 6** |
 | 4.2 | init 救援模式 | ✅ | 替换了原来的 `loop{sleep(3600)}`，真给 shell + 打印可操作原因。**做得好** |
 | 4.3a | 服务日志轮转 | ✅ | —— |
 | **4.3b** | **审计日志轮转 + 写失败告警** | ✅ **已完成** | 见 §2.2。`perm.rs` 审计带轮转，`audit_rotates_when_oversized` 守着；写失败不再静默 |
@@ -260,7 +260,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 
 2. **删除必须先进回收站**（09-27 版已提）。补一条验收：**回收站本身要有容量上限与过期清理** —— 否则它只是把"磁盘满"从用户目录挪到回收站。
 
-3. **`ai-permissions.md` 的承诺要与实现对齐。**
+3. **`../ai-permissions.md` 的承诺要与实现对齐。**
    该文档 §机制 2 承诺"审计写入失败…不允许静默零留痕"，而实现里所有 `audit()` 调用都是 `let _ =`。4.1 引入 L2 敏感写之后，审计会变成**写操作唯一的追溯手段**，这个缺口必须在 4.1 之前补上（即 §2.2 的 4.3b）。
 
 ---
@@ -333,7 +333,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 ### 门禁 5 · 能打中文 —— **✅ 已达成**（2026-09-28 复核）
 
 2.3 已落地（`f5d6487`）：指令条内拼音 → 候选 → 上屏，自建词表 ~100 条，`Ctrl+Space` 切换、**默认关**。
-走查图 `docs/host-ui-ime.png` / `host-ui-light-ime.png` 在归档门禁内（逐像素一致）。
+走查图 `assets/ui-archive/host-ui-ime.png` / `host-ui-light-ime.png` 在归档门禁内（逐像素一致）。
 
 > ✅ **终端内也已接**（`feed_terminal` 收 `&mut ime`，`3a34f49`），Esc 取消拼字同轮接上。
 > 所以这条门禁现在是"**指令条与终端都能打中文**"。唯一缺的是**实机键盘交互验证** ——
@@ -346,7 +346,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 
 > ⚠️ 三个前置约束仍成立，改这块之前必读：**写白名单必须是读白名单的子集**（排除 `/etc/aether` 与
 > `/var/log/aether`，分别防提权与灭证）；**不要**为写操作另加 `Request` 变体（P1-1 的形态）。
-> 详见 `docs/WRITE-OPS-2026-09-28.md`。
+> 详见 `docs/reports/WRITE-OPS-2026-09-28.md`。
 
 ### 校正后的进度
 
@@ -424,7 +424,7 @@ pub fn audit(&self, tool: &str, level: Level, args: &str, verdict: &str) -> std:
 | 文档 | 角色 |
 |---|---|
 | `docs/archive/PRODUCTION-PLAN-2026-09-27.md` | 原始清单，**保留不动**（决策历史） |
-| **`docs/PRODUCTION-PLAN-2026-09-28.md`** | **本文**：校订 + 安全增补 + 验收细化 |
+| **`docs/reports/PRODUCTION-PLAN-2026-09-28.md`** | **本文**：校订 + 安全增补 + 验收细化 |
 | `docs/archive/CODE-REVIEW-2026-09.md` | 四轮审查总集（含第四轮），本文 §2 的实证来源 |
 | `docs/archive/UNIMPLEMENTED-2026-09-27.md` | 交互缺口盘点（已被 Phase 0/1 大部分覆盖，**已随本次归档标注为历史**） |
 | `docs/ai-permissions.md` | 权限模型的书面承诺；§2.2 指出其"不静默零留痕"的承诺与实现有差值 |

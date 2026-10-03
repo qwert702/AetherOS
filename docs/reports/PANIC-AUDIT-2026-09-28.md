@@ -1,6 +1,6 @@
 # AetherOS 关键路径 panic 审计 · 2026-09-28
 
-- **对应计划**：`docs/PRODUCTION-PLAN-2026-09-28.md` §3 的 **0.8**（本轮新增项）
+- **对应计划**：`docs/reports/PRODUCTION-PLAN-2026-09-28.md` §3 的 **0.8**（本轮新增项）
 - **范围**：`aether-compositor` 的 `draw.rs` / `input.rs` / `main.rs` / `layout.rs` / `term.rs`
 - **方法**：静态审读（逐处索引运算的边界推导）+ 局部验证 + 补充回归测试
 - **结果**：**发现并修复 1 个 P2（真实可触发的越界 panic）**，另有 2 处 P3 观察项

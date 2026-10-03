@@ -19,7 +19,7 @@
 > **当前权威来源**：
 > - 令牌：`aether-compositor/src/draw.rs` 的 `theme` 模块（color/font/radius/elevation/state/metric）
 > - 控件：`aether-compositor/src/widgets.rs`
-> - 逐像素门禁：`docs/host-ui-*.png`（12 张，`python scripts/archive-ui-shots.py --check`）
+> - 逐像素门禁：`assets/ui-archive/host-ui-*.png`（12 张，`python scripts/archive-ui-shots.py --check`）
 > - 项目记忆（发展/踩坑/约定）：仓库外的 `项目的记忆/系统/aether/`
 >
 > 本文档 §3 的组件规格与 §8 的协议部分仍有参考价值；**视觉描述一律以现状表为准**。
@@ -189,8 +189,8 @@ let y = tr.vcenter(bar.y as f32, bar.h as f32, font::BODY);
   - 间距是否遵循 4 的倍数网格（现有 `GAP = 14` 不在此网格上，是计划 §3.3 明确保留的例外）
   - 字阶是否还有漏网的裸字号（`div_ceil`/`radius` 等非文本参数不算）
 
-#### 4.5 `docs/screenshot-*.png` 更新
-- **重要约束**：现有 `docs/screenshot-desktop.png`、`screenshot-m4-interactive.png`、`screenshot-vbox.png`、`screenshot-vmware.png`、`screenshot-installer-wizard.png`、`screenshot-installer-done.png` 是**实机截图**（QEMU/VBox/VMware），**不是** `--shot` 生成的
+#### 4.5 `assets/screenshots/screenshot-*.png` 更新
+- **重要约束**：现有 `assets/screenshots/screenshot-desktop.png`、`screenshot-m4-interactive.png`、`screenshot-vbox.png`、`screenshot-vmware.png`、`screenshot-installer-wizard.png`、`screenshot-installer-done.png` 是**实机截图**（QEMU/VBox/VMware），**不是** `--shot` 生成的
 - **要做**：在真实虚拟机里跑起新版本后重新拍摄替换。环境要求见 `docs/HANDOVER.md` 第 61–63 行（QEMU `-vga std`、VBox `--graphicscontroller vboxvga`、VMware 默认 SVGA）
 - **无法在 Windows 开发机上完成**
 
@@ -312,7 +312,7 @@ python scripts/e2e-permission-confirm.py   # 13 项断言
 
 ### 8.6 遗留（需实机环境，未在本轮完成）
 
-- §4.5 `docs/screenshot-*.png` 实机重拍（需 QEMU/VBox/VMware）
+- §4.5 `assets/screenshots/screenshot-*.png` 实机重拍（需 QEMU/VBox/VMware）
 - §4.3 真实点击端到端（交互桌面）；P3 全部项（fbdev stride/modeset、init 救援、Unix socket 权限、ISO 引导链）
 - §P1 之外的已知限制：中文输入、接入真实 LLM 验证、`AiStatus::Cloud` 的真实云端触发（结构已通，等 API Key）
 
@@ -338,7 +338,7 @@ python scripts/e2e-permission-confirm.py   # 13 项断言
 `git diff --check` 干净。主机走查图集：`%TEMP%\aether-ui-verify\final\*.png`（11 张）；
 VM 实拍：`C:\Users\cbn\Pictures\aether-vm-final.png`。
 
-**未覆盖**：真实鼠标点击的端到端（需交互桌面）；`docs/screenshot-*.png` 实机重拍（主机 --shot 图
+**未覆盖**：真实鼠标点击的端到端（需交互桌面）；`assets/screenshots/screenshot-*.png` 实机重拍（主机 --shot 图
 已可用，实机图待 VM 会话内操作后补）；中文输入、真实 LLM Key 验证仍旧。
 
 ---
@@ -392,7 +392,7 @@ VM 实拍：`C:\Users\cbn\Pictures\aether-vm-final.png`。
 - `cargo check --workspace --all-targets` 零警告；`cargo test --workspace` **65 项全绿**
   （上次遗留的 `supervision_restarts_and_backs_off` 也已通过）
 - 主机走查图归档（新命名前缀 `host-ui-`，与实机 `screenshot-*.png` 区分）：
-  `docs/host-ui-desktop.png`（两列）、`host-ui-threecol.png`（三列）、`host-ui-confirm.png`（L3 确认）、`host-ui-menu.png`（下拉菜单）
+  `assets/ui-archive/host-ui-desktop.png`（两列）、`host-ui-threecol.png`（三列）、`host-ui-confirm.png`（L3 确认）、`host-ui-menu.png`（下拉菜单）
 - 截图工具：`scripts/bmp2png.py`（BMP→PNG，仅标准库）。
   ⚠️ 不要把它包成 `.sh` 再调用——本机 bash 嵌套调用时 PATH 被污染，`cargo` 起不来（见 §11）
 
@@ -451,11 +451,11 @@ VM 实拍：`C:\Users\cbn\Pictures\aether-vm-final.png`。
 
 | 项 | 结果 |
 |---|---|
-| 深色回归 | **像素级零回归**：与上一版 `docs/host-ui-desktop.png` 逐像素比对，壁纸区平均差 0.0、窗口区平均差 0.06（仅抗锯齿/时钟相位） |
+| 深色回归 | **像素级零回归**：与上一版 `assets/ui-archive/host-ui-desktop.png` 逐像素比对，壁纸区平均差 0.0、窗口区平均差 0.06（仅抗锯齿/时钟相位） |
 | 浅色走查 | 桌面/三列/确认弹窗/下拉菜单/安装向导/工具气泡/AI 思考态 全部目视通过 |
 | 编译 | `cargo check --workspace --all-targets` 零警告 |
 | 测试 | `cargo test --workspace` **65 项全绿** |
-| 归档 | `docs/host-ui-light-{desktop,confirm,installer,menu}.png`（深色图 `host-ui-*.png` 仍有效） |
+| 归档 | `assets/ui-archive/host-ui-light-{desktop,confirm,installer,menu}.png`（深色图 `host-ui-*.png` 仍有效） |
 
 ### 12.4 新增工具
 
@@ -486,7 +486,7 @@ VM 实拍：`C:\Users\cbn\Pictures\aether-vm-final.png`。
 
 ### 13.2 归档图基线重建（重要）
 
-`docs/host-ui-desktop.png` 等**深色图长期停留在 §9 状态（2026-09-24 20:07）**，
+`assets/ui-archive/host-ui-desktop.png` 等**深色图长期停留在 §9 状态（2026-09-24 20:07）**，
 从未随 §10 的视觉质量冲刺更新——而 `2cccb6a` 的提交信息却用它作为"深色像素级零回归"的
 比对基线。实测该图与当时的实际渲染差 **1.727%**（15272 像素，最大差 15），差异集中在
 Dock 托盘与次要文字。
@@ -499,14 +499,14 @@ B=./target/debug/aether-compositor.exe
 P=python   # scripts/bmp2png.py，仅标准库
 gen() { $B $1 && $P scripts/bmp2png.py preview.bmp "$2"; }
 
-gen "--shot 2 --theme dark"                  docs/host-ui-desktop.png
-gen "--shot 3 --theme dark"                  docs/host-ui-threecol.png
-gen "--shot 2 --confirm 3 --theme dark"      docs/host-ui-confirm.png
-gen "--shot 2 --menu --theme dark"           docs/host-ui-menu.png
-gen "--shot 2 --theme light"                 docs/host-ui-light-desktop.png
-gen "--shot 2 --confirm 3 --theme light"     docs/host-ui-light-confirm.png
-gen "--shot 2 --installer --theme light"     docs/host-ui-light-installer.png
-gen "--shot 2 --menu --theme light"          docs/host-ui-light-menu.png
+gen "--shot 2 --theme dark"                  assets/ui-archive/host-ui-desktop.png
+gen "--shot 3 --theme dark"                  assets/ui-archive/host-ui-threecol.png
+gen "--shot 2 --confirm 3 --theme dark"      assets/ui-archive/host-ui-confirm.png
+gen "--shot 2 --menu --theme dark"           assets/ui-archive/host-ui-menu.png
+gen "--shot 2 --theme light"                 assets/ui-archive/host-ui-light-desktop.png
+gen "--shot 2 --confirm 3 --theme light"     assets/ui-archive/host-ui-light-confirm.png
+gen "--shot 2 --installer --theme light"     assets/ui-archive/host-ui-light-installer.png
+gen "--shot 2 --menu --theme light"          assets/ui-archive/host-ui-light-menu.png
 ```
 
 **教训**：归档图必须与其生成提交绑定。做视觉回归前先确认归档图的 mtime / 生成提交
@@ -592,7 +592,7 @@ gen "--shot 2 --menu --theme light"          docs/host-ui-light-menu.png
 
 ```bash
 cargo build -p aether-compositor --offline   # 脚本直接调二进制，不经过 cargo
-python scripts/archive-ui-shots.py           # 重建 docs/host-ui-*.png
+python scripts/archive-ui-shots.py           # 重建 assets/ui-archive/host-ui-*.png
 python scripts/archive-ui-shots.py --check   # 门禁：差异 > 0.02% 即失败（退出码 1）
 ```
 
@@ -603,7 +603,7 @@ python scripts/archive-ui-shots.py --check   # 门禁：差异 > 0.02% 即失败
   时 PATH 会被改写成 Windows 分号形式，cargo 静默失败。
 - 比对时屏蔽两个非确定区：顶栏时钟（`x > w-80` 且 `y < 32`）与 AI 指令条光标
   （`x 515–530, y 595–630`）。加完掩码后 8 张全部 `0.0000%`。
-- 顺手清掉了工作区里未跟踪的 `docs/host-ui-files-real.png`（无任何文档引用的中间产物）。
+- 顺手清掉了工作区里未跟踪的 `assets/ui-archive/host-ui-files-real.png`（无任何文档引用的中间产物）。
 
 ### 15.3 一行数统计的坑：`aether-*/src/*.rs` 漏掉 `aetherd`
 

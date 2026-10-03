@@ -30,7 +30,7 @@
 |---|---|---|
 | Q1 | 色板仅 6 个语义色，无法支撑完整组件状态 | `draw.rs:14-36` palette 模块 |
 | Q2 | 小字号中文发虚，11px 以下不可读 | 截图实测（fontdue 软件光栅化） |
-| Q3 | 安装器品红主题与主色板（青）冲突 | `docs/screenshot-installer-wizard.png` |
+| Q3 | 安装器品红主题与主色板（青）冲突 | `assets/screenshots/screenshot-installer-wizard.png` |
 | Q4 | L2+ 权限确认弹窗缺失——安全链路 UI 缺口 | roadmap M4 未勾选项 + P0-1 修复配套 |
 | Q5 | 常量散落：MENUBAR_H/TITLE_H/DOCK_ICON/GAP 等魔数无体系 | draw.rs / layout.rs / main.rs |
 | Q6 | 按钮、输入框等组件无状态体系（悬停/按下/禁用/加载） | draw.rs 各绘制函数 |
@@ -143,8 +143,8 @@
 **文件**：`draw.rs`（installer 绘制段）、`docs/`
 - 安装器品红 → 主色板（危险操作仅按钮保留 danger 红）
 - 全界面走查：圆角/间距/字阶一致性，对照 §3 token 表逐项核对
-- `--shot 1-4` + 安装向导截图，更新 `docs/screenshot-*.png`
-- 更新 `INDEX.md`、`roadmap.md`（文档落后实际进度三个里程碑，顺带修正）
+- `--shot 1-4` + 安装向导截图，更新 `assets/screenshots/screenshot-*.png`
+- 更新 `../INDEX.md`、`../roadmap.md`（文档落后实际进度三个里程碑，顺带修正）
 - **验证**：截图归档 + 全 workspace 测试通过
 
 ---

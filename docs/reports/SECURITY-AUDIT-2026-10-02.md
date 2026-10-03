@@ -456,7 +456,7 @@ if mbr[510] != 0x55 || mbr[511] != 0xAA {
 | 3 | README"Linux 358 为按 aetherd 增量推算" | 静态推算应为 381 | ❌ 无法复现 |
 | 4 | INDEX L307=362、L349=362/358、**L351-352=333** | 同节内 358 与 333 直接冲突 | ❌ |
 | 5 | README.en.md L44/L196=**334**；L53 把"370 项"说成 VT 解析器的测试数 | 中文版写 29（`vt.rs` 实测 29 项） | ❌ 过时 + **翻译错误** |
-| 6 | `docs/LAUNCH.md`=334、`LAUNCH-COPY.md`=356、`更新日志/2026-10-01.md`=356、`2026-10-02.md`=368/370 | 370 才是当前真值 | ❌ 四处过时 |
+| 6 | `docs/launch/LAUNCH.md`=334、`LAUNCH-COPY.md`=356、`更新日志/2026-10-01.md`=356、`2026-10-02.md`=368/370 | 370 才是当前真值 | ❌ 四处过时 |
 | 7 | README 逐 crate：compositor **15,890** | 实测 **16,021** | ❌ 差 131；且 README 各 crate 之和 = 24,360 ≠ 它自己的表头 24,491 |
 | 8 | INDEX 逐 crate：compositor **15,926** | 实测 16,021 | ❌ 差 95 ⇒ **同一 crate 三个数字**（15,890 / 15,926 / 16,021） |
 | 9 | INDEX 逐文件表 42 条 | **11 条错** | ❌ 其中 **4 处 `src/main.rs` 全被写成 `3,857`**（aetherd 实际 636 / init 210 / ops 175）——一次全局替换的误伤 |
@@ -566,7 +566,7 @@ exit=0
 | 6 | `cargo-audit` 漏洞库比对、busybox setuid 降权行为、内核 `MODULE_SIG`/LSM 配置 | 未执行 |
 | 7 | nginx `add_header` 继承语义 | 本机无 nginx，依据官方文档；**建议线上 `curl -sI` 复核** |
 | 8 | 日志文件实际权限（umask 推定 0644） | 需 Linux 实机 |
-| 9 | `docs/PRODUCTION-PLAN-2026-09-28.md` 声称的"六个硬门禁 6/6 达成" | 未逐条复核 |
+| 9 | `docs/reports/PRODUCTION-PLAN-2026-09-28.md` 声称的"六个硬门禁 6/6 达成" | 未逐条复核 |
 | 10 | M-15（`cols == 1` 越界 panic）的**可达性** | 当前几何路径算不出 `cols == 1`（窗口最小宽 320px），但未穷举所有布局/分辨率组合 |
 | 11 | M-16（PTY 继承环境变量）在出厂镜像中的可利用性 | 出厂镜像未设 `AETHER_UI_KEY`（已验证），故出厂不可利用；设置该变量的部署**未实测** |
 | 12 | 合成器 `fbdev.rs` 的 `bytes_pp`/`line_length` 边界（依赖真实驱动返回值） | 无 Linux 实机与真实 framebuffer |
