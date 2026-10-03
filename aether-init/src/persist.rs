@@ -71,6 +71,59 @@ const PROBE_MNT: &str = "/run/aether-persist-probe";
 #[cfg(target_os = "linux")]
 const MOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// MBR 里的磁盘签名（偏移 440，小端 4 字节）。**纯函数**，可在开发机上单测。
+///
+/// 返回 `None` = 头部字节不够（读失败/设备异常），**不当作"签名为 0"**。
+pub fn mbr_disk_signature(head: &[u8]) -> Option<u32> {
+    if head.len() < 444 {
+        return None;
+    }
+    Some(u32::from_le_bytes([head[440], head[441], head[442], head[443]]))
+}
+
+/// 从安装标记文本里取身份 id（`id=XXXXXXXX` 十六进制）。**纯函数**。
+///
+/// 找不到 → `None`（旧版本装的标记没有这一行；调用方按**拒绝**处理，见 `identity_matches`）。
+pub fn marker_install_id(text: &str) -> Option<u32> {
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("id="))
+        .and_then(|hex| u32::from_str_radix(hex.trim(), 16).ok())
+}
+
+/// 从分区设备名推出所属磁盘：`/dev/sda2` → `/dev/sda`、
+/// `/dev/nvme0n1p2` → `/dev/nvme0n1`、`/dev/mmcblk0p2` → `/dev/mmcblk0`。
+///
+/// **纯字符串逻辑**（不碰设备），所以能在开发机上测。
+pub fn partition_disk(dev: &str) -> Option<String> {
+    if !dev.starts_with("/dev/") {
+        return None;
+    }
+    // nvme/mmcblk 这类：分区后缀是 `pN`
+    if let Some(pos) = dev.rfind('p') {
+        let tail = &dev[pos + 1..];
+        if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) && dev[..pos].ends_with(|c: char| c.is_ascii_digit()) {
+            return Some(dev[..pos].to_string());
+        }
+    }
+    // sdX/vdX：去掉结尾的连续数字
+    let trimmed = dev.trim_end_matches(|c: char| c.is_ascii_digit());
+    if trimmed.len() < dev.len() && trimmed.len() > 5 {
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+/// 身份是否匹配。**fail-closed**：任一为 `None` 都算不匹配。
+///
+/// 这一条是审计 #13 的核心：光有"标记文件存在"不够 —— 标记住在分区自己身上，
+/// 拷一个分区过来就跟着来了。磁盘签名住在**盘**上，跨介质拷贝带不过来。
+pub fn identity_matches(disk_sig: Option<u32>, marker_id: Option<u32>) -> bool {
+    match (disk_sig, marker_id) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// 只读探测：分区里有没有安装标记。
 ///
 /// 为什么必须是**只读**挂载（2026-10-02 审计 H-3 残余）：ext4 在 rw 挂载时会重放
@@ -122,6 +175,47 @@ fn run_with_timeout(cmd: &str, args: &[&str], timeout: std::time::Duration) -> b
     }
 }
 
+/// 核对"分区所在磁盘的 MBR 签名"与"标记里的 id"是否一致（**跨介质绑定**）。
+///
+/// 读的是**磁盘**（不是分区）的前 512 字节 —— 这一点是关键：
+/// 拷贝一个分区到别的盘，那个盘的 MBR 不会带着同一个签名。
+#[cfg(target_os = "linux")]
+fn identity_bound(dev: &str, marker_path: &std::path::Path) -> bool {
+    let text = std::fs::read_to_string(marker_path).unwrap_or_default();
+    let Some(want) = marker_install_id(&text) else {
+        println!(
+            "[aether-init] 拒绝 {dev}：安装标记里没有身份 id（可能是旧版本装出来的）—— \
+             见安全审计 H-3：缺少跨介质绑定的分区不予挂载"
+        );
+        return false;
+    };
+    let Some(disk) = partition_disk(dev) else {
+        println!("[aether-init] 拒绝 {dev}：无法从设备名推出所属磁盘");
+        return false;
+    };
+    use std::io::Read;
+    let mut head = [0u8; 512];
+    let Ok(mut f) = std::fs::File::open(&disk) else {
+        println!("[aether-init] 拒绝 {dev}：打不开所属磁盘 {disk}");
+        return false;
+    };
+    if f.read_exact(&mut head).is_err() {
+        println!("[aether-init] 拒绝 {dev}：读 {disk} 头部 512 字节失败");
+        return false;
+    }
+    let got = mbr_disk_signature(&head);
+    if identity_matches(got, Some(want)) {
+        println!("[aether-init] {dev} 身份绑定通过（磁盘签名 {want:08X}）");
+        true
+    } else {
+        println!(
+            "[aether-init] 拒绝 {dev}：磁盘签名 {got:?} 与安装标记 {want:08X} 不符 —— \
+             该分区不是这块盘装出来的（拷来的分区不予挂载）"
+        );
+        false
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn has_install_marker(dev: &str) -> bool {
     if std::fs::create_dir_all(PROBE_MNT).is_err() {
@@ -145,6 +239,10 @@ fn has_install_marker(dev: &str) -> bool {
     let found = std::fs::symlink_metadata(&marker)
         .map(|md| md.file_type().is_file())
         .unwrap_or(false);
+    // H-3 残余（审计 #13）：光"有标记文件"不够 —— 标记住在分区自己身上，
+    // 谁拷一个分区过来就跟着来了。再加一道**跨介质**绑定：分区所在**磁盘**的 MBR
+    // 里必须有一个与标记内 id 相同的随机签名（装机时写）。
+    let ok = found && identity_bound(dev, &marker);
     // 卸载必须成功：否则 rw 挂载会失败（EBUSY），而我们又报"不是我们的分区"，
     // 用户看到的是"持久化没了"却查不出原因。卸载失败时把它当成"探测失败"（保守）。
     let unmounted = run_with_timeout("/bin/umount", &[PROBE_MNT], MOUNT_TIMEOUT);
@@ -152,7 +250,7 @@ fn has_install_marker(dev: &str) -> bool {
         println!("[aether-init] 警告：探测挂载点 {PROBE_MNT} 卸载失败 —— 本次不挂载持久分区");
         return false;
     }
-    found
+    ok
 }
 
 /// 从设备头部字节里解析 ext4 卷标（**纯函数**，可在开发机上单测）。
@@ -498,6 +596,40 @@ mod tests {
         // 边界：恰好等于阈值 4 就是"未纠正"（阈值语义不能差一）
         assert_eq!(fsck_verdict(Some(FSCK_UNCORRECTED_CODE - 1), true), FsckVerdict::Ok);
         assert_eq!(fsck_verdict(Some(FSCK_UNCORRECTED_CODE), true), FsckVerdict::Uncorrected);
+    }
+
+    /// 审计 #13（H-3 残余）：身份判据必须是**跨介质**的，且 fail-closed。
+    #[test]
+    fn identity_binding_is_cross_media_and_fails_closed() {
+        // 磁盘签名解析（小端）
+        let mut head = [0u8; 512];
+        head[440..444].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        assert_eq!(mbr_disk_signature(&head), Some(0x1234_5678));
+        // 头部不够 → None（不是"签名为 0"）
+        assert_eq!(mbr_disk_signature(&head[..443]), None);
+        assert_eq!(mbr_disk_signature(&[]), None);
+
+        // 标记解析
+        assert_eq!(marker_install_id("1700000000\nid=12345678\n"), Some(0x1234_5678));
+        assert_eq!(marker_install_id("id=DEADBEEF"), Some(0xDEAD_BEEF), "大写也要认");
+        assert_eq!(marker_install_id("1700000000\n"), None, "旧标记没有 id");
+        assert_eq!(marker_install_id("id=zzzz"), None, "非法十六进制");
+        assert_eq!(marker_install_id(""), None);
+
+        // 设备名 → 磁盘（三种命名规则）
+        assert_eq!(partition_disk("/dev/sda2").as_deref(), Some("/dev/sda"));
+        assert_eq!(partition_disk("/dev/nvme0n1p2").as_deref(), Some("/dev/nvme0n1"));
+        assert_eq!(partition_disk("/dev/mmcblk0p2").as_deref(), Some("/dev/mmcblk0"));
+        assert_eq!(partition_disk("/dev/vda2").as_deref(), Some("/dev/vda"));
+        assert_eq!(partition_disk("sda2"), None, "必须是 /dev/ 开头的设备");
+        assert_eq!(partition_disk("/dev/sda"), None, "整盘没有分区后缀 → 推不出磁盘");
+
+        // 判据：一致才放行；任一缺失都拒绝（fail-closed）
+        assert!(identity_matches(Some(7), Some(7)));
+        assert!(!identity_matches(Some(7), Some(8)), "签名不符必须拒绝");
+        assert!(!identity_matches(None, Some(7)), "读不到磁盘签名必须拒绝");
+        assert!(!identity_matches(Some(7), None), "标记里没有 id 必须拒绝");
+        assert!(!identity_matches(None, None));
     }
 
 }

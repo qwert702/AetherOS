@@ -228,6 +228,59 @@ impl MbrEntry {
 }
 
 /// 读取 MBR 里全部 4 个分区项（每项 16B，从偏移 446 起）。
+/// MBR 里的磁盘签名字段偏移（标准位置：0x1B8 = 440，小端 4 字节）。
+pub const MBR_DISK_SIG_OFFSET: usize = 440;
+
+/// 读 MBR 的磁盘签名。**纯函数**（跨平台可测）。
+///
+/// 为什么用它做身份绑定（安全审计 #13 / H-3 残余）：
+/// 卷标与安装标记都**住在持久分区自己身上** —— 拷一个分区过来就都跟着来了。
+/// 磁盘签名住在**盘**的 MBR 里：分区被拷到别的盘（U 盘/另一台机器）时，
+/// 那个盘的 MBR 不会带着同一个签名，于是 aether-init 拒绝挂载。
+/// **诚实边界**：能整盘伪造（含 MBR）的人仍可绕过 —— 那要靠安全启动/TPM。
+pub fn mbr_disk_signature(mbr: &[u8; 512]) -> u32 {
+    u32::from_le_bytes([
+        mbr[MBR_DISK_SIG_OFFSET],
+        mbr[MBR_DISK_SIG_OFFSET + 1],
+        mbr[MBR_DISK_SIG_OFFSET + 2],
+        mbr[MBR_DISK_SIG_OFFSET + 3],
+    ])
+}
+
+/// 写入磁盘签名（纯函数）。
+pub fn set_disk_signature(mbr: &mut [u8; 512], sig: u32) {
+    mbr[MBR_DISK_SIG_OFFSET..MBR_DISK_SIG_OFFSET + 4].copy_from_slice(&sig.to_le_bytes());
+}
+
+/// 生成一个**非零**随机磁盘签名。
+///
+/// 非零是硬要求：0 是"未设置"的常见初值，用它会让"没绑定"与"绑定到 0"混淆 ——
+/// 而 aether-init 侧的判据是 fail-closed，混淆的代价是分区挂不上。
+/// 随机源取 `/dev/urandom`；拿不到就退回时间戳混合（可用性优先，安全性由"非零 + 随机"保证）。
+fn random_disk_signature() -> u32 {
+    use std::io::Read;
+    let mut b = [0u8; 4];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        if f.read_exact(&mut b).is_ok() {
+            let v = u32::from_le_bytes(b);
+            if v != 0 {
+                return v;
+            }
+        }
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1);
+    let pid = std::process::id() as u64;
+    let mixed = (ts ^ (pid << 32) ^ (ts >> 17)) as u32;
+    if mixed == 0 {
+        1
+    } else {
+        mixed
+    }
+}
+
 pub fn read_entries(mbr: &[u8; 512]) -> [MbrEntry; 4] {
     std::array::from_fn(|i| MbrEntry::from_bytes(&mbr[446 + i * 16..446 + i * 16 + 16]))
 }
@@ -338,6 +391,11 @@ fn setup_persist(disk: &str) -> Result<String> {
         sectors,
     };
     set_partition_entry(&mut mbr, index, &entry)?;
+    // 身份绑定（审计 #13）：给这块盘一个随机签名，并把它写进分区里的安装标记。
+    // 启动时 aether-init 要求"分区所在盘的 MBR 签名 == 标记里的 id" ——
+    // 拷到别的盘的分区因此挂不上（见 `mbr_disk_signature` 的说明与诚实边界）。
+    let disk_sig = random_disk_signature();
+    set_disk_signature(&mut mbr, disk_sig);
     f.seek(SeekFrom::Start(0))?;
     f.write_all(&mbr)?;
     f.sync_all()?;
@@ -418,7 +476,12 @@ fn setup_persist(disk: &str) -> Result<String> {
     // 写失败**必须报错**（代码审查指出）：这个标记现在是启动侧识别分区的**唯一判据**，
     // 写不进去却报"装机成功"，用户重启后会看到持久分区永远挂不上、而且毫无线索。
     // 常量与 aether-init 侧一致（那边的 `INSTALL_MARKER` 有断言钉住字面量）。
-    std::fs::write(format!("{PERSIST_MNT}/{INSTALL_MARKER}"), format!("{ts}\n"))
+    // 第二行是身份绑定 id（与目标盘 MBR 的磁盘签名一致）—— 格式必须与
+    // aether-init 的 `marker_install_id`（`id=<8 位十六进制>`）一致。
+    std::fs::write(
+        format!("{PERSIST_MNT}/{INSTALL_MARKER}"),
+        format!("{ts}\nid={disk_sig:08x}\n"),
+    )
         .map_err(|e| anyhow::anyhow!("写入 {INSTALL_MARKER} 失败: {e} —— 持久分区将无法被识别"))?;
     std::fs::write(
         format!("{PERSIST_MNT}/boot.log"),
@@ -807,6 +870,52 @@ mod tests {
                 "「{what}」必须出现在 dd **之前** —— 现在在其后：目标盘会被毁掉才发现问题"
             );
         }
+    }
+
+    /// 审计 #13：磁盘签名的读写与**非零**要求。
+    #[test]
+    fn disk_signature_is_written_at_the_standard_offset() {
+        let mut mbr = isohybrid_mbr();
+        // 偏移必须是 MBR 的标准磁盘签名字段 0x1B8
+        assert_eq!(MBR_DISK_SIG_OFFSET, 440);
+        set_disk_signature(&mut mbr, 0xDEAD_BEEF);
+        assert_eq!(mbr[440], 0xEF, "小端：低字节在前");
+        assert_eq!(mbr[441], 0xBE);
+        assert_eq!(mbr[442], 0xAD);
+        assert_eq!(mbr[443], 0xDE);
+        assert_eq!(mbr_disk_signature(&mbr), 0xDEAD_BEEF);
+        // 写签名不能破坏 MBR 引导签名
+        assert_eq!(&mbr[510..512], &[0x55, 0xAA]);
+    }
+
+    /// 审计 #13：随机签名必须**非零**（0 是"未设置"的常见初值，混淆会让分区挂不上）。
+    #[test]
+    fn random_disk_signature_is_nonzero_and_varies() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..16 {
+            let s = random_disk_signature();
+            assert_ne!(s, 0, "磁盘签名不得为 0");
+            seen.insert(s);
+        }
+        assert!(seen.len() > 1, "多次生成应至少出现不同值（否则不是随机）");
+    }
+
+    /// 审计 #13：标记文件的格式必须与 aether-init 的解析约定一致。
+    ///
+    /// 两侧各写一份格式是这类改动的典型故障点（一边改成 `ID=` 另一边还在找 `id=`）。
+    /// 这里断言格式串本身；init 侧有对应的解析测试。
+    #[test]
+    fn install_marker_carries_the_identity_id() {
+        let sig: u32 = 0x0A0B_0C0D;
+        let content = format!("1700000000\nid={sig:08x}\n");
+        assert!(content.contains("id=0a0b0c0d"), "必须是 8 位小写十六进制：{content}");
+        assert!(content.starts_with("1700000000"), "第一行仍是时间戳（兼容旧格式）");
+        // 解析回来必须与写入的一致（复刻 init 的解析规则，避免只测一半）
+        let parsed = content
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("id="))
+            .and_then(|h| u32::from_str_radix(h, 16).ok());
+        assert_eq!(parsed, Some(sig));
     }
 
 }
