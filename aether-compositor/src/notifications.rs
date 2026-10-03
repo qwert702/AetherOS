@@ -25,7 +25,7 @@ pub const MAX_NOTICES: usize = 50;
 ///
 /// 为什么需要它：有些提示天然会连发（连点、重试、网络抖动），
 /// 不合并的话历史会被同一条消息刷满，等于把"历史"这个功能废掉。
-pub const MERGE_WINDOW_SECS: u64 = 3;
+pub const MERGE_WINDOW_SECS: i64 = 3;
 
 /// 通知类别。**只分三类**：多一类就要多一套配色与文案，收益不成正比。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -55,8 +55,10 @@ pub struct Notice {
     /// 文本（已去掉换行：历史是一行一条）
     pub text: String,
     pub kind: Kind,
-    /// 发生时间（Unix 秒；由调用方给，便于单测）
-    pub at: u64,
+    /// 发生时间（Unix 秒；由调用方给，便于单测）。
+    /// 用 i64 是因为仓库里的时钟辅助函数（`text::now_utc_secs`）就是 i64 ——
+    /// 在这里转成 u64 只会在 1970 年之前出问题，却要多一次 cast。
+    pub at: i64,
     /// 合并次数：1 = 只发生过一次
     pub repeat: u32,
 }
@@ -88,7 +90,7 @@ impl Notifications {
     /// 2. 超出上限 → 淘汰最旧的一条。
     /// 3. 文本先做净化：多行压成一行、去掉首尾空白 —— 历史是一行一条，
     ///    带换行的文本会把布局撑坏。
-    pub fn push(&mut self, text: &str, kind: Kind, now_secs: u64) {
+    pub fn push(&mut self, text: &str, kind: Kind, now_secs: i64) {
         let clean = one_line(text);
         if clean.is_empty() {
             return; // 空消息不该占一条历史
@@ -173,7 +175,7 @@ mod tests {
     fn history_is_bounded_and_drops_oldest() {
         let mut n = Notifications::new();
         for i in 0..(MAX_NOTICES + 10) {
-            n.push(&format!("第 {i} 条"), Kind::Info, i as u64 * 100);
+            n.push(&format!("第 {i} 条"), Kind::Info, i as i64 * 100);
         }
         assert_eq!(n.len(), MAX_NOTICES, "上限必须生效（内存有界）");
         // 最新的在最前，最旧的已被淘汰

@@ -1473,6 +1473,10 @@ pub struct Renderer {
     /// **由主循环每帧喂进来**（而不是从 settings 现算）：帧时间与内存占用
     /// 只有主循环知道，绘制层不该去读 `/proc`（那会让"画一帧"带上 IO）。
     pub perf_text: Option<String>,
+    /// 通知历史（§3.2）。放在 Renderer 上而不是主循环局部变量：
+    /// **两个事件循环（fbdev 与预览）都要写它**，局部变量就得声明两份，
+    /// 而"只给其中一个接线"正是会产生静默不一致的那类改动。
+    pub notifs: crate::notifications::Notifications,
     /// 桌面图标本帧的命中区（矩形 → 应用序号）。默认桌面**不开窗口**，图标是主要入口。
     pub desktop_icons: Vec<(Rect, usize)>,
     /// 安装向导的关闭按钮（2026-10-01：用户反馈"向导点开就关不掉"）。
@@ -1528,6 +1532,7 @@ impl Renderer {
             control_panel: Rect { x: 0, y: 0, w: 0, h: 0 },
             bg_dirty: false,
             perf_text: None,
+            notifs: crate::notifications::Notifications::new(),
             desktop_icons: Vec::new(),
             installer_close: Rect { x: 0, y: 0, w: 0, h: 0 },
             control_hits: Vec::new(),

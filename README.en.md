@@ -16,7 +16,7 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 
 | | |
 |---|---|
-| **Scale** | 29,791 lines of Rust / 48 source files / 7 crates (measured 2026-10-02) |
+| **Scale** | 29,805 lines of Rust / 48 source files / 7 crates (measured 2026-10-02) |
 | **Verification** | 440 unit tests green · 0 compiler warnings on Windows and on 6/7 crates for musl (`aetherd` cannot be cross-checked because of ring) · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
 | **Artifact** | bootable ISO ≈ 38.5 MB, tested booting in QEMU, VirtualBox and VMware |
 
@@ -188,7 +188,7 @@ aether-ops patrol ─▶ init service status + /var/log/aether ─▶ self-heali
 
 | Directory | Lines | Description | Milestone |
 |---|---|---|---|
-| `aether-compositor/` | 18,388 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
+| `aether-compositor/` | 18,402 | Compositor plus desktop shell responsibilities (rendering / layout / terminal / IME / Wayland spike) | M1–M2 |
 | `aetherd/` | 6,952 | AI hub daemon (agent / tools / permissions / routing / model config / recycle bin / app installation) | M4 |
 | `aether-init/` | 2,423 | PID 1 and service management | M3 |
 | `aether-ops/` | 795 | AI operations and self-healing | M5 |

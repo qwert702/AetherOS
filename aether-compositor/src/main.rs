@@ -443,7 +443,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     if snap_zone != layout::Snap::None {
                         if let Some(win) = desktop.wins.get_mut(i) {
                             win.target = Some(layout::rect(snap_zone, layout::work_area(w, h)));
-                            toast = Some((snap_zone.label().to_string(), Instant::now()));
+                            push_toast(&mut toast, &mut renderer.notifs, snap_zone.label().to_string(), notifications::Kind::Info);
                         }
                     }
                 }
@@ -460,10 +460,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 这里特判的代价小得多，且行为可预期。
                     if c == '\0' {
                         ime.toggle();
-                        toast = Some((
-                            if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.into(),
-                            Instant::now(),
-                        ));
+                        push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.to_string(), notifications::Kind::Info);
                     } else if let Some((req, echo)) = confirm.as_mut() {
                         // 确认弹窗独占键盘：L3 的回显输入写进弹窗而不是指令条
                         if req.echo_required.is_some() {
@@ -519,7 +516,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         // 且"用户拒绝过"不会留下任何痕迹。
                         tty_log(&format!("权限确认被拒绝: {}", req.tool));
                         cancel_confirm(&req.token);
-                        toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, format!("已拒绝「{}」", req.tool), notifications::Kind::Err);
                     } else if installer.open && !installer.running {
                         installer.open = false;
                     }
@@ -527,7 +524,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 input::UiEvent::LayoutKey(n) => {
                     if let Some(msg) = set_layout(&mut desktop, layout::Layout::ALL[(n - 1).clamp(0, 3)]) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
                 input::UiEvent::Ctrl(c, shift) => {
@@ -538,14 +535,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                             drag = None;
                             snap_zone = layout::Snap::None;
                         }
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
                 input::UiEvent::Nav(n) => {
                     if let Some(msg) =
                         dispatch_nav(&mut desktop, n, &mut ai_input, &mut ai_cursor, &mut ime, &ai_tx)
                     {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
                 input::UiEvent::Enter => {
@@ -556,7 +553,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             tty_log(&format!("权限确认通过: {}", req.tool));
                             dispatch_approved(req, &ai_tx);
                         } else {
-                            toast = Some(("回显不匹配：请原样输入目标名".into(), Instant::now()));
+                            push_toast(&mut toast, &mut renderer.notifs, "回显不匹配：请原样输入目标名".to_string(), notifications::Kind::Err);
                         }
                     } else if installer.open {
                         if begin_install(&mut installer, &ai_tx) {
@@ -619,7 +616,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args) {
-                        toast = Some((format!("Aether 执行 · {msg}"), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, format!("Aether 执行 · {msg}"), notifications::Kind::Info);
                     }
                 }
                 AiEvent::Confirm(req) => {
@@ -654,13 +651,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                             // 电源没有对话气泡可挂：只进 toast。
                             // 文案要说清"受理 ≠ 已关机"——真正断电时进程已经没了。
                             let mark = if ok { "✓" } else { "✗" };
-                            toast = Some((format!("{mark} {last}"), Instant::now()));
+                            push_toast(&mut toast, &mut renderer.notifs, format!("{mark} {last}"), notifications::Kind::Info);
                         }
                     }
                     // 电源的结果已经在上面用 toast 说清楚了；再加一句"已执行 · …"
                     // 会让人误以为"已经关机完成"（而实际只是受理）
                     if ok && origin != ConfirmOrigin::Power {
-                        toast = Some((format!("已执行 · {}", last.chars().take(24).collect::<String>()), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, format!("已执行 · {}", last.chars().take(24).collect::<String>()), notifications::Kind::Info);
                     }
                 }
             }
@@ -685,13 +682,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                         }
                     }
                     Some(draw::ConfirmButton::Allow) => {
-                        toast = Some(("回显不匹配：请原样输入目标名".into(), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, "回显不匹配：请原样输入目标名".to_string(), notifications::Kind::Info);
                     }
                     Some(draw::ConfirmButton::Deny) => {
                         if let Some((req, _)) = confirm.take() {
                             tty_log(&format!("权限确认被拒绝: {}", req.tool));
                             cancel_confirm(&req.token);
-                            toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
+                            push_toast(&mut toast, &mut renderer.notifs, format!("已拒绝「{}」", req.tool), notifications::Kind::Info);
                         }
                     }
                     None => {}
@@ -768,14 +765,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 动作类命中：打开内建应用（「应用」页的行）
                     if let settings::SettingsHit::OpenApp(i) = hit {
                         if let Some(msg) = open_app(&mut desktop, i) {
-                            toast = Some((msg, Instant::now()));
+                            push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                         }
                     }
                     // 「网络」页：重启网络服务 —— 唯一一个真正**改系统**的动作（P4.4）。
                     // 走 aetherd（ServiceControl）转 init，合成器不直接碰系统。
                     if let settings::SettingsHit::RestartService(unit) = hit {
                         control_service(ai_tx.clone(), unit, aether_ipc::ServiceAction::Restart);
-                        toast = Some((format!("正在重启服务 {unit}…"), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, format!("正在重启服务 {unit}…"), notifications::Kind::Info);
                     }
                     // 电源入口（批次 J-2）：与 AI 触发的工具调用走**同一条**路径
                     // （system_power 工具 → 确认卡片 → aetherd → PID 1），不新造通道。
@@ -784,10 +781,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         settings::SettingsHit::Power(action) => {
                             let a = action.as_str();
                             spawn_power_tool(action, &ai_tx);
-                            toast = Some((
-                                format!("请在确认卡片里输入 {a} 以确认"),
-                                Instant::now(),
-                            ));
+                            push_toast(&mut toast, &mut renderer.notifs, format!("请在确认卡片里输入 {a} 以确认"), notifications::Kind::Info);
                         }
                         settings::SettingsHit::Logout => {
                             apply_ui_intent(UiIntent::Logout, &ai_tx, &mut toast, &mut renderer, &mut audio);
@@ -809,11 +803,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                         let dark = renderer.settings.dark_mode;
                         apply_theme(&mut renderer, dark);
                         renderer.bg_dirty = true;
-                        toast = Some(("外观已恢复默认".into(), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, "外观已恢复默认".to_string(), notifications::Kind::Info);
                     }
                     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                         // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
-                        toast = Some((format!("设置未能写入磁盘：{e}"), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, format!("设置未能写入磁盘：{e}"), notifications::Kind::Err);
                     }
                 }
             } else if focused_terminal(&desktop) && mouse_down {
@@ -859,7 +853,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 drag = None;
                 snap_zone = layout::Snap::None;
                 if let Some(m) = msg {
-                    toast = Some((m, Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, m, notifications::Kind::Info);
                 }
             } else if focused_terminal(&desktop)
                 && active_term_contains(&desktop, tr.as_ref(), mouse.0, mouse.1)
@@ -888,7 +882,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 if let Some(i) = items.iter().position(|r| r.contains(mouse.0, mouse.1)) {
                     let (t, r) = run_menu_item(&mut desktop, open_menu.unwrap_or(0), i);
                     if let Some(m) = t {
-                        toast = Some((m, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, m, notifications::Kind::Info);
                     }
                     if let Some(r) = r {
                         ai_reply = Some((r, draw::BubbleKind::Ai, Instant::now()));
@@ -913,14 +907,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                             }
                             None => {
                                 if let Some(msg) = open_app(&mut desktop, i) {
-                                    toast = Some((msg, Instant::now()));
+                                    push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                                 }
                             }
                         }
                     }
                     DockAction::Installed(id, name) => {
                         if let Some(msg) = open_installed_app(&mut desktop, id, name) {
-                            toast = Some((msg, Instant::now()));
+                            push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                         }
                     }
                     DockAction::Installer => installer.open(),
@@ -934,7 +928,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             {
                 if let Some((label, path)) = desktop.sidebar.get(i).cloned() {
                     if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
             } else if let Some((_, path)) = renderer
@@ -945,13 +939,13 @@ fn run_fbdev() -> anyhow::Result<()> {
             {
                 let label = draw::path_leaf(&path);
                 if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
-                    toast = Some((msg, Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                 }
             } else if renderer.file_up.contains(mouse.0, mouse.1) {
                 // 返回上级目录
                 open_menu = None;
                 if let Some(msg) = go_up(&mut desktop) {
-                    toast = Some((msg, Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                 }
             } else if let Some((_, idx)) = renderer.file_cells.iter().find(|(r, _)| r.contains(mouse.0, mouse.1)).copied() {
                 // 文件管理器图标：点一次选中，再点一次打开。
@@ -959,7 +953,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 open_menu = None;
                 if desktop.selected == Some(idx) {
                     if let Some(msg) = open_entry(&mut desktop, idx) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 } else {
                     desktop.selected = Some(idx);
@@ -1718,6 +1712,25 @@ fn set_fb_blank(on: bool, blanked: &mut bool) {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn set_fb_blank(_on: bool, _blanked: &mut bool) {}
 
+/// 设置一条 toast，**同时记入通知历史**（§3.2）。
+///
+/// 为什么不直接在 47 个产生点各写两行：那样迟早会有人只改一处（新加的提示不进历史），
+/// 而"历史不全"比"没有历史"更糟 —— 用户会以为没发生过。统一走这个函数，
+/// 新增提示只要用它就自动进历史。
+///
+/// `kind` 由调用点给：历史里失败必须与成功**可区分**（标记 + 颜色），
+/// 而"这条是不是失败"只有产生点知道，不该在这里猜文本。
+fn push_toast(
+    toast: &mut Option<(String, Instant)>,
+    notifs: &mut notifications::Notifications,
+    msg: impl Into<String>,
+    kind: notifications::Kind,
+) {
+    let msg = msg.into();
+    notifs.push(&msg, kind, crate::text::now_utc_secs());
+    *toast = Some((msg, Instant::now()));
+}
+
 /// 执行控制中心交回来的意图（**有副作用的部分**）。
 ///
 /// 与 `control_center_click` 分开的理由见 `UiIntent`：判定要能在单测里跑，
@@ -1736,10 +1749,7 @@ fn apply_ui_intent(
             let label = if action == aether_ipc::PowerAction::PowerOff { "关机" } else { "重启" };
             // 关掉控制中心：确认卡片要盖在最上层，面板留着会挡住它（也会让人以为没反应）
             renderer.control_open = false;
-            *toast = Some((
-                format!("{label}：请在确认卡片里输入 {a} 以确认"),
-                Instant::now(),
-            ));
+            push_toast(toast, &mut renderer.notifs, format!("{label}：请在确认卡片里输入 {a} 以确认"), notifications::Kind::Info);
             tty_log(&format!("控制中心电源入口 → {label}（等待确认卡片）"));
             spawn_power_tool(action, ai_tx);
         }
@@ -1747,10 +1757,10 @@ fn apply_ui_intent(
             // 写真实 mixer；**失败必须如实提示**（不假装"音量已调"）
             match audio.set_volume(pct) {
                 Ok(()) => {
-                    *toast = Some((format!("音量 {}%", audio.volume_pct()), Instant::now()));
+                    push_toast(toast, &mut renderer.notifs, format!("音量 {}%", audio.volume_pct()), notifications::Kind::Info);
                 }
                 Err(e) => {
-                    *toast = Some((format!("音量未改变：{e}"), Instant::now()));
+                    push_toast(toast, &mut renderer.notifs, format!("音量未改变：{e}"), notifications::Kind::Err);
                 }
             }
         }
@@ -2627,10 +2637,7 @@ fn preview_main() -> anyhow::Result<()> {
             // Ctrl+Space 切中英输入（与真机路径的 NUL 特判对应）
             if ctrl && *k == minifb::Key::Space {
                 ime.toggle();
-                toast = Some((
-                    if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.into(),
-                    Instant::now(),
-                ));
+                push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.to_string(), notifications::Kind::Err);
                 continue;
             }
             // Ctrl 组合键：Ctrl+W 关窗、Ctrl+Shift+C/V 复制粘贴
@@ -2641,7 +2648,7 @@ fn preview_main() -> anyhow::Result<()> {
                     if let Some(msg) = apply_ctrl(&mut desktop, ch.to_ascii_lowercase(), shift) {
                         drag = None;
                         snap_zone = layout::Snap::None;
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                         continue;
                     }
                 }
@@ -2651,7 +2658,7 @@ fn preview_main() -> anyhow::Result<()> {
                 if let Some(msg) =
                     dispatch_nav(&mut desktop, nav, &mut ai_input, &mut ai_cursor, &mut ime, &tx)
                 {
-                    toast = Some((msg, Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                 }
                 continue;
             }
@@ -2670,22 +2677,22 @@ fn preview_main() -> anyhow::Result<()> {
                 }
                 minifb::Key::Key1 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::Float) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
                 minifb::Key::Key2 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::TwoCol) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
                 minifb::Key::Key3 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::ThreeCol) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
                 minifb::Key::Key4 if alt => {
                     if let Some(msg) = set_layout(&mut desktop, Layout::Monocle) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
                 _ => {}
@@ -2711,7 +2718,7 @@ fn preview_main() -> anyhow::Result<()> {
                 }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args) {
-                        toast = Some((format!("Aether 执行 · {msg}"), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, format!("Aether 执行 · {msg}"), notifications::Kind::Info);
                     }
                 }
                 AiEvent::Confirm(req) => {
@@ -2743,13 +2750,13 @@ fn preview_main() -> anyhow::Result<()> {
                     }
                 }
                 Some(draw::ConfirmButton::Allow) => {
-                    toast = Some(("回显不匹配：请原样输入目标名".into(), Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, "回显不匹配：请原样输入目标名".to_string(), notifications::Kind::Info);
                 }
                 Some(draw::ConfirmButton::Deny) => {
                     if let Some((req, _)) = confirm.take() {
                         // 拒绝要回传服务端（撤销令牌 + 留痕），不能只关本地弹窗
                         cancel_confirm(&req.token);
-                        toast = Some((format!("已拒绝「{}」", req.tool), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, format!("已拒绝「{}」", req.tool), notifications::Kind::Info);
                     }
                 }
                 None => {}
@@ -2808,7 +2815,7 @@ fn preview_main() -> anyhow::Result<()> {
                 drag = None;
                 snap_zone = layout::Snap::None;
                 if let Some(m) = msg {
-                    toast = Some((m, Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, m, notifications::Kind::Info);
                 }
             } else if focused_terminal(&desktop)
                 && active_term_contains(&desktop, tr.as_ref(), mx, my)
@@ -2839,7 +2846,7 @@ fn preview_main() -> anyhow::Result<()> {
                 if let Some(i) = hit {
                     let (t, r) = run_menu_item(&mut desktop, open_menu.unwrap_or(0), i);
                     if let Some(m) = t {
-                        toast = Some((m, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, m, notifications::Kind::Info);
                     }
                     if let Some(r) = r {
                         ai_reply = Some((r, draw::BubbleKind::Ai, Instant::now()));
@@ -2866,14 +2873,14 @@ fn preview_main() -> anyhow::Result<()> {
                             }
                             None => {
                                 if let Some(msg) = open_app(&mut desktop, i) {
-                                    toast = Some((msg, Instant::now()));
+                                    push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                                 }
                             }
                         }
                     }
                     DockAction::Installed(id, name) => {
                         if let Some(msg) = open_installed_app(&mut desktop, id, name) {
-                            toast = Some((msg, Instant::now()));
+                            push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                         }
                     }
                     DockAction::Installer | DockAction::Nothing => {}
@@ -2889,7 +2896,7 @@ fn preview_main() -> anyhow::Result<()> {
                 // 侧栏"位置"：接真实目录
                 if let Some((label, path)) = desktop.sidebar.get(i).cloned() {
                     if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
             }
@@ -2902,13 +2909,13 @@ fn preview_main() -> anyhow::Result<()> {
                 // 面包屑：点哪一段就跳到哪一级
                 let label = draw::path_leaf(&path);
                 if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
-                    toast = Some((msg, Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                 }
             }
             else if renderer.file_up.contains(mx, my) {
                 open_menu = None;
                 if let Some(msg) = go_up(&mut desktop) {
-                    toast = Some((msg, Instant::now()));
+                    push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                 }
             }
             // 3.5 文件管理器图标 → 点一次选中，再点一次打开
@@ -2916,7 +2923,7 @@ fn preview_main() -> anyhow::Result<()> {
                 open_menu = None;
                 if desktop.selected == Some(idx) {
                     if let Some(msg) = open_entry(&mut desktop, idx) {
-                        toast = Some((msg, Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 } else {
                     desktop.selected = Some(idx);
@@ -2945,7 +2952,7 @@ fn preview_main() -> anyhow::Result<()> {
                 if snap_zone != layout::Snap::None {
                     if let Some(win) = desktop.wins.get_mut(i) {
                         win.target = Some(layout::rect(snap_zone, layout::work_area(WIDTH, HEIGHT)));
-                        toast = Some((snap_zone.label().to_string(), Instant::now()));
+                        push_toast(&mut toast, &mut renderer.notifs, snap_zone.label().to_string(), notifications::Kind::Info);
                     }
                 }
                 snap_zone = layout::Snap::None;
