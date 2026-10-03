@@ -16,6 +16,11 @@ pub enum Incident {
     LogAlert { unit: String, line: String },
     /// 内存压力告警
     MemPressure,
+    /// **手动导出**（§5.7 一键诊断包）：不是故障触发的，而是用户主动要一份。
+    ///
+    /// 单独一个变体而不是"借"某个故障变体：报告的第一行会说"发生了什么"，
+    /// 借的话就会谎报一次并不存在的故障 —— 诊断报告的信用全靠"它说的是真的"。
+    Manual,
 }
 
 /// 组装诊断报告。
@@ -35,6 +40,8 @@ pub fn build_report(
             (format!("服务「{unit}」日志异常"), unit.clone())
         }
         Incident::MemPressure => ("内存压力告警".into(), String::new()),
+        // 手动导出：标题必须**说清不是故障**，否则读报告的人会以为系统刚出过事
+        Incident::Manual => ("手动导出（用户主动请求，非故障触发）".into(), String::new()),
     };
 
     let mut r = String::new();
@@ -151,4 +158,14 @@ mod tests {
         assert_eq!(t, "4\n5\n6");
         assert_eq!(tail_lines("", 3), "");
     }
+    /// §5.7：手动导出的报告必须**说清不是故障** —— 诊断报告的信用全靠"它说的是真的"。
+    #[test]
+    fn manual_report_says_it_is_not_an_incident() {
+        let r = build_report(&Incident::Manual, &[], &crate::monitor::Metrics::default(), "手动导出", "");
+        assert!(r.contains("手动导出"), "报告应标明是手动导出：{r}");
+        assert!(r.contains("非故障触发"), "必须说清不是故障：{r}");
+        // 不能出现"崩溃/告警"这类会把读者带偏的字样
+        assert!(!r.contains("崩溃"), "手动导出不该提崩溃：{r}");
+    }
+
 }

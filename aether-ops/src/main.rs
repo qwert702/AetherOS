@@ -83,6 +83,18 @@ fn emit_report(
 fn main() {
     #[cfg(target_os = "linux")]
     {
+        // §5.7 一键诊断包：**不必等故障**，用户想让别人看的时候就能立刻拿到一份。
+        // 放在巡检循环之前：一次性动作，做完就退出（不进入常驻循环）。
+        if std::env::args().any(|a| a == "--bundle") {
+            bundle();
+            return;
+        }
+        if std::env::args().any(|a| a == "--help" || a == "-h") {
+            println!("用法：aether-ops [--bundle]");
+            println!("  --bundle  立即导出一份诊断报告（含服务状态/内存/日志尾部），打印文件路径");
+            println!("  无参数    以巡检 agent 常驻运行");
+            return;
+        }
         if let Err(e) = run() {
             eprintln!("aether-ops: 巡检循环异常退出: {e}");
             std::process::exit(1);
@@ -90,6 +102,26 @@ fn main() {
     }
     #[cfg(not(target_os = "linux"))]
     println!("aether-ops: 决策核心见 monitor.rs（cargo test 覆盖）；系统内以巡检 agent 常驻");
+}
+
+/// 一次性导出诊断包（§5.7）：打印**确切路径**，方便直接贴到 issue 里。
+#[cfg(target_os = "linux")]
+fn bundle() {
+    let services = monitor::query_services().unwrap_or_else(|e| {
+        // 查不到服务状态也要出报告（缺的那部分如实写"查询失败"），
+        // 而不是因为一个子查询失败就什么都不给 —— 排障时"什么都没有"最没用。
+        println!("aether-ops: 服务状态查询失败（{e}），报告里会标注");
+        Vec::new()
+    });
+    let metrics = monitor::read_metrics();
+    emit_report(
+        diagnose::Incident::Manual,
+        &services,
+        &metrics,
+        "手动导出（aether-ops --bundle）",
+        "ops",
+    );
+    println!("aether-ops: 把上面那个 .txt 的内容贴到 issue 即可（不含任何凭据/密钥）");
 }
 
 /// 常驻巡检循环。
