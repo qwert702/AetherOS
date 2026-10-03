@@ -65,6 +65,10 @@ pub struct Settings {
     pub notify_sound: bool,
     /// 界面语言：0 = 中文，1 = English（下标，见 [`LOCALE_COUNT`]）。
     pub locale: u8,
+    /// 首次启动向导是否已走完（或跳过）（§5.8）。
+    ///
+    /// **跳过也算完成**：否则用户点了跳过，下次开机又弹一遍 —— 那是骚扰不是帮助。
+    pub setup_done: bool,
     /// 空闲多少分钟后息屏（**0 = 永不**）。取值只允许 `IDLE_BLANK_OPTIONS` 里的档位 ——
     /// 任意分钟数没有意义（用户只会在这几档里选），也避免设置文件被改成 99999。
     pub idle_blank_min: u16,
@@ -135,6 +139,8 @@ impl Default for Settings {
             idle_blank_min: 10,
             perf_hud: false,
             record_notifications: true,
+            // §5.8：全新安装时向导要弹（旧文件缺这个键会被当成「已完成」，见 from_json_with）
+            setup_done: false,
         }
     }
 }
@@ -201,6 +207,19 @@ impl Settings {
         if let Some(b) = v.get("record_notifications").and_then(Value::as_bool) {
             s.record_notifications = b;
         }
+        // §5.8 首次启动向导：**缺键要视为「已完成」**，不能当成 false。
+        //
+        // 为什么：老设置文件没有这个键，而"有设置文件"本身就说明用户早就用过系统了。
+        // 缺键当 false 的话，那些用户升级后开机会突然被弹一个向导 —— 那是骚扰。
+        // 只有**文件根本不存在**（全新安装，走 `Settings::default()`）才该弹。
+        // 「有设置文件」的准确含义 = **文档里确实有字段**（不是 `null`、不是 `{}`）。
+        // 退化的空文档说明这份文件没有内容，那就按全新安装处理（向导该弹）。
+        let looks_like_a_settings_file = v.as_object().map(|o| !o.is_empty()).unwrap_or(false);
+        if let Some(b) = v.get("setup_done").and_then(Value::as_bool) {
+            s.setup_done = b;
+        } else {
+            s.setup_done = looks_like_a_settings_file;
+        }
         if let Some(n) = v.get("idle_blank_min").and_then(Value::as_u64) {
             // 不在档位里的值**吸附到最近的合法档**（而不是原样接受）——
             // 否则手工改过的设置文件会让界面显示一个选不中的值
@@ -250,6 +269,7 @@ impl Settings {
             "idle_blank_min": self.idle_blank_min,
             "perf_hud": self.perf_hud,
             "record_notifications": self.record_notifications,
+            "setup_done": self.setup_done,
         });
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
@@ -598,6 +618,8 @@ mod tests {
             idle_blank_min: 10,
             perf_hud: false,
             record_notifications: true,
+            // §5.8：全新安装时向导要弹（旧文件缺这个键会被当成「已完成」，见 from_json_with）
+            setup_done: false,
         };
         assert_eq!(Settings::from_json(&s.to_json()), s);
     }
@@ -692,6 +714,8 @@ mod tests {
             idle_blank_min: 10,
             perf_hud: false,
             record_notifications: true,
+            // §5.8：全新安装时向导要弹（旧文件缺这个键会被当成「已完成」，见 from_json_with）
+            setup_done: false,
         };
         s.save(path).expect("写设置应当成功（父目录会自动建）");
         assert_eq!(Settings::load(path, 8 * 60), s, "写进去什么，读出来就该是什么");
@@ -1154,6 +1178,26 @@ mod restart_action_tests {
         assert_eq!(s.locale, 1);
         apply_hit(&mut s, &mut page, SettingsHit::Locale(99));
         assert_eq!(s.locale, LOCALE_COUNT - 1, "越界要夹到最后一档，而不是越界");
+    }
+
+    /// §5.8：向导开关要能存下来；**老文件（没有这个键）必须视为已完成**。
+    #[test]
+    fn setup_done_round_trips_and_defaults_to_done_for_old_files() {
+        assert!(!Settings::default().setup_done, "全新安装时应当弹出向导");
+        let done = Settings { setup_done: true, ..Settings::default() };
+        assert!(Settings::from_json(&done.to_json()).setup_done);
+        // **旧文件没有 setup_done 键 → 视为已完成**（否则升级后会被弹向导骚扰）
+        assert!(
+            Settings::from_json(r#"{"dark_mode":true,"locale":1}"#).setup_done,
+            "缺键必须当成已完成（老用户不该被弹向导）"
+        );
+        // 显式写成 false 时要尊重（例如想重看一遍向导）
+        assert!(!Settings::from_json(r#"{"setup_done":false}"#).setup_done, "显式 false 要生效");
+        // 键存在但不是布尔（文件被手改坏）→ 按"有字段"处理（不弹向导），不接受奇怪状态
+        assert!(Settings::from_json(r#"{"setup_done":"yes"}"#).setup_done);
+        // 退化文档（没有字段）**不算**"用过系统"：向导该弹
+        assert!(!Settings::from_json("null").setup_done, "null 不该被当成设置文件");
+        assert!(!Settings::from_json("{}").setup_done, "空对象不该被当成设置文件");
     }
 
 }

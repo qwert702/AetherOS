@@ -1555,6 +1555,8 @@ pub struct Renderer {
     pub palette: crate::palette::Palette,
     /// 「工具权限」页的视图状态（§5.3）。列表来自 aetherd（异步取），状态跨帧保留。
     pub policy: crate::policyview::PolicyView,
+    /// 首次启动向导（§5.8）。状态跨帧保留（走到第几步、还开不开）。
+    pub setup: crate::setup::Setup,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1768,6 +1770,91 @@ fn draw_palette(
     }
 }
 
+/// 首次启动向导覆层（§5.8）。
+///
+/// 键盘驱动（与命令面板同一取舍），所以**每一步都必须把"按哪个键做什么"写在脸上** ——
+/// 提示文案来自 `setup::hint`，与按键映射同源（`setup::handle_key`），不会分叉。
+fn draw_setup(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    s: &crate::setup::Setup,
+    settings: &crate::settings::Settings,
+    tr: Option<&TextRenderer>,
+) {
+    use crate::draw::theme::color;
+    // 全屏压暗：开机第一屏，背后本来就没什么内容，但模态语义要一致
+    fill_rect(
+        buf,
+        w,
+        h,
+        Rect { x: 0, y: 0, w: w as i32, h: h as i32 },
+        color::scrim(),
+        0.55,
+    );
+    let Some(tr) = tr else { return };
+    let lang = crate::i18n::lang();
+    let panel_w = 560.0f32.min(w as f32 - 80.0);
+    let panel_h = 300.0f32;
+    let px = (w as f32 - panel_w) / 2.0;
+    let py = (h as f32 - panel_h) / 2.0;
+    fill_rect(
+        buf, w, h,
+        Rect { x: px as i32, y: py as i32, w: panel_w as i32, h: panel_h as i32 },
+        color::glass(),
+        0.99,
+    );
+
+    let (zh, en) = crate::setup::title(s.step);
+    tr.draw_bold(buf, w, h, px + 24.0, py + 22.0, crate::i18n::pick(lang, zh, en), font::TITLE, color::text(), 0.98);
+
+    let (hz, he) = crate::setup::hint(s.step);
+    tr.draw(buf, w, h, px + 24.0, py + 56.0, crate::i18n::pick(lang, hz, he), font::CAPTION, color::text_dim(), 0.9);
+
+    // 当前值：让用户知道自己改成了什么（键盘驱动时尤其重要 —— 没有控件状态可看）
+    let tz_h = settings.tz_offset_min / 60;
+    let tz_m = (settings.tz_offset_min % 60).abs();
+    let cur = format!(
+        "{}：{}    {}：UTC{:+03}:{:02}    {}：{} / {}",
+        crate::i18n::tr("语言", "Language"),
+        if settings.locale == 1 { "English" } else { "中文" },
+        crate::i18n::tr("时区", "Time zone"),
+        tz_h,
+        tz_m,
+        crate::i18n::tr("外观", "Theme"),
+        if settings.dark_mode { crate::i18n::tr("深色", "Dark") } else { crate::i18n::tr("浅色", "Light") },
+        if settings.high_contrast { crate::i18n::tr("高对比", "High contrast") } else { crate::i18n::tr("标准", "Standard") },
+    );
+    tr.draw(buf, w, h, px + 24.0, py + 96.0, &cur, font::CAPTION, color::text_dim(), 0.85);
+
+    // 步骤指示 + 操作提示
+    let footer = format!(
+        "{} {}/{}    {}    {}",
+        crate::i18n::tr("第", "Step"),
+        s.step + 1,
+        crate::setup::STEP_COUNT,
+        crate::i18n::tr("回车继续 · B 返回 · Esc 跳过", "Enter next · B back · Esc skip"),
+        if s.is_last_step() {
+            crate::i18n::tr("（回车即完成）", "(Enter finishes)")
+        } else {
+            ""
+        },
+    );
+    tr.draw(buf, w, h, px + 24.0, py + panel_h - 44.0, &footer, font::CAPTION, color::text_dim(), 0.8);
+
+    // 进度点
+    for i in 0..crate::setup::STEP_COUNT {
+        let x = px + 24.0 + i as f32 * 18.0;
+        let y = py + panel_h - 22.0;
+        fill_rect(
+            buf, w, h,
+            Rect { x: x as i32, y: y as i32, w: 10, h: 10 },
+            if i == s.step { color::accent() } else { color::hairline() },
+            0.95,
+        );
+    }
+}
+
 impl Renderer {
     pub fn new(w: usize, h: usize) -> Self {
         Self {
@@ -1787,6 +1874,7 @@ impl Renderer {
         lock: Default::default(),
         palette: Default::default(),
         policy: Default::default(),
+        setup: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -2001,6 +2089,12 @@ impl Renderer {
         }
         if ui.open_menu.is_some() {
             self.draw_dropdown(buf, w, h, ui, tr);
+        }
+        // 首次启动向导（§5.8）：**盖在命令面板之上**（开机第一次进来，
+        // 向导是当前唯一该做的事），但仍在锁屏之下（锁屏必须最后画，见文件末尾注释）。
+        if self.setup.open {
+            draw_setup(buf, w, h, &self.setup, &self.settings, tr);
+            mark!("setup");
         }
         // 命令面板（§5.5）：在普通浮层之上、锁屏之下。
         if self.palette.open {

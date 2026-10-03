@@ -42,6 +42,7 @@ mod shortcuts;
 mod palette;
 mod policyview;
 mod spaces;
+mod setup;
 mod auth;
 mod i18n;
 mod lock;
@@ -325,6 +326,12 @@ fn run_fbdev() -> anyhow::Result<()> {
     // 用户设置（P3）：从唯一持久分区读入；文件缺失/损坏会回落默认值（见 settings.rs）。
     // 没有设置文件时，默认时区取 `TZ`（镜像可按发行配置定），而不是写死 +8。
     renderer.settings = settings::Settings::load(settings::SETTINGS_PATH, text::tz_offset_min());
+    // §5.8 首次启动向导：**只在全新安装时弹**（设置里没记过"已完成"）。
+    // 判据与"旧文件缺键视为已完成"的兼容规则合起来，保证升级用户不会被弹窗骚扰。
+    renderer.setup = setup::Setup::initial(renderer.settings.setup_done);
+    if renderer.setup.open {
+        tty_log("首次启动：显示设置向导");
+    }
     // Dock 里要显示"已装应用"（见 load_installed_apps）。开机扫一次，
     // 之后由 refresh_apps_throttled 每 ~3 秒重扫 —— 这样"让 AI 装一个应用"之后，
     // Dock 上会自己冒出来，不必重启合成器。
@@ -424,6 +431,100 @@ fn run_fbdev() -> anyhow::Result<()> {
             // 放在 match 之前、且排在 DNS 守卫之前：锁着的时候一切输入都归锁屏。
             if renderer.lock.is_locked() {
                 handle_lock_key(&mut renderer.lock, &ev);
+                continue;
+            }
+            // §5.8 首次启动向导：**优先级高于命令面板与 DNS 编辑** ——
+            // 开机第一次进来时它是当前唯一该做的事，别的浮层不该抢键。
+            if renderer.setup.open {
+                let act = match &ev {
+                    input::UiEvent::Char(c) => setup::handle_key(renderer.setup.step, *c),
+                    input::UiEvent::Enter => setup::Action::Next,
+                    input::UiEvent::Escape => setup::Action::SkipAll,
+                    _ => setup::Action::None,
+                };
+                // 记"已完成"并落盘：走完与跳过**都算完成**（否则下次开机又弹）。
+                let mut mark_done = false;
+                match act {
+                    setup::Action::None => {}
+                    setup::Action::Next => {
+                        if renderer.setup.advance() {
+                            mark_done = true;
+                        }
+                    }
+                    setup::Action::Back => renderer.setup.back(),
+                    setup::Action::SkipAll => {
+                        renderer.setup.finish();
+                        mark_done = true;
+                    }
+                    // 下面是"让用户做一次已有的设置操作"——**复用设置中心那条命中路径**
+                    // （`apply_hit`），本处不复制任何设置逻辑，否则两份必然分叉。
+                    setup::Action::SetLang(i) => {
+                        settings::apply_hit(
+                            &mut renderer.settings,
+                            &mut renderer.settings_page,
+                            settings::SettingsHit::Locale(i),
+                        );
+                        crate::i18n::set_lang(crate::i18n::Lang::from_locale(renderer.settings.locale));
+                    }
+                    setup::Action::TzShift(d) => {
+                        settings::apply_hit(
+                            &mut renderer.settings,
+                            &mut renderer.settings_page,
+                            settings::SettingsHit::TzShift(d),
+                        );
+                    }
+                    setup::Action::SetDark => {
+                        settings::apply_hit(
+                            &mut renderer.settings,
+                            &mut renderer.settings_page,
+                            settings::SettingsHit::ToggleDark,
+                        );
+                        // 先取值再调用：同一表达式里既 `&mut renderer` 又读它的字段会借不过
+                        // （这段在 `cfg(target_os = "linux")` 的循环里 —— **又是 musl 抓出来的**）
+                        let (dark, hc) = (
+                            renderer.settings.dark_mode,
+                            renderer.settings.high_contrast,
+                        );
+                        apply_theme(&mut renderer, dark, hc);
+                    }
+                    setup::Action::SetContrast => {
+                        settings::apply_hit(
+                            &mut renderer.settings,
+                            &mut renderer.settings_page,
+                            settings::SettingsHit::ToggleContrast,
+                        );
+                        // 先取值再调用：同一表达式里既 `&mut renderer` 又读它的字段会借不过
+                        // （这段在 `cfg(target_os = "linux")` 的循环里 —— **又是 musl 抓出来的**）
+                        let (dark, hc) = (
+                            renderer.settings.dark_mode,
+                            renderer.settings.high_contrast,
+                        );
+                        apply_theme(&mut renderer, dark, hc);
+                    }
+                    setup::Action::UseDefaultDns => {
+                        // 走与设置页同一条出口（`set_dns` → aetherd → resolv.conf）
+                        set_dns(ai_tx.clone(), setup::DEFAULT_DNS.to_string());
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            "正在写入默认 DNS…".to_string(),
+                            notifications::Kind::Info,
+                        );
+                    }
+                }
+                if mark_done {
+                    renderer.settings.setup_done = true;
+                    if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
+                        // 存不下来要**说出来**：否则下次开机又弹一遍，用户不知道为什么
+                        eprintln!("[aether-compositor] 保存向导完成状态失败：{e}");
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            format!("向导状态保存失败：{e}"),
+                            notifications::Kind::Err,
+                        );
+                    }
+                }
                 continue;
             }
             // §5.5：命令面板是**模态**的 —— 打开期间所有按键都归它，
