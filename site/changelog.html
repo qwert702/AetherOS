@@ -414,6 +414,86 @@
 <p>（compositor 238→241）；6 crate musl <strong>0 警告</strong>；<code>gates.py</code> <strong>10/10</strong>；</p>
 <p>文档三层 + 逐文件 + 测试分布表全过；规模 28,464 行 / 46 文件。</p>
 <p><strong>未实机验证</strong>：真机断电、确认卡片在真机上的实际交互（本机无 PID 1）。</p>
+<h2 id="2026-10-03-k-1-k-2">二十、功能缺口：声音（2026-10-03 凌晨，批次 K-1 / K-2）</h2>
+<p>对应 FEATURE-GAPS §2.2「完全没有音频栈」。后端与界面分两批做。</p>
+<h3>最重要的决定：<strong>不链接 libasound</strong></h3>
+<p><code>alsa-sys</code> 需要在<strong>交叉编译目标</strong>上有 libasound 的头与库 —— 那会让本仓库现有的</p>
+<p>musl 静态检查（6/7 crate 可查，合成器正是其中之一）直接失效，代价太大。</p>
+<p>我们真正需要的只有两件事：播一个短提示音、读写 Master 音量。于是走 alsa-utils：</p>
+<p><code>aplay -q -</code>（WAV 从 stdin 读，不需要临时文件）与 <code>amixer get/set Master</code>。</p>
+<p>零构建期依赖、零新增第三方 crate。附带好处：<code>aplay -l</code> 失败恰好给出一个**可靠的</p>
+<p>"有没有声卡"判据** —— 而"无设备时如实显示"是本项目的硬要求。</p>
+<p>代价写清楚了：每次提示音起一个子进程（10~30ms 延迟，提示音可接受）；</p>
+<p>音量读写同样走子进程，所以<strong>不能每帧调用</strong>（只在启动/改完时 refresh）。</p>
+<h3>提示音：运行时合成 WAV，不内嵌音频文件</h3>
+<p>一段 60~160ms 的正弦音只有几十行代码，而内嵌二进制资源既无法在代码审查里核对，</p>
+<p>也会让"这声音到底是什么"变成黑箱。合成还让三条性质变成<strong>可测</strong>的：WAV 头合法</p>
+<p>（逐字段核对 RIFF/data 长度）、不是静音（峰值 &gt; 1000）、三种音可区分（音高/时长不同）。</p>
+<p>三种提示音：确认卡片弹出（880Hz，需引起注意）、AI 回复完成（1320Hz，轻）、</p>
+<p>操作失败（440Hz，更长）—— 失败与成功<strong>听感可分</strong>，用户不必盯屏幕。</p>
+<h3>界面：点击轨道定位，无设备时不画滑块</h3>
+<p>* 音量用<strong>点击位置</strong>决定百分比（绝对定位操作，点哪儿就是哪儿），也让"少一处拖拽状态"</p>
+<p>  成为可能；写完<strong>回读</strong> mixer —— 写成功 ≠ 值真的变了（有些 mixer 会把值夹到最近档位）。</p>
+<p>* <code>AudioState</code> 三态（就绪/无设备/未检测）：<strong>"探测不了"与"确实没有声卡"必须分开</strong> ——</p>
+<p>  把"缺 aplay"说成"缺声卡"会让用户去查一个不存在的问题。</p>
+<p>* 非 <code>Ready</code> 时<strong>只显示如实文案且不登记命中区</strong>：画一个拖不动的滑块比没有滑块更糟。</p>
+<h3>一个值得记的过程细节</h3>
+<p>音量接线写在 <strong>Linux 专属的 fbdev 循环</strong>里，Windows 构建<strong>根本编译不到</strong>。</p>
+<p>是 <strong>musl 静态检查</strong>把这条路径真正编译了一遍，当场抓出 3 处签名/字段不匹配。</p>
+<p>这正是当初加 musl 检查的价值 —— "Windows 上能过"不等于"能跑"。</p>
+<h3>验证</h3>
+<p><code>cargo test</code> <strong>424 项</strong>（+14）；musl <strong>0 警告</strong>；<code>gates.py</code> 10/10。</p>
+<p><strong>未实机验证</strong>：真实播放、VMware 是否有虚拟声卡、镜像里是否真有 <code>aplay</code>/<code>amixer</code></p>
+<p>（defconfig 符号名待构建机核对：首次构建后要确认没有 "was set but is not valid" 告警）。</p>
+<h2 id="2026-10-03-l-1">二十一、功能缺口：设置"真的能改"（一半）+ 缺口清单对齐（2026-10-03，批次 L-1）</h2>
+<h3>壁纸：真的能换，且默认行为不变</h3>
+<p><code>draw::wallpaper_colors(index, dark)</code>：索引 0 = <strong>跟随主题</strong>（与改动前逐字节一致），</p>
+<p>1..=5 = 五档低饱和中性渐变。<strong>索引 0 保持原行为</strong>很重要 —— 否则"加个壁纸功能"</p>
+<p>等于给所有用户静默换了壁纸。换壁纸走与换主题<strong>同一条缓存失效机制</strong>（<code>bg_dirty</code>）：</p>
+<p>不重建的话画面会保持旧壁纸直到某次偶然失效，那正是"设置改了没反应"的典型症状。</p>
+<h3>恢复默认：真的重置，但保留时区</h3>
+<p>时区来自系统/发行配置（<code>TZ</code>），不是"外观偏好" —— 顺手把它重置成 +8 属于</p>
+<p>"改了一个用户没要求改的东西"，是这类按钮最容易犯的错。</p>
+<h3>单测抓到一个真问题</h3>
+<p>"各档配色必须互不相同"这条断言<strong>当场抓到</strong>：<code>WALLPAPER_COUNT = 6</code>，但配色表只写到</p>
+<p>索引 4 —— 第 5 档落到兜底分支，<strong>与默认档配色相同</strong>（"选了像没选"）。已补第 5 档。</p>
+<p>这类"枚举数量与表长度不一致"是典型的静默缺陷，肉眼看代码很难发现。</p>
+<h3>刻意<strong>不做</strong>的两项（不做假控件）</h3>
+<p><strong>界面缩放</strong>与<strong>默认应用</strong>：设置文件里已有字段（批次 I 加的，向前兼容），但<strong>不在 UI 暴露</strong> ——</p>
+<p>软件渲染下真正应用缩放要改文字度量与控件尺寸的整条链路；默认应用要先定</p>
+<p>"文件用什么打开"的语义。做不到就不给控件，"能点但没用"是本项目明令禁止的。</p>
+<h3>缺口清单本身也同步了（提交 3c852d2）</h3>
+<p><code>docs/FEATURE-GAPS-2026-10-02.md</code> 的 §2 开头加了进度表（含提交号），</p>
+<p>每条标注<strong>状态</strong>、<strong>刻意偏离原建议的取舍</strong>、以及<strong>仍未实机验证</strong>的边界。</p>
+<p>原文的"现象/证据"段落全部保留并标注为历史 —— 记录当初的判断依据比抹掉它更有用。</p>
+<p><strong>为什么专门做这件事</strong>：那份清单是整项工作的"计划之锚"，如果它开始说"待做"</p>
+<p>而实际已做，它就会变成当初它要解决的那种"文档与现实脱节"。</p>
+<h3>验证</h3>
+<p><code>cargo test</code> <strong>427 项</strong>（+3）；musl 0 警告；<code>gates.py</code> 10/10；规模 29,191 行 / 47 文件。</p>
+<h2 id="2026-10-03-m-1">二十二、功能缺口：电源管理 / 息屏（2026-10-03，批次 M-1）</h2>
+<p>对应 FEATURE-GAPS §3.6「无空闲熄屏、无休眠 —— 实机费电」。本批做<strong>息屏</strong></p>
+<p>（休眠涉及整机状态保存，不在本批）。</p>
+<h3>写内核 blank 接口，不是"自己涂黑屏幕"</h3>
+<p><code>set_fb_blank()</code> 写 <code>/sys/class/graphics/fb0/blank</code>（4 = POWERDOWN / 0 = UNBLANK）。</p>
+<p><strong>不自己在帧缓冲上涂黑</strong>：那只让画面看起来黑了，输出与背光照旧 —— 实机上等于没省电，</p>
+<p>而用户会以为系统卡死了。fb0 不存在时依次退到 fb1/fb2，都不行就<strong>打一行日志如实报错</strong>。</p>
+<h3>判定是纯函数，所以不必等十分钟就能验</h3>
+<p><code>Settings::should_blank(Duration)</code> 拿 <code>Duration</code> 而不是 <code>Instant</code> ——</p>
+<p>"阈值前不息、阈值后息、0 = 永不舍弃"三条边界可以在单测里当场验，</p>
+<p>而不是靠"设成 1 分钟然后盯着屏幕看"。</p>
+<h3>几个刻意的决定</h3>
+<p>* <strong>0 = 永不是一个能选中的档</strong>，不是"没设置"。演示与排障时需要它；</p>
+<p>  若把它当成"未设置"而回落默认值，用户选了"永不"却仍被息屏 —— 那是最恼人的一类 bug。</p>
+<p>* <strong>档位固定</strong>（0/5/10/30 分钟），非法值<strong>吸附到最近档</strong>：手工改过的设置文件</p>
+<p>  不会让界面出现"高亮没落在任何按钮上"的状态。</p>
+<p>* <strong>默认 10 分钟</strong>（主流桌面系统的默认行为）—— 默认值本身值得说明：它意味着</p>
+<p>  开箱即用就带息屏，而不是"缺省等于没这个功能"。</p>
+<p>* <strong>任何输入都重置计时，且不吞掉那次输入</strong>：息屏时按的第一个键就是用户想按的键。</p>
+<p>  重置放在事件处理<strong>之前</strong> —— 放后面的话，被 <code>continue</code> 掉的分支（终端按键）不会重置，</p>
+<p>  于是"在终端里一直打字"反而会被息屏。</p>
+<h3>验证</h3>
+<p><code>cargo test</code> <strong>430 项</strong>（+3）；musl 0 警告；<code>gates.py</code> 10/10；规模 29,386 行 / 47 文件。</p>
+<p><strong>未实机验证</strong>：<code>fb0/blank</code> 在真机/VMware 上是否接受 "4"、息屏后能否被输入正常唤醒。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>
