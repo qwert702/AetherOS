@@ -888,9 +888,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
 
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
-                    if matches!(hit, settings::SettingsHit::ToggleDark) {
-                        let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer
-                        apply_theme(&mut renderer, dark);
+                    if matches!(
+                        hit,
+                        settings::SettingsHit::ToggleDark | settings::SettingsHit::ToggleContrast
+                    ) {
+                        // 先取值，避免同时可变借用 renderer
+                        let dark = renderer.settings.dark_mode;
+                        let hc = renderer.settings.high_contrast;
+                        apply_theme(&mut renderer, dark, hc);
                     }
                     // 壁纸（批次 L-1）：换壁纸要重建背景缓存 —— 与换主题同一条机制。
                     // 不重建的话画面会保持旧壁纸直到某次偶然的缓存失效，看起来像"没生效"。
@@ -900,7 +905,8 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 恢复默认：可能同时改了主题与壁纸，两件事都要做
                     if matches!(hit, settings::SettingsHit::ResetDefaults) {
                         let dark = renderer.settings.dark_mode;
-                        apply_theme(&mut renderer, dark);
+                        let hc = renderer.settings.high_contrast;
+                        apply_theme(&mut renderer, dark, hc);
                         renderer.bg_dirty = true;
                         push_toast(&mut toast, &mut renderer.notifs, "外观已恢复默认".to_string(), notifications::Kind::Ok);
                     }
@@ -1903,12 +1909,14 @@ fn desktop_icon_click(
 ///
 /// 两个入口共用：设置中心「外观」页与控制中心的深色开关。
 /// **不改 `settings.dark_mode`** —— 那是调用方的事（设置中心走 `apply_hit`，控制中心自己翻）。
-fn apply_theme(renderer: &mut draw::Renderer, dark: bool) {
+fn apply_theme(renderer: &mut draw::Renderer, dark: bool, high_contrast: bool) {
     draw::theme::color::set_mode(if dark {
         draw::theme::color::Mode::Dark
     } else {
         draw::theme::color::Mode::Light
     });
+    // 高对比度与主题模式**正交**：两种主题都能开（§3.4）。
+    draw::theme::color::set_high_contrast(high_contrast);
     renderer.bg_dirty = true; // 壁纸与投影合成层都依赖主题，必须重建
 }
 
@@ -2222,8 +2230,10 @@ fn control_center_click(
             }
             ControlHit::ToggleDark => {
                 renderer.settings.dark_mode = !renderer.settings.dark_mode;
-                let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer
-                apply_theme(renderer, dark);
+                // 先取值，避免同时可变借用 renderer
+                let dark = renderer.settings.dark_mode;
+                let hc = renderer.settings.high_contrast;
+                apply_theme(renderer, dark, hc);
                 if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                     eprintln!("aether-compositor: 设置未能写入磁盘: {e}");
                 }
@@ -2632,6 +2642,9 @@ fn main() -> anyhow::Result<()> {
         _ => {
             // 读用户设置（读不到就是默认值 = 明亮）
             let saved = settings::Settings::load(settings::SETTINGS_PATH, text::tz_offset_min());
+            // 无障碍设置与主题一起应用（§3.4）：高对比度也要在**第一帧之前**生效，
+            // 否则开机瞬间会闪一下低对比界面。
+            draw::theme::color::set_high_contrast(saved.high_contrast);
             if saved.dark_mode {
                 draw::theme::color::Mode::Dark
             } else {

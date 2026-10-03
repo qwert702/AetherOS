@@ -26,7 +26,7 @@ use self::theme::{color, elevation, font, metric, radius, state};
 pub mod theme {
     /// 色板 §3.1：中性层级 + 克制使用的强调色
     pub mod color {
-        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
         /// 主题模式。启动时设定一次，绘制期间只读。
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -38,6 +38,8 @@ pub mod theme {
         }
 
         static MODE: AtomicU8 = AtomicU8::new(Mode::Light as u8);
+        /// 高对比度（无障碍 §3.4）。与主题模式**正交**：明亮/深色都能开高对比。
+        static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
 
         pub fn set_mode(m: Mode) {
             MODE.store(m as u8, Ordering::Relaxed);
@@ -46,6 +48,91 @@ pub mod theme {
         #[inline]
         pub fn is_light() -> bool {
             MODE.load(Ordering::Relaxed) == Mode::Light as u8
+        }
+
+        /// 开关高对比度（无障碍 §3.4）。启动时按用户设置设定一次。
+        pub fn set_high_contrast(on: bool) {
+            HIGH_CONTRAST.store(on, Ordering::Relaxed);
+        }
+
+        #[inline]
+        pub fn high_contrast() -> bool {
+            HIGH_CONTRAST.load(Ordering::Relaxed)
+        }
+
+        /// 高对比度下把**前景**色推向与背景相反的一端（纯函数，便于确定性测试）。
+        ///
+        /// 方向按主题决定：浅色主题的前景要**更深**，深色主题的要**更亮**。
+        /// 如果无脑"推向极端"，浅色主题下的灰色文字会变得更亮、与白底对比更差 ——
+        /// 那是帮倒忙，所以这里必须知道主题。
+        pub fn push_fg(c: [u8; 3], light: bool) -> [u8; 3] {
+            c.map(|v| {
+                if light {
+                    (v as u32 * 5 / 8) as u8
+                } else {
+                    (255 - (255 - v as u32) * 5 / 8) as u8
+                }
+            })
+        }
+
+        /// 高对比度下把**背景**色推向纯白（浅色）或纯黑（深色），与前景拉开距离。
+        pub fn push_bg(c: [u8; 3], light: bool) -> [u8; 3] {
+            c.map(|v| {
+                if light {
+                    (255 - (255 - v as u32) * 3 / 8) as u8
+                } else {
+                    (v as u32 * 3 / 8) as u8
+                }
+            })
+        }
+
+        /// 前景取色（高对比度时按方向推一把）。
+        #[inline]
+        fn fg(c: [u8; 3]) -> [u8; 3] {
+            if high_contrast() {
+                push_fg(c, is_light())
+            } else {
+                c
+            }
+        }
+
+        /// 背景取色（高对比度时按方向推一把）。
+        #[inline]
+        fn bg(c: [u8; 3]) -> [u8; 3] {
+            if high_contrast() {
+                push_bg(c, is_light())
+            } else {
+                c
+            }
+        }
+
+        // ---- WCAG 对比度（用于**客观**验证无障碍声明，而不是靠肉眼说"更清楚了"）----
+        /// 相对亮度（WCAG 2.x 定义）。
+        // 只在测试下编译：这两个函数是**验证无障碍声明**的工具，不是运行时功能。
+        // 高对比度本身靠 `push_fg`/`push_bg` 生效；对不对要靠客观数字说话。
+        // （标成 pub 却没人调用会被死代码检查拦下 —— 门禁把警告当失败。）
+        #[cfg(test)]
+        pub fn relative_luminance(c: [u8; 3]) -> f64 {
+            fn ch(v: u8) -> f64 {
+                let s = v as f64 / 255.0;
+                if s <= 0.03928 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2])
+        }
+
+        /// 两色的对比度（1.0 ~ 21.0）。WCAG：AA 正文 4.5、AAA 正文 7.0。
+        // 只在测试下编译：这两个函数是**验证无障碍声明**的工具，不是运行时功能。
+        // 高对比度本身靠 `push_fg`/`push_bg` 生效；对不对要靠客观数字说话。
+        // （标成 pub 却没人调用会被死代码检查拦下 —— 门禁把警告当失败。）
+        #[cfg(test)]
+        pub fn contrast_ratio(a: [u8; 3], b: [u8; 3]) -> f64 {
+            let (la, lb) = (relative_luminance(a), relative_luminance(b));
+            let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+            (hi + 0.05) / (lo + 0.05)
         }
 
         #[inline]
@@ -62,45 +149,45 @@ pub mod theme {
         // 靠描边与阴影做层次 —— 之前那套偏蓝的灰在真机帧缓冲上会读成粉。
         /// 壁纸渐变顶（纯白）
         pub fn bg_top() -> [u8; 3] {
-            pick([255, 255, 255], [27, 29, 33])
+            bg(pick([255, 255, 255], [27, 29, 33]))
         }
         /// 壁纸渐变底（极浅中性灰，几乎看不出渐变）
         pub fn bg_bottom() -> [u8; 3] {
-            pick([244, 245, 247], [23, 24, 28])
+            bg(pick([244, 245, 247], [23, 24, 28]))
         }
         /// 底座（菜单栏、侧栏、终端底、状态条、音乐面板）。
         /// 浅色下**必须比窗口体暗**，否则底座与窗口同色，所有区域糊成一片。
         pub fn inset() -> [u8; 3] {
-            pick([235, 237, 240], [30, 32, 41])
+            bg(pick([235, 237, 240], [30, 32, 41]))
         }
         /// 窗口/面板主面（纯白，与壁纸同色，靠描边区分）
         pub fn surface_1() -> [u8; 3] {
-            pick([255, 255, 255], [46, 49, 60])
+            bg(pick([255, 255, 255], [46, 49, 60]))
         }
         /// 内容"纸面"、卡片、浮层、侧栏选中
         pub fn surface_2() -> [u8; 3] {
-            pick([255, 255, 255], [64, 68, 80])
+            bg(pick([255, 255, 255], [64, 68, 80]))
         }
         /// 输入框、悬停中的控件
         pub fn surface_3() -> [u8; 3] {
-            pick([241, 243, 246], [80, 84, 97])
+            bg(pick([241, 243, 246], [80, 84, 97]))
         }
         /// 对比线：描边、分隔线、悬停叠层。
         /// 深色模式是白线，明亮模式是黑线——**所有调用点的 alpha 无需改动**。
         pub fn hairline() -> [u8; 3] {
-            pick([16, 18, 24], [255, 255, 255])
+            fg(pick([16, 18, 24], [255, 255, 255]))
         }
         /// 主文字
         pub fn text() -> [u8; 3] {
-            pick([26, 28, 34], [240, 241, 246])
+            fg(pick([26, 28, 34], [240, 241, 246]))
         }
         /// 次要文字
         pub fn text_dim() -> [u8; 3] {
-            pick([94, 98, 108], [180, 182, 192])
+            fg(pick([94, 98, 108], [180, 182, 192]))
         }
         /// 占位/禁用文字
         pub fn text_faint() -> [u8; 3] {
-            pick([146, 150, 160], [136, 139, 150])
+            fg(pick([146, 150, 160], [136, 139, 150]))
         }
 
         /// 顶部内高光：两种模式都是白（明亮模式下表现为"玻璃上缘"）。
@@ -123,7 +210,7 @@ pub mod theme {
         /// 明亮模式**必须是白**：用底座色（浅灰）会读成一块灰板，
         /// 整个界面立刻廉价。深色模式则是比窗口更暗的底座。
         pub fn glass() -> [u8; 3] {
-            pick([255, 255, 255], [30, 32, 41])
+            bg(pick([255, 255, 255], [30, 32, 41]))
         }
 
         /// 悬浮玻璃层不透明度（P0：整体提纯——面板不透明化，浮层保留玻璃）
@@ -2665,6 +2752,12 @@ fn draw_settings_content(
             // 由事件循环执行（绘制期不改状态）。
             let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
             toggle_row(buf, w, h, mouse, tr, r1, "深色模式", Some("默认关闭（明亮/纯白）；切换立即生效"), s.dark_mode, SettingsHit::ToggleDark, hits);
+            // §3.4 无障碍：高对比度。紧跟主题开关 —— 它是"看得清"这条线上的第二项。
+            // 说明文字直接给出**可验证的依据**（WCAG AA），而不是"更清楚"这种主观话。
+            let r_hc = Rect { x: r1.x, y: r1.y + 56, w: r1.w, h: r1.h };
+            toggle_row(buf, w, h, mouse, tr, r_hc, "高对比度",
+                       Some("把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交"),
+                       s.high_contrast, SettingsHit::ToggleContrast, hits);
             ry += 58;
             widgets::group_header(buf, w, h, content.x + 24, ry, "当前配色", Some(tr));
             ry += 22;
@@ -4973,6 +5066,105 @@ mod blit_tests {
         // 每个命中区都要有面积（零面积区域点不到）
         for (rect, _) in &hits {
             assert!(rect.w > 0 && rect.h > 0, "命中区不能是零面积：{rect:?}");
+        }
+    }
+
+    /// §3.4 无障碍：**用 WCAG 对比度客观验证**，而不是靠肉眼说「更清楚了」。
+    ///
+    /// 用纯函数（收 `light` 参数）而不是全局状态：测试并行执行，
+    /// 全局原子量会被其它用例改掉，断言就成了掷骰子。
+    #[test]
+    fn high_contrast_raises_wcag_ratios_in_both_themes() {
+        use crate::draw::theme::color::{contrast_ratio, push_bg, push_fg};
+        // 基色取自色板（与 color:: 里的字面量一致）
+        let cases: Vec<(&str, bool, [u8; 3], [u8; 3])> = vec![
+            ("浅色/主文字", true, [26, 28, 34], [255, 255, 255]),
+            ("浅色/次要文字", true, [94, 98, 108], [255, 255, 255]),
+            ("浅色/占位文字", true, [146, 150, 160], [255, 255, 255]),
+            ("深色/主文字", false, [240, 241, 246], [46, 49, 60]),
+            ("深色/次要文字", false, [180, 182, 192], [46, 49, 60]),
+            ("深色/占位文字", false, [136, 139, 150], [46, 49, 60]),
+        ];
+        for (name, light, fg, bgground) in cases {
+            let before = contrast_ratio(fg, bgground);
+            let after = contrast_ratio(push_fg(fg, light), push_bg(bgground, light));
+            assert!(
+                after > before,
+                "{name}：高对比度**没有**提升对比度（{before:.2} → {after:.2}）"
+            );
+            assert!(
+                after >= 4.5,
+                "{name}：高对比度下仍低于 WCAG AA 正文 4.5（实得 {after:.2}）"
+            );
+        }
+    }
+
+    /// 最弱的一档（占位文字）在正常模式下**本来就不达标** —— 这条记录现状，
+    /// 也说明高对比度不是"锦上添花"而是必需：它把这档从 ~3 提到 ≥4.5。
+    #[test]
+    fn faint_text_is_the_one_that_actually_needs_high_contrast() {
+        use crate::draw::theme::color::{contrast_ratio, push_fg};
+        let normal = contrast_ratio([146, 150, 160], [255, 255, 255]);
+        assert!(normal < 4.5, "占位文字在正常模式下就不该达标（实得 {normal:.2}）");
+        let hc = contrast_ratio(push_fg([146, 150, 160], true), [255, 255, 255]);
+        assert!(hc >= 4.5, "高对比度必须把它拉过 AA（实得 {hc:.2}）");
+    }
+
+    /// 变换的方向性：**浅色主题往前景更暗、深色主题更亮**，绝不能反。
+    ///
+    /// 这条是防"帮倒忙"的：如果只写"推向极端"，浅色主题下的灰字会被推**亮**，
+    /// 与白底对比更差 —— 那是把无障碍做成了反效果。
+    #[test]
+    fn push_direction_depends_on_theme() {
+        use crate::draw::theme::color::push_fg;
+        let grey = [146u8, 150, 160];
+        let light_hc = push_fg(grey, true);
+        let dark_hc = push_fg(grey, false);
+        // 用 u32 求和：u8 相加会溢出（146+150+160 = 456 > 255）
+        let sum = |c: [u8; 3]| c.iter().map(|v| *v as u32).sum::<u32>();
+        assert!(
+            sum(light_hc) < sum(grey),
+            "浅色主题应把前景推得更暗：{grey:?} → {light_hc:?}"
+        );
+        assert!(
+            sum(dark_hc) > sum(grey),
+            "深色主题应把前景推得更亮：{grey:?} → {dark_hc:?}"
+        );
+    }
+
+    /// §3.4：「外观」页必须登记高对比度开关 —— 无障碍功能**只有真的能点到**才算做了。
+    #[test]
+    fn appearance_page_registers_the_high_contrast_switch() {
+        // 本模块没有 import 这两个名字，用函数内 use 最不容易互相干扰
+        use crate::draw::{draw_settings_content, Rect};
+        let Some(tr) = crate::text::TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        let (w, h) = (820usize, 620usize);
+        let mut buf = vec![0u32; w * h];
+        let r = Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+        let mut hits = Vec::new();
+        let page = crate::settings::PAGES
+            .iter()
+            .position(|p| p.title == "外观")
+            .expect("应存在「外观」页");
+        draw_settings_content(
+            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
+            crate::settings::Settings::default(),
+            &crate::settings::DnsField::default(),
+            page, &mut hits,
+        );
+        use crate::settings::SettingsHit as H;
+        assert!(
+            hits.iter().any(|(_, x)| matches!(x, H::ToggleContrast)),
+            "外观页缺少高对比度开关"
+        );
+        // 命中区不能是零面积（零面积 = 点不到）
+        for (rect, x) in &hits {
+            if matches!(x, H::ToggleContrast) {
+                assert!(rect.w > 0 && rect.h > 0, "高对比度开关命中区是零面积：{rect:?}");
+            }
         }
     }
 

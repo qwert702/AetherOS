@@ -47,6 +47,8 @@ pub struct Settings {
     pub ime_default: bool,
     /// 深色模式（**默认 false = 明亮/纯白**，与产品主视觉一致）。用户可在设置中心或控制中心切换。
     pub dark_mode: bool,
+    /// 高对比度（无障碍 §3.4）。与深色模式**正交**：两种主题都能开。
+    pub high_contrast: bool,
     /// 鼠标速度（百分比，100 = 1:1）。
     ///
     /// 合成器原先对相对位移**硬编码 ×2**，在 VMware/真机上太快（用户实测反馈）；
@@ -123,6 +125,7 @@ impl Default for Settings {
             clock_seconds: false,
             ime_default: false,
             dark_mode: false,
+            high_contrast: false,
             mouse_speed_pct: 100,
             wallpaper: 0,
             ui_scale_pct: 100,
@@ -165,6 +168,9 @@ impl Settings {
         }
         if let Some(b) = v.get("ime_default").and_then(Value::as_bool) {
             s.ime_default = b;
+        }
+        if let Some(b) = v.get("high_contrast").and_then(Value::as_bool) {
+            s.high_contrast = b;
         }
         if let Some(b) = v.get("dark_mode").and_then(Value::as_bool) {
             s.dark_mode = b;
@@ -234,6 +240,7 @@ impl Settings {
             "clock_seconds": self.clock_seconds,
             "ime_default": self.ime_default,
             "dark_mode": self.dark_mode,
+            "high_contrast": self.high_contrast,
             "mouse_speed_pct": self.mouse_speed_pct,
             "wallpaper": self.wallpaper,
             "ui_scale_pct": self.ui_scale_pct,
@@ -316,6 +323,8 @@ pub enum SettingsHit {
     ImeDefault,
     /// 深色模式开关（默认关 = 白色）
     ToggleDark,
+    /// 切换高对比度（无障碍 §3.4）。
+    ToggleContrast,
     /// 鼠标速度（百分比，由分段控件给值；越界由 `apply_hit` 夹取）
     MouseSpeed(i32),
     /// **动作类**：打开内建应用（序号与 `main.rs::open_app` 一致）
@@ -488,6 +497,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::TzShift(d) => s.shift_tz(d),
         SettingsHit::ImeDefault => s.ime_default = !s.ime_default,
         SettingsHit::ToggleDark => s.dark_mode = !s.dark_mode,
+        SettingsHit::ToggleContrast => s.high_contrast = !s.high_contrast,
         SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
         // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序/电源动作），
         // 放这里只是为了让 `apply_hit` 对枚举保持穷尽（漏一个变体会编译不过）。
@@ -544,6 +554,8 @@ mod tests {
             clock_seconds: true,
             ime_default: true,
             dark_mode: true,
+            // 无障碍字段也用**非默认值**往返一次：默认值会让"没写进 JSON"这类 bug 溜过去
+            high_contrast: true,
             mouse_speed_pct: 150,
             // 批次 I 新字段也一起过一遍往返（漏了就会在"存了没生效"这类 bug 里翻车）
             wallpaper: 3,
@@ -637,6 +649,7 @@ mod tests {
             clock_seconds: true,
             ime_default: false,
             dark_mode: true,
+            high_contrast: true,
             mouse_speed_pct: 60,
             // 非默认值：真正验证"写进去→读出来"包含批次 I 的新字段
             wallpaper: 4,
@@ -1052,6 +1065,23 @@ mod restart_action_tests {
         assert_eq!(f.cursor.pos(), 1);
         // 关键：不能 panic、不能产生非法 UTF-8（String 保证，但插入位置算错会 panic）
         assert_eq!(f.validate().is_err(), true);
+    }
+
+    /// §3.4：高对比度开关要能改、能存、能读回来（与深色模式同一条路径）。
+    #[test]
+    fn high_contrast_toggles_and_round_trips() {
+        let mut s = Settings::default();
+        assert!(!s.high_contrast, "默认必须是关（不改动默认观感）");
+        let mut page = 0usize;
+        apply_hit(&mut s, &mut page, SettingsHit::ToggleContrast);
+        assert!(s.high_contrast, "第一次点击应开启");
+        let json = s.to_json();
+        assert!(json.contains("high_contrast"), "必须落盘：{json}");
+        assert!(Settings::from_json(&json).high_contrast, "读回来必须还是开");
+        apply_hit(&mut s, &mut page, SettingsHit::ToggleContrast);
+        assert!(!s.high_contrast, "再点一次应关闭");
+        // 旧文件没有这个字段 → 走默认（关），不能因此读失败
+        assert!(!Settings::from_json(r#"{"dark_mode":true}"#).high_contrast);
     }
 
 }
