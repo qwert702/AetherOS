@@ -405,6 +405,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
             }
+            // §2.4：设置页正在编辑 DNS 时，**键盘事件先给输入框**。
+            // 放在 match 之前而不是改 4 个分支（Char/Backspace/Escape/Enter）：
+            // 改 4 处就有 4 处出错机会，守卫只有一处。
+            // **只拦键盘** —— 鼠标等事件继续走下面的匹配，否则编辑态下界面会僵住。
+            if renderer.dns.editing && handle_dns_key(&mut renderer.dns, &ev, &ai_tx) {
+                continue;
+            }
+
             match ev {
                 input::UiEvent::MouseMove { dx, dy } => {
                     // 位移在事件流里累积，不受渲染帧率影响。
@@ -610,6 +618,20 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
+                AiEvent::DnsSaved { ok, message } => {
+                    // 回执落到输入框的反馈行：**成功才退出编辑态**，失败留在编辑态
+                    // 让用户接着改（把他踢出去等于让他重来一遍）。
+                    // `DnsField::finish` 封装了这条规则，两处调用点的行为因此一致。
+                    let msg = message;
+                    renderer.dns.finish(if ok { Ok(msg.clone()) } else { Err(msg.clone()) });
+                    // 也弹一条提示：编辑框可能已滚出视野，而"改系统配置"的结果必须让人看到
+                    push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        format!("DNS：{msg}"),
+                        if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
+                    );
+                }
                 AiEvent::Reply(text, channel) => {
                     ai_status = match channel.as_deref() {
                         Some("cloud") => draw::AiStatus::Cloud,
@@ -806,6 +828,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                     // 导出审计日志（§5.2）：**动作类**，成功给出确切路径，
                     // 失败给出原因（不静默、不谎报"已导出"）
+                    // 「修改 DNS」（§2.4）：点击进入编辑态，输入框里带上**当前值**
+                    // （用户从现状开始改，而不是从空白重打）。
+                    if let settings::SettingsHit::EditDns = hit {
+                        let current = crate::net::read().dns.join(", ");
+                        renderer.dns.begin(&current);
+                    }
                     if let settings::SettingsHit::ExportAudit = hit {
                         match export_audit() {
                             Ok(path) => push_toast(
@@ -1302,6 +1330,10 @@ enum AiEvent {
     Confirm(Box<ConfirmRequest>),
     /// 确认后执行的结果（或安装结果）
     ToolDone { ok: bool, output: String, origin: ConfirmOrigin },
+
+    /// DNS 写入的回执（§2.4）。**单独一个变体**，不复用 `ToolDone`：
+    /// 那是"AI 工具调用完成"的语义，会让设置页的一次保存显示成 AI 回复。
+    DnsSaved { ok: bool, message: String },
 }
 
 /// 安装向导状态（仅 Live ISO 会话；run_fbdev 持有）。
@@ -3048,6 +3080,20 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
+                AiEvent::DnsSaved { ok, message } => {
+                    // 回执落到输入框的反馈行：**成功才退出编辑态**，失败留在编辑态
+                    // 让用户接着改（把他踢出去等于让他重来一遍）。
+                    // `DnsField::finish` 封装了这条规则，两处调用点的行为因此一致。
+                    let msg = message;
+                    renderer.dns.finish(if ok { Ok(msg.clone()) } else { Err(msg.clone()) });
+                    // 也弹一条提示：编辑框可能已滚出视野，而"改系统配置"的结果必须让人看到
+                    push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        format!("DNS：{msg}"),
+                        if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
+                    );
+                }
                 AiEvent::Reply(text, channel) => {
                     ai_status = match channel.as_deref() {
                         Some("cloud") => draw::AiStatus::Cloud,
@@ -4044,6 +4090,103 @@ fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether
                 output: format!("重启网络失败：{e}"),
                 origin: ConfirmOrigin::Ai,
             },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// DNS 输入框的键盘处理。返回 `true` = **已消费**该事件（调用方应跳过其余处理）。
+///
+/// **只在 Linux 下编译**：唯一调用点在 fbdev 的事件循环里（那是真机路径）。
+/// 预览模式（minifb）用的是**另一套输入路径**（直接轮询按键，不走 `UiEvent`），
+/// 本轮没有接 —— 也就是说**预览里能看见输入框、但打不进字**。
+/// 这一点是缺的，不是"已经能用"；接手的人不要被画出来的框骗到。
+///
+/// 设计要点：
+/// * 回车时**先本地校验**（用共享的纯函数校验器）：不合法的输入**根本不发 IPC** ——
+///   没必要为一次注定被拒的请求去连服务端，用户也能立刻看到原因；
+/// * 校验通过才发 IPC，并先显示"正在保存…"（写入是异步的，不能假装已经成功）；
+/// * 只消费键盘事件，其它一律返回 `false` 交回主循环。
+#[cfg(target_os = "linux")]
+fn handle_dns_key(
+    f: &mut crate::settings::DnsField,
+    ev: &input::UiEvent,
+    tx: &mpsc::Sender<AiEvent>,
+) -> bool {
+    match ev {
+        input::UiEvent::Char(c) => {
+            f.insert(*c);
+            true
+        }
+        input::UiEvent::Backspace => {
+            f.backspace();
+            true
+        }
+        input::UiEvent::Enter => {
+            match f.validate() {
+                Ok(list) => {
+                    let v = list
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    set_dns(tx.clone(), v);
+                    // 不写"已保存"：这时只是发出去了，结果由 DnsSaved 事件回来
+                    f.feedback = Some("正在保存…".to_string());
+                }
+                Err(why) => {
+                    // 校验不过：本地报错，不发 IPC（也**不退出编辑态**，用户接着改）
+                    f.feedback = Some(why);
+                }
+            }
+            true
+        }
+        input::UiEvent::Escape => {
+            f.cancel();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 把 DNS 设置写进系统（§2.4 网络写入的界面侧出口）。
+///
+/// **只在 Linux 下编译**：唯一调用者是 `handle_dns_key`（同样只在 fbdev 路径）。
+///
+/// **为什么不在合成器里直接写 `/etc/resolv.conf`**：改系统配置是 aetherd 的职责
+/// （它做校验、原子写入、审计），合成器只画界面。与「重启网络服务」同一条路子。
+///
+/// 与剪贴板/服务控制同一套路：**独立线程 + 超时 + 结果回主循环**，绝不阻塞渲染。
+/// 服务端会要求"已注册的 UI 通道"，所以先 `register_ui`。
+///
+/// 结果用 `AiEvent::DnsSaved` 回到主循环 —— **不复用 `ToolDone`**：那会让
+/// 一次手动保存显示成 AI 回复。
+#[cfg(target_os = "linux")]
+fn set_dns(tx: mpsc::Sender<AiEvent>, value: String) {
+    std::thread::spawn(move || {
+        let run = || -> anyhow::Result<Response> {
+            let mut stream = IpcStream::connect(Duration::from_secs(2))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut reader = BufReader::new(stream.try_clone()?);
+            register_ui(&mut stream, &mut reader)?;
+            stream.write_all(
+                aether_ipc::encode(&Request::SetSetting {
+                    key: aether_ipc::SettingKey::Dns,
+                    value,
+                })
+                .as_bytes(),
+            )?;
+            let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
+            serde_json::from_str::<Response>(line.trim()).map_err(|e| anyhow::anyhow!("解析响应失败: {e}"))
+        };
+        let ev = match run() {
+            Ok(Response::SettingAck { ok, message, .. }) => AiEvent::DnsSaved { ok, message },
+            Ok(Response::Error { code, message }) => AiEvent::DnsSaved {
+                ok: false,
+                message: format!("被拒绝（{code}）：{message}"),
+            },
+            Ok(_) => AiEvent::DnsSaved { ok: false, message: "收到意外响应".into() },
+            Err(e) => AiEvent::DnsSaved { ok: false, message: format!("连接 aetherd 失败：{e}") },
         };
         let _ = tx.send(ev);
     });

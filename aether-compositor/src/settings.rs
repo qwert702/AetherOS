@@ -301,6 +301,9 @@ impl Settings {
 /// 且**绘制不修改状态**（看一帧不改设置）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsHit {
+    /// 「网络」页：开始编辑 DNS（§2.4）。**只改编辑态**，真正的写入在按下回车后
+    /// 经 aetherd 执行 —— 界面不直接改系统配置。
+    EditDns,
     /// 切换到第 n 页
     Page(usize),
     /// 24 小时制开关
@@ -505,7 +508,10 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::OpenApp(_)
         | SettingsHit::RestartService(_)
         | SettingsHit::Power(_)
-        | SettingsHit::Logout => {}
+        | SettingsHit::Logout
+        // 「修改 DNS」同样**不改设置状态**：编辑态住在 `Renderer::dns`
+        // （界面状态，不是要落盘的设置），由 main.rs 的命中分派处理。
+        | SettingsHit::EditDns => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

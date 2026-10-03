@@ -1458,6 +1458,9 @@ pub struct Renderer {
     pub settings: crate::settings::Settings,
     /// 设置窗口当前页（左栏选中项）
     pub settings_page: usize,
+    /// 「网络」页的 DNS 输入框状态（§2.4）。**不放进 `Settings`**：
+    /// 那个结构会被序列化落盘，而这个只是编辑期的临时状态（含光标与未提交文本）。
+    pub dns: crate::settings::DnsField,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1528,6 +1531,7 @@ impl Renderer {
             installed_apps: Vec::new(),
             settings: crate::settings::Settings::default(),
             settings_page: crate::settings::first_enabled_page(),
+            dns: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -1725,7 +1729,7 @@ impl Renderer {
                 buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
                 &mut self.sidebar_hits, &mut self.crumb_hits,
-                self.settings, self.settings_page, &mut self.settings_hits,
+                self.settings, &self.dns, self.settings_page, &mut self.settings_hits,
             );
         }
         mark!("windows");
@@ -2202,6 +2206,7 @@ fn draw_window(
     sidebar_hits: &mut Vec<(Rect, usize)>,
     crumb_hits: &mut Vec<(Rect, String)>,
     settings: crate::settings::Settings,
+    dns_field: &crate::settings::DnsField,
     settings_page: usize,
     settings_hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -2308,7 +2313,7 @@ fn draw_window(
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
         WinKind::Wayland => draw_wayland_content(buf, w, h, content, win.wayland.as_ref()),
         WinKind::Settings => draw_settings_content(
-            buf, w, h, content, mouse, tr, settings, settings_page, settings_hits,
+            buf, w, h, content, mouse, tr, settings, dns_field, settings_page, settings_hits,
         ),
     }
 }
@@ -2328,6 +2333,7 @@ fn draw_settings_content(
     mouse: (f32, f32),
     tr: Option<&TextRenderer>,
     s: crate::settings::Settings,
+    dns_field: &crate::settings::DnsField,
     page: usize,
     hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -2503,7 +2509,34 @@ fn draw_settings_content(
                 ry += 24;
             }
             ry += 10;
-            // 唯一一个"能改系统"的动作（P4.4）：走 aetherd → init，不是本地假动作
+            // 「修改 DNS」（§2.4）：唯一一个**能改系统配置**的设置项。
+            //
+            // 交互分两态，但**用同一个命中区**（点它就是进编辑态，已在编辑态时重点无害）：
+            // 编辑态显示输入内容 + 光标 + 校验反馈，非编辑态显示当前值 + 提示。
+            // 校验反馈**不需要等 aetherd**（用的是共享的纯函数校验器），所以打字时就有反应。
+            let dns_act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            if dns_field.editing {
+                // 光标用「▏」表示（字体里没有独立的插入符绘制原语，用一个细竖线字符最省事）
+                let shown = format!("{}▏", dns_field.text);
+                let hint = dns_field
+                    .feedback
+                    .clone()
+                    .unwrap_or_else(|| "回车保存 · Esc 取消".to_string());
+                widgets::row(buf, w, h, dns_act, &shown, Some(&hint),
+                             widgets::States::at(dns_act, mouse), Some(tr));
+            } else {
+                let hint = dns_field
+                    .feedback
+                    .clone()
+                    .unwrap_or_else(|| "点击后输入，例如 1.1.1.1, 8.8.8.8".to_string());
+                let label = if dns_field.text.is_empty() { "修改 DNS".to_string() } else { format!("修改 DNS（{}）", dns_field.text) };
+                widgets::row(buf, w, h, dns_act, &label, Some(&hint),
+                             widgets::States::at(dns_act, mouse), Some(tr));
+            }
+            hits.push((dns_act, SettingsHit::EditDns));
+            ry += 50;
+
+            // 唯一一个"重启服务"的动作（P4.4）：走 aetherd → init，不是本地假动作
             let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
             widgets::row(buf, w, h, act, "重启网络服务", Some("断开后重新连接（经 aetherd 转交 init）"),
                          widgets::States::at(act, mouse), Some(tr));
@@ -4713,7 +4746,8 @@ mod blit_tests {
             .expect("时钟与时区页必须存在");
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-            crate::settings::Settings::default(), page, &mut hits,
+            crate::settings::Settings::default(), &crate::settings::DnsField::default(),
+            page, &mut hits,
         );
 
         // 1) 命中区要齐：页面行 + 本页的真控件
@@ -4763,7 +4797,8 @@ mod blit_tests {
         let mut hits2 = Vec::new();
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-            crate::settings::Settings::default(), appear, &mut hits2,
+            crate::settings::Settings::default(), &crate::settings::DnsField::default(),
+            appear, &mut hits2,
         );
         assert!(
             hits2.iter().any(|(_, x)| matches!(x, H::ToggleDark)),
@@ -4823,4 +4858,46 @@ mod blit_tests {
         draw_background_rows(&mut buf, w, h, 1.0, 5, 2, 0, false); // 反向区间
         assert!(buf.iter().all(|&p| p == 0), "越界行带不应写入任何像素");
     }
+    /// §2.4：网络页必须有一个**可点**的 DNS 编辑入口。
+    ///
+    /// 这条测试盯的是"控件真的登记了命中区"——只画出来但没登记命中，
+    /// 用户点下去毫无反应，而这正是本项目最不能接受的那种"假控件"。
+    #[test]
+    fn network_page_offers_a_clickable_dns_field() {
+        // 本模块没有 import 这两个名字，用函数内 `use` 最不容易互相干扰
+        use crate::draw::{draw_settings_content, Rect};
+        // 与同文件其它绘制测试一致：**没有字体就跳过**。
+        // 注意必须传 `Some(&tr)` —— `tr = None` 时绘制会提前返回，
+        // 一个命中区都不会登记（第一次写这条测试时就是栽在这里：
+        // 测试失败，但原因是"没画"，不是"控件没登记"）。
+        let Some(tr) = crate::text::TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        let w = 420;
+        let h = 320;
+        let mut buf = vec![0u32; w * h];
+        let mut hits = Vec::new();
+        let r = Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+        let page = crate::settings::PAGES
+            .iter()
+            .position(|p| p.title == "网络")
+            .expect("应当存在「网络」设置页");
+        draw_settings_content(
+            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
+            crate::settings::Settings::default(),
+            &crate::settings::DnsField::default(),
+            page,
+            &mut hits,
+        );
+        assert!(
+            hits.iter().any(|(_, x)| matches!(x, crate::settings::SettingsHit::EditDns)),
+            "网络页必须登记 DNS 编辑入口的命中区，否则就是「点了没用」的假控件"
+        );
+        // 每个命中区都要有面积（零面积区域点不到）
+        for (rect, _) in &hits {
+            assert!(rect.w > 0 && rect.h > 0, "命中区不能是零面积：{rect:?}");
+        }
+    }
+
 }
