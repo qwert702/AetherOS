@@ -547,6 +547,37 @@
 <p>空消息不占历史、多行与 ESC 净化、已读不删历史、开关只影响历史、清空后未读归零、</p>
 <p>窗口显示历史且新的在前、类别标记可区分、两种空文案不同。</p>
 <p><strong>未实机验证</strong>：真实使用下的历史观感与未读计数（本机无图形环境）。</p>
+<h2 id="ai-e2e-2026-10-03">二十五、功能批次：AI 撤销 / 时间线导出 / 一键诊断包 / 自动 e2e（2026-10-03）</h2>
+<p>四批各自单独提交，这里合并记录（此前只记到第二十四节）。</p>
+<h3>§5.1 AI 动作撤销（<code>fbbb8e4</code>）</h3>
+<p><code>Ctrl+Z</code> 撤销 AI 的桌面改动。<strong>关键设计：撤销栈不存窗口</strong> ——</p>
+<p><code>Win.term</code> 是活的 PTY 会话（<code>term::Terminal</code>），本质不可克隆，</p>
+<p>所以"撤销关窗"不能靠存整份窗口实现。改为只记逆操作所需的最少数据：</p>
+<table><tbody>
+  <tr><td>AI 动作</td><td>记什么</td><td>撤销怎么做</td></tr>
+  <tr><td><code>layout_set</code></td><td>上一份布局 + <strong>每个窗口的浮动标志</strong></td><td>还原 + 重新平铺</td></tr>
+  <tr><td><code>open_app</code></td><td>新窗口下标</td><td>关掉它</td></tr>
+  <tr><td><code>close_active</code></td><td><strong>一个"不可撤销"标记</strong></td><td>明确告知撤不了，<strong>并停下</strong></td></tr>
+</tbody></table>
+<p><strong>为什么关窗要记标记而不是什么都不记</strong>：不记的话 <code>Ctrl+Z</code> 会跳过它去撤销更早的</p>
+<p>布局改动 —— 用户看到布局变了会以为"撤错了东西"。宁可如实说撤不了，也不做假撤销</p>
+<p>（"只记标题位置"那种内容回不来）。浮动标志也必须一起还原，否则原本浮动的窗口</p>
+<p>继续被平铺，用户会认为"撤销没生效"。</p>
+<h3>§5.2 审计日志导出（<code>287e8b9</code>）</h3>
+<p>动手前先查现状：<strong>"看"早已存在</strong>（权限页显示总数/拒绝/失败/路径 + 最近 8 条，</p>
+<p>还显式统计无法解析的行数）。所以只补<strong>导出</strong>：<code>audit::export_text()</code>（纯函数）+ 按钮，</p>
+<p>写到审计日志同目录（不是 <code>/tmp</code> —— Live ISO 的 <code>/tmp</code> 是内存盘，重启即失）。</p>
+<p>三条自我要求：<strong>必须含来源路径</strong>、<strong>必须含"无法解析"计数</strong>（日志格式变了却看不出来</p>
+<p>是最误导人的静默失败）、每条同时给原始 Unix 秒与相对时间。</p>
+<h3>§5.7 一键诊断包（<code>96149d8</code>）</h3>
+<p><code>aether-ops --bundle</code>：不必等故障，用户想让别人看时就能拿到一份报告。</p>
+<p>新增 <code>diagnose::Incident::Manual</code> —— <strong>不借故障变体</strong>：报告第一行会说"发生了什么"，</p>
+<p>借的话就是谎报一次并不存在的故障，而诊断报告的信用全靠"它说的是真的"。</p>
+<p>顺带补了 <code>--help</code>（此前一个只有常驻模式的 agent 连用法输出都没有）。</p>
+<h3>§4.1 自动 e2e（<code>ec0abc3</code>）</h3>
+<p><code>--e2e</code> 无界面动作运行器 + <code>scripts/e2e-ui-actions.py</code>（5 场景 + 判定逻辑自检），</p>
+<p>接进门禁（13 项）。<strong>关键结果：这条路在 Windows 开发机上真能跑</strong>（实测 5/5）——</p>
+<p>以前"布局/开窗/撤销"只能靠人在真机上点。详见该提交信息。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>
