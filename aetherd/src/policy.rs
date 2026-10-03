@@ -25,10 +25,54 @@
 use crate::perm::Level;
 use std::collections::BTreeMap;
 
+/// 策略文件路径（与 `model.json` 同目录：aetherd 的配置都在 `/etc/aether/` 下）。
+pub const POLICY_PATH: &str = "/etc/aether/policy.json";
+
+impl Policy {
+    /// 从文件读取；文件不存在或内容坏掉 → **全默认**（不 panic、不放行）。
+    ///
+    /// 读失败**不报错**是刻意的：aetherd 起不来比"策略退回默认"严重得多。
+    /// 但调用方应当把结果写进日志（否则用户会以为自己的设置生效了）。
+    pub fn load(path: &std::path::Path) -> (Policy, Option<String>) {
+        match std::fs::read_to_string(path) {
+            Ok(text) => (Policy::parse(&text), None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Policy::default(), None),
+            Err(e) => (Policy::default(), Some(format!("读取 {} 失败：{e}", path.display()))),
+        }
+    }
+
+    /// 原子写入 + 0600。
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // 复用 DNS 那套原子写入：临时文件 → fsync → rename。
+        // 半截的策略文件比没有策略更危险（解析出一半等于悄悄放宽了另一半）。
+        crate::netset::write_atomic(path, &self.to_json())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            /// 与 `model.json` 同级的权限收紧：**策略文件决定「什么能自动执行」，
+            /// 被改宽就是安全边界的改动**，所以同样 0600。
+            ///
+            /// 常量定义**放在这个 cfg 块里**：非 unix 平台根本不会有这个权限概念，
+            /// 定义在外面只会得到一个"从未使用"的警告。
+            const POLICY_MODE: u32 = 0o600;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(POLICY_MODE));
+        }
+        Ok(())
+    }
+}
+
 /// 单个工具的策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolPolicy {
-    /// 每次询问（**默认**）。不做任何省略 —— 默认最安全。
+    /// **默认**：按等级闸门走（L0/L1 放行、L2+ 询问）。未设置时就是它。
+    ///
+    /// 为什么必须有这一态：若默认是「每次询问」，那么"加了个策略编辑器"
+    /// 就等于"连读文件都要点确认" —— 那是把系统变难用，不是加功能。
+    Default,
+    /// 每次询问：**即便 L0 也问**（用户可以刻意收紧某个工具）。
     Ask,
     /// 允许（不弹确认，但**受等级上限约束**，见 [`Policy::effective`]）。
     Allow,
@@ -40,6 +84,7 @@ impl ToolPolicy {
     /// 存进文件用的字面量。
     pub fn as_str(self) -> &'static str {
         match self {
+            ToolPolicy::Default => "default",
             ToolPolicy::Ask => "ask",
             ToolPolicy::Allow => "allow",
             ToolPolicy::Deny => "deny",
@@ -49,6 +94,7 @@ impl ToolPolicy {
     /// 从文件读。**不认识就是 `None`**（调用方跳过那条，退回默认）。
     pub fn parse(s: &str) -> Option<ToolPolicy> {
         match s {
+            "default" => Some(ToolPolicy::Default),
             "ask" => Some(ToolPolicy::Ask),
             "allow" => Some(ToolPolicy::Allow),
             "deny" => Some(ToolPolicy::Deny),
@@ -59,6 +105,7 @@ impl ToolPolicy {
     /// 界面上的中文说明（设置页直接显示它）。
     pub fn label(self) -> &'static str {
         match self {
+            ToolPolicy::Default => "按等级",
             ToolPolicy::Ask => "每次询问",
             ToolPolicy::Allow => "允许",
             ToolPolicy::Deny => "禁止",
@@ -92,14 +139,14 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// 某个工具的原始策略（没设过 → [`ToolPolicy::Ask`]）。
+    /// 某个工具的原始策略（没设过 → [`ToolPolicy::Default`]）。
     pub fn get(&self, tool: &str) -> ToolPolicy {
-        self.entries.get(tool).copied().unwrap_or(ToolPolicy::Ask)
+        self.entries.get(tool).copied().unwrap_or(ToolPolicy::Default)
     }
 
-    /// 设置策略。设回 `Ask` 会**删掉条目**（保持"只存非默认"的约定）。
+    /// 设置策略。设回 `Default` 会**删掉条目**（保持"只存非默认"的约定）。
     pub fn set(&mut self, tool: &str, p: ToolPolicy) {
-        if p == ToolPolicy::Ask {
+        if p == ToolPolicy::Default {
             self.entries.remove(tool);
         } else {
             self.entries.insert(tool.to_string(), p);
@@ -121,12 +168,23 @@ impl Policy {
     pub fn effective(&self, tool: &str, level: Level, max_auto: Level) -> Effect {
         match self.get(tool) {
             ToolPolicy::Deny => Effect::Deny("该工具已被用户明确禁止"),
-            ToolPolicy::Ask => Effect::Ask("默认策略：每次询问"),
-            ToolPolicy::Allow => {
-                if (level as u8) <= (max_auto as u8) {
+            ToolPolicy::Ask => Effect::Ask("该工具被设为「每次询问」"),
+            // 按等级：低于阈值放行，否则询问。**这正是闸门本来的行为**，
+            // 所以"没设过"与"设过"不会在默认状态下产生差异。
+            ToolPolicy::Default => {
+                if (level as u8) < (max_auto as u8) {
                     Effect::Allow
                 } else {
-                    // 关键：**想让 L3 免确认也不行**
+                    Effect::Ask("按等级：该等级需要确认")
+                }
+            }
+            ToolPolicy::Allow => {
+                // 绝对规则（与阈值无关）：**L3 永远不能免确认**。
+                if level == Level::L3 {
+                    Effect::Ask("L3 是危险级：按设计永远需要确认，即便设为「允许」")
+                } else if (level as u8) <= (max_auto as u8) {
+                    Effect::Allow
+                } else {
                     Effect::Ask("该工具的等级高于自动放行上限：即便设为「允许」也必须确认")
                 }
             }
@@ -233,14 +291,42 @@ fn extract_policy_object(text: &str) -> Option<Vec<(String, String)>> {
 mod tests {
     use super::*;
 
+    /// **默认 = 按等级**：不动现有行为（L0/L1 放行、L2+ 询问）。
+    ///
+    /// 这条是防"加了个编辑器却把系统变难用"：若默认是"每次询问"，
+    /// 那么所有工具（包括读文件）都会开始弹确认。
     #[test]
-    fn default_is_ask_for_every_tool() {
+    fn default_follows_the_level_gate() {
         let p = Policy::default();
-        assert_eq!(p.get("read_file"), ToolPolicy::Ask);
+        assert_eq!(p.get("read_file"), ToolPolicy::Default);
         assert_eq!(p.customized(), 0);
-        assert_eq!(
+        assert!(p.effective("read_file", Level::L0, Level::L2).is_allow());
+        assert!(p.effective("read_file", Level::L1, Level::L2).is_allow());
+        assert!(matches!(
+            p.effective("read_file", Level::L2, Level::L2),
+            Effect::Ask(_)
+        ));
+    }
+
+    /// **显式「每次询问」连 L0 也要问**（用户刻意收紧某个工具）。
+    #[test]
+    fn explicit_ask_asks_even_for_l0() {
+        let mut p = Policy::default();
+        p.set("read_file", ToolPolicy::Ask);
+        assert!(matches!(
             p.effective("read_file", Level::L0, Level::L2),
-            Effect::Ask("默认策略：每次询问")
+            Effect::Ask(_)
+        ));
+    }
+
+    /// **L3 永远是绝对例外**：即便把闸门阈值开到 L3，「允许」也不能自动放行。
+    #[test]
+    fn allow_never_auto_approves_l3_even_with_max_threshold() {
+        let mut p = Policy::default();
+        p.set("system_power", ToolPolicy::Allow);
+        assert!(
+            matches!(p.effective("system_power", Level::L3, Level::L3), Effect::Ask(_)),
+            "阈值开到 L3 也不该放行 L3 工具"
         );
     }
 
@@ -270,7 +356,10 @@ mod tests {
         );
         // 说明原因里要把这件事讲清楚（用户会问"我明明设了允许"）
         if let Effect::Ask(why) = e {
-            assert!(why.contains("上限"), "原因要说明是等级上限：{why}");
+            assert!(
+                why.contains("L3") || why.contains("上限"),
+                "原因要说明是等级限制：{why}"
+            );
         }
     }
 
@@ -292,21 +381,29 @@ mod tests {
     fn policy_is_per_tool() {
         let mut p = Policy::default();
         p.set("clipboard_read", ToolPolicy::Allow);
-        assert!(p.effective("clipboard_read", Level::L0, Level::L2).is_allow());
-        assert!(matches!(
-            p.effective("clipboard_write", Level::L0, Level::L2),
-            Effect::Ask(_)
-        ));
+        // 设了策略的那个：L2 也自动放行（用户显式放宽）
+        assert!(p.effective("clipboard_read", Level::L2, Level::L2).is_allow());
+        // 没设的那个：仍按等级走 —— L0 放行、**L2 要确认**
+        assert!(p.effective("clipboard_write", Level::L0, Level::L2).is_allow());
+        assert!(
+            matches!(p.effective("clipboard_write", Level::L2, Level::L2), Effect::Ask(_)),
+            "策略只该作用于被设置的那个工具"
+        );
     }
 
     #[test]
-    fn setting_back_to_ask_removes_the_entry() {
+    fn setting_back_to_default_removes_the_entry() {
         let mut p = Policy::default();
         p.set("t", ToolPolicy::Deny);
         assert_eq!(p.customized(), 1);
+        // 设回**默认**（不是"每次询问"）才删条目：显式的"每次询问"是一个**真实的选择**，
+        // 它比默认更严，删掉它就等于把用户刻意收紧的东西悄悄放宽了。
         p.set("t", ToolPolicy::Ask);
-        assert_eq!(p.customized(), 0, "设回默认应当删条目，而不是存一条 ask");
+        assert_eq!(p.customized(), 1, "显式的「每次询问」应当被保留");
         assert_eq!(p.get("t"), ToolPolicy::Ask);
+        p.set("t", ToolPolicy::Default);
+        assert_eq!(p.customized(), 0, "设回默认才删条目");
+        assert_eq!(p.get("t"), ToolPolicy::Default);
     }
 
     #[test]
@@ -320,7 +417,7 @@ mod tests {
         assert_eq!(back.get("system_power"), ToolPolicy::Deny);
         assert_eq!(back.get("read_file"), ToolPolicy::Allow);
         // 只写非默认条目
-        assert!(!json.contains("ask"), "不该把默认的 ask 写进文件：{json}");
+        assert!(!json.contains("\"ask\""), "不该把默认值写进文件：{json}");
     }
 
     /// **坏输入不能让 aetherd 起不来**：坏 JSON → 全默认（都问），而不是报错或放行。
@@ -336,9 +433,18 @@ mod tests {
         ] {
             let p = Policy::parse(bad);
             assert_eq!(p.customized(), 0, "坏输入「{bad}」不该产生条目");
-            assert_eq!(p.get("read_file"), ToolPolicy::Ask);
-            // 关键：坏输入**不能**变成"允许"
-            assert!(!p.effective("read_file", Level::L0, Level::L2).is_allow());
+            assert_eq!(p.get("read_file"), ToolPolicy::Default);
+            // 关键：坏输入**不能放松任何东西** —— L2 工具照样要确认，
+            //（注意不能断言"L0 也要问"：默认是"按等级"，L0 本来就放行。
+            //  这里要守的是"坏文件不会让本该确认的操作变成自动执行"。）
+            assert!(matches!(
+                p.effective("install_disk", Level::L2, Level::L2),
+                Effect::Ask(_)
+            ));
+            assert!(matches!(
+                p.effective("install_disk", Level::L3, Level::L2),
+                Effect::Ask(_)
+            ));
         }
     }
 
@@ -348,7 +454,7 @@ mod tests {
         let json = r#"{"version":1,"policy":{"read_file":"allow","weird":"maybe","system_power":"deny"}}"#;
         let p = Policy::parse(json);
         assert_eq!(p.get("read_file"), ToolPolicy::Allow);
-        assert_eq!(p.get("weird"), ToolPolicy::Ask, "不认识的值应退回默认");
+        assert_eq!(p.get("weird"), ToolPolicy::Default, "不认识的值应退回默认");
         assert_eq!(p.get("system_power"), ToolPolicy::Deny, "其余条目不该被牵连");
         assert_eq!(p.customized(), 2);
     }
@@ -373,5 +479,54 @@ mod tests {
             assert_eq!(ToolPolicy::parse(p.as_str()), Some(p));
         }
         assert_eq!(ToolPolicy::parse("ALLOW"), None, "大小写敏感，避免歧义");
+        assert_eq!(ToolPolicy::Default.label(), "按等级");
     }
+    /// 持久化：**写出去、读回来**必须一致（否则"设了不生效"很难查）。
+    #[test]
+    fn policy_saves_and_loads_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "aether-policy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("policy.json");
+
+        let mut p = Policy::default();
+        p.set("system_power", ToolPolicy::Deny);
+        p.set("read_file", ToolPolicy::Ask);
+        p.save(&path).expect("保存应成功");
+
+        let (back, warn) = Policy::load(&path);
+        assert!(warn.is_none(), "读正常文件不该有告警：{warn:?}");
+        assert_eq!(back, p, "写出再读回必须一致");
+        assert_eq!(back.get("system_power"), ToolPolicy::Deny);
+        assert_eq!(back.get("read_file"), ToolPolicy::Ask);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 文件不存在 → 全默认，且**不算错误**（首次运行就是这个状态）。
+    #[test]
+    fn loading_a_missing_file_is_not_an_error() {
+        let path = std::env::temp_dir().join("aether-policy-definitely-missing-xyz.json");
+        let _ = std::fs::remove_file(&path);
+        let (p, warn) = Policy::load(&path);
+        assert_eq!(p.customized(), 0);
+        assert!(warn.is_none(), "文件不存在是正常情况，不该报警：{warn:?}");
+    }
+
+    /// 读不动（这里是目录）→ 退回默认**并给出告警**（不能静默）。
+    #[test]
+    fn unreadable_file_warns_and_falls_back() {
+        let dir = std::env::temp_dir().join(format!("aether-policy-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (p, warn) = Policy::load(&dir);
+        assert_eq!(p.customized(), 0, "读失败应退回默认");
+        assert!(warn.is_some(), "读失败必须有告警，否则用户以为设置生效了");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

@@ -49,6 +49,9 @@ pub struct Gate {
     /// 合成器的"拒绝"只是本地 UI 状态（不发 IPC），服务端既不撤销令牌，
     /// 也不知道发生过拒绝，`Verdict::Denied` 因此永远不可达。
     denied: Mutex<HashMap<String, Instant>>,
+    /// 逐工具策略（§5.3）。**放在闸门里**而不是调用方：判定与策略必须在一起，
+    /// 分开放迟早会出现"某条路径忘了看策略"的口子。
+    policy: Mutex<crate::policy::Policy>,
 }
 
 impl Gate {
@@ -157,10 +160,19 @@ impl Gate {
                 eprintln!("[aetherd] 提示：收紧审计目录权限失败（{e}）—— 已跳过（不跟随符号链接）");
             }
         }
+        // 策略文件读不到/坏掉 → 全默认（按等级），并在日志里说明。
+        // **不因此启动失败**：把"配置写错"升级成"服务起不来"更糟。
+        let (policy, warn) = crate::policy::Policy::load(std::path::Path::new(
+            crate::policy::POLICY_PATH,
+        ));
+        if let Some(w) = warn {
+            eprintln!("[aetherd] 权限策略读取失败，已退回默认（按等级）：{w}");
+        }
         Self {
             audit_path,
             auto_approve_below: Level::L2,
             denied: Mutex::new(HashMap::new()),
+            policy: Mutex::new(policy),
         }
     }
 
@@ -171,6 +183,7 @@ impl Gate {
             audit_path: PathBuf::from(""),
             auto_approve_below: Level::L2,
             denied: Mutex::new(HashMap::new()),
+            policy: Mutex::new(crate::policy::Policy::default()),
         }
     }
 
@@ -199,10 +212,52 @@ impl Gate {
                 DENY_TTL.as_secs()
             ));
         }
-        if level >= self.auto_approve_below && !approved {
-            return Verdict::NeedsConfirmation;
+        // 逐工具策略（§5.3）。顺序：**先看策略**，再落到等级闸门 ——
+        // 因为策略里可能有"禁止"（优先于一切）或"允许"（用户显式放宽）。
+        let effect = {
+            let p = self.policy.lock().unwrap_or_else(|e| e.into_inner());
+            p.effective(tool, level, self.auto_approve_below)
+        };
+        match effect {
+            crate::policy::Effect::Deny(why) => Verdict::Denied(format!("{why}（{tool}）")),
+            crate::policy::Effect::Allow => Verdict::Allowed,
+            crate::policy::Effect::Ask(_) => {
+                if approved {
+                    Verdict::Allowed
+                } else {
+                    Verdict::NeedsConfirmation
+                }
+            }
         }
-        Verdict::Allowed
+    }
+
+    /// 当前策略的快照（给界面读取）。
+    ///
+    /// （消费者是下一批的 IPC/设置页；在那之前只有测试用它 —— 这个 allow 是**有期限的**，
+    /// 接线那一批应当删掉。前几批的同类 allow 都是这么处理的。）
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn policy_snapshot(&self) -> crate::policy::Policy {
+        self.policy.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 设置某个工具的策略并存盘。
+    ///
+    /// **存盘失败必须报出来**：用户改完看到"已保存"而其实没写下去，
+    /// 是最难查的一类问题（重启后设置没了，用户只能怀疑自己）。
+    /// （消费者是下一批的 IPC/设置页；同上，allow 是有期限的。）
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_tool_policy(
+        &self,
+        tool: &str,
+        p: crate::policy::ToolPolicy,
+        path: &std::path::Path,
+    ) -> std::io::Result<()> {
+        let snapshot = {
+            let mut guard = self.policy.lock().unwrap_or_else(|e| e.into_inner());
+            guard.set(tool, p);
+            guard.clone()
+        };
+        snapshot.save(path)
     }
 
     /// 追加一条**带工具参数**的审计记录（参数在内部统一脱敏）。
@@ -570,6 +625,104 @@ mod tests {
             src.contains("file_type().is_symlink()"),
             "必须有明确的 is_symlink 判定，而不是只看 metadata"
         );
+    }
+
+    /// §5.3：策略**真的**影响判定（不是"存了不用"）。
+    #[test]
+    fn policy_actually_changes_the_verdict() {
+        let g = Gate::for_test();
+        let args = args();
+        // 默认：按等级（L0 放行、L2 需确认）
+        assert_eq!(g.judge("read_file", Level::L0, &args, false), Verdict::Allowed);
+        assert_eq!(g.judge("read_file", Level::L2, &args, false), Verdict::NeedsConfirmation);
+        // 设成「禁止」：**连 L0 也拒绝**，且理由里要提到策略
+        {
+            let mut p = g.policy.lock().unwrap();
+            p.set("read_file", crate::policy::ToolPolicy::Deny);
+        }
+        match g.judge("read_file", Level::L0, &args, false) {
+            Verdict::Denied(why) => assert!(why.contains("禁止"), "理由应说明是策略禁止：{why}"),
+            other => panic!("禁止策略应给出 Denied，实得 {other:?}"),
+        }
+        // **已确认也拒绝**：禁止优先于一切
+        assert!(matches!(
+            g.judge("read_file", Level::L0, &args, true),
+            Verdict::Denied(_)
+        ));
+        // 设成「每次询问」：连 L0 都要确认
+        {
+            let mut p = g.policy.lock().unwrap();
+            p.set("read_file", crate::policy::ToolPolicy::Ask);
+        }
+        assert_eq!(g.judge("read_file", Level::L0, &args, false), Verdict::NeedsConfirmation);
+        assert_eq!(g.judge("read_file", Level::L0, &args, true), Verdict::Allowed);
+        // 设成「允许」：L2 也自动放行（用户显式放宽），但 **L3 仍要确认**
+        {
+            let mut p = g.policy.lock().unwrap();
+            p.set("install_disk", crate::policy::ToolPolicy::Allow);
+        }
+        assert_eq!(g.judge("install_disk", Level::L2, &args, false), Verdict::Allowed);
+        assert_eq!(
+            g.judge("install_disk", Level::L3, &args, false),
+            Verdict::NeedsConfirmation,
+            "L3 永远不能免确认（审计结论）"
+        );
+    }
+
+    /// 策略**只影响那一个工具**（设了 A 不该动 B）。
+    #[test]
+    fn policy_does_not_leak_to_other_tools() {
+        let g = Gate::for_test();
+        let args = args();
+        {
+            let mut p = g.policy.lock().unwrap();
+            p.set("read_file", crate::policy::ToolPolicy::Deny);
+        }
+        assert!(matches!(g.judge("read_file", Level::L0, &args, false), Verdict::Denied(_)));
+        assert_eq!(g.judge("clipboard_read", Level::L0, &args, false), Verdict::Allowed);
+    }
+
+    /// 快照与设置走同一条路（界面读到的就是判定用的那份）。
+    #[test]
+    fn policy_snapshot_reflects_changes() {
+        let g = Gate::for_test();
+        assert_eq!(g.policy_snapshot().customized(), 0);
+        {
+            let mut p = g.policy.lock().unwrap();
+            p.set("x", crate::policy::ToolPolicy::Allow);
+        }
+        assert_eq!(g.policy_snapshot().customized(), 1);
+        assert_eq!(
+            g.policy_snapshot().get("x"),
+            crate::policy::ToolPolicy::Allow
+        );
+    }
+
+    /// §5.3：`set_tool_policy` 要**真的写盘**，且写出来的能被读回。
+    ///
+    /// "改完显示已保存、其实没写下去"是最难查的一类问题（重启后设置没了，
+    /// 用户只能怀疑自己），所以这条测试落在**文件**上而不是内存上。
+    #[test]
+    fn set_tool_policy_persists_to_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "aether-gate-policy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("policy.json");
+        let g = Gate::for_test();
+        g.set_tool_policy("system_power", crate::policy::ToolPolicy::Deny, &path)
+            .expect("写盘应成功");
+        let (back, warn) = crate::policy::Policy::load(&path);
+        assert!(warn.is_none(), "{warn:?}");
+        assert_eq!(back.get("system_power"), crate::policy::ToolPolicy::Deny);
+        // 内存里的那份也变了（下次判定立刻生效，不必重启）
+        assert_eq!(g.policy_snapshot().get("system_power"), crate::policy::ToolPolicy::Deny);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
 }
