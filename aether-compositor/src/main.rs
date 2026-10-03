@@ -375,6 +375,9 @@ fn run_fbdev() -> anyhow::Result<()> {
         if audio.muted() { "，已静音" } else { "" }
     ));
 
+    // §5.1 撤销栈（栈在主循环里，不进 Desktop：Desktop 的构造点有多处，
+    // 而撤销栈只被这一个循环使用）
+    let mut undo = UndoStack::new();
     loop {
         let frame_start = Instant::now();
         let t = start.elapsed().as_secs_f32();
@@ -528,6 +531,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Ctrl(c, shift) => {
+                    // §5.1 撤销：`Ctrl+Z` 在这里直接处理（不进 `apply_ctrl` ——
+                    // 撤销要访问撤销栈，而 `apply_ctrl` 的签名里没有它）
+                    if c == 'z' && !shift {
+                        if let Some(msg) = undo_last(&mut desktop, &mut undo) {
+                            push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
+                        }
+                        continue;
+                    }
                     // 关窗会改动窗口数组：拖拽状态必须一起清掉（P2-3 同类越界）
                     let closed = !shift && c == 'w';
                     if let Some(msg) = apply_ctrl(&mut desktop, c, shift) {
@@ -620,7 +631,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     ai_reply = Some((format!("⚠ {text}"), draw::BubbleKind::Ai, Instant::now()));
                 }
                 AiEvent::Action(name, args) => {
-                    if let Some(msg) = apply_action(&mut desktop, &name, &args) {
+                    if let Some(msg) = apply_action(&mut desktop, &name, &args, &mut undo) {
                         push_toast(&mut toast, &mut renderer.notifs, format!("Aether 执行 · {msg}"), notifications::Kind::Info);
                     }
                 }
@@ -1561,8 +1572,89 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
     }
 }
 
+/// 撤销栈上限。**有界**是硬要求：无界栈会随运行时长无限增长，
+/// 而"撤销到很久以前"本来也没意义（那是快照/回滚 §5.6 的事）。
+const UNDO_CAP: usize = 20;
+
+/// 一步可撤销的 AI 动作（§5.1）。
+///
+/// **不存窗口**：`Win.term` 是活的 PTY 会话（`term::Terminal`），本质不可克隆 ——
+/// 所以"撤销关窗"不能靠存整份窗口实现。宁可**如实说撤不了**，也不做假撤销。
+enum UndoStep {
+    /// 布局被改：记上一份布局 + 每个窗口原来的浮动标志。
+    /// （正向动作会把所有窗口的 `floating` 清掉；只还原布局会让原本浮动的窗口继续被
+    ///  平铺，用户会认为"撤销没生效"。）
+    Layout { prev: Layout, floating: Vec<bool> },
+    /// 打开了窗口：记下标（撤销 = 关掉它）
+    OpenedWindow(usize),
+    /// 关掉了窗口：**无法撤销**（内容已释放）。记一个标记而不是"什么都不记" ——
+    /// 后者会让 Ctrl+Z 跳过这一步去撤销更早的动作，用户会以为撤错了。
+    CloseNotUndoable,
+}
+
+/// 撤销栈（有界，新的在后）。
+struct UndoStack {
+    steps: std::collections::VecDeque<UndoStep>,
+}
+
+impl UndoStack {
+    fn new() -> Self {
+        Self { steps: std::collections::VecDeque::new() }
+    }
+    fn push(&mut self, step: UndoStep) {
+        if self.steps.len() >= UNDO_CAP {
+            self.steps.pop_front(); // 栈满后"最近 20 步"仍可撤销
+        }
+        self.steps.push_back(step);
+    }
+    fn pop(&mut self) -> Option<UndoStep> {
+        self.steps.pop_back()
+    }
+    /// 栈深度（**仅测试与诊断**）。生产路径不需要它 —— 撤销只管"能不能弹出"。
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.steps.len()
+    }
+}
+
+/// 执行一次撤销。返回给用户的说明；`None` = 没有可撤销的动作。
+fn undo_last(desktop: &mut Desktop, stack: &mut UndoStack) -> Option<String> {
+    match stack.pop()? {
+        UndoStep::Layout { prev, floating } => {
+            desktop.layout = prev;
+            for (i, f) in floating.iter().enumerate() {
+                if let Some(w) = desktop.wins.get_mut(i) {
+                    w.floating = *f;
+                    w.target = None;
+                }
+            }
+            // 撤销后重新平铺：否则窗口还停在"改布局之后"的位置上，看起来没撤干净
+            snap_now(desktop, prev);
+            Some(format!("已撤销：布局回到 {}", prev.label()))
+        }
+        UndoStep::OpenedWindow(idx) => {
+            if idx < desktop.wins.len() {
+                close_window(desktop, idx);
+                Some("已撤销：关掉刚打开的窗口".into())
+            } else {
+                Some("已撤销：那个窗口已经不在了".into())
+            }
+        }
+        UndoStep::CloseNotUndoable => {
+            // 明确说"撤不了"，并且**不再往更早的步骤走** —— 那会让用户以为撤错了
+            Some("这一步无法撤销：窗口已关闭（终端会话/内容已释放）".into())
+        }
+    }
+}
+
 /// 应用来自 aetherd 的桌面行为（AI 操作桌面的落地端）。
-fn apply_action(desktop: &mut Desktop, name: &str, args: &serde_json::Value) -> Option<String> {
+fn apply_action(
+    desktop: &mut Desktop,
+    name: &str,
+    args: &serde_json::Value,
+    undo: &mut UndoStack,
+) -> Option<String> {
+    // 每个分支在**改动之前**记逆操作（改完再记，记到的就是新状态）
     match name {
         "layout_set" => {
             let lay = match args.get("layout").and_then(|v| v.as_str())? {
@@ -1572,6 +1664,10 @@ fn apply_action(desktop: &mut Desktop, name: &str, args: &serde_json::Value) -> 
                 "float" => Layout::Float,
                 _ => return None,
             };
+            undo.push(UndoStep::Layout {
+                prev: desktop.layout,
+                floating: desktop.wins.iter().map(|w| w.floating).collect(),
+            });
             desktop.layout = lay;
             for w in &mut desktop.wins {
                 w.floating = false;
@@ -1583,9 +1679,18 @@ fn apply_action(desktop: &mut Desktop, name: &str, args: &serde_json::Value) -> 
             let app = args.get("app").and_then(|v| v.as_str())?;
             let icon = APP_TITLES.iter().position(|t| *t == app)?;
             // open_app 返回 Some 时是拒绝/上限提示，不能谎报"已打开"（P3-3）
-            Some(open_app(desktop, icon).unwrap_or_else(|| format!("已打开「{app}」")))
+            let before = desktop.wins.len();
+            let msg = open_app(desktop, icon);
+            // **只在真的多了一个窗口时**才记：被拒绝/达上限时记了会变成
+            // "撤销一次什么都没发生"，那种撤销比没有更让人困惑
+            if msg.is_none() && desktop.wins.len() > before {
+                undo.push(UndoStep::OpenedWindow(desktop.wins.len() - 1));
+            }
+            Some(msg.unwrap_or_else(|| format!("已打开「{app}」")))
         }
         "close_active" => {
+            // 关窗**不可撤销**（窗口含活的终端会话，存不下来）——记标记，如实告知
+            undo.push(UndoStep::CloseNotUndoable);
             if desktop.wins.len() > 1 {
                 // 统一走 close_window：它有索引边界检查与 active 夹取，
                 // 且不会像裸 pop 那样在"拖拽中"留下失效的 drag 索引（0.8 审计）
@@ -2655,6 +2760,9 @@ fn preview_main() -> anyhow::Result<()> {
     let mut ai_status = draw::AiStatus::Local;
     let mut thinking = false;
 
+    // §5.1 撤销栈：**预览循环也要有**（两个循环都会应用 AI 动作，
+    // 只给其中一个接线正是会产生静默不一致的那类改动）
+    let mut undo = UndoStack::new();
     while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
         let t = start.elapsed().as_secs_f32();
         // 通知记录开关（§3.2）：**预览循环也必须同步** —— 自查时发现只有 fbdev 循环同步，
@@ -2816,7 +2924,7 @@ fn preview_main() -> anyhow::Result<()> {
                     ai_reply = Some((format!("⚠ {text}"), draw::BubbleKind::Ai, Instant::now()));
                 }
                 AiEvent::Action(name, args) => {
-                    if let Some(msg) = apply_action(&mut desktop, &name, &args) {
+                    if let Some(msg) = apply_action(&mut desktop, &name, &args, &mut undo) {
                         push_toast(&mut toast, &mut renderer.notifs, format!("Aether 执行 · {msg}"), notifications::Kind::Info);
                     }
                 }
@@ -4823,6 +4931,117 @@ mod wayland_sync_tests {
             body.contains("control_layout::ROW_H_ACTION"),
             "动作行距应来自 control_layout::ROW_H_ACTION"
         );
+    }
+
+    /// §5.1：撤销"改布局"必须连**浮动标志**一起还原。
+    ///
+    /// 只还原布局是不够的：正向动作会把所有窗口的 `floating` 清掉，
+    /// 于是原本浮动的窗口会继续被平铺 —— 用户会认为"撤销没生效"。
+    #[test]
+    fn undo_restores_layout_and_floating_flags() {
+        let mut d = demo_desktop();
+        let mut u = UndoStack::new();
+        let before = d.layout.label();
+        // 先人为让第一个窗口浮动，检验撤销是否还原它
+        if let Some(w) = d.wins.first_mut() {
+            w.floating = true;
+        }
+        let floats_before: Vec<bool> = d.wins.iter().map(|w| w.floating).collect();
+
+        let args = serde_json::json!({ "layout": "monocle" });
+        let _ = apply_action(&mut d, "layout_set", &args, &mut u);
+        assert_ne!(d.layout.label(), before, "布局应被改掉");
+        assert!(d.wins.iter().all(|w| !w.floating), "正向动作应清掉浮动标志");
+        assert_eq!(u.len(), 1);
+
+        let msg = undo_last(&mut d, &mut u).expect("应有可撤销的动作");
+        assert_eq!(d.layout.label(), before, "撤销应还原布局");
+        assert_eq!(
+            d.wins.iter().map(|w| w.floating).collect::<Vec<_>>(),
+            floats_before,
+            "撤销应还原每个窗口的浮动标志"
+        );
+        assert!(msg.contains("布局"), "提示应说明撤了什么：{msg}");
+        // 栈已空 → 再撤销没有可做的
+        assert!(undo_last(&mut d, &mut u).is_none(), "空栈应返回 None");
+    }
+
+    /// §5.1：撤销"开窗"必须关掉**刚打开的那个**。
+    #[test]
+    fn undo_after_open_app_closes_that_window() {
+        let mut d = demo_desktop();
+        let mut u = UndoStack::new();
+        let n0 = d.wins.len();
+        let args = serde_json::json!({ "app": "终端" });
+        let _ = apply_action(&mut d, "open_app", &args, &mut u);
+        assert_eq!(d.wins.len(), n0 + 1, "应真的开了一个窗口");
+        assert_eq!(u.len(), 1);
+        let msg = undo_last(&mut d, &mut u).expect("应有可撤销的动作");
+        assert_eq!(d.wins.len(), n0, "撤销应关掉刚打开的窗口");
+        assert!(msg.contains("关掉"), "提示应说明撤了什么：{msg}");
+    }
+
+    /// §5.1：**关窗不可撤销**，而且不能"跳过它去撤销更早的动作"。
+    ///
+    /// 这条是本设计最重要的性质：窗口里有活的终端会话，存不下来。
+    /// 如果关窗不记标记，Ctrl+Z 会去撤销更早的布局改动 —— 用户会以为撤错了东西。
+    #[test]
+    fn closing_is_not_undoable_and_does_not_fall_through() {
+        let mut d = demo_desktop();
+        let mut u = UndoStack::new();
+        // 先做一步可撤销的（改布局），再关窗
+        let args = serde_json::json!({ "layout": "float" });
+        let _ = apply_action(&mut d, "layout_set", &args, &mut u);
+        let layout_after_change = d.layout.label();
+        let _ = apply_action(&mut d, "close_active", &serde_json::json!({}), &mut u);
+        assert_eq!(u.len(), 2);
+
+        // 第一次撤销：应命中"关窗"这一步，明确说撤不了，**布局保持不变**
+        let msg = undo_last(&mut d, &mut u).expect("应消费掉这一步");
+        assert!(msg.contains("无法撤销"), "应明确告知撤不了：{msg}");
+        assert_eq!(
+            d.layout.label(),
+            layout_after_change,
+            "关窗不可撤销时**不得**顺手撤销更早的布局改动"
+        );
+        // 第二次撤销才是布局
+        let msg2 = undo_last(&mut d, &mut u).expect("布局那步仍应可撤销");
+        assert!(msg2.contains("布局"));
+    }
+
+    /// §5.1：栈**有界**（无界栈会随运行时长无限增长）。
+    #[test]
+    fn undo_stack_is_bounded() {
+        let mut u = UndoStack::new();
+        for i in 0..(UNDO_CAP + 5) {
+            u.push(UndoStep::OpenedWindow(i));
+        }
+        assert_eq!(u.len(), UNDO_CAP, "栈不得超过上限");
+        // 弹出顺序 = 从新到旧：第一个弹出的是最新压入的，最后一个是最早留下的
+        let mut popped = Vec::new();
+        while let Some(UndoStep::OpenedWindow(i)) = u.pop() {
+            popped.push(i);
+        }
+        assert_eq!(popped.len(), UNDO_CAP, "应恰好弹出上限那么多步");
+        assert_eq!(popped[0], UNDO_CAP + 5 - 1, "最新的应在栈顶（先弹出）");
+        assert_eq!(
+            *popped.last().unwrap(),
+            UNDO_CAP + 5 - 1 - (UNDO_CAP as i32 - 1) as usize,
+            "最旧的 5 步应已被淘汰"
+        );
+    }
+
+    /// §5.1：被拒绝的 open_app **不该**记一步（否则"撤销一次什么都没发生"）。
+    #[test]
+    fn rejected_open_app_records_nothing() {
+        let mut d = demo_desktop();
+        let mut u = UndoStack::new();
+        // 不存在的应用名 → apply_action 返回 None，且不该开窗
+        let n0 = d.wins.len();
+        let r = apply_action(&mut d, "open_app", &serde_json::json!({ "app": "不存在的应用" }), &mut u);
+        assert!(r.is_none(), "未知应用应被拒绝");
+        assert_eq!(d.wins.len(), n0, "不该开窗");
+        assert_eq!(u.len(), 0, "被拒绝的动作不该进撤销栈");
     }
 
 }
