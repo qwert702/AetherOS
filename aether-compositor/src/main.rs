@@ -359,6 +359,11 @@ fn run_fbdev() -> anyhow::Result<()> {
     // 音频（提示音 + 音量，批次 K）：**探测一次**，不在循环里反复探测
     // （`refresh()` 会起子进程，每帧调用会把 CPU 吃光）
     let mut audio = audio::Audio::probe();
+    // 空闲计时（§3.6）：任何输入都重置它。用 `Instant` 而不是累计秒数 ——
+    // 累计秒数在丢帧/挂起后会漂，而"上一次输入是什么时候"永远准确。
+    let mut last_input = Instant::now();
+    // 当前是否已息屏（避免每帧重复写 sysfs）
+    let mut idle_blanked = false;
     tty_log(&format!(
         "音频：{}（音量 {}%{}）",
         audio.state().label(),
@@ -375,6 +380,15 @@ fn run_fbdev() -> anyhow::Result<()> {
 
         // ---- 1. evdev 输入（drain 本帧积累的全部事件）----
         while let Ok(ev) = input_rx.try_recv() {
+            // 任何输入都算"用户还在"（§3.6 息屏）：**先重置计时再处理事件** ——
+            // 放后面的话，`continue` 掉的分支（终端按键）就不会重置，
+            // 于是"在终端里一直打字"反而会被息屏。
+            last_input = Instant::now();
+            if idle_blanked {
+                // 有输入就立刻亮屏（不等这一帧画完），并**吞掉这一次输入**？
+                // 不吞：息屏时用户按的第一个键就是他想按的那个键（吞掉会让人以为键盘失灵）。
+                set_fb_blank(false, &mut idle_blanked);
+            }
             // 终端拿到焦点时按键归 shell（否则 Ctrl+C 会被当成关窗、方向键会去翻文件列表）。
             // 但模态弹窗优先：确认卡片/安装向导打开时，键盘仍归它们，否则用户无法回答。
             if confirm.is_none() && !installer.open && focused_terminal(&desktop) {
@@ -556,6 +570,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
             }
+        }
+
+        // ---- 1.5 空闲息屏（§3.6）----
+        // 放在输入之后、渲染之前：这样"这一帧刚有输入"与"该不该息屏"
+        // 用的是同一份计时，不会出现"刚动鼠标却又立刻息屏"。
+        if renderer.settings.should_blank(last_input.elapsed()) {
+            set_fb_blank(true, &mut idle_blanked);
         }
 
         // ---- 2. AI 事件轮询（非阻塞）----
@@ -1607,6 +1628,47 @@ fn apply_theme(renderer: &mut draw::Renderer, dark: bool) {
     });
     renderer.bg_dirty = true; // 壁纸与投影合成层都依赖主题，必须重建
 }
+
+/// 息屏 / 亮屏（§3.6）：写内核的 fb blank 接口。
+///
+/// **不自己在帧缓冲上涂黑**：那只让"画面看起来黑了"，输出与背光照旧 ——
+/// 在实机上等于没省电，而用户会以为系统卡死了。写 `blank` 才是真的关输出。
+///
+/// 失败**不静默**（本项目硬要求）：路径不存在（有些机器是 fb1，或用了别的显示后端）
+/// 时打一行日志，让人知道"息屏没生效"，而不是以为设置坏了。
+#[cfg(target_os = "linux")]
+fn set_fb_blank(on: bool, blanked: &mut bool) {
+    if *blanked == on {
+        return; // 状态没变就不写：每帧写 sysfs 是无谓的系统调用
+    }
+    // fb0 覆盖绝大多数单屏机器；找不到就退到 fb1/fb2，都不行则如实报错
+    const PATHS: [&str; 3] = [
+        "/sys/class/graphics/fb0/blank",
+        "/sys/class/graphics/fb1/blank",
+        "/sys/class/graphics/fb2/blank",
+    ];
+    // 4 = FB_BLANK_POWERDOWN（真关输出），0 = FB_BLANK_UNBLANK
+    let val = if on { "4" } else { "0" };
+    for path in PATHS {
+        if std::path::Path::new(path).exists() {
+            match std::fs::write(path, val) {
+                Ok(()) => {
+                    *blanked = on;
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("aether-compositor: 息屏写入 {path} 失败: {e}");
+                    return;
+                }
+            }
+        }
+    }
+    eprintln!("aether-compositor: 未找到 /sys/class/graphics/fb*/blank —— 息屏在当前显示后端不生效");
+}
+
+/// 非 Linux（开发机预览）：没有 fb 设备，空实现。
+#[cfg(not(target_os = "linux"))]
+fn set_fb_blank(_on: bool, _blanked: &mut bool) {}
 
 /// 执行控制中心交回来的意图（**有副作用的部分**）。
 ///

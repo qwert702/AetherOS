@@ -2515,6 +2515,22 @@ fn draw_settings_content(
                 hits.push((sw, SettingsHit::Wallpaper(i)));
             }
             ry += 44;
+            // 息屏档位（§3.6）：固定档位按钮，当前档高亮。
+            // 0 = 永不 —— 演示与排障时需要它，所以它必须是一个**能选中的档**，
+            // 而不是"设了 0 却显示成 5 分钟"这种含糊状态。
+            widgets::group_header(buf, w, h, content.x + 24, ry, "空闲息屏", Some(tr));
+            ry += 24;
+            for (i, min) in crate::settings::IDLE_BLANK_OPTIONS.iter().enumerate() {
+                let label = if *min == 0 { "永不".to_string() } else { format!("{min} 分钟") };
+                let b = Rect { x: content.x + 24 + (i as i32) * 84, y: ry, w: 76, h: 34 };
+                let on = s.idle_blank_min == *min;
+                widgets::row(buf, w, h, b, &label, None, widgets::States::at(b, mouse), Some(tr));
+                if on {
+                    rounded_outline(buf, w, h, b, 4.0, color::accent(), 0.95);
+                }
+                hits.push((b, SettingsHit::IdleBlank(*min)));
+            }
+            ry += 46;
             // 恢复默认（批次 L-1）：用户改坏了能回去。**真的重置**，不是只改显示。
             let reset = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
             widgets::row(buf, w, h, reset, "恢复默认外观",

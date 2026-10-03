@@ -63,6 +63,9 @@ pub struct Settings {
     pub notify_sound: bool,
     /// 界面语言：0 = 中文，1 = English（下标，见 [`LOCALE_COUNT`]）。
     pub locale: u8,
+    /// 空闲多少分钟后息屏（**0 = 永不**）。取值只允许 `IDLE_BLANK_OPTIONS` 里的档位 ——
+    /// 任意分钟数没有意义（用户只会在这几档里选），也避免设置文件被改成 99999。
+    pub idle_blank_min: u16,
 }
 
 /// 界面缩放的允许档位。
@@ -79,6 +82,21 @@ pub const LOCALE_COUNT: u8 = 2;
 
 /// 默认打开方式的可选数量 —— **直接引用内置应用表**，避免两处各写一个数字。
 pub const DEFAULT_APP_COUNT: u8 = crate::APP_TITLES.len() as u8;
+
+/// 息屏档位（分钟）。**0 = 永不**。
+///
+/// 为什么是固定档位而不是任意值：用户只在这几档里选，而固定档位让
+/// "设置文件被手工改成 99999" 这类情况有一个明确的吸附目标（见 `snap_idle_blank`）。
+pub const IDLE_BLANK_OPTIONS: [u16; 4] = [0, 5, 10, 30];
+
+/// 把任意分钟数吸附到最近的合法档位。
+pub fn snap_idle_blank(min: u16) -> u16 {
+    IDLE_BLANK_OPTIONS
+        .iter()
+        .copied()
+        .min_by_key(|o| (*o as i32 - min as i32).abs())
+        .unwrap_or(0)
+}
 
 /// 把任意值吸附到最近的一档缩放（未知值不会留在设置里）。
 pub fn snap_scale(v: u16) -> u16 {
@@ -106,6 +124,7 @@ impl Default for Settings {
             default_app: 0,
             notify_sound: true,
             locale: 0,
+            idle_blank_min: 10,
         }
     }
 }
@@ -163,7 +182,31 @@ impl Settings {
         if let Some(n) = v.get("locale").and_then(Value::as_u64) {
             s.locale = (n as u8).min(LOCALE_COUNT.saturating_sub(1));
         }
+        if let Some(n) = v.get("idle_blank_min").and_then(Value::as_u64) {
+            // 不在档位里的值**吸附到最近的合法档**（而不是原样接受）——
+            // 否则手工改过的设置文件会让界面显示一个选不中的值
+            s.idle_blank_min = snap_idle_blank(n as u16);
+        }
         s
+    }
+
+    /// 空闲判定：是否该息屏。
+    ///
+    /// 纯函数（拿 `Duration` 而不是 `Instant`）：**可单测**，不必等十分钟。
+    /// 档位 0 表示永不 —— 那是演示与排障时的选择，不该被"默认值"覆盖掉。
+    pub fn should_blank(&self, idle: std::time::Duration) -> bool {
+        match self.idle_blank_secs() {
+            None => false,
+            Some(limit) => idle.as_secs() >= limit,
+        }
+    }
+
+    /// 息屏阈值（秒）。`None` = 永不。
+    pub fn idle_blank_secs(&self) -> Option<u64> {
+        match self.idle_blank_min {
+            0 => None,
+            m => Some(m as u64 * 60),
+        }
     }
 
     /// 序列化（带 schema 版本号，便于以后迁移时判断）。
@@ -184,6 +227,7 @@ impl Settings {
             "default_app": self.default_app,
             "notify_sound": self.notify_sound,
             "locale": self.locale,
+            "idle_blank_min": self.idle_blank_min,
         });
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
@@ -281,6 +325,8 @@ pub enum SettingsHit {
     Wallpaper(u8),
     /// 恢复默认外观（批次 L-1）：**保留时区**（它来自系统/发行配置，不是"外观"）。
     ResetDefaults,
+    /// 息屏档位（§3.6）：分钟数，0 = 永不。非法值由 `apply_hit` 吸附。
+    IdleBlank(u16),
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -350,6 +396,9 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
             *s = Settings::default();
             s.tz_offset_min = tz;
         }
+        SettingsHit::IdleBlank(min) => {
+            s.idle_blank_min = snap_idle_blank(min);
+        }
     }
 }
 
@@ -382,6 +431,7 @@ mod tests {
             default_app: 2,
             notify_sound: false,
             locale: 1,
+            idle_blank_min: 10,
         };
         assert_eq!(Settings::from_json(&s.to_json()), s);
     }
@@ -472,6 +522,7 @@ mod tests {
             default_app: 1,
             notify_sound: false,
             locale: 1,
+            idle_blank_min: 10,
         };
         s.save(path).expect("写设置应当成功（父目录会自动建）");
         assert_eq!(Settings::load(path, 8 * 60), s, "写进去什么，读出来就该是什么");
@@ -635,6 +686,7 @@ mod restart_action_tests {
             default_app: 2,
             notify_sound: false,
             locale: 1,
+            idle_blank_min: 10,
             ..Settings::default()
         };
         let mut page = 1usize;
@@ -673,4 +725,69 @@ mod restart_action_tests {
         let lum = |c: [u8; 3]| c[0] as u32 + c[1] as u32 + c[2] as u32;
         assert!(lum(dark_top) < lum(light_top), "深色档应更暗");
     }
+    /// §3.6：息屏判定是**纯函数** —— 不必等十分钟就能验。
+    ///
+    /// 三条边界必须钉住：0 = 永不（**不能被"默认值"覆盖**）、阈值前不息、阈值后息。
+    #[test]
+    fn idle_blank_respects_never_and_threshold() {
+        use std::time::Duration;
+        let never = Settings { idle_blank_min: 0, ..Settings::default() };
+        assert_eq!(never.idle_blank_secs(), None);
+        // 永不档：无论空闲多久都不息屏（演示/排障时正是要这个）
+        assert!(!never.should_blank(Duration::from_secs(60 * 60 * 24)));
+
+        let five = Settings { idle_blank_min: 5, ..Settings::default() };
+        assert_eq!(five.idle_blank_secs(), Some(300));
+        assert!(!five.should_blank(Duration::from_secs(299)), "差一秒不该息屏");
+        assert!(five.should_blank(Duration::from_secs(300)), "到点就该息屏");
+        assert!(five.should_blank(Duration::from_secs(301)));
+    }
+
+    /// §3.6：非法档位必须**吸附到最近合法档**，而不是原样接受。
+    ///
+    /// 否则手工改过的设置文件会让界面显示一个选不中的值（"高亮没有落在任何按钮上"）。
+    #[test]
+    fn idle_blank_snaps_to_declared_steps() {
+        assert_eq!(snap_idle_blank(0), 0);
+        assert_eq!(snap_idle_blank(4), 5, "4 离 5 更近");
+        assert_eq!(snap_idle_blank(7), 5, "7 离 5 比离 10 近");
+        assert_eq!(snap_idle_blank(8), 10, "8 离 10 更近");
+        assert_eq!(snap_idle_blank(25), 30);
+        assert_eq!(snap_idle_blank(9999), 30, "超大值吸附到最大档，不溢出");
+        // 每个档位本身必须是不动点
+        for o in IDLE_BLANK_OPTIONS {
+            assert_eq!(snap_idle_blank(o), o, "{o} 应是不动点");
+        }
+
+        let mut st = Settings::default();
+        let mut page = 0usize;
+        apply_hit(&mut st, &mut page, SettingsHit::IdleBlank(9999));
+        assert_eq!(st.idle_blank_min, 30, "命中里的非法值也要吸附");
+        apply_hit(&mut st, &mut page, SettingsHit::IdleBlank(0));
+        assert_eq!(st.idle_blank_min, 0, "0（永不）必须能选中");
+        assert_eq!(page, 0, "改息屏不该切页");
+    }
+
+    /// §3.6：旧设置文件（没有这个键）必须拿到默认值，且新文件能往返。
+    #[test]
+    fn idle_blank_is_backward_compatible() {
+        // 旧文件：没有 idle_blank_min → 用默认（10 分钟）
+        let old = r#"{"version":1,"dark_mode":true}"#;
+        let s = Settings::from_json(old);
+        assert_eq!(s.idle_blank_min, Settings::default().idle_blank_min);
+        assert!(s.dark_mode, "旧文件的其它字段仍要读进来");
+
+        // 新文件往返
+        let s = Settings { idle_blank_min: 30, ..Settings::default() };
+        let back = Settings::from_json(&s.to_json());
+        assert_eq!(back.idle_blank_min, 30);
+
+        // 手工改成非法值 → 吸附（而不是让界面显示一个选不中的档）
+        let weird = Settings::from_json(r#"{"idle_blank_min": 77}"#);
+        assert_eq!(weird.idle_blank_min, snap_idle_blank(77));
+        // 类型不对（字符串）→ 走默认，不 panic
+        let bad = Settings::from_json(r#"{"idle_blank_min": "十分钟"}"#);
+        assert_eq!(bad.idle_blank_min, Settings::default().idle_blank_min);
+    }
+
 }
