@@ -1553,6 +1553,8 @@ pub struct Renderer {
     pub lock: crate::lock::LockScreen,
     /// 命令面板（§5.5）。跨帧存在（查询、结果、选中项），所以要放在 Renderer 上。
     pub palette: crate::palette::Palette,
+    /// 「工具权限」页的视图状态（§5.3）。列表来自 aetherd（异步取），状态跨帧保留。
+    pub policy: crate::policyview::PolicyView,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1784,6 +1786,7 @@ impl Renderer {
             dns: Default::default(),
         lock: Default::default(),
         palette: Default::default(),
+        policy: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -1981,7 +1984,7 @@ impl Renderer {
                 buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
                 &mut self.sidebar_hits, &mut self.crumb_hits,
-                self.settings, &self.dns, self.settings_page, &mut self.settings_hits,
+                self.settings, &self.dns, &self.policy, self.settings_page, &mut self.settings_hits,
             );
         }
         mark!("windows");
@@ -2473,6 +2476,7 @@ fn draw_window(
     crumb_hits: &mut Vec<(Rect, String)>,
     settings: crate::settings::Settings,
     dns_field: &crate::settings::DnsField,
+    policy: &crate::policyview::PolicyView,
     settings_page: usize,
     settings_hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -2579,7 +2583,7 @@ fn draw_window(
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
         WinKind::Wayland => draw_wayland_content(buf, w, h, content, win.wayland.as_ref()),
         WinKind::Settings => draw_settings_content(
-            buf, w, h, content, mouse, tr, settings, dns_field, settings_page, settings_hits,
+            buf, w, h, content, mouse, tr, settings, dns_field, policy, settings_page, settings_hits,
         ),
     }
 }
@@ -2600,6 +2604,7 @@ fn draw_settings_content(
     tr: Option<&TextRenderer>,
     s: crate::settings::Settings,
     dns_field: &crate::settings::DnsField,
+    policy: &crate::policyview::PolicyView,
     page: usize,
     hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -2621,6 +2626,23 @@ fn draw_settings_content(
     // 注意：这里必须写全限定 `crate::i18n::tr` —— 本文件的 `tr` 是**文本渲染器**的
     // 局部变量名，直接用 `tr(...)` 会被它遮蔽（编译报"not callable"）。
     let lang = crate::i18n::lang();
+    // 左栏必须**放得下全部页**：页数一多，固定 30px 行高就会溢出，
+    // 而溢出的那一页**点不到**（命中去跑到窗口外）—— 加页面的那次改动就踩了这条
+    // （有测试盯着"命中区必须都在窗口内"，所以是测试先红，不是用户先发现）。
+    // 按可用高度自适应行高，下限 20px：再小就不是给人点的了，那种情况才裁剪。
+    let groups: i32 = {
+        let mut n: i32 = 0;
+        let mut last = "";
+        for p in PAGES.iter() {
+            if p.group != last {
+                n += 1;
+                last = p.group;
+            }
+        }
+        n
+    };
+    let chrome = 12 + groups * 20 + groups.saturating_sub(1) * 10;
+    let row_h = (((r.h - chrome).max(0)) / PAGES.len().max(1) as i32).clamp(20, 30);
     for (i, p) in PAGES.iter().enumerate() {
         // **按原文比较**（`p.group`），只在绘制时翻译：拿翻译后的文本互相比较的话，
         // 同一分组会因为两次取到的文本不同而重复出标题。
@@ -2632,7 +2654,11 @@ fn draw_settings_content(
             y += 20;
             group = p.group;
         }
-        let row = Rect { x: r.x + 8, y, w: SIDEBAR_W - 16, h: 30 };
+        // 仍然放不下（页数极多）：如实裁剪而不是画到窗口外
+        if y + row_h > r.y + r.h {
+            break;
+        }
+        let row = Rect { x: r.x + 8, y, w: SIDEBAR_W - 16, h: row_h };
         let st = widgets::States {
             hover: p.enabled && row.contains(mouse.0, mouse.1),
             selected: i == page,
@@ -2754,6 +2780,80 @@ fn draw_settings_content(
                     "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
                     font::CAPTION, color::text_dim(), 0.7);
         }
+        "工具权限" => {
+            // §5.3：逐工具策略。内容来自传入的 `policy` 视图（由事件循环异步取回），
+            // **绘制不自己发 IPC** —— 那样每帧都会发一次请求。
+            use crate::policyview as pv;
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("每个工具一行", "One row per tool"), Some(tr),
+            );
+            ry += 24;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "点击一行循环切换：按等级 → 每次询问 → 允许 → 禁止。禁止优先于一切；L3 永不免确认。",
+                    "Click a row to cycle: By level → Always ask → Allow → Deny. Deny wins over everything; L3 always confirms.",
+                ),
+                font::CAPTION, color::text_dim(), 0.85,
+            );
+            ry += 28;
+
+            // 三种"没有行"的状态必须**分开说**：取不到 ≠ 一个工具都没有 ≠ 还没取
+            if let Some(err) = policy.error() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    &format!("{}：{err}", crate::i18n::tr("读取失败", "Failed to load")),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            } else if !policy.is_loaded() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("正在读取…", "Loading…"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            } else if policy.is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("没有可配置的工具", "No tools to configure"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            }
+
+            let rows = policy.entries().to_vec();
+            for (i, e) in rows.iter().enumerate() {
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                let hint = policy.row_hint(e, lang);
+                widgets::row(
+                    buf, w, h, row, &e.tool, Some(&hint),
+                    widgets::States::at(row, mouse), Some(tr),
+                );
+                hits.push((row, SettingsHit::CycleToolPolicy(i)));
+                ry += 46;
+                // 列表超出可视区就停下（滚动不是这批的事，但画到框外更糟）
+                if ry > content.y + content.h - 60 {
+                    break;
+                }
+            }
+            let _ = pv::level_label(0); // 引用一下模块，避免"未使用"（它在 row_hint 里用到）
+
+            ry += 6;
+            let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf, w, h, act,
+                crate::i18n::tr("重新读取", "Reload"),
+                Some(crate::i18n::tr(
+                    "从 aetherd 取一次最新的策略",
+                    "Fetch the current policy from aetherd",
+                )),
+                widgets::States::at(act, mouse), Some(tr),
+            );
+            hits.push((act, SettingsHit::RefreshPolicy));
+        }
         "快捷键" => {
             // §5.9：总览页。内容**只来自 `shortcuts::SHORTCUTS`** ——
             // 那张表的每条都带探针测试，所以这里画出来的每一条在源码里都有落点。
@@ -2795,7 +2895,7 @@ fn draw_settings_content(
             widgets::group_header(buf, w, h, content.x + 24, ry, "状态", Some(tr));
             ry += 24;
             tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, &n.summary(), font::BODY, color::text(), 0.92);
-            ry += 30;
+            ry += row_h;
             let (name, mac, gw, up) = match &n.iface {
                 Some(i) => (i.name.clone(), i.mac.clone(), i.gateway.clone(), i.up),
                 None => ("（无）".to_string(), String::new(), String::new(), false),
@@ -5077,7 +5177,7 @@ mod blit_tests {
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-            page, &mut hits,
+           &crate::policyview::PolicyView::default(), page, &mut hits,
         );
 
         // 1) 命中区要齐：页面行 + 本页的真控件
@@ -5128,7 +5228,7 @@ mod blit_tests {
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-            appear, &mut hits2,
+           &crate::policyview::PolicyView::default(), appear, &mut hits2,
         );
         assert!(
             hits2.iter().any(|(_, x)| matches!(x, H::ToggleDark)),
@@ -5217,6 +5317,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
+            &crate::policyview::PolicyView::default(),
             page,
             &mut hits,
         );
@@ -5314,6 +5415,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
+            &crate::policyview::PolicyView::default(),
             page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
@@ -5353,6 +5455,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
+            &crate::policyview::PolicyView::default(),
             page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
@@ -5393,6 +5496,7 @@ mod blit_tests {
                 &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
                 crate::settings::Settings::default(),
                 &crate::settings::DnsField::default(),
+                &crate::policyview::PolicyView::default(),
                 i, &mut hits,
             );
             assert!(

@@ -313,6 +313,10 @@ pub enum SettingsHit {
     EditDns,
     /// 切换界面语言（§3.5）。值是 `Settings::locale` 的下标。
     Locale(u8),
+    /// 点击「工具权限」页的第 `i` 行：把该工具的策略循环到下一个（§5.3）。
+    CycleToolPolicy(usize),
+    /// 重新从 aetherd 取一次策略列表（§5.3）。
+    RefreshPolicy,
     /// 切换到第 n 页
     Page(usize),
     /// 24 小时制开关
@@ -408,6 +412,8 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "网络", title_en: "Network", group: "网络与共享", group_en: "Network & Sharing", enabled: true },
     PageDef { title: "应用", title_en: "Apps", group: "应用", group_en: "Applications", enabled: true },
     PageDef { title: "权限与隐私", title_en: "Privacy & Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
+    // §5.3：逐工具的权限策略编辑器。与上一页同组：都属"谁能动我的东西"。
+    PageDef { title: "工具权限", title_en: "Tool Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §3.2：通知页（是否记录 + 清空历史）。放在最后一页：它是"回头看"的地方，
     // 不是日常要改的设置。
     PageDef { title: "通知", title_en: "Notifications", group: "系统", group_en: "System", enabled: true },
@@ -530,7 +536,10 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         | SettingsHit::Logout
         // 「修改 DNS」同样**不改设置状态**：编辑态住在 `Renderer::dns`
         // （界面状态，不是要落盘的设置），由 main.rs 的命中分派处理。
-        | SettingsHit::EditDns => {}
+        | SettingsHit::EditDns
+        // 「工具权限」的行点击与刷新：要发 IPC 与 aetherd 来回，由事件循环处理。
+        | SettingsHit::CycleToolPolicy(_)
+        | SettingsHit::RefreshPolicy => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

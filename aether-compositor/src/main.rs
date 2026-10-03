@@ -40,6 +40,7 @@ mod widgets;
 mod settings;
 mod shortcuts;
 mod palette;
+mod policyview;
 mod auth;
 mod i18n;
 mod lock;
@@ -668,6 +669,33 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
+                AiEvent::PolicyLoaded(entries) => {
+                    renderer.policy.set_entries(entries);
+                }
+                AiEvent::PolicySaved { ok, message, tool, policy } => {
+                    if ok {
+                        // 服务端确认后才更新那一行 —— 本地先改就等于"假装已生效"
+                        renderer.policy.apply_confirmed(&tool, policy);
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            message,
+                            notifications::Kind::Ok,
+                        );
+                    } else {
+                        renderer.policy.set_error(message.clone());
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            message,
+                            notifications::Kind::Err,
+                        );
+                    }
+                }
+                AiEvent::PolicyFailed(why) => {
+                    renderer.policy.set_error(why.clone());
+                    push_toast(&mut toast, &mut renderer.notifs, why, notifications::Kind::Err);
+                }
                 AiEvent::DnsSaved { ok, message } => {
                     // 回执落到输入框的反馈行：**成功才退出编辑态**，失败留在编辑态
                     // 让用户接着改（把他踢出去等于让他重来一遍）。
@@ -878,6 +906,50 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                     // 导出审计日志（§5.2）：**动作类**，成功给出确切路径，
                     // 失败给出原因（不静默、不谎报"已导出"）
+                    // §5.3「工具权限」页：进入该页时**自动取一次**（否则会是空白，
+                    // 用户不知道是没工具还是没加载）。
+                    if let settings::SettingsHit::Page(i) = hit {
+                        let is_tools = settings::PAGES
+                            .get(i)
+                            .map(|p| p.title == "工具权限")
+                            .unwrap_or(false);
+                        if is_tools && !renderer.policy.is_loaded() {
+                            fetch_policy(ai_tx.clone());
+                        }
+                    }
+                    // §5.3：点击一行 → 循环到下一个策略。**先标记 pending 再发请求**：
+                    // 等回执期间不再接受点击（连点会发多个请求，回执顺序无法保证，
+                    // 最后落盘的可能不是用户最后想要的那个）。
+                    if let settings::SettingsHit::CycleToolPolicy(i) = hit {
+                        match renderer.policy.cycle(i) {
+                            Some((tool, next)) => {
+                                renderer.policy.mark_pending(&tool);
+                                save_tool_policy(ai_tx.clone(), tool.clone(), next);
+                                push_toast(
+                                    &mut toast,
+                                    &mut renderer.notifs,
+                                    format!("正在保存 {tool}…"),
+                                    notifications::Kind::Info,
+                                );
+                            }
+                            None => push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                "正在保存上一项，请稍候".to_string(),
+                                notifications::Kind::Info,
+                            ),
+                        }
+                    }
+                    // §5.3：重新读取
+                    if let settings::SettingsHit::RefreshPolicy = hit {
+                        fetch_policy(ai_tx.clone());
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            "正在读取权限策略…".to_string(),
+                            notifications::Kind::Info,
+                        );
+                    }
                     // 「修改 DNS」（§2.4）：点击进入编辑态，输入框里带上**当前值**
                     // （用户从现状开始改，而不是从空白重打）。
                     if let settings::SettingsHit::EditDns = hit {
@@ -1396,6 +1468,17 @@ enum AiEvent {
     /// DNS 写入的回执（§2.4）。**单独一个变体**，不复用 `ToolDone`：
     /// 那是"AI 工具调用完成"的语义，会让设置页的一次保存显示成 AI 回复。
     DnsSaved { ok: bool, message: String },
+    /// 权限策略列表取回来了（§5.3）。
+    PolicyLoaded(Vec<aether_ipc::PolicyEntryWire>),
+    /// 权限策略写入的回执（带上"写成了什么"，视图据此更新那一行）。
+    PolicySaved {
+        ok: bool,
+        message: String,
+        tool: String,
+        policy: aether_ipc::ToolPolicyWire,
+    },
+    /// 取/写权限策略失败。
+    PolicyFailed(String),
 }
 
 /// 安装向导状态（仅 Live ISO 会话；run_fbdev 持有）。
@@ -3151,6 +3234,33 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
+                AiEvent::PolicyLoaded(entries) => {
+                    renderer.policy.set_entries(entries);
+                }
+                AiEvent::PolicySaved { ok, message, tool, policy } => {
+                    if ok {
+                        // 服务端确认后才更新那一行 —— 本地先改就等于"假装已生效"
+                        renderer.policy.apply_confirmed(&tool, policy);
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            message,
+                            notifications::Kind::Ok,
+                        );
+                    } else {
+                        renderer.policy.set_error(message.clone());
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            message,
+                            notifications::Kind::Err,
+                        );
+                    }
+                }
+                AiEvent::PolicyFailed(why) => {
+                    renderer.policy.set_error(why.clone());
+                    push_toast(&mut toast, &mut renderer.notifs, why, notifications::Kind::Err);
+                }
                 AiEvent::DnsSaved { ok, message } => {
                     // 回执落到输入框的反馈行：**成功才退出编辑态**，失败留在编辑态
                     // 让用户接着改（把他踢出去等于让他重来一遍）。
@@ -4326,6 +4436,72 @@ fn handle_dns_key(
         }
         _ => false,
     }
+}
+
+/// 取一次权限策略（§5.3）。与 `set_dns` 同一套路：独立线程 + 超时 + 事件回执。
+///
+/// 需要已注册的 UI 通道（服务端会 403）—— 策略决定"什么能自动执行"，
+/// 能读它就知道系统的安全边界长什么样。
+#[cfg(target_os = "linux")]
+fn fetch_policy(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let run = || -> anyhow::Result<Response> {
+            let mut stream = IpcStream::connect(Duration::from_secs(2))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut reader = BufReader::new(stream.try_clone()?);
+            register_ui(&mut stream, &mut reader)?;
+            stream.write_all(aether_ipc::encode(&Request::GetPolicy).as_bytes())?;
+            let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
+            serde_json::from_str::<Response>(line.trim()).map_err(|e| anyhow::anyhow!("解析响应失败: {e}"))
+        };
+        let ev = match run() {
+            Ok(Response::PolicyList { entries }) => AiEvent::PolicyLoaded(entries),
+            Ok(Response::Error { code, message }) => {
+                AiEvent::PolicyFailed(format!("被拒绝（{code}）：{message}"))
+            }
+            Ok(_) => AiEvent::PolicyFailed("收到意外响应".into()),
+            Err(e) => AiEvent::PolicyFailed(format!("连接 aetherd 失败：{e}")),
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 写一个工具的策略（§5.3）。回执里带上"写成了什么"，视图据此更新那一行 ——
+/// **本地不先改**：显示成已生效而服务端没写成功，是最难查的一类问题。
+#[cfg(target_os = "linux")]
+fn save_tool_policy(
+    tx: mpsc::Sender<AiEvent>,
+    tool: String,
+    policy: aether_ipc::ToolPolicyWire,
+) {
+    std::thread::spawn(move || {
+        let value = tool.clone();
+        let run = || -> anyhow::Result<Response> {
+            let mut stream = IpcStream::connect(Duration::from_secs(2))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            let mut reader = BufReader::new(stream.try_clone()?);
+            register_ui(&mut stream, &mut reader)?;
+            stream.write_all(
+                aether_ipc::encode(&Request::SetToolPolicy { tool: value, policy }).as_bytes(),
+            )?;
+            let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
+            serde_json::from_str::<Response>(line.trim()).map_err(|e| anyhow::anyhow!("解析响应失败: {e}"))
+        };
+        let ev = match run() {
+            Ok(Response::PolicyAck { ok, message, tool: t2 }) => AiEvent::PolicySaved {
+                ok,
+                message,
+                tool: t2,
+                policy,
+            },
+            Ok(Response::Error { code, message }) => AiEvent::PolicyFailed(format!(
+                "被拒绝（{code}）：{message}（策略未改变）"
+            )),
+            Ok(_) => AiEvent::PolicyFailed("收到意外响应".into()),
+            Err(e) => AiEvent::PolicyFailed(format!("连接 aetherd 失败：{e}")),
+        };
+        let _ = tx.send(ev);
+    });
 }
 
 /// 把 DNS 设置写进系统（§2.4 网络写入的界面侧出口）。
