@@ -2075,10 +2075,20 @@ impl Renderer {
         self.settings_hits.clear();
         for (i, win) in desktop.wins.iter().enumerate() {
             draw_window(
-                buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
+                buf, w, h, win, i == desktop.active,
+                PageCtx {
+                    mouse: ui.mouse,
+                    tr,
+                    settings: self.settings,
+                    dns: &self.dns,
+                    policy: &self.policy,
+                    store: &self.store,
+                    time: &self.time,
+                },
+                t, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
                 &mut self.sidebar_hits, &mut self.crumb_hits,
-                self.settings, &self.dns, &self.policy, &self.store, &self.time, self.settings_page, &mut self.settings_hits,
+                self.settings_page, &mut self.settings_hits,
             );
         }
         mark!("windows");
@@ -2564,9 +2574,8 @@ fn draw_window(
     h: usize,
     win: &Win,
     active: bool,
-    mouse: (f32, f32),
+    ctx: PageCtx,
     t: f32,
-    tr: Option<&TextRenderer>,
     fv: &FileView,
     cells: &mut Vec<(Rect, usize)>,
     up: &mut Rect,
@@ -2574,14 +2583,12 @@ fn draw_window(
     lights_out: &mut Vec<(usize, Rect, Rect, Rect)>,
     sidebar_hits: &mut Vec<(Rect, usize)>,
     crumb_hits: &mut Vec<(Rect, String)>,
-    settings: crate::settings::Settings,
-    dns_field: &crate::settings::DnsField,
-    policy: &crate::policyview::PolicyView,
-    store: &crate::store::StoreView,
-    time: &crate::timeview::TimeView,
     settings_page: usize,
     settings_hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
+    // 这里只解构窗口自身要用的两个：其余字段（设置/四个视图）是**原样转发**给
+    // `draw_settings_content` 的，解出来只会得到五个"未使用变量"警告。
+    let PageCtx { mouse, tr, .. } = ctx;
     let r = win.rect;
     let title = win.title.as_str();
     let kind = win.kind;
@@ -2685,8 +2692,45 @@ fn draw_window(
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
         WinKind::Wayland => draw_wayland_content(buf, w, h, content, win.wayland.as_ref()),
         WinKind::Settings => draw_settings_content(
-            buf, w, h, content, mouse, tr, settings, dns_field, policy, store, time, settings_page, settings_hits,
+            buf, w, h, content, ctx, settings_page, settings_hits,
         ),
+    }
+}
+
+/// 绘制设置页所需的"外部世界"。
+///
+/// **为什么要有它**：这些参数一路从 `Renderer` 传到页面分支，散着传已经到 13 个 ——
+/// 每加一个页面就要改签名 + 全部调用点（含 6 处测试）。收成一个结构后，
+/// 加一个页面只改结构的字段与页面分支，不动任何签名。
+///
+/// 全是 `Copy`（引用 + `Settings`），所以按值传没有代价。
+#[derive(Clone, Copy)]
+pub struct PageCtx<'a> {
+    pub mouse: (f32, f32),
+    pub tr: Option<&'a TextRenderer>,
+    pub settings: crate::settings::Settings,
+    pub dns: &'a crate::settings::DnsField,
+    pub policy: &'a crate::policyview::PolicyView,
+    pub store: &'a crate::store::StoreView,
+    pub time: &'a crate::timeview::TimeView,
+}
+
+/// 测试用的上下文：四个视图对象借用**静态默认值**（测试不关心它们，但必须活得够久）。
+#[cfg(test)]
+pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
+    use std::sync::OnceLock;
+    static DNS: OnceLock<crate::settings::DnsField> = OnceLock::new();
+    static POLICY: OnceLock<crate::policyview::PolicyView> = OnceLock::new();
+    static STORE: OnceLock<crate::store::StoreView> = OnceLock::new();
+    static TIME: OnceLock<crate::timeview::TimeView> = OnceLock::new();
+    PageCtx {
+        mouse: (0.0, 0.0),
+        tr,
+        settings: crate::settings::Settings::default(),
+        dns: DNS.get_or_init(Default::default),
+        policy: POLICY.get_or_init(Default::default),
+        store: STORE.get_or_init(Default::default),
+        time: TIME.get_or_init(Default::default),
     }
 }
 
@@ -2702,17 +2746,12 @@ fn draw_settings_content(
     w: usize,
     h: usize,
     r: Rect,
-    mouse: (f32, f32),
-    tr: Option<&TextRenderer>,
-    s: crate::settings::Settings,
-    dns_field: &crate::settings::DnsField,
-    policy: &crate::policyview::PolicyView,
-    store: &crate::store::StoreView,
-    // 注：参数已到 13 个，该抽成一个 `PageCtx` 结构了（独立批次做，不混在本批里改）。
-    time: &crate::timeview::TimeView,
+    ctx: PageCtx,
     page: usize,
     hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
+    // 解构成**与原来同名**的局部变量：这样函数体一行都不用改（重构风险最低的做法）
+    let PageCtx { mouse, tr, settings: s, dns: dns_field, policy, store, time } = ctx;
     use crate::settings::{SettingsHit, PAGES};
     use crate::widgets;
     const SIDEBAR_W: i32 = 168;
@@ -5413,9 +5452,7 @@ mod blit_tests {
             .position(|p| p.title == "时钟与时区")
             .expect("时钟与时区页必须存在");
         draw_settings_content(
-            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-            crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(), page, &mut hits,
+            &mut buf, w, h, r, crate::draw::test_ctx(Some(&tr)), page, &mut hits,
         );
 
         // 1) 命中区要齐：页面行 + 本页的真控件
@@ -5464,9 +5501,7 @@ mod blit_tests {
             .expect("外观页必须存在");
         let mut hits2 = Vec::new();
         draw_settings_content(
-            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-            crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(), appear, &mut hits2,
+            &mut buf, w, h, r, crate::draw::test_ctx(Some(&tr)), appear, &mut hits2,
         );
         assert!(
             hits2.iter().any(|(_, x)| matches!(x, H::ToggleDark)),
@@ -5552,11 +5587,7 @@ mod blit_tests {
             .position(|p| p.title == "网络")
             .expect("应当存在「网络」设置页");
         draw_settings_content(
-            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-            crate::settings::Settings::default(),
-            &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
-            page,
+            &mut buf, w, h, r, crate::draw::test_ctx(Some(&tr)), page,
             &mut hits,
         );
         assert!(
@@ -5650,11 +5681,7 @@ mod blit_tests {
             .position(|p| p.title == "外观")
             .expect("应存在「外观」页");
         draw_settings_content(
-            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-            crate::settings::Settings::default(),
-            &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
-            page, &mut hits,
+            &mut buf, w, h, r, crate::draw::test_ctx(Some(&tr)), page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
         assert!(
@@ -5690,11 +5717,7 @@ mod blit_tests {
             .position(|p| p.title == "外观")
             .expect("应存在「外观」页");
         crate::draw::draw_settings_content(
-            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-            crate::settings::Settings::default(),
-            &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
-            page, &mut hits,
+            &mut buf, w, h, r, crate::draw::test_ctx(Some(&tr)), page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
         let locale_hits: Vec<_> = hits.iter().filter(|(_, x)| matches!(x, H::Locale(_))).collect();
@@ -5731,11 +5754,7 @@ mod blit_tests {
             let mut buf = vec![0u32; w * h];
             let mut hits = Vec::new();
             crate::draw::draw_settings_content(
-                &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
-                crate::settings::Settings::default(),
-                &crate::settings::DnsField::default(),
-                &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), &crate::timeview::TimeView::default(),
-                i, &mut hits,
+                &mut buf, w, h, r, crate::draw::test_ctx(Some(&tr)), i, &mut hits,
             );
             assert!(
                 hits.iter().any(|(_, x)| matches!(x, crate::settings::SettingsHit::Page(_))),
