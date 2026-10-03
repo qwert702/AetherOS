@@ -108,6 +108,14 @@ fn spawn_unix_listener(shared: Arc<Shared>) -> std::io::Result<()> {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
+            // M-17 残余（2026-10-02 审计）：**对端身份校验**，与 aether-init 同一判据。
+            // 0600 权限位已经挡住陌生用户，但"权限位正确"与"真的只接受预期身份"
+            // 是两件事 —— 一旦权限被改宽（打包/挂载/误操作），这里仍会拒绝。
+            // 读不到凭据 → 拒绝（fail-closed）。
+            if let Err(reason) = aether_ipc::check_peer(&stream) {
+                eprintln!("[aetherd] 拒绝 Unix 连接：{reason}");
+                continue;
+            }
             stream.set_read_timeout(Some(IDLE_TIMEOUT)).ok();
             // 写超时同样必须有（对抗审查发现）：只设读超时的话，一个"连上但不读"的
             // 对端会让 `write_all` **永久阻塞**在该 socket 上 —— 32 条这样的连接就能
@@ -988,4 +996,14 @@ mod ipc_gating_tests {
             "已注册通道写剪贴板应成功，实得 {out:?}"
         );
     }
+    /// M-17 残余：aetherd 用的是共享判据（`aether-ipc`），这里只做一次**接线检查** ——
+    /// 判据本身的性质（只放行 root、未知一律拒绝）由 `aether-ipc` 的用例覆盖，
+    /// 免得同一性质在两处各测一遍、日后分叉。
+    #[test]
+    fn ipc_peer_check_is_wired_to_the_shared_predicate() {
+        // 用**纯核心**（跨平台）：`peer_uid_allowed` 是 Linux 便捷版，Windows 上没有
+        assert!(aether_ipc::peer_uid_allowed_with(Some(0), 1000), "root 无条件放行");
+        assert!(!aether_ipc::peer_uid_allowed_with(None, 0), "未知身份必须拒绝");
+    }
+
 }

@@ -74,32 +74,6 @@ fn accept_loop<S: DuplexStream + Send + 'static>(
     }
 }
 
-/// 读取 Unix socket 对端的 uid（`SO_PEERCRED`）。
-///
-/// 为什么要有（2026-10-02 审计 L-3）：socket 是 0600，**理论上**只有 root 能连；
-/// 但"权限位正确"与"真的只接受预期身份"是两件事 —— 一旦权限被改宽、
-/// 或者哪天换了挂载点/打包方式，这里仍会拒绝陌生 uid。这就是纵深防御的意义。
-/// 读不到对端身份时返回 None，调用方按"拒绝"处理（fail-closed）。
-#[cfg(target_os = "linux")]
-fn peer_uid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
-    use std::os::unix::io::AsRawFd;
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            &mut cred as *mut libc::ucred as *mut libc::c_void,
-            &mut len,
-        )
-    };
-    if rc == 0 {
-        Some(cred.uid)
-    } else {
-        None
-    }
-}
 
 /// 启动 IPC 服务线程（每连接一线程）。
 /// Linux 走 Unix socket（0600，root-only）——"PID 1 服务管理"是高权限边界，
@@ -115,14 +89,13 @@ pub fn spawn(manager: Arc<Mutex<Manager>>) -> anyhow::Result<()> {
         let mut incoming = listener.incoming();
         accept_loop(
             move || match incoming.next() {
-                Some(Ok(s)) => match peer_uid(&s) {
-                    Some(uid) if uid == 0 || uid == unsafe { libc::getuid() } => Some(s),
-                    Some(uid) => {
-                        eprintln!("[aether-init] 拒绝来自 uid={uid} 的服务控制连接");
-                        None
-                    }
-                    None => {
-                        eprintln!("[aether-init] 读不到对端身份，拒绝服务控制连接");
+                // 对端身份判据**与 aetherd 共用同一处实现**（`aether-ipc`）：
+                // 原先这里写 `uid == 0 || uid == getuid()`、aetherd 写 `uid == 0`，
+                // 两者在"都以 root 运行"时等价，但判据分叉本身就是缺陷来源。
+                Some(Ok(s)) => match aether_ipc::check_peer(&s) {
+                    Ok(()) => Some(s),
+                    Err(reason) => {
+                        eprintln!("[aether-init] 拒绝服务控制连接：{reason}");
                         None
                     }
                 },

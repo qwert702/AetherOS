@@ -297,6 +297,83 @@ pub fn decode<'a, T: Deserialize<'a>>(line: &'a str) -> anyhow::Result<T> {
     Ok(serde_json::from_str(line.trim())?)
 }
 
+
+// ---------------------------------------------------------------------------
+// 对端身份（SO_PEERCRED）
+// ---------------------------------------------------------------------------
+
+/// 是否允许该 uid 连接本机 IPC（**纯函数，跨平台可测**）。
+///
+/// 只允许 root（uid 0）：当前没有用户模型，合成器与 CLI 都以 root 运行。
+/// **读不到对端身份时一律拒绝**（fail-closed）—— "不知道对方是谁"不等于"可以放行"。
+///
+/// 判据**只有这一处**：aetherd 与 aether-init 共用它。两处各写一份迟早会分叉，
+/// 而"一个入口严、另一个松"正是这类检查最容易出的问题。
+pub fn peer_uid_allowed_with(uid: Option<u32>, trusted_uid: u32) -> bool {
+    matches!(uid, Some(u) if u == 0 || u == trusted_uid)
+}
+
+/// 以**本进程自身的 uid** 为可信身份（Linux）。
+///
+/// 语义：root 永远放行；此外只放行"与本进程同一个用户"的连接 ——
+/// 服务若以非 root 用户运行，接受同用户连接是自然的，而它也造不出 root-only 的 socket。
+/// 这是 aetherd 与 aether-init 统一后的判据（原先两处写法不同，见审计 M-17 残余）。
+#[cfg(target_os = "linux")]
+pub fn peer_uid_allowed(uid: Option<u32>) -> bool {
+    // SAFETY: getuid 不会失败、无副作用、无参数。
+    let me = unsafe { libc::getuid() };
+    peer_uid_allowed_with(uid, me)
+}
+
+/// 读取 Unix socket 对端的 uid（`SO_PEERCRED`）。读不到返回 `None`。
+///
+/// **不用 `UnixStream::peer_cred()`**：它在 rustc 1.98 上仍是 unstable
+/// （`peer_credentials_unix_socket`）—— 这个坑只有 musl 静态检查能发现，
+/// 因为 Windows 编译不到这段代码。改用 `libc::getsockopt`（与 aether-init 同一套）。
+#[cfg(target_os = "linux")]
+pub fn peer_uid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `cred` 是 POD，先清零再交给内核填写；长度按类型给出。
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc == 0 {
+        Some(cred.uid)
+    } else {
+        None
+    }
+}
+
+/// 校验对端身份，**不通过时返回拒绝原因**（便于调用方打印统一格式的日志）。
+///
+/// 返回 `Err(reason)` 即应断开该连接。**读不到身份不是"跳过检查"**，而是拒绝。
+#[cfg(target_os = "linux")]
+pub fn check_peer(stream: &std::os::unix::net::UnixStream) -> Result<(), String> {
+    let uid = peer_uid(stream);
+    if peer_uid_allowed(uid) {
+        Ok(())
+    } else {
+        Err(format!("对端 uid {uid:?} 不是 root（SO_PEERCRED）"))
+    }
+}
+
+/// 非 Linux 的 unix（如 macOS）：没有 `SO_PEERCRED`（那边是 `LOCAL_PEERCRED`，语义不同）。
+///
+/// **不假装检查过** —— 明确返回错误（fail-closed）。当前部署目标只有 Linux，
+/// 若将来要支持别的 unix，应在这里补对应实现，而不是悄悄放行。
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn check_peer(_stream: &std::os::unix::net::UnixStream) -> Result<(), String> {
+    Err("本平台没有 SO_PEERCRED，无法校验对端身份（按拒绝处理）".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,4 +524,23 @@ mod tests {
             other => panic!("应为 ToolCall，实得 {other:?}"),
         }
     }
+    /// 对端身份判据：只放行 root，且**未知身份一律拒绝**。
+    ///
+    /// 这条测试的意义是把"fail-closed"钉死：改成 `uid != Some(1000)` 那种
+    /// 黑名单式写法（常见错误方向）会立刻变红。
+    #[test]
+    fn peer_uid_must_be_root_or_same_user_and_unknown_is_rejected() {
+        // root 永远放行（无论本进程是谁）
+        assert!(peer_uid_allowed_with(Some(0), 0));
+        assert!(peer_uid_allowed_with(Some(0), 1000), "root 应无条件放行");
+        // 本进程自身的 uid 放行（服务以非 root 运行时接受同用户连接）
+        assert!(peer_uid_allowed_with(Some(1000), 1000));
+        // 其它 uid 一律拒绝
+        assert!(!peer_uid_allowed_with(Some(1000), 0), "普通用户不得连 root 的 IPC");
+        assert!(!peer_uid_allowed_with(Some(1), 1000));
+        // **fail-closed**：读不到身份必须拒绝（最关键的一条）
+        assert!(!peer_uid_allowed_with(None, 0));
+        assert!(!peer_uid_allowed_with(None, 1000));
+    }
+
 }
