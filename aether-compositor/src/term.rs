@@ -610,4 +610,80 @@ mod tests {
         t.clear_selection();
         assert!(t.sel.is_none());
     }
+    /// M-13（2026-10-02 审计）代码级不变量：**两种模式都必须先剥控制字符**。
+    ///
+    /// 这条盯的是"回退路径"（应用没声明 DECSET 2004，例如 busybox ash）：
+    /// 那条路径最容易被人当成"老行为，不用管"，但粘贴内容同样可能来自不可信来源
+    /// （剪贴板/AI 写入），把 ESC 原样送进 PTY 就能改终端状态。
+    #[test]
+    fn paste_strips_control_chars_in_both_modes() {
+        let evil = "echo hi\x1b[2J\x03x\x04";
+
+        // 回退模式：输出里不该出现任何 ESC（这是我们唯一能控制的模式）
+        let plain = String::from_utf8_lossy(&paste_bytes(evil, false)).to_string();
+        assert!(!plain.contains('\x1b'), "回退模式不得放行 ESC：{plain:?}");
+        assert!(!plain.contains('\x03'), "不得放行 Ctrl-C（可中断前台进程）");
+        assert!(!plain.contains('\x04'), "不得放行 Ctrl-D（可关闭 stdin）");
+        assert!(plain.contains("echo hi"), "正常文本必须保留");
+        assert!(plain.contains("[2J"), "ESC 被剥掉后剩下的可见字符应保留（只剥控制字符）");
+
+        // 括号模式：**先剥掉我们自己加的一头一尾**，内部同样不得有 ESC。
+        // （原断言直接查"整体是否含 ESC"是错的 —— 包装序列本身就是 ESC。）
+        let wrapped = String::from_utf8_lossy(&paste_bytes(evil, true)).to_string();
+        assert!(wrapped.starts_with("\x1b[200~"), "应以括号粘贴起始序列开头");
+        assert!(wrapped.ends_with("\x1b[201~"), "应以括号粘贴结束序列结尾");
+        let inner = wrapped
+            .strip_prefix("\x1b[200~")
+            .and_then(|s| s.strip_suffix("\x1b[201~"))
+            .expect("包装序列应各出现一次");
+        assert!(
+            !inner.contains('\x1b'),
+            "粘贴内容里的 ESC 必须被剥掉（否则 [2J 会真的清屏）：{inner:?}"
+        );
+        assert!(!inner.contains('\x03') && !inner.contains('\x04'));
+    }
+
+    /// M-13：粘贴内容里的 `ESC[201~` **不能**提前结束括号粘贴。
+    ///
+    /// 这是括号粘贴的经典逃逸：攻击者把结束序列放进被粘贴的文本里，
+    /// 后续内容就落到"普通输入"上下文（可能被逐行执行）。
+    /// 由于两种模式都先剥掉 ESC，这个逃逸自然不成立 —— 但要有测试钉住，
+    /// 否则哪天有人"为了保留更丰富的粘贴内容"放宽 strip_control，就会静默失效。
+    #[test]
+    fn pasted_end_sequence_cannot_terminate_bracketed_paste() {
+        let attack = "safe\x1b[201~rm -rf /\x1b[200~";
+        let out = paste_bytes(attack, true);
+        // 只应有我们自己加的一头一尾两个 ESC 序列
+        let text = String::from_utf8_lossy(&out);
+        assert_eq!(
+            text.matches("\x1b[200~").count(),
+            1,
+            "开头序列只应出现一次（来自我们，而不是粘贴内容）：{text:?}"
+        );
+        assert_eq!(
+            text.matches("\x1b[201~").count(),
+            1,
+            "结束序列只应出现一次（否则粘贴被提前结束）：{text:?}"
+        );
+        assert!(text.starts_with("\x1b[200~"), "应以括号粘贴起始序列开头");
+        assert!(text.ends_with("\x1b[201~"), "应以括号粘贴结束序列结尾");
+    }
+
+    /// M-13：回退路径把 `\n` 换成 `\r`（回车=提交），且 **CRLF 不重复插入回车**。
+    ///
+    /// 这条是"终端世界既有约定"的忠实实现 —— 不是我们能改的语义，
+    /// 但"既有约定实现对不对"必须可测（写错会变成插入两个回车，等于多执行一次）。
+    #[test]
+    fn fallback_paste_maps_newlines_to_carriage_returns() {
+        // 纯 LF
+        assert_eq!(paste_bytes("a\nb", false), b"a\rb".to_vec());
+        // CRLF 只应产生一个回车
+        assert_eq!(paste_bytes("a\r\nb", false), b"a\rb".to_vec());
+        // 单独 CR 保持
+        assert_eq!(paste_bytes("a\rb", false), b"a\rb".to_vec());
+        // 括号模式**不**做这个替换（换行原样保留，交给 shell 的编辑缓冲）
+        let br = paste_bytes("a\nb", true);
+        assert!(br.windows(3).any(|w| w == b"a\nb"), "括号模式应保留原始换行");
+    }
+
 }
