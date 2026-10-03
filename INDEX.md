@@ -1,6 +1,6 @@
 # AetherOS 代码索引
 
-生成时间：2026-10-02（复核自 git 历史 + 代码实测）· 源码 **28,133 行**
+生成时间：2026-10-02（复核自 git 历史 + 代码实测）· 源码 **28,464 行**
 （7 个 crate，45 个 .rs 源文件，不含 `target/`）
 
 > 上一版（09-27）写的是 **10,684 行 / 25 文件** —— 那不是笔误，是**漏统计**：
@@ -10,14 +10,14 @@
 
 | crate | 行数 | 文件 | 职责 |
 |---|---|---|---|
-| `aether-compositor` | 16,730 | 22 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 4,489 视觉层 / `main.rs` 4,061 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
+| `aether-compositor` | 17,061 | 22 | 自研合成器 + 桌面 Shell 职责（`draw.rs` 4,489 视觉层 / `main.rs` 4,061 主循环 / `wayland/` 7 文件 2,194 行为 3.1 spike） |
 | `aetherd` | 6,952 | 11 | AI 中枢：agent / 工具 / 权限闸门 / 混合路由 / 模型配置 / 回收站 / **应用安装** |
 | `aether-init` | 2,423 | 7 | PID 1 与服务管理 |
 | `aether-ops` | 795 | 3 | AI 运维：日志监控 + 故障诊断 |
 | `aether-install` | 772 | 1 | 磁盘安装器（isohybrid 整盘写入） |
 | `aether-ipc` | 450 | 1 | 全系统 IPC 协议 |
 | `aether-shell` | 11 | 1 | 占位（职责当前由 compositor 承担） |
-| **合计** | **28,133** | **46** | |
+| **合计** | **28,464** | **46** | |
 
 > 口径：2026-10-02 工作区实测（`wc -l` 口径：统计换行符个数，不含 `target/`）。
 > 逐文件行数**每次提交都会漂**，引用前先跑 `python scripts/repo-stats.py`
@@ -69,11 +69,11 @@ Aether/
 - 函数：`encode`（JSON+换行）/ `decode`（NDJSON 帧）
 - ⚠️ 新增 `Request` 变体是**权限模型的敏感动作**：剪贴板这条路（P1-1）就曾因走变体而绕过 `Gate`。新变体必须有对应的门槛测试（见 `server.rs::ipc_gating_tests`）
 
-### aether-compositor（合成器，16,730 行 / 22 文件）
+### aether-compositor（合成器，17,061 行 / 22 文件）
 | 文件 | 内容 |
 |---|---|
-| `src/main.rs` (4,189) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
-| `src/draw.rs` (4,489) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、**双模色板**（`color::*()` 函数 + 模式原子量，`--theme light\|dark`，默认明亮）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、壁纸双模（深色=结构化极光带 + 颗粒，明亮=近白底 + 四角粉彩柔光团）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐/Wayland surface 窗口内容、BMP 导出 |
+| `src/main.rs` (4,403) | 主循环：事件 → 布局动画 → 渲染；AI 指令条与 aetherd 通信；`--shot` 截图模式（支持 `--bubble`/`--ai-status`/`--confirm`/`--installer`/`--fonttest`/`--theme`/`--bench` 等走查参数）；`apply_action` 落地 AI 桌面行为；安装向导；L2+ 确认弹窗交互；`dispatch_nav`（三级导航分流）；`feed_terminal`（终端按键归属） |
+| `src/draw.rs` (4,572) | "Essence" 视觉语言：`theme` 设计令牌（色板/字阶/圆角/阴影/交互态/尺寸 6 子模块）、**双模色板**（`color::*()` 函数 + 模式原子量，`--theme light\|dark`，默认明亮）、`sdf_round_rect`（填充/描边/裁切共用距离场）、`fill_clipped`（内容区贴合窗口圆角）、`gradient_stops`（多段垂直渐变，窗口一次成型）、壁纸双模（深色=结构化极光带 + 颗粒，明亮=近白底 + 四角粉彩柔光团）、菜单栏/Dock/Toast/三类回复气泡/确认卡片、文件网格/终端/音乐/Wayland surface 窗口内容、BMP 导出 |
 | `src/vt.rs` (871) | **VT/ANSI 解析器**（跨平台纯逻辑，29 项单测）：转义序列状态机、屏幕缓冲、滚屏、光标 |
 | `src/term.rs` (613) | 终端胶合层：Linux 走真 PTY；开发机喂真实 ANSI 脚本走同一解析/渲染路径。渲染**逐格绝对定位**（比例字体不能靠字符串推进） |
 | `src/pty.rs` (244 Linux) | PTY 打开/读写（Windows 无法验证，刻意保持薄） |
@@ -84,7 +84,7 @@ Aether/
 | `src/audit.rs` (225) | **审计日志读取**（2026-10-02 P4.3）：「权限与隐私」页的数据来源 —— 读 aetherd 权限门写的 `/var/log/aether/aether-audit.log`（`ts\tlevel\ttool\targs\tverdict`）。解析是纯函数；**坏行被计数并显示**而不是静默丢弃 |
 | `src/net.rs` (259) | **网络状态**（2026-10-01 P4.2）：「网络」设置页的数据来源 —— 读 `/sys/class/net/*`、`/proc/net/route`、`/proc/net/fib_trie`、`/etc/resolv.conf`。解析全是**纯函数**（收文本不读文件），可在开发机单测；网关是内核的小端十六进制，单独测试钉住 |
 | `src/widgets.rs` (570) | **控件原语**（2026-09-29 P1 新增）：按钮 / 开关 / 滑杆 / 分段 / 列表行 / 滚动条 / 徽标 + 共享命中表 `HitTable`；六态统一，几何与颜色一律取 `theme` 令牌（不硬编码）。配套 `input.rs` 新增**滚轮事件**（此前完全没有映射，长列表只能翻页） |
-| `src/settings.rs` (557) | **用户设置（P3）**：`/var/lib/aether/settings.json` （`/var` 是唯一持久分区）的读写与声明。JSON 用 `serde_json::Value` 手读字段、**逐字段容错**（缺失/类型错/越界一律回落默认），写入走临时文件 + `rename` 原子替换；`apply_hit` 是设置点击的纯逻辑（可用性校验 + 数值夹取），与界面解耦以便单测 |
+| `src/settings.rs` (591) | **用户设置（P3）**：`/var/lib/aether/settings.json` （`/var` 是唯一持久分区）的读写与声明。JSON 用 `serde_json::Value` 手读字段、**逐字段容错**（缺失/类型错/越界一律回落默认），写入走临时文件 + `rename` 原子替换；`apply_hit` 是设置点击的纯逻辑（可用性校验 + 数值夹取），与界面解耦以便单测 |
 | `src/layout.rs` (185) | 布局引擎：`Layout::{Float,TwoCol,ThreeCol,Monocle}`、平铺目标矩形计算、拖拽边缘吸附 `Snap::{Left,Right,Top}` |
 | `src/fbdev.rs` (405 Linux) | framebuffer 打开/上屏（stride 对齐、复用缓冲） |
 | `src/wayland/mod.rs` (39) | 3.1 spike 入口（**未接入生产路径**，见 `docs/PHASE3-DECISION-2026-09-28.md`） |
@@ -310,7 +310,7 @@ cargo run -p aetherd -- config --show                           # 模型配置�
 cargo run -p aetherd -- config --api-key K --cloud-base URL      # 配置云端（也支持自建网关）
 cargo run -p aether-init -- --dry-run ./platform/overlay/etc/aether/services  # 服务监督自检
 python scripts/e2e-permission-confirm.py                        # 权限链路端到端（先起 aetherd serve）
-cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 413 项，分布见「测试分布」）
+cargo test --workspace --offline --no-fail-fast                 # 全部单元测试（本机 416 项，分布见「测试分布」）
 
 # ⚠️ 改了 cfg(target_os="linux") 的代码后必须交叉检查：Windows 构建会整段屏蔽那些路径
 cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether-compositor -p aether-init -p aether-ops -p aether-install -p aether-ipc -p aether-shell
@@ -352,7 +352,7 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
   空格提交 / 退格删拼音，**未被 IME 吃掉的字符才送 PTY**（`3a34f49`）；Esc 取消拼字同轮接上
 - ⚠️ 终端里的中文输入**只做过编译与源码级确认，没有实机键盘交互验证**（`--shot` 出静态帧，测不了输入）
 
-## 测试分布（2026-10-02 实测：**Windows 413 全绿；Windows 侧 0 警告，musl 侧 6/7 crate 0 警告**）
+## 测试分布（2026-10-02 实测：**Windows 416 全绿；Windows 侧 0 警告，musl 侧 6/7 crate 0 警告**）
 
 > **Linux 侧未实测。** 本机是 Windows，跑不了 Linux 二进制。此前文档里的
 > **358 / 333 是静态推算**，两者互相矛盾且都无法复现，已删除（2026-10-02 安全审计）。
@@ -368,14 +368,14 @@ cargo check --offline --target x86_64-unknown-linux-musl --all-targets -p aether
 
 | crate | Windows（实测） | 全平台 `#[test]` 属性 | 备注 |
 |---|---|---|---|
-| `aether-compositor` | 238 | 239 | `fbdev.rs` 是 Linux 专属模块，其中 1 项在 Windows 不参与 |
+| `aether-compositor` | 241 | 242 | `fbdev.rs` 是 Linux 专属模块，其中 1 项在 Windows 不参与 |
 | `aetherd` | 129 | 132 | 3 项是 Linux/unix 专属（`read_file` 目标机策略、审计文件 0600）|
 | `aether-init` | 25 | 26 | 1 项为 unix 专属（日志符号链接拒绝）；含 `shipped_essential_services_must_be_restartable`（见下） |
 | `aether-ops` | 0 | 14 | 整个 crate 是 Linux 专属，Windows 不参与 |
 | `aether-install` | 13 | 13 | 含 `has_mbr_detects_isohybrid_and_rejects_plain_iso`（H-6 回归）|
 | `aether-ipc` | 8 | 8 | |
 | `aether-shell` | 0 | 0 | 占位 |
-| **合计** | **413** | **432** | 差值 19 = 只在 Linux/unix 上运行的用例 |
+| **合计** | **416** | **435** | 差值 19 = 只在 Linux/unix 上运行的用例 |
 
 > 这张表由 `scripts/repo-stats.py --check` 核对：**属性列逐 crate 与源码实测比对**、
 > 合计行与各列求和比对（代码审查发现过它自相矛盾且无人看守）。

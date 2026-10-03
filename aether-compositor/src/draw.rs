@@ -1201,6 +1201,44 @@ pub enum ConfirmButton {
 pub const DOCK_BUILTINS: usize = 5;
 
 /// 帧渲染器：持有跨帧缓存（背景层等）与可点击区域登记（供命中测试）。
+/// 控制中心的行布局：**高度从行数推导**，不写死数字。
+///
+/// 为什么（2026-10-02 功能批次 J-2）：`PANEL_H` 原先是手写常量，旁边一句注释
+/// "加一行就要同步这里"。那种约定迟早会忘 —— 忘了的后果是最后一行**画在面板外**
+/// （看得见、点不到，或直接被裁掉），而且只在特定分辨率下才明显。
+/// 现在行数与行高是唯一事实来源，高度是算出来的：加行自动变高。
+pub mod control_layout {
+    /// 开关行（深色模式 / 输入法 / 24 小时制）
+    pub const SWITCH_ROWS: i32 = 3;
+    /// 快捷跳转行（设置 / 终端）
+    pub const JUMP_ROWS: i32 = 2;
+    /// 电源行（关机 / 重启 / 注销）
+    pub const POWER_ROWS: i32 = 3;
+
+    /// 开关行高（含行距）
+    pub const ROW_H_SWITCH: i32 = 36;
+    /// 动作行高（快捷跳转 / 电源）
+    pub const ROW_H_ACTION: i32 = 32;
+    /// 顶部内边距 + AI 三态行
+    const HEAD: i32 = 12 + 26;
+    /// 一次分隔 + 组标题
+    const SECTION: i32 = 8 + 20;
+    /// 底部提示留白
+    pub const FOOTER: i32 = 22;
+
+    /// 内容总高（不含底部留白）
+    pub const CONTENT_H: i32 = HEAD
+        + SECTION
+        + SWITCH_ROWS * ROW_H_SWITCH
+        + SECTION
+        + JUMP_ROWS * ROW_H_ACTION
+        + SECTION
+        + POWER_ROWS * ROW_H_ACTION;
+
+    /// 面板高度 = 内容 + 底部提示留白
+    pub const PANEL_H: i32 = CONTENT_H + FOOTER;
+}
+
 /// 控制中心里可交互项的标识（绘制期登记、事件循环消费）。
 ///
 /// 与 `settings::SettingsHit` 同一思路：绘制不修改状态，判定只有一份。
@@ -1216,6 +1254,12 @@ pub enum ControlHit {
     OpenTerminal,
     /// 深色模式开关（默认关 = 白色；最常用的一项，所以在面板里排第一）
     ToggleDark,
+    /// **动作类**：关机（L3，需确认卡片 + 回显 `poweroff`）
+    PowerOff,
+    /// **动作类**：重启（L3，需确认卡片 + 回显 `reboot`）
+    Reboot,
+    /// **动作类**：注销（= 重启合成器，由 aether-init 拉起；不需要确认）
+    Logout,
 }
 
 /// 画一个应用图标：彩色底座 + 白色几何符号（全部纯 rect/圆，不依赖字体字形覆盖）。
@@ -1837,7 +1881,8 @@ impl Renderer {
     ) {
         use crate::widgets;
         const PANEL_W: i32 = 264;
-        const PANEL_H: i32 = 282; // 4 行内容 + 两次分隔 + 底部提示（加一行就要同步这里）
+        // 高度由行数推导（见 control_layout）：加行自动变高，不存在"忘了同步"
+        const PANEL_H: i32 = control_layout::PANEL_H;
         // 右对齐到状态簇（并保证不出屏）
         let x = (self.status_cluster.x + self.status_cluster.w - PANEL_W).max(8);
         let panel = Rect {
@@ -1908,6 +1953,25 @@ impl Renderer {
         for (label, hit) in [
             ("打开设置", ControlHit::OpenSettings),
             ("打开终端", ControlHit::OpenTerminal),
+        ] {
+            let r = row(y);
+            widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
+            self.control_hits.push((r, hit));
+            y += 32;
+        }
+
+        // ⑤ 电源（2026-10-02 功能批次 J-2）
+        //
+        // 放在最下面而不是最上面：关机/重启是**低频且不可逆**的动作，
+        // 放在开关旁边会让人手滑点错（Windows/macOS 也把它收在菜单末尾）。
+        widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
+        y += 8;
+        widgets::group_header(buf, w, h, panel.x + 16, y, "电源", Some(tr));
+        y += 20;
+        for (label, hit) in [
+            ("关机", ControlHit::PowerOff),
+            ("重启", ControlHit::Reboot),
+            ("注销", ControlHit::Logout),
         ] {
             let r = row(y);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
@@ -2446,6 +2510,25 @@ fn draw_settings_content(
                 tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
                 tr.draw(buf, w, h, (content.x + 130) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
                 ry += 24;
+            }
+
+            // 电源入口（2026-10-02 功能批次 J-2）。
+            //
+            // 放在「关于」页而不是新造一页：关机/重启/注销是**低频**动作，
+            // 为它们单开一页会让左栏更长、更难找常用的那几页（本项目不做空壳页）。
+            // 控制中心里也有同一组入口（那边是常用路径）。
+            ry += 18;
+            tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, "电源", font::CAPTION, color::text(), 0.9);
+            ry += 26;
+            for (label, hint, hit) in [
+                ("关机", "停止所有服务并断电（需确认）", SettingsHit::Power(aether_ipc::PowerAction::PowerOff)),
+                ("重启", "停止所有服务并重新引导（需确认）", SettingsHit::Power(aether_ipc::PowerAction::Reboot)),
+                ("注销", "重启桌面（窗口会关闭，由 aether-init 拉起）", SettingsHit::Logout),
+            ] {
+                let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                widgets::row(buf, w, h, act, label, Some(hint), widgets::States::at(act, mouse), Some(tr));
+                hits.push((act, hit));
+                ry += 48;
             }
         }
         _ => {}

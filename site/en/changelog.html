@@ -380,6 +380,41 @@
 <p>（+6：服务控制鉴权与真实性、<code>sys_info</code> 不编造 ×2、设置兼容与吸附 ×2 等）；</p>
 <p>6 crate musl <strong>0 警告</strong>；文档门禁三层 + 测试分布表全过；规模 27,543 行 / 45 文件。</p>
 <p><strong>未实机验证</strong>：aetherd→aether-init 的真实转发要在目标机上跑（本机是 Windows，没有 init 通道）。</p>
+<h2 id="j-2">十九、功能缺口：电源操作接线到界面（同日，批次 J-2）</h2>
+<h3>现在真的能关机了</h3>
+<p>控制中心与设置「关于」页各有一组<strong>关机 / 重启 / 注销</strong>入口，走的是</p>
+<p><strong>AI 工具调用同一条路</strong>：<code>system_power</code>（L3）→ 确认卡片（要打一遍 <code>poweroff</code>/<code>reboot</code>）</p>
+<p>→ aetherd 鉴权与审计 → aether-init（PID 1）停服务 → <code>sync()</code> → 断电。</p>
+<ul>
+  <li><strong>注销不需要确认</strong>：它是可恢复的（桌面几秒后回来），且当前没有账户体系 ——</li>
+</ul>
+<p>  假装它是"安全敏感操作"反而不诚实（真注销要等 §2.3）。</p>
+<ul>
+  <li>合成器<strong>只判定意图</strong>（<code>UiIntent</code>），执行放在主循环：单测里点一下"关机"绝不会真发 IPC、</li>
+</ul>
+<p>  更不会退出进程把测试运行器带走。</p>
+<h3>顺手消灭一类"加行忘改高度"的 bug</h3>
+<p>控制中心面板高度原先是手写常量，旁边一句注释"加一行就要同步这里"。这次要加三行 ——</p>
+<p>与其靠注释提醒，不如让<strong>高度从行数推导</strong>（<code>draw::control_layout</code>）：加行自动变高，</p>
+<p>不存在"忘了同步"这回事（忘了的后果是最后一行画在面板外：看得见、点不到）。</p>
+<h3>⚠️ 一个必须说清楚的发现：视觉回归门禁<strong>在我动手之前就是红的</strong></h3>
+<p>跑 <code>archive-ui-shots.py --check</code> 时 10 张归档图不一致。查提交时间：</p>
+<table><tbody>
+  <tr><td>文件</td><td>最后一次提交</td></tr>
+  <tr><td><code>docs/host-ui-*.png</code>（归档走查图）</td><td><strong>09:37</strong>「权限与隐私页上线」</td></tr>
+  <tr><td><code>aether-compositor/src/draw.rs</code></td><td><strong>12:45</strong>「服务控制泛化（网络 + AI 两个真实动作）」</td></tr>
+</tbody></table>
+<p><strong>12:45 改了绘制代码却没有重建归档图</strong>，而这两次提交都早于本轮工作。差异里</p>
+<p><code>host-ui-desktop-clean</code> 高达 <strong>79%</strong>（包围盒几乎整屏）—— 我没动桌面渲染，</p>
+<p>也<strong>无法解释</strong>这个差异。</p>
+<p>我<strong>没有</strong>用"重建归档图"把它盖过去：那会把无法解释的差异固化成"新基线"。</p>
+<p>这条按"已知失败 + 待查"记录，请在有图形环境的机器上复核后再决定重建还是排查。</p>
+<p>（<code>gates.py</code> 里本来就没有这一步，所以它不会拦住提交 —— 这正是"门禁之外的东西会腐烂"的例子。）</p>
+<h3>验证</h3>
+<p><code>cargo build --all-targets --locked</code> <strong>0 警告</strong>；<code>cargo test</code> <strong>416 项全绿</strong></p>
+<p>（compositor 238→241）；6 crate musl <strong>0 警告</strong>；<code>gates.py</code> <strong>10/10</strong>；</p>
+<p>文档三层 + 逐文件 + 测试分布表全过；规模 28,464 行 / 46 文件。</p>
+<p><strong>未实机验证</strong>：真机断电、确认卡片在真机上的实际交互（本机无 PID 1）。</p>
 <p># 2026-10-01 更新</p>
 <h2 id="">一、你能看到的变化</h2>
 <h3>1. 桌面重做：启动后是干净桌面 + 桌面图标</h3>

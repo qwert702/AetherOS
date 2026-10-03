@@ -179,6 +179,15 @@ fn tty_log(msg: &str) {
     }
 }
 
+/// 非 Linux（开发机预览/单测）没有 VGA 文本控制台：**空实现**。
+///
+/// 为什么给空实现而不是让每个调用点写 `#[cfg(target_os = "linux")]`：
+/// 调用点关心的是"记一笔"，不是"记到哪个设备"。散落的 cfg 会让主循环更难读，
+/// 而且会让"这些代码在 Windows 上根本不参与编译"—— 那意味着拼写错误要等 CI
+/// 才发现（本项目已经在别处吃过这个亏）。空实现让它们始终参与编译。
+#[cfg(not(target_os = "linux"))]
+fn tty_log(_msg: &str) {}
+
 /// 净化一段要写进终端的文本：丢弃 ESC 序列、C0 与 **C1** 控制字符。
 ///
 /// 与 `aether-init::logtee::sanitize_for_display` 同一套规则（那个在另一个 crate，
@@ -579,8 +588,16 @@ fn run_fbdev() -> anyhow::Result<()> {
                             let mark = if ok { "✓" } else { "✗" };
                             ai_reply = Some((format!("{mark} {last}"), draw::BubbleKind::Tool, Instant::now()));
                         }
+                        ConfirmOrigin::Power => {
+                            // 电源没有对话气泡可挂：只进 toast。
+                            // 文案要说清"受理 ≠ 已关机"——真正断电时进程已经没了。
+                            let mark = if ok { "✓" } else { "✗" };
+                            toast = Some((format!("{mark} {last}"), Instant::now()));
+                        }
                     }
-                    if ok {
+                    // 电源的结果已经在上面用 toast 说清楚了；再加一句"已执行 · …"
+                    // 会让人误以为"已经关机完成"（而实际只是受理）
+                    if ok && origin != ConfirmOrigin::Power {
                         toast = Some((format!("已执行 · {}", last.chars().take(24).collect::<String>()), Instant::now()));
                     }
                 }
@@ -636,10 +653,26 @@ fn run_fbdev() -> anyhow::Result<()> {
                     tty_log("安装向导 → 开始安装（按钮确认）");
                 }
             }
-        } else if control_center_click(&mut renderer, &mut desktop, &mut ime, mouse.0, mouse.1, click_pending) {
+        } else if {
             // 控制中心是浮层：展开时它优先消费点击（含"点别处关闭"）。
             // 同样用一次性信号 —— 用电平信号会每帧翻转一次开关，面板疯狂闪。
-            // 控制中心是浮层：展开时它优先消费点击（含"点别处关闭"）
+            // 判定与执行分开：`control_center_click` 只判定（可单测），
+            // 电源/注销这类"有副作用"的意图在这里执行。
+            let mut intent = None;
+            let consumed = control_center_click(
+                &mut renderer,
+                &mut desktop,
+                &mut ime,
+                mouse.0,
+                mouse.1,
+                click_pending,
+                &mut intent,
+            );
+            if let Some(i) = intent {
+                apply_ui_intent(i, &ai_tx, &mut toast, &mut renderer);
+            }
+            consumed
+        } {
         } else if desktop_icon_click(&renderer, &mut desktop, mouse.0, mouse.1, click_pending) {
             // 桌面图标：打开对应应用。
             // **必须用一次性信号 `click_pending`，不能用 `press`（= mouse_down || click_pending）**：
@@ -681,6 +714,23 @@ fn run_fbdev() -> anyhow::Result<()> {
                     if let settings::SettingsHit::RestartService(unit) = hit {
                         control_service(ai_tx.clone(), unit, aether_ipc::ServiceAction::Restart);
                         toast = Some((format!("正在重启服务 {unit}…"), Instant::now()));
+                    }
+                    // 电源入口（批次 J-2）：与 AI 触发的工具调用走**同一条**路径
+                    // （system_power 工具 → 确认卡片 → aetherd → PID 1），不新造通道。
+                    // 也不在这里直接调 reboot —— 合成器只画界面，永远不碰系统。
+                    match hit {
+                        settings::SettingsHit::Power(action) => {
+                            let a = action.as_str();
+                            spawn_power_tool(action, &ai_tx);
+                            toast = Some((
+                                format!("请在确认卡片里输入 {a} 以确认"),
+                                Instant::now(),
+                            ));
+                        }
+                        settings::SettingsHit::Logout => {
+                            apply_ui_intent(UiIntent::Logout, &ai_tx, &mut toast, &mut renderer);
+                        }
+                        _ => {}
                     }
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
                     if matches!(hit, settings::SettingsHit::ToggleDark) {
@@ -1032,6 +1082,23 @@ enum ConfirmOrigin {
     Ai,
     /// 安装向导触发（结果回填向导）
     Installer,
+    /// 控制中心的电源入口触发（结果只进 toast —— 没有对话气泡可挂）
+    Power,
+}
+
+/// 控制中心交回给主循环的**意图**。
+///
+/// 为什么不让 `control_center_click` 直接执行：那个函数是纯逻辑、被单测覆盖
+/// （Windows 上也会跑），而"关机"要发 IPC、"注销"要退出进程 —— 两件事都不该
+/// 在单测里发生。所以它只**判定**，由主循环执行（与设置中心的动作类命中同一套规矩：
+/// `settings.rs::apply_hit` 对 `RestartService` 也是只占位不执行）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum UiIntent {
+    /// 关机 / 重启（经 system_power 工具 → 确认卡片 → aetherd → PID 1）
+    Power(aether_ipc::PowerAction),
+    /// 注销：重启合成器（由 aether-init 按 compositor.json 的 restart:true 拉起）
+    Logout,
 }
 
 impl ConfirmRequest {
@@ -1497,6 +1564,65 @@ fn apply_theme(renderer: &mut draw::Renderer, dark: bool) {
     renderer.bg_dirty = true; // 壁纸与投影合成层都依赖主题，必须重建
 }
 
+/// 执行控制中心交回来的意图（**有副作用的部分**）。
+///
+/// 与 `control_center_click` 分开的理由见 `UiIntent`：判定要能在单测里跑，
+/// 而"发 IPC / 退出进程"不能。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn apply_ui_intent(
+    intent: UiIntent,
+    ai_tx: &mpsc::Sender<AiEvent>,
+    toast: &mut Option<(String, Instant)>,
+    renderer: &mut draw::Renderer,
+) {
+    match intent {
+        UiIntent::Power(action) => {
+            let a = action.as_str();
+            let label = if action == aether_ipc::PowerAction::PowerOff { "关机" } else { "重启" };
+            // 关掉控制中心：确认卡片要盖在最上层，面板留着会挡住它（也会让人以为没反应）
+            renderer.control_open = false;
+            *toast = Some((
+                format!("{label}：请在确认卡片里输入 {a} 以确认"),
+                Instant::now(),
+            ));
+            tty_log(&format!("控制中心电源入口 → {label}（等待确认卡片）"));
+            spawn_power_tool(action, ai_tx);
+        }
+        UiIntent::Logout => {
+            // 注销 = 重启合成器：**不经过 IPC**（这是合成器自己的生命周期，
+            // 不需要整机权限）。aether-init 按 `compositor.json` 的 `restart: true`
+            // 会把它拉起来，所以用户看到的是"桌面重新出现"。
+            //
+            // 诚实边界：当前**没有账户体系**（见 FEATURE-GAPS §2.3），所以这不是
+            // "切换用户"，而是"把桌面重启一遍" —— 窗口会没，但不会有任何隐私边界。
+            tty_log("注销：退出合成器，由 aether-init 重新拉起（当前无账户体系）");
+            std::process::exit(0);
+        }
+    }
+}
+
+/// 在后台线程里发起 `system_power` 工具调用。
+///
+/// 独立线程 + 超时（与 `control_service` 同一套路）：IPC 往返绝不阻塞渲染。
+/// `approval` 传 None —— L3 会被闸门拦下并回 `NeedsConfirmation`，
+/// 主循环据此弹出确认卡片；用户输入回显后带令牌重发才会真正执行。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn spawn_power_tool(action: aether_ipc::PowerAction, tx: &mpsc::Sender<AiEvent>) {
+    let a = action.as_str();
+    // confirm 与 action 必须逐字相同：这是 aetherd 侧的回显校验（防误点）
+    let args = serde_json::json!({ "action": a, "confirm": a });
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = send_tool_call("system_power".into(), args, None, ConfirmOrigin::Power, &tx) {
+            let _ = tx.send(AiEvent::ToolDone {
+                ok: false,
+                output: format!("电源请求未能发出：{e}"),
+                origin: ConfirmOrigin::Power,
+            });
+        }
+    });
+}
+
 /// 控制中心（P4）的点击处理。返回 `true` = 这次点击已被浮层消费。
 ///
 /// 抽成函数的原因：主循环那段 `if/else` 链已经很长，插进去会让缩进与所有权更难读；
@@ -1515,6 +1641,7 @@ fn control_center_click(
     mx: f32,
     my: f32,
     pressed: bool,
+    intent: &mut Option<UiIntent>,
 ) -> bool {
     use draw::ControlHit;
     if !pressed {
@@ -1555,6 +1682,17 @@ fn control_center_click(
             }
             ControlHit::OpenTerminal => {
                 let _ = open_app(desktop, 1);
+            }
+            // 电源三个入口**只判定意图**，执行交给主循环（理由见 UiIntent 的说明）：
+            // 单测里点一下"关机"绝不该真的去发 IPC 或退出进程。
+            ControlHit::PowerOff => {
+                *intent = Some(UiIntent::Power(aether_ipc::PowerAction::PowerOff));
+            }
+            ControlHit::Reboot => {
+                *intent = Some(UiIntent::Power(aether_ipc::PowerAction::Reboot));
+            }
+            ControlHit::Logout => {
+                *intent = Some(UiIntent::Logout);
             }
         }
         return true;
@@ -3525,6 +3663,9 @@ mod control_center_tests {
 
     /// 控制中心的点击规则（三条）。刻意只测**不落盘**的动作（输入法切换、打开窗口），
     /// 避免单测去写 `/var/lib/aether`。
+    ///
+    /// 电源/注销三项**只断言意图**（`UiIntent`），不执行 —— 单测里点"关机"绝不该
+    /// 真的发 IPC，更不该退出进程（那会把测试运行器一起带走）。
     #[test]
     fn click_rules() {
         let mut r = draw::Renderer::new(1280, 760);
@@ -3532,17 +3673,26 @@ mod control_center_tests {
         let mut i = ime::Ime::default();
         r.status_cluster = Rect { x: 1100, y: 2, w: 60, h: 22 };
 
+        // 判定与执行分开后，测试统一走这个小包装：拿 (是否消费, 意图)
+        let click = |r: &mut draw::Renderer,
+                     d: &mut Desktop,
+                     i: &mut ime::Ime,
+                     x: f32,
+                     y: f32,
+                     pressed: bool| {
+            let mut intent = None;
+            let consumed = control_center_click(r, d, i, x, y, pressed, &mut intent);
+            (consumed, intent)
+        };
+
         // ① 状态簇：第一次点开、再点收起
-        assert!(
-            control_center_click(&mut r, &mut d, &mut i, 1120.0, 10.0, true),
-            "状态簇点击应被消费"
-        );
+        assert!(click(&mut r, &mut d, &mut i, 1120.0, 10.0, true).0, "状态簇点击应被消费");
         assert!(r.control_open, "第一次点状态簇应展开");
-        assert!(control_center_click(&mut r, &mut d, &mut i, 1120.0, 10.0, true));
+        assert!(click(&mut r, &mut d, &mut i, 1120.0, 10.0, true).0);
         assert!(!r.control_open, "再点应收起");
 
         // 未展开时其它位置**不**消费点击（要留给窗口内容）
-        assert!(!control_center_click(&mut r, &mut d, &mut i, 400.0, 400.0, true));
+        assert!(!click(&mut r, &mut d, &mut i, 400.0, 400.0, true).0);
 
         // ② 展开后命中开关 → 执行真实动作并消费
         r.control_open = true;
@@ -3552,7 +3702,7 @@ mod control_center_tests {
             Rect { x: 1200, y: 100, w: 46, h: 20 },
             draw::ControlHit::ToggleIme,
         )];
-        assert!(control_center_click(&mut r, &mut d, &mut i, 1210.0, 110.0, true));
+        assert!(click(&mut r, &mut d, &mut i, 1210.0, 110.0, true).0);
         assert_ne!(i.enabled(), ime_before, "点输入法开关应真的切换输入法");
 
         // 打开设置：窗口数 +1（复用 open_app 那条真实路径）
@@ -3561,7 +3711,7 @@ mod control_center_tests {
             Rect { x: 1004, y: 200, w: 256, h: 34 },
             draw::ControlHit::OpenSettings,
         )];
-        assert!(control_center_click(&mut r, &mut d, &mut i, 1100.0, 210.0, true));
+        assert!(click(&mut r, &mut d, &mut i, 1100.0, 210.0, true).0);
         assert_eq!(d.wins.len(), wins_before + 1, "点快捷跳转应真的开窗口");
         assert_eq!(
             d.wins.last().map(|w| w.kind),
@@ -3570,14 +3720,78 @@ mod control_center_tests {
         );
 
         // ③ 面板内空白：消费但不关闭
-        assert!(control_center_click(&mut r, &mut d, &mut i, 1050.0, 240.0, true));
+        assert!(click(&mut r, &mut d, &mut i, 1050.0, 240.0, true).0);
         assert!(r.control_open, "点面板内空白不该关闭面板");
         // 面板以外：关闭
-        assert!(control_center_click(&mut r, &mut d, &mut i, 100.0, 400.0, true));
+        assert!(click(&mut r, &mut d, &mut i, 100.0, 400.0, true).0);
         assert!(!r.control_open, "点面板以外应关闭");
 
         // 未按下（松开）不消费
-        assert!(!control_center_click(&mut r, &mut d, &mut i, 1120.0, 10.0, false));
+        assert!(!click(&mut r, &mut d, &mut i, 1120.0, 10.0, false).0);
+    }
+
+    /// 批次 J-2 回归：三个电源入口必须**判定出正确的意图**。
+    ///
+    /// 这条测试的价值在于"UI 真的接上了后端"：如果哪天有人把 `ControlHit::PowerOff`
+    /// 的分支删了（或画了按钮却没登记命中区），这里会红 —— 而"点一下试试"是发现不了
+    /// 的（本机没有 PID 1，点了也只会看到 IPC 失败）。
+    #[test]
+    fn power_entries_yield_intents() {
+        let mut r = draw::Renderer::new(1280, 760);
+        let mut d = demo_desktop();
+        let mut i = ime::Ime::default();
+        r.status_cluster = Rect { x: 1100, y: 2, w: 60, h: 22 };
+        r.control_open = true;
+        r.control_panel = Rect { x: 1000, y: 40, w: 264, h: 406 };
+
+        for (hit, want) in [
+            (draw::ControlHit::PowerOff, UiIntent::Power(aether_ipc::PowerAction::PowerOff)),
+            (draw::ControlHit::Reboot, UiIntent::Power(aether_ipc::PowerAction::Reboot)),
+            (draw::ControlHit::Logout, UiIntent::Logout),
+        ] {
+            r.control_hits = vec![(Rect { x: 1004, y: 300, w: 256, h: 34 }, hit)];
+            let mut intent = None;
+            let consumed = control_center_click(&mut r, &mut d, &mut i, 1100.0, 310.0, true, &mut intent);
+            assert!(consumed, "{hit:?} 的点击应被消费");
+            assert_eq!(intent, Some(want), "{hit:?} 应判定出 {want:?}");
+        }
+
+        // 反向断言：普通开关**不能**顺手产生电源意图（否则面板里点什么都想关机）
+        r.control_hits = vec![(
+            Rect { x: 1200, y: 100, w: 46, h: 20 },
+            draw::ControlHit::ToggleIme,
+        )];
+        let mut intent = None;
+        control_center_click(&mut r, &mut d, &mut i, 1210.0, 110.0, true, &mut intent);
+        assert_eq!(intent, None, "点开关不该产生电源意图");
+    }
+
+    /// 面板高度必须放得下全部命中区 —— 否则最后一行（注销）会被裁掉、点不到。
+    ///
+    /// 注意这条现在是**纯算术**：高度由 `control_layout` 的行数推导（加行自动变高），
+    /// 所以它验证的是"行高/留白的账算对了"，而不是"有没有忘改常量" ——
+    /// 后者已经被结构本身消灭了。
+    #[test]
+    fn control_panel_is_tall_enough_for_all_rows() {
+        use draw::control_layout as L;
+        // 最后一行的底部（相对面板顶）：HEAD + SECTION + 开关行 + SECTION + 跳转行
+        //                                + SECTION + 电源行
+        let last_row_bottom = 12 + 26
+            + (8 + 20) + L::SWITCH_ROWS * L::ROW_H_SWITCH
+            + (8 + 20) + L::JUMP_ROWS * L::ROW_H_ACTION
+            + (8 + 20) + L::POWER_ROWS * L::ROW_H_ACTION;
+        assert_eq!(
+            last_row_bottom,
+            L::CONTENT_H,
+            "内容高度的推导与逐行累加不一致（行高或留白改了？）"
+        );
+        assert!(
+            last_row_bottom <= L::PANEL_H,
+            "最后一行（y+h={last_row_bottom}）超出面板高度 {}",
+            L::PANEL_H
+        );
+        // 底部提示要留得下（它画在 panel.y + panel.h - 22）
+        assert!(L::PANEL_H - last_row_bottom >= L::FOOTER, "底部提示没地方放");
     }
 }
 

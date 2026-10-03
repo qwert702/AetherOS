@@ -266,6 +266,17 @@ pub enum SettingsHit {
     ///
     /// 单元名由调用点给出（见 `draw.rs` 的各页），目前有 `network` 与 `aetherd`。
     RestartService(&'static str),
+    /// **动作类**：关机 / 重启（L3，走 `system_power` 工具 → 确认卡片 → PID 1）。
+    ///
+    /// 与 `RestartService` 分开而不是合并：电源是**整机级且不可逆**的，必须过确认卡片；
+    /// "重启某个服务"不需要。合并成一个变体就会让确认逻辑退化成"看参数决定要不要确认"，
+    /// 而那种判定迟早会漏（本仓库已经因为"按入口判"吃过一次亏，见 H-2）。
+    Power(aether_ipc::PowerAction),
+    /// **动作类**：注销（= 重启合成器，由 aether-init 按 `restart: true` 拉起）。
+    ///
+    /// 不需要确认：它是**可恢复**的（桌面几秒后回来），且当前没有账户体系 ——
+    /// 假装它是"安全敏感操作"反而不诚实（见 FEATURE-GAPS §2.3）。
+    Logout,
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -317,9 +328,12 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::ImeDefault => s.ime_default = !s.ime_default,
         SettingsHit::ToggleDark => s.dark_mode = !s.dark_mode,
         SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
-        // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序），
+        // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序/电源动作），
         // 放这里只是为了让 `apply_hit` 对枚举保持穷尽（漏一个变体会编译不过）。
-        SettingsHit::OpenApp(_) | SettingsHit::RestartService(_) => {}
+        SettingsHit::OpenApp(_)
+        | SettingsHit::RestartService(_)
+        | SettingsHit::Power(_)
+        | SettingsHit::Logout => {}
     }
 }
 
@@ -553,5 +567,25 @@ mod restart_action_tests {
         assert_eq!(st.clock_24h, before.clock_24h);
         assert_eq!(st.dark_mode, before.dark_mode);
         assert_eq!(st.mouse_speed_pct, before.mouse_speed_pct);
+    }
+
+    /// 批次 J-2：电源与注销同样是**动作类**命中 —— 不得改动设置状态或当前页。
+    ///
+    /// 这条比 `restart_hit_...` 更重要一点：电源动作如果顺手把设置改了（或把页面
+    /// 跳走了），用户点"关机"却看到界面变化，会以为点错了。
+    #[test]
+    fn power_and_logout_hits_are_actions_not_state() {
+        let mut st = Settings::default();
+        let before = st.clone();
+        let mut page = 2usize;
+        for hit in [
+            SettingsHit::Power(aether_ipc::PowerAction::PowerOff),
+            SettingsHit::Power(aether_ipc::PowerAction::Reboot),
+            SettingsHit::Logout,
+        ] {
+            apply_hit(&mut st, &mut page, hit);
+        }
+        assert_eq!(page, 2, "动作类命中不得切换设置页");
+        assert_eq!(st, before, "动作类命中不得改动任何设置值");
     }
 }
