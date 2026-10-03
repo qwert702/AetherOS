@@ -1242,8 +1242,8 @@ fn draw_perf_hud(buf: &mut [u32], w: usize, h: usize, text: &str, tr: Option<&Te
 pub mod control_layout {
     /// 开关行（深色模式 / 输入法 / 24 小时制）
     pub const SWITCH_ROWS: i32 = 3;
-    /// 快捷跳转行（设置 / 终端）
-    pub const JUMP_ROWS: i32 = 2;
+    /// 快捷跳转行（设置 / 终端 / 通知 —— §3.2 加了通知中心入口）
+    pub const JUMP_ROWS: i32 = 3;
     /// 电源行（关机 / 重启 / 注销）
     pub const POWER_ROWS: i32 = 3;
     /// 音量行（批次 K-2）：一条可点击设定的音量轨道
@@ -1299,6 +1299,8 @@ pub enum ControlHit {
     /// **动作类**：音量轨道（批次 K-2）。点击位置决定音量 ——
     /// 命中区是**整条轨道**，具体百分比由点击 x 与轨道宽度算出（见 `main.rs`）。
     VolumeTrack,
+    /// **动作类**：打开通知中心（§3.2）
+    Notifications,
 }
 
 /// 画一个应用图标：彩色底座 + 白色几何符号（全部纯 rect/圆，不依赖字体字形覆盖）。
@@ -2053,9 +2055,18 @@ impl Renderer {
         y += 8;
         widgets::group_header(buf, w, h, panel.x + 16, y, "快捷跳转", Some(tr));
         y += 20;
+        // 「通知」带**真实未读数**（不是装饰性的小红点）：没有未读时不显示数字，
+        // 因为"0 条未读"和"没有通知中心"在界面上应该长得不一样。
+        let unread = self.notifs.unread();
+        let notif_label = if unread > 0 {
+            format!("通知（{unread} 条未读）")
+        } else {
+            "通知".to_string()
+        };
         for (label, hit) in [
             ("打开设置", ControlHit::OpenSettings),
             ("打开终端", ControlHit::OpenTerminal),
+            (notif_label.as_str(), ControlHit::Notifications),
         ] {
             let r = row(y);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));

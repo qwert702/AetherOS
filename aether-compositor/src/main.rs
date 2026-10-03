@@ -803,7 +803,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         let dark = renderer.settings.dark_mode;
                         apply_theme(&mut renderer, dark);
                         renderer.bg_dirty = true;
-                        push_toast(&mut toast, &mut renderer.notifs, "外观已恢复默认".to_string(), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, "外观已恢复默认".to_string(), notifications::Kind::Ok);
                     }
                     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                         // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
@@ -1712,6 +1712,69 @@ fn set_fb_blank(on: bool, blanked: &mut bool) {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn set_fb_blank(_on: bool, _blanked: &mut bool) {}
 
+/// 打开通知中心（§3.2）：**复用文本预览窗口**，不新造 WinKind。
+///
+/// 为什么不新造一种窗口类型：多一种就要多一套绘制、滚动、命中处理，
+/// 而通知列表本来就是"一段只读文本 + 时间戳"—— 预览窗口已经把这套做完了
+/// （含长列表滚动）。把它命名为"通知"是**用户可见**的部分，内部复用是实现细节。
+///
+/// 打开即**清未读**（与所有系统的通知中心一致）：用户既然点开看了，就不该继续标未读。
+/// 历史本身**不清**（清空是设置里的另一个动作）。
+fn open_notifications(
+    desktop: &mut Desktop,
+    notifs: &mut notifications::Notifications,
+    tz_min: i32,
+) -> Option<String> {
+    let lines: Vec<String> = notifs
+        .iter()
+        .map(|n| {
+            // 时间用用户当前时区显示（与顶栏同一份设置，不另算一套）
+            let at = crate::text::clock_fmt(n.at, tz_min, true, false);
+            let body = if n.repeat > 1 {
+                format!("{}（×{}）", n.text, n.repeat)
+            } else {
+                n.text.clone()
+            };
+            format!("{} {} {}", at, n.kind.mark(), body)
+        })
+        .collect();
+    let empty = notifs.is_empty();
+    notifs.mark_all_read();
+    let data = draw::PreviewData {
+        // 标题里带总数：用户一眼知道"历史攒了多少"
+        path: format!("通知（共 {} 条）", notifs.len()),
+        lines,
+        // 空历史显示一句说明，而不是一片空白（让人以为界面坏了）
+        error: if empty { Some("还没有通知".to_string()) } else { None },
+        truncated: false,
+        scroll: Default::default(),
+    };
+    // 已经开着通知窗口 → 就地刷新内容（不叠第二个"通知"窗口）
+    if let Some(w) = desktop
+        .wins
+        .iter_mut()
+        .find(|w| w.kind == draw::WinKind::Preview && w.title == "通知")
+    {
+        w.preview = Some(data);
+        return None;
+    }
+    if desktop.wins.len() >= 8 {
+        return Some("窗口数量已达上限（8）".into());
+    }
+    desktop.wins.push(draw::Win {
+        rect: Rect { x: 300, y: 120, w: 560, h: 420 },
+        target: None,
+        title: "通知".to_string(),
+        kind: draw::WinKind::Preview,
+        floating: true,
+        restore: None,
+        preview: Some(data),
+        term: None,
+        wayland: None,
+    });
+    None
+}
+
 /// 设置一条 toast，**同时记入通知历史**（§3.2）。
 ///
 /// 为什么不直接在 47 个产生点各写两行：那样迟早会有人只改一处（新加的提示不进历史），
@@ -1757,7 +1820,7 @@ fn apply_ui_intent(
             // 写真实 mixer；**失败必须如实提示**（不假装"音量已调"）
             match audio.set_volume(pct) {
                 Ok(()) => {
-                    push_toast(toast, &mut renderer.notifs, format!("音量 {}%", audio.volume_pct()), notifications::Kind::Info);
+                    push_toast(toast, &mut renderer.notifs, format!("音量 {}%", audio.volume_pct()), notifications::Kind::Ok);
                 }
                 Err(e) => {
                     push_toast(toast, &mut renderer.notifs, format!("音量未改变：{e}"), notifications::Kind::Err);
@@ -1858,6 +1921,11 @@ fn control_center_click(
             }
             ControlHit::OpenTerminal => {
                 let _ = open_app(desktop, 1);
+            }
+            ControlHit::Notifications => {
+                // 通知历史在 renderer 上、桌面在 desktop 上：两个不相交的可变借用
+                let tz = renderer.settings.tz_offset_min;
+                let _ = open_notifications(desktop, &mut renderer.notifs, tz);
             }
             // 电源三个入口**只判定意图**，执行交给主循环（理由见 UiIntent 的说明）：
             // 单测里点一下"关机"绝不该真的去发 IPC 或退出进程。
@@ -2648,7 +2716,7 @@ fn preview_main() -> anyhow::Result<()> {
                     if let Some(msg) = apply_ctrl(&mut desktop, ch.to_ascii_lowercase(), shift) {
                         drag = None;
                         snap_zone = layout::Snap::None;
-                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Ok);
                         continue;
                     }
                 }
@@ -4646,6 +4714,41 @@ mod wayland_sync_tests {
         assert!(!z.contains("inf") && !z.contains("NaN"), "{z}");
         // 拿不到内存时如实显示原因（不编数字）
         assert!(perf_hud_text(16.0, "不可用（非 Linux：无 /proc）").contains("不可用"));
+    }
+
+    /// §3.2：通知中心打开后必须**真的能看见**，且打开即清未读、不叠第二个窗口。
+    #[test]
+    fn notifications_window_shows_history_and_clears_unread() {
+        let mut d = demo_desktop();
+        let mut n = notifications::Notifications::new();
+        let wins_before = d.wins.len();
+
+        // 空历史也要能打开（显示一句说明，而不是一片空白/打不开）
+        assert!(open_notifications(&mut d, &mut n, 480).is_none());
+        assert_eq!(d.wins.len(), wins_before + 1, "空历史也应打开窗口");
+        let w = d.wins.last().unwrap();
+        assert_eq!(w.title, "通知");
+        let data = w.preview.as_ref().expect("应有预览内容");
+        assert!(data.path.starts_with("通知（共 "), "标题应带总数：{}", data.path);
+        assert!(data.error.is_some(), "空历史应给出说明而不是空白");
+
+        // 记两条（类别不同 → 不会合并），再打开
+        n.push("网络已连接", notifications::Kind::Ok, 3600);
+        n.push("写盘失败", notifications::Kind::Err, 3660);
+        assert_eq!(n.unread(), 2);
+        assert!(open_notifications(&mut d, &mut n, 480).is_none());
+        assert_eq!(d.wins.len(), wins_before + 1, "已有通知窗口时应就地刷新，不叠第二个");
+        let data = d.wins.last().unwrap().preview.as_ref().unwrap();
+        assert_eq!(data.lines.len(), 2, "两条通知都应在列表里");
+        // 新的在前
+        assert!(data.lines[0].contains("写盘失败"), "最新一条应在最前：{:?}", data.lines);
+        // 类别标记可区分（否则"成功"和"失败"在历史里长得一样）
+        assert!(data.lines[0].contains(notifications::Kind::Err.mark()));
+        assert!(data.lines[1].contains(notifications::Kind::Ok.mark()));
+        assert!(data.error.is_none(), "有内容时不该显示说明");
+        // 打开即清未读；**历史不清**（清空是另一个动作）
+        assert_eq!(n.unread(), 0, "打开通知中心应清未读");
+        assert_eq!(n.len(), 2, "清未读不该删历史");
     }
 
 }

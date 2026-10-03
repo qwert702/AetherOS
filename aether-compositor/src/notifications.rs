@@ -135,11 +135,9 @@ impl Notifications {
         self.unread = 0;
     }
 
-    /// 清空历史（用户主动"清空"，与"标为已读"是两件事）。
-    pub fn clear(&mut self) {
-        self.items.clear();
-        self.unread = 0;
-    }
+    // 说明：**清空历史**（`clear`）暂不在此处提供 —— 它的界面在 N1-d 的设置页里。
+    // 按本项目既有做法：不留没人调用的死接口（与 `Audio::set_volume` 同一处理），
+    // 等界面一起加，避免"看着做了"。
 }
 
 /// 压成一行：多行合并、去掉控制字符与首尾空白。
@@ -243,17 +241,16 @@ mod tests {
     }
 
     #[test]
-    fn read_and_clear_are_distinct() {
+    fn mark_read_keeps_history() {
         let mut n = Notifications::new();
         n.push("a", Kind::Info, 0);
         n.push("b", Kind::Info, 1);
         assert_eq!(n.unread(), 2);
         n.mark_all_read();
         assert_eq!(n.unread(), 0);
+        // **标为已读不等于删除**：历史还要能回看（清空是设置里的另一个动作）
         assert_eq!(n.len(), 2, "标为已读不该删掉历史");
-        n.clear();
-        assert!(n.is_empty());
-        assert_eq!(n.unread(), 0, "清空后未读必须归零");
+        assert!(!n.is_empty());
     }
 
     /// 三类标记必须互不相同 —— 否则界面上"成功"和"失败"看起来一样。
