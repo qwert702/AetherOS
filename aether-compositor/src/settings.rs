@@ -69,6 +69,8 @@ pub struct Settings {
     /// 性能 HUD（§5.10）：显示**真实**帧时间与内存占用。**默认关** ——
     /// 它是排障工具，不是装饰；常开会让界面多一块与日常使用无关的信息。
     pub perf_hud: bool,
+    /// 是否记录通知历史（§3.2）。默认**开** —— 用户没关就不该悄悄不记。
+    pub record_notifications: bool,
 }
 
 /// 界面缩放的允许档位。
@@ -129,6 +131,7 @@ impl Default for Settings {
             locale: 0,
             idle_blank_min: 10,
             perf_hud: false,
+            record_notifications: true,
         }
     }
 }
@@ -189,6 +192,9 @@ impl Settings {
         if let Some(b) = v.get("perf_hud").and_then(Value::as_bool) {
             s.perf_hud = b;
         }
+        if let Some(b) = v.get("record_notifications").and_then(Value::as_bool) {
+            s.record_notifications = b;
+        }
         if let Some(n) = v.get("idle_blank_min").and_then(Value::as_u64) {
             // 不在档位里的值**吸附到最近的合法档**（而不是原样接受）——
             // 否则手工改过的设置文件会让界面显示一个选不中的值
@@ -236,6 +242,7 @@ impl Settings {
             "locale": self.locale,
             "idle_blank_min": self.idle_blank_min,
             "perf_hud": self.perf_hud,
+            "record_notifications": self.record_notifications,
         });
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
@@ -337,6 +344,10 @@ pub enum SettingsHit {
     IdleBlank(u16),
     /// 性能 HUD 开关（§5.10）
     TogglePerfHud,
+    /// 是否记录通知历史（§3.2）
+    ToggleRecordNotifications,
+    /// **动作类**：清空通知历史（§3.2）。不改设置状态，由事件循环执行。
+    ClearNotifications,
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -361,6 +372,9 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "网络", group: "网络与共享", enabled: true },
     PageDef { title: "应用", group: "应用", enabled: true },
     PageDef { title: "权限与隐私", group: "隐私和安全性", enabled: true },
+    // §3.2：通知页（是否记录 + 清空历史）。放在最后一页：它是"回头看"的地方，
+    // 不是日常要改的设置。
+    PageDef { title: "通知", group: "系统", enabled: true },
 ];
 
 /// 左栏默认选中的页（第一个可用的页）。
@@ -410,6 +424,11 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
             s.idle_blank_min = snap_idle_blank(min);
         }
         SettingsHit::TogglePerfHud => s.perf_hud = !s.perf_hud,
+        SettingsHit::ToggleRecordNotifications => {
+            s.record_notifications = !s.record_notifications
+        }
+        // 动作类：清空历史由事件循环执行（`apply_hit` 不改状态）
+        SettingsHit::ClearNotifications => {}
     }
 }
 
@@ -444,6 +463,7 @@ mod tests {
             locale: 1,
             idle_blank_min: 10,
             perf_hud: false,
+            record_notifications: true,
         };
         assert_eq!(Settings::from_json(&s.to_json()), s);
     }
@@ -536,6 +556,7 @@ mod tests {
             locale: 1,
             idle_blank_min: 10,
             perf_hud: false,
+            record_notifications: true,
         };
         s.save(path).expect("写设置应当成功（父目录会自动建）");
         assert_eq!(Settings::load(path, 8 * 60), s, "写进去什么，读出来就该是什么");
@@ -701,6 +722,7 @@ mod restart_action_tests {
             locale: 1,
             idle_blank_min: 10,
             perf_hud: false,
+            record_notifications: true,
             ..Settings::default()
         };
         let mut page = 1usize;
@@ -822,6 +844,26 @@ mod restart_action_tests {
         assert!(!Settings::from_json(r#"{"dark_mode":true}"#).perf_hud);
         // 类型不对 → 默认，不 panic
         assert!(!Settings::from_json(r#"{"perf_hud":"开"}"#).perf_hud);
+    }
+
+    /// N1-d：通知记录开关默认**开**、能往返、旧文件走默认。
+    #[test]
+    fn record_notifications_defaults_on_and_round_trips() {
+        assert!(Settings::default().record_notifications, "默认应记录");
+        let mut st = Settings::default();
+        let mut page = 0usize;
+        apply_hit(&mut st, &mut page, SettingsHit::ToggleRecordNotifications);
+        assert!(!st.record_notifications, "点一下应关闭");
+        apply_hit(&mut st, &mut page, SettingsHit::ToggleRecordNotifications);
+        assert!(st.record_notifications);
+        // 清空是**动作类**：不该改动任何设置状态（否则"点清空"会顺手改开关）
+        let before = st.clone();
+        apply_hit(&mut st, &mut page, SettingsHit::ClearNotifications);
+        assert_eq!(st, before, "清空历史不得改动设置状态");
+
+        let off = Settings { record_notifications: false, ..Settings::default() };
+        assert!(!Settings::from_json(&off.to_json()).record_notifications, "关闭状态要能存下来");
+        assert!(Settings::from_json(r#"{"dark_mode":true}"#).record_notifications, "旧文件走默认（开）");
     }
 
 }

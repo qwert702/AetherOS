@@ -2727,6 +2727,49 @@ fn draw_settings_content(
                 ry += 48;
             }
         }
+        "通知" => {
+            // §3.2：通知历史。两个控件：是否记录 + 清空。
+            let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
+            toggle_row(
+                buf,
+                w,
+                h,
+                mouse,
+                tr,
+                r1,
+                "记录通知历史",
+                Some("关掉后不再记录（提示条本身照常显示，只是不再进历史）"),
+                s.record_notifications,
+                SettingsHit::ToggleRecordNotifications,
+                hits,
+            );
+            ry += 58;
+            // 清空：**动作类**，由事件循环执行（绘制期不改状态）
+            let clear = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf,
+                w,
+                h,
+                clear,
+                "清空通知历史",
+                Some("只清历史，不影响任何其它设置"),
+                widgets::States::at(clear, mouse),
+                Some(tr),
+            );
+            hits.push((clear, SettingsHit::ClearNotifications));
+            ry += 52;
+            tr.draw(
+                buf,
+                w,
+                h,
+                (content.x + 24) as f32,
+                ry as f32,
+                "通知中心在控制中心里打开（点顶栏状态簇）。",
+                font::CAPTION,
+                color::text_dim(),
+                0.75,
+            );
+        }
         _ => {}
     }
 }

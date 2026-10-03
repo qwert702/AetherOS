@@ -573,6 +573,11 @@ fn run_fbdev() -> anyhow::Result<()> {
             }
         }
 
+        // ---- 1.35 通知记录开关（§3.2）----
+        // 每帧同步一次：设置页改了开关，下一次进 toast 就生效，不必重启。
+        // 放在这里而不是 push_toast 内部：那需要给 47 个调用点都加一个参数。
+        renderer.notifs.set_enabled(renderer.settings.record_notifications);
+
         // ---- 1.4 性能 HUD（§5.10）----
         // 每帧算一次：帧时间取**上一帧**的耗时（本帧还没画完，拿不到自己的耗时），
         // 内存读 /proc/self/statm（拿不到就如实写"不可用"，绝不编数字）。
@@ -788,6 +793,18 @@ fn run_fbdev() -> anyhow::Result<()> {
                         }
                         _ => {}
                     }
+                    // 清空通知历史（§3.2）：**动作类**，绘制期不改状态，这里执行。
+                    // 顺手也把未读清零（历史的未读与"有没有内容"不该出现不一致）。
+                    if let settings::SettingsHit::ClearNotifications = hit {
+                        let had = renderer.notifs.len();
+                        renderer.notifs.clear();
+                        // **刻意不走 push_toast**：那条消息会被记回刚清空的历史，
+                        // 于是用户点完"清空"看到的仍是 1 条 —— 看起来像没生效。
+                        // 统一走 push_toast 是为了"不漏记"，而这里正是**唯一**一个
+                        // 不该被记的动作；例外写在这里，并有测试钉住历史确实是空的。
+                        toast = Some((format!("已清空 {had} 条通知"), Instant::now()));
+                    }
+
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
                     if matches!(hit, settings::SettingsHit::ToggleDark) {
                         let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer
@@ -1744,8 +1761,18 @@ fn open_notifications(
         // 标题里带总数：用户一眼知道"历史攒了多少"
         path: format!("通知（共 {} 条）", notifs.len()),
         lines,
-        // 空历史显示一句说明，而不是一片空白（让人以为界面坏了）
-        error: if empty { Some("还没有通知".to_string()) } else { None },
+        // 空历史显示一句说明，而不是一片空白（让人以为界面坏了）。
+        // **两种空要分开说**：从没记过 vs 用户自己关了记录 —— 后者如果只说"还没有通知"，
+        // 用户会以为是功能坏了，而其实是他自己关的。
+        error: if empty {
+            Some(if notifs.enabled() {
+                "还没有通知".to_string()
+            } else {
+                "通知记录已关闭（可在 设置 → 通知 打开）".to_string()
+            })
+        } else {
+            None
+        },
         truncated: false,
         scroll: Default::default(),
     };
@@ -4731,6 +4758,16 @@ mod wayland_sync_tests {
         let data = w.preview.as_ref().expect("应有预览内容");
         assert!(data.path.starts_with("通知（共 "), "标题应带总数：{}", data.path);
         assert!(data.error.is_some(), "空历史应给出说明而不是空白");
+        // 开着记录时的空 = "还没有通知"
+        assert!(data.error.as_deref().unwrap().contains("还没有"),
+                "开着记录时应说'还没有通知'：{:?}", data.error);
+        // 关掉记录时的空必须**说明原因**（否则用户以为功能坏了，其实是他自己关的）
+        let mut n2 = notifications::Notifications::new();
+        n2.set_enabled(false);
+        let mut d2 = demo_desktop();
+        let _ = open_notifications(&mut d2, &mut n2, 480);
+        let off = d2.wins.last().unwrap().preview.as_ref().unwrap().error.clone().unwrap();
+        assert!(off.contains("记录已关闭"), "关闭记录时的空文案应说明原因：{off}");
 
         // 记两条（类别不同 → 不会合并），再打开
         n.push("网络已连接", notifications::Kind::Ok, 3600);

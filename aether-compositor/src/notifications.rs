@@ -69,6 +69,9 @@ pub struct Notifications {
     /// **新的在前**（索引 0 是最新）：界面按时间倒序展示，这样渲染不用反转
     items: VecDeque<Notice>,
     unread: usize,
+    /// 是否记录（设置里的开关）。**关掉只影响"记不记历史"，不影响 toast 本身** ——
+    /// 把提示整个瞒掉是另一回事，不该由一个"历史开关"顺带做掉。
+    enabled: bool,
 }
 
 impl Default for Notifications {
@@ -79,7 +82,7 @@ impl Default for Notifications {
 
 impl Notifications {
     pub fn new() -> Self {
-        Self { items: VecDeque::with_capacity(MAX_NOTICES), unread: 0 }
+        Self { items: VecDeque::with_capacity(MAX_NOTICES), unread: 0, enabled: true }
     }
 
     /// 记录一条通知。
@@ -91,6 +94,9 @@ impl Notifications {
     /// 3. 文本先做净化：多行压成一行、去掉首尾空白 —— 历史是一行一条，
     ///    带换行的文本会把布局撑坏。
     pub fn push(&mut self, text: &str, kind: Kind, now_secs: i64) {
+        if !self.enabled {
+            return; // 用户关了记录：历史不增长（toast 照常显示，由调用方负责）
+        }
         let clean = one_line(text);
         if clean.is_empty() {
             return; // 空消息不该占一条历史
@@ -135,9 +141,20 @@ impl Notifications {
         self.unread = 0;
     }
 
-    // 说明：**清空历史**（`clear`）暂不在此处提供 —— 它的界面在 N1-d 的设置页里。
-    // 按本项目既有做法：不留没人调用的死接口（与 `Audio::set_volume` 同一处理），
-    // 等界面一起加，避免"看着做了"。
+    /// 是否记录历史（设置开关）。关掉只影响历史，不影响 toast 显示。
+    pub fn set_enabled(&mut self, on: bool) {
+        self.enabled = on;
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// 清空历史（用户主动"清空"，与"标为已读"是两件事）。
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.unread = 0;
+    }
 }
 
 /// 压成一行：多行合并、去掉控制字符与首尾空白。
@@ -261,4 +278,25 @@ mod tests {
         assert_ne!(m[1], m[2]);
         assert_ne!(m[0], m[2]);
     }
+    /// N1-d：开关只影响"记不记历史"，且清空要真的清干净。
+    #[test]
+    fn enabled_switch_and_clear() {
+        let mut n = Notifications::new();
+        assert!(n.enabled(), "默认应记录（用户没关就不该悄悄不记）");
+        n.set_enabled(false);
+        n.push("关掉后不该进历史", Kind::Info, 0);
+        assert!(n.is_empty(), "关闭记录后历史不该增长");
+        assert_eq!(n.unread(), 0);
+        n.set_enabled(true);
+        n.push("打开后应进历史", Kind::Info, 1);
+        assert_eq!(n.len(), 1);
+        // 清空：内容与未读都要归零
+        n.clear();
+        assert!(n.is_empty());
+        assert_eq!(n.unread(), 0, "清空后未读必须归零");
+        // 清空后仍可继续记录
+        n.push("清空后还能记", Kind::Ok, 2);
+        assert_eq!(n.len(), 1);
+    }
+
 }
