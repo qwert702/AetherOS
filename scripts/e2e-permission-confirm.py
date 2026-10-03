@@ -8,7 +8,7 @@
 UI 通道密钥：优先 AETHER_UI_KEY 环境变量，否则读 /run/aether/ui.key
 （aetherd 首次启动时生成）。
 
-验证的语义（对应 docs/ai-permissions.md 与代码审查 P0-4 / P1-8 / P1-9 / H-2）：
+验证的语义（对应 docs/AI权限模型-2026-09-05.md 与代码审查 P0-4 / P1-8 / P1-9 / H-2）：
   1. 已注册 UI 通道、无令牌的 L3 ToolCall → NeedsConfirmation（含等级/回显目标/后果/令牌）
   2. 已注册通道带令牌重发                → 放行到工具体（非权限拦截）
   3. 重复使用同一令牌                    → 403（一次性）

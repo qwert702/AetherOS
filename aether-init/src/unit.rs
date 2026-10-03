@@ -3,7 +3,7 @@
 //! 安全模型：AetherOS 是封闭系统，可运行的服务集合 = 编译期内建于
 //! init 的白名单，每个服务的启动命令都是字面量构造（无任何字符串
 //! 拼接进命令行），服务文件 JSON 只能引用白名单内的服务并配置策略。
-//! 第三方应用后续通过签名清单机制接入（见 docs/roadmap.md）。
+//! 第三方应用后续通过签名清单机制接入（见 docs/路线图与已知缺口-2026-09-05.md）。
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};

@@ -212,7 +212,7 @@
 <p>  &gt; 把本地值当作"下载页的哈希"发布，于是官网让人拿一个<strong>必然校验失败</strong>的值去校验下载的</p>
 <p>  &gt; 文件；更新日志里也留下了同一个误导性数字。</p>
 <p>  &gt; 修法：新增 <code>site/release.json</code> 作为"已发布事实"的单一来源，并给站点门禁加了</p>
-<p>  &gt; <strong>"禁止出现非发布产物的 sha256"</strong> 检查。详见 <code>docs/reports/SECURITY-AUDIT-2026-10-02.md</code> 附录 C。</p>
+<p>  &gt; <strong>"禁止出现非发布产物的 sha256"</strong> 检查。详见 <code>docs/报告/安全审计-2026-10-02.md</code> 附录 C。</p>
 <ul>
   <li>部署：复制到 <code>D:\aether-vm\AetherOS-VMware</code>，<code>vmrun stop/start</code> 重启虚拟机</li>
   <li><strong>串口验证</strong>：日志含「字节序」「字体已加载」「已渲染」「已挂载」✓，</li>
@@ -231,7 +231,7 @@
 <p>在虚拟机里打开 设置 →「网络」页点「重启网络服务」、→「AI」页点「重启 AI 服务」，</p>
 <p>确认 toast 显示 aetherd 的 ack。这是 P4.4 <strong>唯一未验证</strong>的环节（编译与单测已过）。</p>
 <h2 id="">十六、安全审计与修复（同日）</h2>
-<p>对全仓库做了一轮安全审计（报告：<a href="../docs/reports/SECURITY-AUDIT-2026-10-02.md"><code>docs/reports/SECURITY-AUDIT-2026-10-02.md</code></a>），</p>
+<p>对全仓库做了一轮安全审计（报告：<a href="../docs/报告/安全审计-2026-10-02.md"><code>docs/报告/安全审计-2026-10-02.md</code></a>），</p>
 <p>并按"可用性 / 交付链路 / 文档门禁 / 底层加固"四个批次修完。<strong>下面只列用户能感知的变化</strong>：</p>
 <h3>行为变化（会影响怎么用）</h3>
 <ul>
@@ -296,7 +296,7 @@
 </ul>
 <h2 id="e-h">十七、安全审计：剩余项已处置（同日，后续批次 E–H）</h2>
 <p>第一轮修复之后又做了四批，把报告里<strong>剩下的每一条</strong>都处置了（处置表见</p>
-<p><a href="../docs/reports/SECURITY-AUDIT-2026-10-02.md"><code>docs/reports/SECURITY-AUDIT-2026-10-02.md</code></a> 附录 E，</p>
+<p><a href="../docs/报告/安全审计-2026-10-02.md"><code>docs/报告/安全审计-2026-10-02.md</code></a> 附录 E，</p>
 <p>其中三条"只记录/部分"、三条"代码已修但产物或真机待确认"的边界见附录 E 末尾清单）。</p>
 <p>约束：<strong>只改代码、只做本地验证，不对真实机器/真实磁盘/生产主机执行安装、刷写或部署。</strong></p>
 <h3>用户能感知的变化</h3>
@@ -343,7 +343,7 @@
 </ul>
 <p>  默认要求密钥认证；需要 root 的步骤走 <code>sudo -n</code>。<strong>本轮没有对生产机执行任何部署。</strong></p>
 <h2 id="i">十八、功能缺口开始动工（同日，批次 I：地基）</h2>
-<p>按 <a href="../docs/reports/FEATURE-GAPS-2026-10-02.md"><code>docs/reports/FEATURE-GAPS-2026-10-02.md</code></a> 的 26 条缺口清单开工。</p>
+<p>按 <a href="../docs/报告/功能缺口清单-2026-10-02.md"><code>docs/报告/功能缺口清单-2026-10-02.md</code></a> 的 26 条缺口清单开工。</p>
 <p>第一批是<strong>地基</strong>（后面每一批都要踩在它上面），重点是先修掉一个"文档没说、但会让后面全白做"的硬伤。</p>
 <h3>修掉一个硬伤：设置里的「重启服务」其实是假的</h3>
 <p><code>aetherd</code> 收到 <code>ServiceControl</code> 时<strong>从不转发给 aether-init</strong>，而是直接回一句</p>
@@ -463,7 +463,7 @@
 <p>软件渲染下真正应用缩放要改文字度量与控件尺寸的整条链路；默认应用要先定</p>
 <p>"文件用什么打开"的语义。做不到就不给控件，"能点但没用"是本项目明令禁止的。</p>
 <h3>缺口清单本身也同步了（提交 3c852d2）</h3>
-<p><code>docs/reports/FEATURE-GAPS-2026-10-02.md</code> 的 §2 开头加了进度表（含提交号），</p>
+<p><code>docs/报告/功能缺口清单-2026-10-02.md</code> 的 §2 开头加了进度表（含提交号），</p>
 <p>每条标注<strong>状态</strong>、<strong>刻意偏离原建议的取舍</strong>、以及<strong>仍未实机验证</strong>的边界。</p>
 <p>原文的"现象/证据"段落全部保留并标注为历史 —— 记录当初的判断依据比抹掉它更有用。</p>
 <p><strong>为什么专门做这件事</strong>：那份清单是整项工作的"计划之锚"，如果它开始说"待做"</p>
@@ -622,7 +622,7 @@
 <p><strong>⚠️ 2026-10-02 更正</strong>：上面"可安装到虚拟磁盘后独立引导"<strong>对本版本发布的那个 ISO 不成立</strong>。</p>
 <p>实测该资产（40,327,168 字节 / sha256 <code>7c50f481…</code>）首 512 字节无 MBR 签名，即<strong>未经 <code>isohybrid</code> 处理</strong>，</p>
 <p>不能 dd 到磁盘引导 —— 装机路径会失败。引导与 Live 桌面不受影响。构建脚本已补上 isohybrid 步骤与自检</p>
-<p>（<code>platform/build-iso.sh</code>），重新构建后装机才可用。详见 <a href="reports/SECURITY-AUDIT-2026-10-02.md"><code>reports/SECURITY-AUDIT-2026-10-02.md</code></a> 的 H-6。</p>
+<p>（<code>platform/build-iso.sh</code>），重新构建后装机才可用。详见 <a href="报告/安全审计-2026-10-02.md"><code>报告/安全审计-2026-10-02.md</code></a> 的 H-6。</p>
 <p>*Correction (2026-10-02): the disk-install claim does not hold for the ISO shipped with this release —</p>
 <p>it was measured to have no MBR signature (not isohybrid), so it cannot be written to a disk and booted.</p>
 <p>Booting and the live desktop are unaffected. The build script now applies isohybrid; a rebuilt ISO will</p>

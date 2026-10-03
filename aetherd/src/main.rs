@@ -4,7 +4,7 @@
 //! - `aetherd chat "指令"` —— 单轮 agent：路由 → LLM → 工具调用循环 → 回答
 //! - `aetherd serve`      —— 常驻 IPC 服务（127.0.0.1:7311，NDJSON），
 //!   供 Shell 指令条调用；离线快速意图先行，LLM 兜底
-//! - 所有工具执行经过权限闸门（docs/ai-permissions.md）+ 审计日志
+//! - 所有工具执行经过权限闸门（docs/AI权限模型-2026-09-05.md）+ 审计日志
 
 mod apps;
 mod intent;
