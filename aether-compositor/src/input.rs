@@ -60,8 +60,12 @@ pub enum NavKey {
 pub enum UiEvent {
     /// 可打印字符（英文/符号直接进 AI 指令条，与预览版一致）
     Char(char),
-    /// Super（Win/Cmd）+ 字母，已转小写。用于 `Super+L` 锁屏这类全局快捷键。
-    Super(char),
+    /// Super（Win/Cmd）+ 键，已转小写；第二位是**是否按住 Shift**。
+    ///
+    /// 为什么要带 Shift：虚拟桌面（§5.4）用 `Super+1..4` 切空间、
+    /// `Super+Shift+1..4` 把当前窗口**搬到**那个空间 —— 没有这一位就没法区分，
+    /// 而"搬窗口"和"切空间"是两件完全不同的事（做错了会以为窗口丢了）。
+    Super(char, bool),
     Enter,
     Backspace,
     Escape,
@@ -262,9 +266,10 @@ fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
                 return vec![];
             };
             if mods.meta {
-                // Super+字母 → 组合键（与 Ctrl 同样只认字母，避免漏出散字）
-                return if base.is_ascii_alphabetic() {
-                    vec![UiEvent::Super(base.to_ascii_lowercase())]
+                // Super+字母/数字 → 组合键（与 Ctrl 同样只收这两种，避免漏出散字）。
+                // 数字是虚拟桌面的需要（`Super+1..4`）；只认字母的话那几个键收不到。
+                return if base.is_ascii_alphanumeric() {
+                    vec![UiEvent::Super(base.to_ascii_lowercase(), mods.shift)]
                 } else {
                     vec![]
                 };
@@ -582,23 +587,44 @@ mod tests {
         assert!(translate(&ev(EV_KEY, KEY_LEFTMETA, 1), &mut m).is_empty());
         assert!(m.meta, "Meta 状态应被记住");
         // Super+L → Super('l')，且**不能**退化成一个 'l' 字符
-        assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m), vec![UiEvent::Super('l')]);
+        assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m), vec![UiEvent::Super('l', false)]);
         // 松开 Meta 后恢复普通字符
         assert!(translate(&ev(EV_KEY, KEY_LEFTMETA, 0), &mut m).is_empty());
         assert!(!m.meta);
         assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m), vec![UiEvent::Char('l')]);
     }
 
-    /// Super+非字母不该漏出字符（与 Alt 一致：**不能退化成普通字符**）；右 Meta 同理。
+    /// Super 组合键**不能退化成普通字符**（与 Alt 一致）；右 Meta 同理。
+    ///
+    /// 注意 `Super+1` 的期望在 §5.4 之后变了：它现在是**有意义的**
+    /// （虚拟桌面要 `Super+1..4`，所以数字键位必须收），
+    /// 但本条测试要守的性质**没变** —— 它绝不能变成一个裸 `'1'` 字符。
     #[test]
-    fn super_with_non_letter_does_not_leak_a_char() {
+    fn super_with_non_alnum_does_not_leak_a_char() {
         let mut m = Mods::default();
         translate(&ev(EV_KEY, KEY_LEFTMETA, 1), &mut m);
-        assert!(translate(&ev(EV_KEY, KEY_1, 1), &mut m).is_empty());
+        // 数字键位：收成组合键（虚拟桌面需要），**不是**普通字符
+        let got = translate(&ev(EV_KEY, KEY_1, 1), &mut m);
+        assert_eq!(got, vec![UiEvent::Super('1', false)]);
+        assert!(
+            !got.iter().any(|e| matches!(e, UiEvent::Char(_))),
+            "Super 组合键绝不能漏成普通字符"
+        );
+        // 带 Shift 时要区分开（Super+Shift+1 = 把窗口搬过去）
+        translate(&ev(EV_KEY, KEY_LEFTSHIFT, 1), &mut m);
+        let got2 = translate(&ev(EV_KEY, KEY_1, 1), &mut m);
+        assert_eq!(got2, vec![UiEvent::Super('1', true)], "Shift 必须被带上");
+        translate(&ev(EV_KEY, KEY_LEFTSHIFT, 0), &mut m);
+        // 标点键位仍然什么都不产生（避免漏出 `,` 这种散字）。
+        // 51 是 `key_char` 里映射成逗号的那个键位（见该函数）。
+        assert!(
+            translate(&ev(EV_KEY, 51, 1), &mut m).is_empty(),
+            "Super+标点不该产生任何事件"
+        );
         let mut m2 = Mods::default();
         translate(&ev(EV_KEY, KEY_RIGHTMETA, 1), &mut m2);
         assert!(m2.meta, "右 Meta 也应算 Meta");
-        assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m2), vec![UiEvent::Super('l')]);
+        assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m2), vec![UiEvent::Super('l', false)]);
     }
 
 }

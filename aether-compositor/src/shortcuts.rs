@@ -49,7 +49,23 @@ pub const SHORTCUTS: &[Shortcut] = &[
         keys: "Super+L",
         desc: "锁定屏幕（解锁需重新验证口令）",
         desc_en: "Lock the screen (unlocking requires the password)",
-        probe: "input::UiEvent::Super('l') => {",
+        // 探针跟着实现走：`Super` 分支后来合并成了 `Super(c, shift)`（§5.4 要区分
+        // `Super+1` 与 `Super+Shift+1`），原来那条探针当场失效 —— 这正是探针的用处。
+        probe: "if c == 'l' && !shift {",
+        in_input: false,
+    },
+    Shortcut {
+        keys: "Super+1…4",
+        desc: "切换虚拟桌面（各桌面的窗口互不可见，切走不关掉）",
+        desc_en: "Switch virtual desktop (windows stay alive on the other desktop)",
+        probe: "spaces.switch(i, &mut desktop.wins",
+        in_input: false,
+    },
+    Shortcut {
+        keys: "Super+Shift+1…4",
+        desc: "把当前窗口搬到指定桌面",
+        desc_en: "Move the active window to a desktop",
+        probe: "spaces.move_active(i, &mut desktop.wins",
         in_input: false,
     },
     Shortcut {

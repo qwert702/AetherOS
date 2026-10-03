@@ -41,6 +41,7 @@ mod settings;
 mod shortcuts;
 mod palette;
 mod policyview;
+mod spaces;
 mod auth;
 mod i18n;
 mod lock;
@@ -348,6 +349,11 @@ fn run_fbdev() -> anyhow::Result<()> {
     // 缩放中的窗口：(索引, 边, 按下时的原始矩形)
     let mut resize: Option<(usize, Edge, draw::Rect)> = None;
     let mut snap_zone = layout::Snap::None;
+
+    // §5.4 虚拟桌面。**被停放的窗口不在 `desktop.wins` 里** —— 这是本设计的要点：
+    // 输入、绘制、命中测试都只遍历那个向量，所以别的空间的窗口既画不出来也点不到，
+    // 不存在「忘了过滤」这种漏洞（详见 `spaces` 模块的注释）。
+    let mut spaces: spaces::Spaces<draw::Win> = spaces::Spaces::new();
     let mut toast: Option<(String, Instant)> = None;
     let mut ai_input = String::new();
     // 2.4：输入光标 —— 支持在中间插入/删除，不再只能追加（打错一个字要全删重来）
@@ -495,19 +501,73 @@ fn run_fbdev() -> anyhow::Result<()> {
                         click_pending = true;
                     }
                 }
-                input::UiEvent::Super('l') => {
+                input::UiEvent::Super(c, shift) => {
                     // §2.3：Super+L 锁屏。**这是全局快捷键**，所以放在事件匹配里、
                     // 走的是与其它输入同一条路径 —— 不再是"某个页面里的按钮"。
                     renderer.lock.lock();
                     tty_log("锁屏（Super+L）");
+                
+                    // §5.4 虚拟桌面：`Super+1..4` 切空间，`Super+Shift+1..4` 把当前窗口搬过去。
+                    // 两件事都要清掉拖拽与吸附预览：那些状态属于**上一个空间的窗口**
+                    // （与关窗同一类问题：窗口数组变了而拖拽状态还指着旧下标，P2-3 那次越界就是这么来的）。
+                    if c == 'l' && !shift {
+                        renderer.lock.lock();
+                        tty_log("屏幕已锁定（Super+L）");
+                        continue;
+                    }
+                    if let Some(d) = c.to_digit(10) {
+                        if d >= 1 && (d as usize) <= spaces::Spaces::<draw::Win>::COUNT {
+                            let i = (d - 1) as usize;
+                            if shift {
+                                if spaces.move_active(i, &mut desktop.wins, &mut desktop.active) {
+                                    drag = None;
+                                    snap_zone = layout::Snap::None;
+                                    push_toast(
+                                        &mut toast,
+                                        &mut renderer.notifs,
+                                        format!("已移到桌面 {}", i + 1),
+                                        notifications::Kind::Info,
+                                    );
+                                } else {
+                                    push_toast(
+                                        &mut toast,
+                                        &mut renderer.notifs,
+                                        "没有可移动的窗口".to_string(),
+                                        notifications::Kind::Info,
+                                    );
+                                }
+                            } else if spaces.switch(i, &mut desktop.wins, &mut desktop.active) {
+                                drag = None;
+                                snap_zone = layout::Snap::None;
+                                // 自检：切完之后"当前空间那一格必须是空的"（不变量）。
+                                // 只在调试构建里查，代价为零；真出问题时能立刻指出是哪一步破坏的。
+                                debug_assert!(spaces.invariant_holds(), "虚拟桌面不变量被破坏");
+                                // 提示带上"这是第几个桌面/共几个 + 这个桌面上有几个窗口"——
+                                // 只说"切过去了"信息太少，用户会想知道自己到了哪儿、那儿有什么
+                                push_toast(
+                                    &mut toast,
+                                    &mut renderer.notifs,
+                                    format!(
+                                        "桌面 {}/{} · {} 个窗口",
+                                        spaces.current() + 1,
+                                        spaces.count(),
+                                        spaces.len_of(spaces.current(), desktop.wins.len()),
+                                    ),
+                                    notifications::Kind::Info,
+                                );
+                            }
+                            continue;
+                        }
+                    }
+                    // 其余 Super 组合键：**明确忽略**（输入层已保证它们不会漏成普通字符）
                 }
-                input::UiEvent::Super(c) => {
-                    // 其它 Super 组合暂未映射。**必须显式吃掉**，原因有两个：
-                    // 1) 不处理会让这个 match 不再穷尽（Linux 编译不过 —— 本地 Windows
-                    //    构建看不到这段代码，是 musl 静态检查抓出来的）；
-                    // 2) Super+字母若退回成普通字符，全局键就会漏成输入内容。
-                    let _ = c;
-                }
+                // 原来这里有一条 `Super(c) => { let _ = c; }` 的兜底分支
+                // （作用是"显式吃掉未映射的 Super 组合键，否则 match 不穷尽"）。
+                // 2026-10-03 §5.4 把 Super 的分支合并成一个之后，它变成**不可达**，
+                // 于是删掉 —— 兜底的作用由上面那个分支直接承担：
+                // 未映射的组合键走到分支末尾自然结束，**不会退回成普通字符**
+                // （输入层已经保证 Super 组合键不产生 `Char`）。
+                // 顺带：这条不可达是 **musl 静态检查**报出来的，Windows 构建看不到这段。
                 input::UiEvent::Char(c) => {
                     // Ctrl+Space 在 evdev 侧通常落成 NUL —— 用它当中英切换键。
                     // 换成显式的 UiEvent 变体更好，但那要改 input.rs 的采集层；
