@@ -804,6 +804,25 @@ fn run_fbdev() -> anyhow::Result<()> {
                         }
                         _ => {}
                     }
+                    // 导出审计日志（§5.2）：**动作类**，成功给出确切路径，
+                    // 失败给出原因（不静默、不谎报"已导出"）
+                    if let settings::SettingsHit::ExportAudit = hit {
+                        match export_audit() {
+                            Ok(path) => push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!("审计日志已导出：{path}"),
+                                notifications::Kind::Ok,
+                            ),
+                            Err(e) => push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!("导出失败：{e}"),
+                                notifications::Kind::Err,
+                            ),
+                        }
+                    }
+
                     // 清空通知历史（§3.2）：**动作类**，绘制期不改状态，这里执行。
                     // 顺手也把未读清零（历史的未读与"有没有内容"不该出现不一致）。
                     if let settings::SettingsHit::ClearNotifications = hit {
@@ -1905,6 +1924,34 @@ fn open_notifications(
         wayland: None,
     });
     None
+}
+
+/// 导出审计日志（§5.2）：写到审计日志同目录，返回**确切路径**。
+///
+/// 与审计日志同目录而不是 `/tmp`：Live ISO 的 `/tmp` 是内存盘，
+/// 重启即失，而"导出给别人看"通常要跨越一次重启。
+///
+/// 非 Linux 目标**如实报错**而不是悄悄写到某个 Windows 路径 ——
+/// 预览机上写出来的文件对用户没有任何意义，还可能在他机器上留下垃圾。
+#[cfg(target_os = "linux")]
+fn export_audit() -> Result<String, String> {
+    let now = crate::text::now_utc_secs().max(0) as u64;
+    let info = crate::audit::read(crate::audit::AUDIT_PATH, 200);
+    let text = crate::audit::export_text(&info, now);
+    let dir = std::path::Path::new(crate::audit::AUDIT_PATH)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/var/log/aether"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建 {}：{e}", dir.display()))?;
+    let path = dir.join(format!("audit-export-{now}.txt"));
+    std::fs::write(&path, text).map_err(|e| format!("写入失败：{e}"))?;
+    Ok(path.display().to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn export_audit() -> Result<String, String> {
+    Err("导出仅在目标系统上可用（预览机没有审计日志目录）".into())
 }
 
 /// 设置一条 toast，**同时记入通知历史**（§3.2）。

@@ -348,6 +348,8 @@ pub enum SettingsHit {
     ToggleRecordNotifications,
     /// **动作类**：清空通知历史（§3.2）。不改设置状态，由事件循环执行。
     ClearNotifications,
+    /// **动作类**：导出审计日志（§5.2）
+    ExportAudit,
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -427,8 +429,8 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::ToggleRecordNotifications => {
             s.record_notifications = !s.record_notifications
         }
-        // 动作类：清空历史由事件循环执行（`apply_hit` 不改状态）
-        SettingsHit::ClearNotifications => {}
+        // 动作类：清空历史/导出审计由事件循环执行（`apply_hit` 不改状态）
+        SettingsHit::ClearNotifications | SettingsHit::ExportAudit => {}
     }
 }
 

@@ -2414,6 +2414,21 @@ fn draw_settings_content(
             // `now_utc_secs()` 是 i64（时钟可能被回拨成负数）；相对时间只需非负值。
             let now = crate::text::now_utc_secs().max(0) as u64;
             let info = crate::audit::read(crate::audit::AUDIT_PATH, 8);
+            // §5.2 导出按钮：把审计日志写成可贴到 issue 的纯文本。
+            // 放在标题上方（列表下方会随条目数浮动，位置不稳定）。
+            let export = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 36 };
+            widgets::row(
+                buf,
+                w,
+                h,
+                export,
+                "导出审计日志",
+                Some("写到 /var/log/aether/，并显示路径"),
+                widgets::States::at(export, mouse),
+                Some(tr),
+            );
+            hits.push((export, SettingsHit::ExportAudit));
+            ry += 46;
             widgets::group_header(buf, w, h, content.x + 24, ry, "审计日志", Some(tr));
             ry += 24;
             if !info.exists {

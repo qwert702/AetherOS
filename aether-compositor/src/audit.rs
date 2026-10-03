@@ -79,6 +79,48 @@ pub struct AuditInfo {
     pub unparsed: usize,
 }
 
+/// 把审计信息渲染成**可直接贴到 issue** 的纯文本（§5.2 导出）。
+///
+/// 纯函数（`now` 由调用方给）—— 于是"导出内容包含什么"可以单测，
+/// 不必真的写文件。**导出必须包含文件路径与解析失败计数**：前者让读者知道数据来源，
+/// 后者防止"日志格式变了但导出看起来一切正常"（那种静默最误导人）。
+pub fn export_text(info: &AuditInfo, now: u64) -> String {
+    let mut s = String::new();
+    s.push_str("AetherOS 审计日志导出\n");
+    s.push_str("==================\n");
+    s.push_str(&format!("来源：{}\n", info.path));
+    s.push_str(&format!("文件存在：{}\n", if info.exists { "是" } else { "否" }));
+    s.push_str(&format!(
+        "总条数：{} · 被拒绝：{} · 失败：{} · 无法解析：{}\n",
+        info.total, info.denied, info.failed, info.unparsed
+    ));
+    s.push_str(&format!("导出时间（Unix 秒）：{now}\n\n"));
+    if info.recent.is_empty() {
+        s.push_str("（没有记录）\n");
+        return s;
+    }
+    s.push_str("最近记录（新的在前）：\n");
+    for e in &info.recent {
+        // 用制表符分隔，便于贴进表格工具；时间同时给"多久以前"（人看）与原始秒（机器看）
+        s.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            e.ts,
+            e.age_text(now),
+            e.level,
+            e.tool,
+            e.verdict,
+            if e.is_denied() {
+                "被拒绝"
+            } else if e.is_failed() {
+                "失败"
+            } else {
+                "正常"
+            }
+        ));
+    }
+    s
+}
+
 /// 解析一行审计记录。字段数不对或时间戳不是数字 → `None`。
 pub fn parse_line(line: &str) -> Option<Entry> {
     let f: Vec<&str> = line.trim_end_matches(['\r', '\n']).split('\t').collect();
@@ -222,4 +264,40 @@ mod tests {
         assert_eq!(i.recent[0].ts, 1_780_000_030, "最新的在最前");
         std::fs::remove_dir_all(&dir).ok();
     }
+    /// §5.2：导出文本必须**如实包含**来源、计数与解析失败数 ——
+    /// 尤其"无法解析"那一项：日志格式变了却看不出来，是最误导人的静默失败。
+    #[test]
+    fn export_text_is_faithful_about_what_it_contains() {
+        let info = AuditInfo {
+            path: "/var/log/aether/aether-audit.log".into(),
+            exists: true,
+            recent: vec![Entry {
+                ts: 1000,
+                level: "L3".into(),
+                tool: "system_power".into(),
+                verdict: "denied_no_ui".into(),
+                args: String::new(),
+            }],
+            total: 7,
+            denied: 2,
+            failed: 1,
+            unparsed: 3,
+        };
+        let out = export_text(&info, 1060);
+        assert!(out.contains("/var/log/aether/aether-audit.log"), "应含来源路径");
+        assert!(out.contains("总条数：7"), "{out}");
+        assert!(out.contains("被拒绝：2"), "{out}");
+        assert!(out.contains("无法解析：3"), "解析失败数必须如实导出：{out}");
+        assert!(out.contains("system_power"), "应含具体记录");
+        assert!(out.contains("被拒绝"), "应标出被拒绝的条目");
+        // 原始秒必须原样出现在导出里（机器可读那一列由格式保证）
+        assert!(out.contains("1000"), "应含原始时间戳：{out}");
+
+        // 空记录也要能导出（导出"什么都没有"是有用信息，不是错误）
+        let empty = AuditInfo { exists: false, ..AuditInfo::default() };
+        let out2 = export_text(&empty, 0);
+        assert!(out2.contains("没有记录"), "{out2}");
+        assert!(out2.contains("文件存在：否"), "{out2}");
+    }
+
 }
