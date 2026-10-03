@@ -347,6 +347,52 @@ const TRUSTED_CHANNEL_TOOLS: &[&str] = &[
     "system_power",
 ];
 
+/// 本地策略 ↔ 线上策略的转换（**只此一处**，成对写在一起）。
+///
+/// 分散成多处 match 迟早会漏一个分支，而漏掉的那个分支的表现是
+/// "设了不生效"或更糟：把 `Deny` 变成 `Default`（等于悄悄放宽）。
+pub fn wire_of(p: crate::policy::ToolPolicy) -> aether_ipc::ToolPolicyWire {
+    use crate::policy::ToolPolicy as P;
+    match p {
+        P::Default => aether_ipc::ToolPolicyWire::Default,
+        P::Ask => aether_ipc::ToolPolicyWire::Ask,
+        P::Allow => aether_ipc::ToolPolicyWire::Allow,
+        P::Deny => aether_ipc::ToolPolicyWire::Deny,
+    }
+}
+
+pub fn policy_of(w: aether_ipc::ToolPolicyWire) -> crate::policy::ToolPolicy {
+    use aether_ipc::ToolPolicyWire as W;
+    match w {
+        W::Default => crate::policy::ToolPolicy::Default,
+        W::Ask => crate::policy::ToolPolicy::Ask,
+        W::Allow => crate::policy::ToolPolicy::Allow,
+        W::Deny => crate::policy::ToolPolicy::Deny,
+    }
+}
+
+/// 该工具名是否在注册表里。
+///
+/// 写入策略前**必须**过这一关：否则打字错误会留下一条谁也看不见的死配置，
+/// 而用户会以为自己已经禁掉了某个东西。
+pub fn is_known_tool(name: &str) -> bool {
+    registry().iter().any(|t| t.name == name)
+}
+
+/// 编辑器要的全部工具（名字 + 等级 + 当前策略），按注册表顺序。
+pub fn policy_entries(
+    p: &crate::policy::Policy,
+) -> Vec<aether_ipc::PolicyEntryWire> {
+    registry()
+        .iter()
+        .map(|t| aether_ipc::PolicyEntryWire {
+            tool: t.name.to_string(),
+            level: t.level as u8,
+            policy: wire_of(p.get(t.name)),
+        })
+        .collect()
+}
+
 /// 按名字查询该工具是否需要可信通道（`agent_run` 与 `server::ToolCall` 共用同一条判定）。
 pub fn requires_trusted_channel(name: &str) -> bool {
     TRUSTED_CHANNEL_TOOLS.contains(&name)
@@ -1950,4 +1996,58 @@ mod tests {
         );
         assert!(r.is_err(), "不存在的条目应报错");
     }
+    /// §5.3：**每个注册表里的工具都要能在编辑器里看到**。
+    ///
+    /// 漏掉一个工具的表现是"这个工具改不了策略"，而用户不知道是自己没找到、
+    /// 还是这个工具本来就不支持 —— 那种模糊状态最难查。
+    #[test]
+    fn every_registered_tool_shows_up_in_the_policy_editor() {
+        let p = crate::policy::Policy::default();
+        let entries = policy_entries(&p);
+        assert_eq!(
+            entries.len(),
+            registry().len(),
+            "编辑器列出的工具数与注册表不一致"
+        );
+        for t in registry() {
+            assert!(
+                entries.iter().any(|e| e.tool == t.name),
+                "工具 {} 没有出现在策略编辑器里",
+                t.name
+            );
+        }
+        // 等级要照实带出来（界面按它显示风险）
+        for e in &entries {
+            assert!(e.level <= 3, "等级越界：{} 是 {}", e.tool, e.level);
+        }
+    }
+
+    /// 转换必须**成对**：任何策略经过线上再回来都是它自己（漏一个分支就会"设了不生效"）。
+    #[test]
+    fn wire_conversion_is_a_round_trip() {
+        use crate::policy::ToolPolicy as P;
+        for p in [P::Default, P::Ask, P::Allow, P::Deny] {
+            assert_eq!(policy_of(wire_of(p)), p, "{p:?} 的转换不是成对的");
+        }
+    }
+
+    /// 当前策略要如实带进列表（否则界面永远显示"按等级"，用户以为设置没保存）。
+    #[test]
+    fn policy_entries_reflect_the_current_policy() {
+        let mut p = crate::policy::Policy::default();
+        let first = registry()[0].name;
+        p.set(first, crate::policy::ToolPolicy::Deny);
+        let entries = policy_entries(&p);
+        let e = entries.iter().find(|e| e.tool == first).expect("应有该工具");
+        assert_eq!(e.policy, aether_ipc::ToolPolicyWire::Deny);
+    }
+
+    #[test]
+    fn unknown_tool_names_are_rejected() {
+        assert!(is_known_tool("read_file"));
+        for bad in ["", "read_file ", "READ_FILE", "../etc/passwd", "不存在的工具"] {
+            assert!(!is_known_tool(bad), "不该认为 {bad:?} 是已知工具");
+        }
+    }
+
 }

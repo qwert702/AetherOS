@@ -563,6 +563,86 @@ fn handle_request(
                 ),
             }]
         }
+        Request::GetPolicy => {
+            // 策略决定"什么能自动执行"，读它就知道系统的安全边界长什么样（侦察信息）——
+            // 与"写系统设置"同一门槛：必须是已注册的 UI 通道。
+            if !*is_ui {
+                audit_or_warn(gate, "get_policy", Level::L0, verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝读取权限策略：本连接未注册为 UI 通道");
+                return vec![Response::Error {
+                    code: 403,
+                    message: "读取权限策略必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let entries = crate::tools::policy_entries(&gate.policy_snapshot());
+            eprintln!("[aetherd] 权限策略已读取（{} 个工具）", entries.len());
+            vec![Response::PolicyList { entries }]
+        }
+        Request::SetToolPolicy { tool, policy } => {
+            if !*is_ui {
+                audit_or_warn(gate, "set_tool_policy", Level::L1, verdict::REJECTED_NO_UI);
+                eprintln!("[aetherd] 拒绝写权限策略：本连接未注册为 UI 通道");
+                return vec![Response::Error {
+                    code: 403,
+                    message: "写权限策略必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            // **未知工具一律拒绝**：允许写不存在的名字会留下死配置 ——
+            // 用户以为禁掉了某个东西，其实没有，而且他没有任何办法看出来。
+            if !crate::tools::is_known_tool(&tool) {
+                let args = serde_json::json!({ "tool": &tool, "policy": policy });
+                if let Err(e) =
+                    gate.audit_call("set_tool_policy", Level::L1, &args, verdict::FAILED)
+                {
+                    eprintln!("[aetherd] 审计日志写入失败: {e}");
+                }
+                eprintln!("[aetherd] 拒绝写权限策略：未知工具「{tool}」");
+                return vec![Response::PolicyAck {
+                    tool,
+                    ok: false,
+                    message: "未知工具：策略不会写入（否则会留下看不见的死配置）".into(),
+                }];
+            }
+            let local = crate::tools::policy_of(policy);
+            let args = serde_json::json!({ "tool": &tool, "policy": local.label() });
+            let path = std::path::Path::new(crate::policy::POLICY_PATH);
+            match gate.set_tool_policy(&tool, local, path) {
+                Ok(()) => {
+                    if let Err(e) =
+                        gate.audit_call("set_tool_policy", Level::L1, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!(
+                        "[aetherd] 权限策略已更新：{tool} → {}（已写入 {}）",
+                        local.label(),
+                        path.display()
+                    );
+                    // 先拼消息再移动 `tool`（结构体字段的求值顺序会让 `tool` 先被移走）
+                    let message = format!("{} 已设为「{}」", tool, local.label());
+                    vec![Response::PolicyAck {
+                        tool,
+                        ok: true,
+                        message,
+                    }]
+                }
+                Err(e) => {
+                    // **写盘失败必须如实报**：显示"已保存"而其实没写下去，
+                    // 是最难查的一类问题（重启后设置没了，用户只能怀疑自己）。
+                    if let Err(e2) =
+                        gate.audit_call("set_tool_policy", Level::L1, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 权限策略写入失败：{tool} —— {e}");
+                    vec![Response::PolicyAck {
+                        tool,
+                        ok: false,
+                        message: format!("写入失败（设置未生效）：{e}"),
+                    }]
+                }
+            }
+        }
         Request::SetSetting { key, value } => {
             // 写系统设置与"服务控制"同一门槛：**必须**由已注册的 UI 通道发起。
             //

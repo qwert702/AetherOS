@@ -232,10 +232,6 @@ impl Gate {
     }
 
     /// 当前策略的快照（给界面读取）。
-    ///
-    /// （消费者是下一批的 IPC/设置页；在那之前只有测试用它 —— 这个 allow 是**有期限的**，
-    /// 接线那一批应当删掉。前几批的同类 allow 都是这么处理的。）
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn policy_snapshot(&self) -> crate::policy::Policy {
         self.policy.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -244,8 +240,6 @@ impl Gate {
     ///
     /// **存盘失败必须报出来**：用户改完看到"已保存"而其实没写下去，
     /// 是最难查的一类问题（重启后设置没了，用户只能怀疑自己）。
-    /// （消费者是下一批的 IPC/设置页；同上，allow 是有期限的。）
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_tool_policy(
         &self,
         tool: &str,

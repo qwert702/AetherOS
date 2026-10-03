@@ -98,6 +98,45 @@ pub enum Request {
         key: SettingKey,
         value: String,
     },
+    /// 读取逐工具权限策略（§5.3 权限策略编辑器）。
+    ///
+    /// 只允许已注册的 UI 通道：策略决定"什么能自动执行"，能读它就知道系统的
+    /// 安全边界长什么样（属于侦察信息）。
+    GetPolicy,
+    /// 设置某个工具的策略。**工具名必须存在于注册表**（服务端会校验）——
+    /// 允许写入不存在的工具名会留下"死配置"：用户以为禁了某个东西，其实没有。
+    SetToolPolicy {
+        tool: String,
+        policy: ToolPolicyWire,
+    },
+}
+
+/// 策略的**线上表示**（四态，与 aetherd 的 `ToolPolicy` 一一对应）。
+///
+/// 为什么不直接复用 aetherd 的类型：`aether-ipc` 是共享协议 crate，
+/// 不该依赖服务端实现。转换写在一处并有测试保证成对。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPolicyWire {
+    /// 按等级闸门（未设置时的状态）
+    Default,
+    /// 每次询问（连 L0 也问）
+    Ask,
+    /// 允许（受等级上限与"L3 永不自动放行"约束）
+    Allow,
+    /// 禁止（优先于一切）
+    Deny,
+}
+
+/// 编辑器要的一行：工具名 + 等级 + 当前策略。
+///
+/// 只带**原始数据**，不带展示文案 —— 文案与语言属于界面（i18n 在那边）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyEntryWire {
+    pub tool: String,
+    /// 等级 0~3（L0 只读 … L3 危险）。
+    pub level: u8,
+    pub policy: ToolPolicyWire,
 }
 
 /// 允许的 DNS 服务器数量上限。
@@ -207,6 +246,16 @@ pub enum Response {
     /// 而不是空话 —— 设置页要把它原样显示给用户。
     SettingAck {
         key: String,
+        ok: bool,
+        message: String,
+    },
+    /// 策略列表（`Request::GetPolicy` 的应答）。
+    PolicyList {
+        entries: Vec<PolicyEntryWire>,
+    },
+    /// 策略写入回执（`Request::SetToolPolicy` 的应答）。
+    PolicyAck {
+        tool: String,
         ok: bool,
         message: String,
     },
@@ -680,6 +729,33 @@ mod tests {
             assert!(r.is_err(), "{bad:?}（{why}）应被拒绝");
             assert!(!r.unwrap_err().is_empty(), "{bad:?} 的理由不能为空");
         }
+    }
+
+    #[test]
+    fn tool_policy_wire_round_trips_and_matches_serde_names() {
+        for (p, name) in [
+            (ToolPolicyWire::Default, "default"),
+            (ToolPolicyWire::Ask, "ask"),
+            (ToolPolicyWire::Allow, "allow"),
+            (ToolPolicyWire::Deny, "deny"),
+        ] {
+            let json = serde_json::to_string(&p).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<ToolPolicyWire>(&json).unwrap(), p);
+        }
+        // 不认识的值必须解码失败（否则会静默退回默认，把"禁了"变成"按等级"）
+        assert!(serde_json::from_str::<ToolPolicyWire>("\"maybe\"").is_err());
+    }
+
+    #[test]
+    fn policy_entry_round_trips() {
+        let e = PolicyEntryWire {
+            tool: "system_power".to_string(),
+            level: 3,
+            policy: ToolPolicyWire::Deny,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert_eq!(serde_json::from_str::<PolicyEntryWire>(&json).unwrap(), e);
     }
 
 }
