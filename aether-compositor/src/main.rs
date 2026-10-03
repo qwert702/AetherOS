@@ -4788,4 +4788,37 @@ mod wayland_sync_tests {
         assert_eq!(n.len(), 2, "清未读不该删历史");
     }
 
+    /// 自查补强：控制中心的**行距必须来自布局常量**，不能是硬编码数字。
+    ///
+    /// 为什么需要这条（而不是原来那条"高度公式自洽"的测试）：原来那条两边都从同一组
+    /// 常量推导，是**同义反复** —— 它挡不住"在绘制里加了一行、却忘了改行数常量"。
+    /// 实测过：修这条之前绘制实际比公式高 4px，而那条测试照样通过。
+    ///
+    /// 用 `include_str!` 在编译期嵌入源码来扫（不做运行期文件 IO）。
+    #[test]
+    fn control_center_row_advances_come_from_layout_constants() {
+        let src = include_str!("draw.rs");
+        let start = src.find("fn draw_control_center(").expect("找不到控制中心绘制函数");
+        let end = src[start..]
+            .find("/// 展开中的下拉菜单")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let body = &src[start..end];
+        for bad in ["y += 36;", "y += 32;", "y += 40;", "y += 34;"] {
+            assert!(
+                !body.contains(bad),
+                "控制中心里还有硬编码行距 `{bad}` —— 高度公式与绘制会不一致（加一行就会忘）"
+            );
+        }
+        // 同时要求它**确实**用了常量（否则把行距删了也能过上面那条）
+        assert!(
+            body.contains("control_layout::ROW_H_SWITCH"),
+            "开关行距应来自 control_layout::ROW_H_SWITCH"
+        );
+        assert!(
+            body.contains("control_layout::ROW_H_ACTION"),
+            "动作行距应来自 control_layout::ROW_H_ACTION"
+        );
+    }
+
 }

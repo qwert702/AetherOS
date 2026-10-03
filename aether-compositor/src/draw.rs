@@ -2032,7 +2032,7 @@ impl Renderer {
         let s0 = knob(r0);
         widgets::switch(buf, w, h, s0, self.settings.dark_mode, widgets::States::at(s0, ui.mouse));
         self.control_hits.push((s0, ControlHit::ToggleDark));
-        y += 36;
+        y += control_layout::ROW_H_SWITCH;
 
         // ③ 中文输入法
         let r1 = row(y);
@@ -2040,7 +2040,7 @@ impl Renderer {
         let s1 = knob(r1);
         widgets::switch(buf, w, h, s1, self.ime_on, widgets::States::at(s1, ui.mouse));
         self.control_hits.push((s1, ControlHit::ToggleIme));
-        y += 36;
+        y += control_layout::ROW_H_SWITCH;
 
         // ③ 24 小时制
         let r2 = row(y);
@@ -2048,7 +2048,7 @@ impl Renderer {
         let s2 = knob(r2);
         widgets::switch(buf, w, h, s2, self.settings.clock_24h, widgets::States::at(s2, ui.mouse));
         self.control_hits.push((s2, ControlHit::ToggleClock24h));
-        y += 40;
+        y += control_layout::ROW_H_SWITCH;
 
         // ④ 快捷跳转
         widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
@@ -2071,7 +2071,7 @@ impl Renderer {
             let r = row(y);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, hit));
-            y += 32;
+            y += control_layout::ROW_H_ACTION;
         }
 
         // ⑤ 音量（批次 K-2）
@@ -2121,7 +2121,7 @@ impl Renderer {
             let r = row(y);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, hit));
-            y += 32;
+            y += control_layout::ROW_H_ACTION;
         }
         tr.draw(
             buf, w, h,
