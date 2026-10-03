@@ -908,3 +908,55 @@ exit=0
 ---
 
 *本报告由代码审查 + 运行时实证生成。所有发现均给出 `文件:行号`；标注"未验证"的结论不得当作事实使用。*
+
+---
+
+## 附录 H：残余发现的处置（2026-10-03，批次 S-1~S-3）
+
+> 本附录的规矩：**逐条对着代码核**，而不是对着附录 D.2 的结论抄。
+> 核对中发现 D.2 有多条已过时 —— 记在下面，避免后来者重复劳动。
+
+### H.1 核对结论：D.2 里已过时的三条（代码已修，报告未更新）
+
+| D.2 编号 | 报告当时写的 | 代码实况（本次核对） |
+|---|---|---|
+| #14 Unix socket 失败静默降级 TCP | ❌ 未修 | **已修**：`aetherd/src/server.rs` 建 socket 失败即 `exit(EXIT_UNIX_SOCKET_UNAVAILABLE)`；只有显式 `AETHER_ALLOW_TCP_ONLY=1`（开发机调试）才降级，且日志明说"仅提供 TCP 通道" |
+| #15 `audit_args` 字段白名单默认放行 | ⚠️ 部分修 | **已修**：`aetherd/src/tools.rs::audit_args` 注释明写"**默认脱敏**，而不是点名脱敏"，并有 `audit_args_redacts_unknown_string_fields_by_default` 用例 |
+| #18 仓库无 CI | ❌ 未修 | **已建**：`.github/workflows/ci.yml`（ubuntu + windows 双平台跑 `gates.py --online`，Linux 任务额外跑 `cargo test`）；文件头如实写明"本工作流在本地无法验证" |
+
+### H.2 本轮实际修复（三个提交）
+
+| 批次 | 对应发现 | 提交 | 改了什么 |
+|---|---|---|---|
+| S-1 | #12 `fsck` fail-open | `230f01d` | 判定抽成纯函数 `fsck_verdict`；**fail-open 只剩"镜像确实没这工具"一种**；"工具在但执行失败/被信号杀死"改为 fail-closed；"跳过检查"措辞改为"**未检查**，非通过" |
+| S-2 | M-17 残余（aetherd 侧无 `SO_PEERCRED`） | `d5ae35e` | 判据放进 `aether-ipc`（**在 musl 检查范围内**，于是 Linux 代码真的被编译验证）；aetherd 与 aether-init **统一到同一判据**（原先是 `uid == 0` vs `uid == 0 \|\| uid == getuid()` 两处写法） |
+| S-3 | #17 H-6 校验**时机**只能靠人工审查 | `d1f97dd` | 新增源码扫描式测试：断言三道门（`--yes` 确认 / isohybrid 前提 / 不得自读自写）在源码里出现在 `dd` **之前**；回滚顺序即变红 |
+
+### H.3 S-2 的过程记录：一个只有 musl 检查能发现的坑
+
+S-2 最初用标准库 `UnixStream::peer_cred()` 实现（我以为 1.70 起已稳定）。
+Windows 编译不到这段 `cfg(unix)` 代码，**`cargo test` 全绿**；
+是 **musl 静态检查**当场报出：
+
+```
+error[E0658]: use of unstable library feature `peer_credentials_unix_socket`
+```
+
+它在 rustc 1.98 上**仍未稳定**。若没有这条门禁，提交上去的就是一个
+"Windows 测试全过、Linux 根本编译不过"的改动 —— 而这恰好就是 D.2 第 18 条
+（无 CI ⇒ Linux 断言从不执行）所要防的事。**这是本轮最有价值的一条记录。**
+
+### H.4 仍然未处理（如实列出，不含糊）
+
+| 编号 | 发现 | 为什么没做 |
+|---|---|---|
+| #13 | **H-3 身份判据可伪造**（高危，前提 = 能预置介质） | 需要**安装器 + init 联合改造**：装机时把分区 UUID/凭据写到只读启动介质，init 侧比对。属设计级改动，本批不做 |
+| #17 残余 | `O_NOFOLLOW` 开关回滚不变红 | 需要构造"符号链接被预置"的测试环境（受控临时目录 + 竞态），未做 |
+| #16 | M-13 括号粘贴在 guest 的实际行为 | **必须真机/虚拟机验证**（busybox ash 是否发 DECSET 2004），本机无法做 |
+| L-11 | `scripts/` 目录 ACL 过宽 | **宿主环境问题**（Windows ACL），仓库里改不了，需在机器上 `icacls` 收紧 |
+
+### H.5 未实机验证（与附录 B 一致，本轮新增）
+
+* fsck 在真机上失败/工具缺失的实际行为（本机无 ext4 持久分区）
+* 陌生 uid 连接被拒的实际行为（本机无 unix socket 对端可造）
+* 真机装机流程（S-3 只加测试，不改行为）
