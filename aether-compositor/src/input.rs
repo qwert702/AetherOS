@@ -35,6 +35,9 @@ pub struct Mods {
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
+    /// Super/Win/Command 键（evdev 的 Meta）。锁屏快捷键 `Super+L` 需要它 ——
+    /// 在此之前这层状态根本不存在，所以那类快捷键**不可能实现**（不是没写，是没这个信息）。
+    pub meta: bool,
 }
 
 /// 导航/功能键（不产生字符的那些）。
@@ -57,6 +60,8 @@ pub enum NavKey {
 pub enum UiEvent {
     /// 可打印字符（英文/符号直接进 AI 指令条，与预览版一致）
     Char(char),
+    /// Super（Win/Cmd）+ 字母，已转小写。用于 `Super+L` 锁屏这类全局快捷键。
+    Super(char),
     Enter,
     Backspace,
     Escape,
@@ -107,6 +112,9 @@ const KEY_0: u16 = 11;
 const KEY_LEFTCTRL: u16 = 29;
 const KEY_LEFTSHIFT: u16 = 42;
 const KEY_LEFTALT: u16 = 56;
+/// Super/Win 键（evdev 里叫 Meta）。
+const KEY_LEFTMETA: u16 = 125;
+const KEY_RIGHTMETA: u16 = 126;
 const KEY_RIGHTCTRL: u16 = 97;
 const KEY_RIGHTALT: u16 = 100;
 const KEY_RIGHTSHIFT: u16 = 54;
@@ -214,6 +222,10 @@ fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
                         mods.shift = down;
                         true
                     }
+                    KEY_LEFTMETA | KEY_RIGHTMETA => {
+                        mods.meta = down;
+                        return vec![];
+                    }
                     KEY_LEFTALT | KEY_RIGHTALT => {
                         mods.alt = down;
                         true
@@ -249,6 +261,14 @@ fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
             let Some(base) = key_char(raw.code) else {
                 return vec![];
             };
+            if mods.meta {
+                // Super+字母 → 组合键（与 Ctrl 同样只认字母，避免漏出散字）
+                return if base.is_ascii_alphabetic() {
+                    vec![UiEvent::Super(base.to_ascii_lowercase())]
+                } else {
+                    vec![]
+                };
+            }
             if mods.ctrl {
                 // Ctrl+字母 → 组合键；Ctrl+其他不产生字符（否则会漏出 ';' 之类的散字）
                 return if base.is_ascii_alphabetic() {
@@ -488,7 +508,7 @@ mod tests {
     #[test]
     fn ctrl_shift_is_reported_separately() {
         // Ctrl+Shift+C 与 Ctrl+C 必须是**不同的**事件：前者是"复制"，后者是"中断"
-        let mut m = Mods { ctrl: true, shift: true, alt: false };
+        let mut m = Mods { ctrl: true, shift: true, ..Default::default() };
         assert_eq!(
             translate(&ev(EV_KEY, 46, 1), &mut m),
             vec![UiEvent::Ctrl('c', true)]
@@ -548,4 +568,37 @@ mod tests {
         translate(&ev(EV_KEY, KEY_LEFTALT, 1), &mut m);
         assert!(translate(&ev(EV_KEY, 30, 1), &mut m).is_empty());
     }
+    /// evdev 的 L 键码。模块顶层只定义用得到的几个键 —— 这里自带一个，
+    /// 避免为了测试在生产代码里加一个恒不被使用的常量（那会触发死代码警告）。
+    const KEY_L: u16 = 38;
+
+    /// Super+L 的前置：Meta 状态必须被跟踪，且 Super+字母产出 `Super` 事件。
+    ///
+    /// 在这条之前，输入层**完全不认识 Meta 键** —— 于是"锁屏快捷键"这类需求
+    /// 在实现层面就是不可能的（不是没写，是没有这个信息）。
+    #[test]
+    fn super_key_is_tracked_and_produces_events() {
+        let mut m = Mods::default();
+        assert!(translate(&ev(EV_KEY, KEY_LEFTMETA, 1), &mut m).is_empty());
+        assert!(m.meta, "Meta 状态应被记住");
+        // Super+L → Super('l')，且**不能**退化成一个 'l' 字符
+        assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m), vec![UiEvent::Super('l')]);
+        // 松开 Meta 后恢复普通字符
+        assert!(translate(&ev(EV_KEY, KEY_LEFTMETA, 0), &mut m).is_empty());
+        assert!(!m.meta);
+        assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m), vec![UiEvent::Char('l')]);
+    }
+
+    /// Super+非字母不该漏出字符（与 Alt 一致：**不能退化成普通字符**）；右 Meta 同理。
+    #[test]
+    fn super_with_non_letter_does_not_leak_a_char() {
+        let mut m = Mods::default();
+        translate(&ev(EV_KEY, KEY_LEFTMETA, 1), &mut m);
+        assert!(translate(&ev(EV_KEY, KEY_1, 1), &mut m).is_empty());
+        let mut m2 = Mods::default();
+        translate(&ev(EV_KEY, KEY_RIGHTMETA, 1), &mut m2);
+        assert!(m2.meta, "右 Meta 也应算 Meta");
+        assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m2), vec![UiEvent::Super('l')]);
+    }
+
 }

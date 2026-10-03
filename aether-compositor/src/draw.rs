@@ -1461,6 +1461,9 @@ pub struct Renderer {
     /// 「网络」页的 DNS 输入框状态（§2.4）。**不放进 `Settings`**：
     /// 那个结构会被序列化落盘，而这个只是编辑期的临时状态（含光标与未提交文本）。
     pub dns: crate::settings::DnsField,
+    /// 锁屏状态（§2.3）。放在 Renderer 里是因为"锁"影响**每一帧的绘制**
+    /// （整屏遮罩），而不只是某个页面。
+    pub lock: crate::lock::LockScreen,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1516,6 +1519,69 @@ pub struct Renderer {
     pub confirm_echo: Rect,
 }
 
+/// 锁屏遮罩（§2.3）。
+///
+/// 设计要点：
+/// * **整屏压暗**：不透明就不叫锁屏 —— 但纯黑会让人以为死机，用高不透明度而非全黑；
+/// * **不画任何界面内容**（窗口标题、dock、通知都不画）—— 锁屏的意义就是「看不到」；
+/// * 提示语如实显示：拒绝理由、退避倒计时、以及「本镜像未设口令」这种**必须让人知道**的事。
+fn draw_lock_screen(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    lock: &crate::lock::LockScreen,
+    tr: Option<&TextRenderer>,
+) {
+    use crate::draw::theme::color;
+    fill_rect(
+        buf,
+        w,
+        h,
+        Rect { x: 0, y: 0, w: w as i32, h: h as i32 },
+        color::scrim(),
+        color::scrim_alpha(),
+    );
+    let Some(tr) = tr else { return };
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
+    let title = "已锁定";
+    let tw = tr.measure(title, font::TITLE);
+    tr.draw_bold(buf, w, h, cx - tw / 2.0, cy - 90.0, title, font::TITLE, color::text(), 0.95);
+
+    // 口令框：掩码 + 光标（与设置页的输入框同一视觉语言）
+    let shown = format!("{}▏", lock.masked());
+    let box_w = 360.0f32.min(w as f32 - 80.0);
+    let bx = cx - box_w / 2.0;
+    let by = cy - 20.0;
+    fill_rect(
+        buf,
+        w,
+        h,
+        Rect { x: bx as i32, y: by as i32, w: box_w as i32, h: 44 },
+        color::inset(),
+        0.95,
+    );
+    let sw = tr.measure(&shown, font::BODY);
+    tr.draw(
+        buf, w, h, cx - sw / 2.0, by + 12.0, &shown, font::BODY,
+        if lock.is_empty() { color::text_dim() } else { color::text() },
+        if lock.is_empty() { 0.5 } else { 0.95 },
+    );
+
+    let hint = lock
+        .message()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "输入口令后回车解锁".to_string());
+    let hw = tr.measure(&hint, font::CAPTION);
+    tr.draw(buf, w, h, cx - hw / 2.0, by + 60.0, &hint, font::CAPTION, color::text_dim(), 0.9);
+
+    if lock.attempts() > 0 {
+        let n = format!("已尝试 {} 次", lock.attempts());
+        let nw = tr.measure(&n, font::CAPTION);
+        tr.draw(buf, w, h, cx - nw / 2.0, by + 84.0, &n, font::CAPTION, color::text_dim(), 0.7);
+    }
+}
+
 impl Renderer {
     pub fn new(w: usize, h: usize) -> Self {
         Self {
@@ -1532,6 +1598,7 @@ impl Renderer {
             settings: crate::settings::Settings::default(),
             settings_page: crate::settings::first_enabled_page(),
             dns: Default::default(),
+        lock: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -1780,6 +1847,15 @@ impl Renderer {
             draw_toast(buf, w, h, msg, age, tr);
         }
         mark!("toast");
+
+        // 锁屏遮罩：**最后一个画**（盖住 toast、回复气泡、控制中心、甚至安装向导）。
+        // 理由不是"层级美学"，而是**隐私**：锁屏若留着通知可见，
+        // 「张三给你发了消息」就直接外泄了 —— 边界会漏在最容易被忽略的地方。
+        // 解锁后本块不执行，下一帧自然恢复（无残留、无需重绘全屏）。
+        if self.lock.is_locked() {
+            draw_lock_screen(buf, w, h, &self.lock, tr);
+            mark!("lock");
+        }
         // 计时关闭时最后一次赋值不会被读到，显式消费以免 dead-code 警告
         let _ = tmark;
     }

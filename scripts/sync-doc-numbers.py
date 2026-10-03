@@ -125,8 +125,11 @@ def sync_once(dry: bool) -> int:
             for i, l in enumerate(lines):
                 if not l.startswith("|") or leaf not in l:
                     continue
-                if f"({old_n})" in l:
-                    lines[i] = l.replace(f"({old_n})", f"({new_n})")
+                # 括号里可能还有说明（形如 `(551, 键位翻译跨平台)`），
+                # 所以不能只找 `(551)` —— 这是本轮实际踩到的坑。
+                pat = re.compile(r"\(" + re.escape(old_n) + r"(\s*,[^)]*)?\)")
+                if pat.search(l):
+                    lines[i] = pat.sub(lambda m: f"({new_n}{m.group(1) or ''})", l, count=1)
                     hit = True
                 else:
                     mm = re.match(r"^(\| `[^`]*" + re.escape(leaf) + r"` \| )([\d,]+)( \|.*)$", l)

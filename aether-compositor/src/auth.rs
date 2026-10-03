@@ -6,10 +6,12 @@
 //!
 //! ## 三条诚实设计
 //!
+// 生产消费者是**锁屏的 Linux 路径**（`LockScreen::submit` 读 `/etc/shadow`）。
+// 在非 Linux（开发机）上只有测试用到它 —— 这与仓库里 `control_service` 的写法一致：
+// 用按平台的 allow 表达「这些代码只在目标平台上被生产代码调用」，而不是笼统豁免。
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 // 与 `sha512crypt` 同样的情况：调用它的**界面**（登录/锁屏）在同一批的后续提交里接线。
 // 这个 `allow` 是**有期限的**，不是长期豁免 —— 界面接线时应删掉。
-#![cfg_attr(not(test), allow(dead_code))]
-
 //! 1. **没有口令 ≠ 拒绝**。Live 演示镜像默认不设口令（审计 M-4）。
 //!    锁屏若因为"没口令"而拒绝解锁，用户会被永久关在门外 —— 那是把
 //!    "安全默认"做成了自伤。正确做法是：**放行，但在界面上说清楚**
@@ -55,10 +57,6 @@ pub struct Lockout {
 }
 
 impl Lockout {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// 已经失败了几次。
     pub fn fails(&self) -> u32 {
         self.fails
@@ -106,12 +104,6 @@ pub enum Decision {
     Deny(String),
     /// 退避中：还要等 `secs` 秒。**此时根本不去比对口令**（否则等于免费给出比对次数）。
     Wait(u64),
-}
-
-impl Decision {
-    pub fn is_allow(&self) -> bool {
-        matches!(self, Decision::Allow | Decision::AllowWithReason(_))
-    }
 }
 
 /// 从 `/etc/shadow` 文本里取某账户的口令项。
@@ -263,7 +255,7 @@ mod tests {
 
     #[test]
     fn lockout_blocks_retries_until_the_wait_elapses() {
-        let mut lk = Lockout::new();
+        let mut lk = Lockout::default();
         assert_eq!(lk.retry_after(100), 0);
         // 三次免费失败
         for _ in 0..FREE_ATTEMPTS {
@@ -283,7 +275,7 @@ mod tests {
     /// 退避中**根本不去比对口令**（否则指数退避形同虚设）。
     #[test]
     fn waiting_short_circuits_before_any_password_comparison() {
-        let mut lk = Lockout::new();
+        let mut lk = Lockout::default();
         for _ in 0..(FREE_ATTEMPTS + 1) {
             lk.on_failure(1000);
         }
@@ -305,10 +297,13 @@ mod tests {
     /// 没有口令 → **放行但带理由**（锁屏不能因为"没口令"把机主关在门外）。
     #[test]
     fn no_password_allows_with_an_honest_reason() {
-        let mut lk = Lockout::new();
+        let mut lk = Lockout::default();
         for entry in [ShadowEntry::NoPassword, ShadowEntry::Missing] {
             let d = decide(&entry, "", &mut lk, 0);
-            assert!(d.is_allow(), "{entry:?} 应放行，实得 {d:?}");
+            assert!(
+                matches!(d, Decision::Allow | Decision::AllowWithReason(_)),
+                "{entry:?} 应放行，实得 {d:?}"
+            );
             match d {
                 Decision::AllowWithReason(r) => {
                     assert!(!r.is_empty(), "必须给出可显示的理由");
@@ -324,7 +319,7 @@ mod tests {
 
     #[test]
     fn wrong_password_denies_and_counts_but_scheme_errors_do_not() {
-        let mut lk = Lockout::new();
+        let mut lk = Lockout::default();
         let ok = ShadowEntry::Hash(
             "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(),
         );
@@ -344,7 +339,7 @@ mod tests {
 
     #[test]
     fn expired_account_is_denied() {
-        let mut lk = Lockout::new();
+        let mut lk = Lockout::default();
         let d = decide(&ShadowEntry::Expired, "hello", &mut lk, 0);
         assert!(matches!(d, Decision::Deny(_)));
         assert_eq!(lk.fails(), 0, "过期不是用户手误，不该计入失败");
@@ -353,7 +348,7 @@ mod tests {
     /// UUID 那句测试占位：失败计入只针对"口令不正确"，不针对其它错误。
     #[test]
     fn only_wrong_password_is_counted() {
-        let mut lk = Lockout::new();
+        let mut lk = Lockout::default();
         let bad_fmt = ShadowEntry::Hash("$6$".to_string());
         for _ in 0..5 {
             let _ = decide(&bad_fmt, "x", &mut lk, 0);

@@ -39,6 +39,7 @@ mod widgets;
 /// 用户设置的持久化与声明（P3 设置中心）：`/var/lib/aether/settings.json`。
 mod settings;
 mod auth;
+mod lock;
 mod sha512crypt;
 /// 网络状态（P4.2 设置中心「网络」页）：读内核真值（/sys/class/net、/proc/net/*），不新增 IPC。
 mod net;
@@ -407,6 +408,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
             }
+            // §2.3：**锁屏时吞掉所有输入** —— 这是「锁屏」的定义。
+            // 只处理解锁需要的键，其余（鼠标、快捷键、导航、设置页输入）一律丢弃：
+            // 否则锁屏就只是「盖了一层图」，后面的窗口照样能被点到。
+            // 放在 match 之前、且排在 DNS 守卫之前：锁着的时候一切输入都归锁屏。
+            if renderer.lock.is_locked() {
+                handle_lock_key(&mut renderer.lock, &ev);
+                continue;
+            }
             // §2.4：设置页正在编辑 DNS 时，**键盘事件先给输入框**。
             // 放在 match 之前而不是改 4 个分支（Char/Backspace/Escape/Enter）：
             // 改 4 处就有 4 处出错机会，守卫只有一处。
@@ -466,6 +475,19 @@ fn run_fbdev() -> anyhow::Result<()> {
                     if !was_drag {
                         click_pending = true;
                     }
+                }
+                input::UiEvent::Super('l') => {
+                    // §2.3：Super+L 锁屏。**这是全局快捷键**，所以放在事件匹配里、
+                    // 走的是与其它输入同一条路径 —— 不再是"某个页面里的按钮"。
+                    renderer.lock.lock();
+                    tty_log("锁屏（Super+L）");
+                }
+                input::UiEvent::Super(c) => {
+                    // 其它 Super 组合暂未映射。**必须显式吃掉**，原因有两个：
+                    // 1) 不处理会让这个 match 不再穷尽（Linux 编译不过 —— 本地 Windows
+                    //    构建看不到这段代码，是 musl 静态检查抓出来的）；
+                    // 2) Super+字母若退回成普通字符，全局键就会漏成输入内容。
+                    let _ = c;
                 }
                 input::UiEvent::Char(c) => {
                     // Ctrl+Space 在 evdev 侧通常落成 NUL —— 用它当中英切换键。
@@ -4095,6 +4117,27 @@ fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether
         };
         let _ = tx.send(ev);
     });
+}
+
+/// 锁屏期间的按键处理：**只认解锁需要的键**，其余一律丢弃。
+///
+/// 放在 Linux 门后：唯一调用点在 fbdev 事件循环里（与锁屏本身同一条路径）。
+#[cfg(target_os = "linux")]
+fn handle_lock_key(lock: &mut crate::lock::LockScreen, ev: &input::UiEvent) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match ev {
+        input::UiEvent::Char(c) => lock.insert(*c),
+        input::UiEvent::Backspace => lock.backspace(),
+        input::UiEvent::Enter => {
+            lock.submit(crate::lock::LOCK_USER, now);
+        }
+        // Esc 只清空输入、**不解锁**（有人把 Esc 当"取消锁定"，那等于没锁）
+        input::UiEvent::Escape => lock.clear(),
+        _ => {}
+    }
 }
 
 /// DNS 输入框的键盘处理。返回 `true` = **已消费**该事件（调用方应跳过其余处理）。

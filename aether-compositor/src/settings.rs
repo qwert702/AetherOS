@@ -442,20 +442,6 @@ impl DnsField {
         self.cursor.backspace(&mut self.text)
     }
 
-    pub fn delete(&mut self) -> bool {
-        self.feedback = None;
-        self.cursor.delete(&mut self.text)
-    }
-
-    pub fn left(&mut self) {
-        self.cursor.left();
-    }
-
-    pub fn right(&mut self) {
-        let len = self.text.chars().count();
-        self.cursor.right(len);
-    }
-
     /// 提交前校验（**用共享实现**，与写入侧同一份判据）。
     ///
     /// 界面**不重复实现**校验规则：两侧各写一份必然分叉，而分叉的后果是
@@ -1056,14 +1042,14 @@ mod restart_action_tests {
         f.insert('好');
         assert_eq!(f.text, "中文好");
         assert_eq!(f.cursor.pos(), 3);
-        // 左移一格 → 光标在「好」之前（pos = 2）；退格删掉它**前面**那个字符，即「文」
-        f.left();
+        // 退格删掉光标前那个字符，即刚插入的「好」
         assert!(f.backspace(), "退格应删掉光标前的字符");
-        assert_eq!(f.text, "中好", "删的是「文」（pos=2 之前的那个），不是「中」");
-        assert_eq!(f.cursor.pos(), 1, "光标应随之前移一格");
-        // 再退格一次才轮到「中」
+        assert_eq!(f.text, "中文", "删的是最后插入的「好」");
+        assert_eq!(f.cursor.pos(), 2, "光标应随之前移一格");
+        // 再退格一次轮到「文」——多字节定位不能切坏字符串
         assert!(f.backspace());
-        assert_eq!(f.text, "好");
+        assert_eq!(f.text, "中");
+        assert_eq!(f.cursor.pos(), 1);
         // 关键：不能 panic、不能产生非法 UTF-8（String 保证，但插入位置算错会 panic）
         assert_eq!(f.validate().is_err(), true);
     }
