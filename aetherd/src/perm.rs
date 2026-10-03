@@ -555,4 +555,21 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// H-4 回归（审计 #17）：aetherd 侧用 `symlink_metadata` **预检**符号链接
+    /// （而不是跟随链接后 chmod —— 那会变成"root 改任意文件权限"的原语）。
+    ///
+    /// 同样用源码扫描：断言"预检"这个动作还在。去掉它会让这条变红。
+    #[test]
+    fn symlink_precheck_is_still_in_place() {
+        let src = include_str!("perm.rs");
+        assert!(
+            src.contains("symlink_metadata"),
+            "必须用 symlink_metadata 预检（is_symlink 判定不跟随链接）"
+        );
+        assert!(
+            src.contains("file_type().is_symlink()"),
+            "必须有明确的 is_symlink 判定，而不是只看 metadata"
+        );
+    }
+
 }

@@ -343,5 +343,30 @@ mod tests {
         drop(f2);
         assert_eq!(std::fs::read(&p).unwrap(), b"hello+more", "必须追加而不是截断");
     }
+    /// H-4 回归（审计 #17：此前"回滚后测试不会变红"）。
+    ///
+    /// 断言日志/目录的打开方式**实际带着 `O_NOFOLLOW`** —— 不是只在注释里提到。
+    /// 用 `include_str!` 编译期嵌入源码扫描：这些代码是 Linux 专属，
+    /// 在 Windows 开发机上从不执行，行为测试在此处等于没写。
+    ///
+    /// 去掉 `O_NOFOLLOW`（回滚 H-4）会让这条立刻变红。
+    #[test]
+    fn log_opens_actually_use_o_nofollow() {
+        let src = include_str!("logtee.rs");
+        assert!(
+            src.contains("custom_flags(libc::O_NOFOLLOW)"),
+            "日志文件必须以 O_NOFOLLOW 打开（否则符号链接竞态回来）"
+        );
+        assert!(
+            src.contains("libc::O_NOFOLLOW | libc::O_DIRECTORY"),
+            "目录权限收紧必须以 O_NOFOLLOW|O_DIRECTORY 打开（无竞态）"
+        );
+        // 两处都必须挂在 Linux 门后（否则 Windows 目标编译不过）
+        assert!(
+            src.matches("#[cfg(target_os = \"linux\")]").count() >= 1,
+            "O_NOFOLLOW 用法必须在 Linux 门后"
+        );
+    }
+
 }
 
