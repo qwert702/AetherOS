@@ -1157,6 +1157,12 @@ pub struct UiState<'a> {
     pub mouse: (f32, f32),
     /// 左键是否按下（组件的按下态用）
     pub mouse_down: bool,
+    /// 音频状态文案（批次 K-2）：**如实**显示"无音频设备/未检测"，不画假滑块
+    pub audio_label: &'a str,
+    /// 当前音量（0..=100）。仅在 `audio_enabled` 为真时有意义
+    pub audio_volume: u8,
+    /// 音频控件是否可用（= `AudioState::Ready`）。false 时**不登记命中区**（点不动）
+    pub audio_enabled: bool,
     pub open_menu: Option<usize>,
     /// 是否显示"安装"Dock 图标（仅 Live ISO 会话）
     pub show_installer: bool,
@@ -1214,6 +1220,8 @@ pub mod control_layout {
     pub const JUMP_ROWS: i32 = 2;
     /// 电源行（关机 / 重启 / 注销）
     pub const POWER_ROWS: i32 = 3;
+    /// 音量行（批次 K-2）：一条可点击设定的音量轨道
+    pub const VOLUME_ROWS: i32 = 1;
 
     /// 开关行高（含行距）
     pub const ROW_H_SWITCH: i32 = 36;
@@ -1232,6 +1240,8 @@ pub mod control_layout {
         + SWITCH_ROWS * ROW_H_SWITCH
         + SECTION
         + JUMP_ROWS * ROW_H_ACTION
+        + SECTION
+        + VOLUME_ROWS * ROW_H_ACTION
         + SECTION
         + POWER_ROWS * ROW_H_ACTION;
 
@@ -1260,6 +1270,9 @@ pub enum ControlHit {
     Reboot,
     /// **动作类**：注销（= 重启合成器，由 aether-init 拉起；不需要确认）
     Logout,
+    /// **动作类**：音量轨道（批次 K-2）。点击位置决定音量 ——
+    /// 命中区是**整条轨道**，具体百分比由点击 x 与轨道宽度算出（见 `main.rs`）。
+    VolumeTrack,
 }
 
 /// 画一个应用图标：彩色底座 + 白色几何符号（全部纯 rect/圆，不依赖字体字形覆盖）。
@@ -1960,7 +1973,38 @@ impl Renderer {
             y += 32;
         }
 
-        // ⑤ 电源（2026-10-02 功能批次 J-2）
+        // ⑤ 音量（批次 K-2）
+        //
+        // **不可用时不画滑块**（本项目对假控件零容忍）：只显示一行如实的状态文案，
+        // 且不登记命中区 —— "画一个拖不动的滑块"比"没有滑块"更糟。
+        widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
+        y += 8;
+        widgets::group_header(buf, w, h, panel.x + 16, y, "声音", Some(tr));
+        y += 20;
+        {
+            let r = row(y);
+            if ui.audio_enabled {
+                widgets::row(buf, w, h, r, "音量", Some(&format!("{}%", ui.audio_volume)),
+                             widgets::States::at(r, ui.mouse), Some(tr));
+                // 轨道：底槽 + 已填充部分。点击整条轨道即可设定（不需要拖拽，
+                // 也就不需要给事件循环加"拖拽状态"——少一处状态就少一类 bug）
+                let track = Rect { x: r.x + 12, y: r.y + r.h - 12, w: r.w - 24, h: 6 };
+                rounded_rect(buf, w, h, track, 3.0, color::surface_3(), 0.9);
+                let fill_w = (track.w as f32 * ui.audio_volume as f32 / 100.0) as i32;
+                if fill_w > 0 {
+                    rounded_rect(buf, w, h, Rect { x: track.x, y: track.y, w: fill_w, h: track.h },
+                                 3.0, color::accent(), 0.95);
+                }
+                self.control_hits.push((track, ControlHit::VolumeTrack));
+            } else {
+                widgets::row(buf, w, h, r, "音量", Some(ui.audio_label),
+                             widgets::States::at(r, ui.mouse), Some(tr));
+                // **不登记命中区**：不可用时点不动，也就不该有可点击区域
+            }
+            y += control_layout::ROW_H_ACTION;
+        }
+
+        // ⑥ 电源（2026-10-02 功能批次 J-2）
         //
         // 放在最下面而不是最上面：关机/重启是**低频且不可逆**的动作，
         // 放在开关旁边会让人手滑点错（Windows/macOS 也把它收在菜单末尾）。

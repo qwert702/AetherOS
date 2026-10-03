@@ -222,6 +222,30 @@ impl Audio {
         self.muted
     }
 
+    /// 设置音量（写真实 mixer）。返回 `Err` 说明**没写成功** ——
+    /// 界面必须如实提示，不能"看起来动了"。
+    ///
+    /// 写完**回读**：写成功 ≠ 值真的变了（有些 mixer 会把值夹到最近档位）。
+    /// 回读后的值才是显示值 —— 否则界面会显示一个系统并不采纳的数字。
+    pub fn set_volume(&mut self, pct: u8) -> Result<(), String> {
+        let pct = clamp_volume(pct as i32);
+        if !self.state.controls_enabled() {
+            return Err(format!("{}：音量不可调", self.state.label()));
+        }
+        let o = Command::new("amixer")
+            .args(["set", "Master", &format!("{pct}%")])
+            .output()
+            .map_err(|e| format!("amixer 执行失败：{e}"))?;
+        if !o.status.success() {
+            return Err(format!(
+                "amixer 拒绝了设置：{}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        self.read_mixer_state();
+        Ok(())
+    }
+
     /// 播放提示音（**后台线程**，绝不阻塞渲染）。
     ///
     /// 无设备时**静默返回**：提示音缺失不该打断用户操作，而且"没有声卡"这件事

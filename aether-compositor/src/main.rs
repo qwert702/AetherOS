@@ -358,7 +358,7 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut thinking = false;
     // 音频（提示音 + 音量，批次 K）：**探测一次**，不在循环里反复探测
     // （`refresh()` 会起子进程，每帧调用会把 CPU 吃光）
-    let audio = audio::Audio::probe();
+    let mut audio = audio::Audio::probe();
     tty_log(&format!(
         "音频：{}（音量 {}%{}）",
         audio.state().label(),
@@ -695,7 +695,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 &mut intent,
             );
             if let Some(i) = intent {
-                apply_ui_intent(i, &ai_tx, &mut toast, &mut renderer);
+                apply_ui_intent(i, &ai_tx, &mut toast, &mut renderer, &mut audio);
             }
             consumed
         } {
@@ -754,7 +754,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             ));
                         }
                         settings::SettingsHit::Logout => {
-                            apply_ui_intent(UiIntent::Logout, &ai_tx, &mut toast, &mut renderer);
+                            apply_ui_intent(UiIntent::Logout, &ai_tx, &mut toast, &mut renderer, &mut audio);
                         }
                         _ => {}
                     }
@@ -998,6 +998,10 @@ fn run_fbdev() -> anyhow::Result<()> {
             ai_thinking: thinking,
             ai_status,
             ai_reply: reply_now.as_ref().map(|(m, k, a)| (m.as_str(), *k, *a)),
+            // 真实音频状态（批次 K-2）：探测过一次，这里只读缓存，不在每帧起子进程
+            audio_label: audio.state().label(),
+            audio_volume: audio.volume_pct(),
+            audio_enabled: audio.state().controls_enabled(),
             mouse,
             mouse_down,
             open_menu,
@@ -1125,6 +1129,8 @@ enum UiIntent {
     Power(aether_ipc::PowerAction),
     /// 注销：重启合成器（由 aether-init 按 compositor.json 的 restart:true 拉起）
     Logout,
+    /// 设定音量（0..=100）：由点击音量轨道的位置算出（批次 K-2）
+    SetVolume(u8),
 }
 
 impl ConfirmRequest {
@@ -1600,6 +1606,7 @@ fn apply_ui_intent(
     ai_tx: &mpsc::Sender<AiEvent>,
     toast: &mut Option<(String, Instant)>,
     renderer: &mut draw::Renderer,
+    audio: &mut audio::Audio,
 ) {
     match intent {
         UiIntent::Power(action) => {
@@ -1613,6 +1620,17 @@ fn apply_ui_intent(
             ));
             tty_log(&format!("控制中心电源入口 → {label}（等待确认卡片）"));
             spawn_power_tool(action, ai_tx);
+        }
+        UiIntent::SetVolume(pct) => {
+            // 写真实 mixer；**失败必须如实提示**（不假装"音量已调"）
+            match audio.set_volume(pct) {
+                Ok(()) => {
+                    *toast = Some((format!("音量 {}%", audio.volume_pct()), Instant::now()));
+                }
+                Err(e) => {
+                    *toast = Some((format!("音量未改变：{e}"), Instant::now()));
+                }
+            }
         }
         UiIntent::Logout => {
             // 注销 = 重启合成器：**不经过 IPC**（这是合成器自己的生命周期，
@@ -1680,11 +1698,11 @@ fn control_center_click(
     if !renderer.control_open {
         return false;
     }
-    if let Some(hit) = renderer
+    if let Some((rect, hit)) = renderer
         .control_hits
         .iter()
         .find(|(r, _)| r.contains(mx, my))
-        .map(|(_, h)| *h)
+        .map(|(r, h)| (*r, *h))
     {
         match hit {
             ControlHit::ToggleIme => ime.toggle(),
@@ -1719,6 +1737,12 @@ fn control_center_click(
             }
             ControlHit::Logout => {
                 *intent = Some(UiIntent::Logout);
+            }
+            // 音量轨道：**点击位置**决定音量（0..=100）。
+            // 用比例而不是"每次 ±5"：点击是绝对定位操作，用户点哪儿就该是哪儿。
+            ControlHit::VolumeTrack => {
+                let pct = ((mx - rect.x as f32) / rect.w as f32 * 100.0).round();
+                *intent = Some(UiIntent::SetVolume(audio::clamp_volume(pct as i32)));
             }
         }
         return true;
@@ -2221,6 +2245,10 @@ fn main() -> anyhow::Result<()> {
             ai_reply: Some((sample_reply, sample_bubble, 0.5)),
             mouse,
             mouse_down: false,
+            // 截图/预览模式没有真实音频栈：如实标"未检测"并禁用控件（不画假滑块）
+            audio_label: "未检测到音频（预览模式）",
+            audio_volume: 0,
+            audio_enabled: false,
             open_menu: if args.contains(&"--menu".to_string()) { Some(2) } else { None },
             show_installer: args.iter().any(|a| a == "--installer"),
             installer,
@@ -2257,6 +2285,10 @@ fn main() -> anyhow::Result<()> {
             ai_reply: Some(("好的，已把窗口排成两列。", draw::BubbleKind::Ai, 0.5)),
             mouse: (640.0, 400.0),
             mouse_down: false,
+            // 截图/预览模式没有真实音频栈：如实标"未检测"并禁用控件（不画假滑块）
+            audio_label: "未检测到音频（预览模式）",
+            audio_volume: 0,
+            audio_enabled: false,
             open_menu: None,
             show_installer: false,
             installer: None,
@@ -2859,6 +2891,10 @@ fn preview_main() -> anyhow::Result<()> {
             ai_reply: reply_now.as_ref().map(|(m, k, a)| (m.as_str(), *k, *a)),
             mouse: (mx, my),
             mouse_down: down,
+            // 预览模式没有真实音频栈：如实标"未检测"并禁用控件（不画假滑块）
+            audio_label: "未检测到音频（预览模式）",
+            audio_volume: 0,
+            audio_enabled: false,
             open_menu,
             show_installer: false,
             installer: None,
@@ -3801,10 +3837,11 @@ mod control_center_tests {
     fn control_panel_is_tall_enough_for_all_rows() {
         use draw::control_layout as L;
         // 最后一行的底部（相对面板顶）：HEAD + SECTION + 开关行 + SECTION + 跳转行
-        //                                + SECTION + 电源行
+        //                                + SECTION + 音量行 + SECTION + 电源行
         let last_row_bottom = 12 + 26
             + (8 + 20) + L::SWITCH_ROWS * L::ROW_H_SWITCH
             + (8 + 20) + L::JUMP_ROWS * L::ROW_H_ACTION
+            + (8 + 20) + L::VOLUME_ROWS * L::ROW_H_ACTION
             + (8 + 20) + L::POWER_ROWS * L::ROW_H_ACTION;
         assert_eq!(
             last_row_bottom,
@@ -3818,6 +3855,46 @@ mod control_center_tests {
         );
         // 底部提示要留得下（它画在 panel.y + panel.h - 22）
         assert!(L::PANEL_H - last_row_bottom >= L::FOOTER, "底部提示没地方放");
+    }
+
+    /// 批次 K-2 回归：点击音量轨道的**位置**决定音量（绝对定位，不是"每次 ±5"）。
+    ///
+    /// 同时钉住边界：最左 = 0（静音，合法值）、最右 = 100、越界坐标必须夹取
+    /// （坐标是浮点，边缘像素会越界一点点 —— 那不该变成 101% 或 panic）。
+    #[test]
+    fn volume_track_click_maps_position_to_percent() {
+        let mut r = draw::Renderer::new(1280, 760);
+        let mut d = demo_desktop();
+        let mut i = ime::Ime::default();
+        r.status_cluster = Rect { x: 1100, y: 2, w: 60, h: 22 };
+        r.control_open = true;
+        r.control_panel = Rect { x: 1000, y: 40, w: 264, h: 450 };
+
+        let track = Rect { x: 1020, y: 300, w: 200, h: 6 };
+        r.control_hits = vec![(track, draw::ControlHit::VolumeTrack)];
+
+        let pct_at = |r: &mut draw::Renderer, d: &mut Desktop, i: &mut ime::Ime, x: f32| {
+            let mut intent = None;
+            let consumed = control_center_click(r, d, i, x, 303.0, true, &mut intent);
+            assert!(consumed, "音量轨道点击应被消费");
+            match intent {
+                Some(UiIntent::SetVolume(p)) => p,
+                other => panic!("应产生 SetVolume 意图，实得 {other:?}"),
+            }
+        };
+
+        // 注意边界是**开区间**（`Rect::contains` 不含右边界），所以点最左用 x+1：
+        // 这是控件的既有语义，不是本功能的取舍。1 像素 ≈ 0.5% → 四舍五入到 1%。
+        assert!(pct_at(&mut r, &mut d, &mut i, 1021.0) <= 1, "最左 ≈ 静音");
+        assert!(pct_at(&mut r, &mut d, &mut i, 1219.0) >= 99, "最右 ≈ 100");
+        assert_eq!(pct_at(&mut r, &mut d, &mut i, 1120.0), 50, "中点 = 50");
+        // 轨道**之外**（面板空白）的点击：消费点击但**不产生音量意图** ——
+        // 这是真正值得钉的语义（防误触改音量）。
+        // 注：比例天然落在 0..1，构造不出 >100% 的点击，所以夹取只是浮点边缘的防御，
+        // 不在这里硬凑用例（凑出来的用例测的是不存在的场景）。
+        let mut intent = None;
+        assert!(control_center_click(&mut r, &mut d, &mut i, 1240.0, 303.0, true, &mut intent));
+        assert_eq!(intent, None, "点轨道之外不该改音量");
     }
 }
 
