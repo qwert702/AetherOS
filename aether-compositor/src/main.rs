@@ -364,6 +364,8 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut last_input = Instant::now();
     // 当前是否已息屏（避免每帧重复写 sysfs）
     let mut idle_blanked = false;
+    // 上一帧耗时（§5.10 HUD）：本帧开始时间减去它就是上一帧的真实耗时
+    let mut last_frame_ms = 0.0f32;
     tty_log(&format!(
         "音频：{}（音量 {}%{}）",
         audio.state().label(),
@@ -571,6 +573,17 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
             }
         }
+
+        // ---- 1.4 性能 HUD（§5.10）----
+        // 每帧算一次：帧时间取**上一帧**的耗时（本帧还没画完，拿不到自己的耗时），
+        // 内存读 /proc/self/statm（拿不到就如实写"不可用"，绝不编数字）。
+        let frame_ms = last_frame_ms;
+        last_frame_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
+        renderer.perf_text = if renderer.settings.perf_hud {
+            Some(perf_hud_text(frame_ms, &rss_label()))
+        } else {
+            None
+        };
 
         // ---- 1.5 空闲息屏（§3.6）----
         // 放在输入之后、渲染之前：这样"这一帧刚有输入"与"该不该息屏"
@@ -1629,6 +1642,36 @@ fn apply_theme(renderer: &mut draw::Renderer, dark: bool) {
     renderer.bg_dirty = true; // 壁纸与投影合成层都依赖主题，必须重建
 }
 
+/// 拼 HUD 文本（§5.10）。纯函数：**可单测**，且把"0 毫秒"这个边界钉住。
+///
+/// 0 毫秒是会真的出现的（第一帧、或计时精度不足）：直接做除法会得到 `inf`，
+/// 界面上显示 "inf fps" 比不显示还糟 —— 所以显式判断并显示 0。
+fn perf_hud_text(frame_ms: f32, rss: &str) -> String {
+    let fps = if frame_ms > 0.0 { 1000.0 / frame_ms } else { 0.0 };
+    format!("{frame_ms:.1} ms/帧（{fps:.0} fps） · 内存 {rss}")
+}
+
+/// 当前进程常驻内存（§5.10 HUD 用）。**拿不到就说拿不到** ——
+/// 不显示一个猜测值：HUD 的价值全在"数字是真的"，编一个数字等于把工具废掉。
+#[cfg(target_os = "linux")]
+fn rss_label() -> String {
+    // /proc/self/statm 第 2 个字段 = 常驻页数
+    let Ok(s) = std::fs::read_to_string("/proc/self/statm") else {
+        return "不可用（读不到 /proc/self/statm）".into();
+    };
+    let pages: u64 = match s.split_whitespace().nth(1).and_then(|v| v.parse().ok()) {
+        Some(v) => v,
+        None => return "不可用（statm 格式意外）".into(),
+    };
+    // 页大小固定 4096：不引入 libc 只为拿 sysconf，错了也只是显示偏差
+    format!("{:.1} MB", pages as f64 * 4096.0 / 1024.0 / 1024.0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rss_label() -> String {
+    "不可用（非 Linux：无 /proc）".into()
+}
+
 /// 息屏 / 亮屏（§3.6）：写内核的 fb blank 接口。
 ///
 /// **不自己在帧缓冲上涂黑**：那只让"画面看起来黑了"，输出与背光照旧 ——
@@ -1668,6 +1711,7 @@ fn set_fb_blank(on: bool, blanked: &mut bool) {
 
 /// 非 Linux（开发机预览）：没有 fb 设备，空实现。
 #[cfg(not(target_os = "linux"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn set_fb_blank(_on: bool, _blanked: &mut bool) {}
 
 /// 执行控制中心交回来的意图（**有副作用的部分**）。
@@ -4577,4 +4621,20 @@ mod wayland_sync_tests {
         sync_wayland(&mut desktop, &s2);
         assert_eq!(desktop.wins.len(), n0, "全部移除后回到初始数量");
     }
+    /// §5.10：HUD 文本的三条性质 —— 真数字、不除零、拿不到内存时如实说明。
+    #[test]
+    fn perf_hud_text_is_honest_about_edges() {
+        // 正常帧：33.3ms ≈ 30fps
+        let s = perf_hud_text(33.3, "120.0 MB");
+        assert!(s.contains("33.3 ms/帧"), "{s}");
+        assert!(s.contains("30 fps"), "{s}");
+        assert!(s.contains("120.0 MB"), "{s}");
+        // 0 毫秒**不能**变成 inf/nan（第一帧或计时精度不足时会真的出现）
+        let z = perf_hud_text(0.0, "不可用");
+        assert!(z.contains("0 fps"), "0 毫秒应显示 0 fps，而不是 inf：{z}");
+        assert!(!z.contains("inf") && !z.contains("NaN"), "{z}");
+        // 拿不到内存时如实显示原因（不编数字）
+        assert!(perf_hud_text(16.0, "不可用（非 Linux：无 /proc）").contains("不可用"));
+    }
+
 }

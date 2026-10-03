@@ -1207,6 +1207,32 @@ pub enum ConfirmButton {
 pub const DOCK_BUILTINS: usize = 5;
 
 /// 帧渲染器：持有跨帧缓存（背景层等）与可点击区域登记（供命中测试）。
+/// 性能 HUD（§5.10）：右下角一块半透明小面板，显示**真实**帧时间与内存。
+///
+/// 三条自我约束：
+/// 1. **只显示真数据** —— 拿不到就写"不可用"，绝不编一个数字（本项目对假数据零容忍）。
+/// 2. **默认关**（设置里的 `perf_hud`）—— 它是排障工具，不是常显装饰。
+/// 3. 放在**右下角**且不拦截点击：HUD 不该影响正常操作（它没有登记任何命中区）。
+fn draw_perf_hud(buf: &mut [u32], w: usize, h: usize, text: &str, tr: Option<&TextRenderer>) {
+    let Some(tr) = tr else { return };
+    let tw = tr.measure(text, font::CAPTION).ceil() as i32;
+    let panel = Rect { x: w as i32 - tw - 24, y: h as i32 - 34, w: tw + 16, h: 26 };
+    rounded_rect(buf, w, h, panel, radius::SM, color::surface_3(), 0.82);
+    rounded_outline(buf, w, h, panel, radius::SM, color::hairline(), 0.3);
+    draw_text(
+        tr,
+        buf,
+        w,
+        h,
+        (panel.x + 8) as f32,
+        tr.vcenter(panel.y as f32, panel.h as f32, font::CAPTION),
+        text,
+        font::CAPTION,
+        color::text(),
+        0.95,
+    );
+}
+
 /// 控制中心的行布局：**高度从行数推导**，不写死数字。
 ///
 /// 为什么（2026-10-02 功能批次 J-2）：`PANEL_H` 原先是手写常量，旁边一句注释
@@ -1442,6 +1468,11 @@ pub struct Renderer {
     /// 背景缓存需要重建（主题切换等）。惰性标记：下一帧 `prepare_background` 自动处理，
     /// 免得为切个主题把 `w/h` 传遍所有调用点。
     pub bg_dirty: bool,
+    /// 性能 HUD 文本（§5.10）。`None` = 不显示。
+    ///
+    /// **由主循环每帧喂进来**（而不是从 settings 现算）：帧时间与内存占用
+    /// 只有主循环知道，绘制层不该去读 `/proc`（那会让"画一帧"带上 IO）。
+    pub perf_text: Option<String>,
     /// 桌面图标本帧的命中区（矩形 → 应用序号）。默认桌面**不开窗口**，图标是主要入口。
     pub desktop_icons: Vec<(Rect, usize)>,
     /// 安装向导的关闭按钮（2026-10-01：用户反馈"向导点开就关不掉"）。
@@ -1496,6 +1527,7 @@ impl Renderer {
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
             control_panel: Rect { x: 0, y: 0, w: 0, h: 0 },
             bg_dirty: false,
+            perf_text: None,
             desktop_icons: Vec::new(),
             installer_close: Rect { x: 0, y: 0, w: 0, h: 0 },
             control_hits: Vec::new(),
@@ -1730,6 +1762,9 @@ impl Renderer {
         }
         mark!("confirm");
 
+        if let Some(text) = self.perf_text.as_deref() {
+            draw_perf_hud(buf, w, h, text, tr);
+        }
         if let Some((msg, age)) = ui.toast {
             draw_toast(buf, w, h, msg, age, tr);
         }
@@ -2531,6 +2566,13 @@ fn draw_settings_content(
                 hits.push((b, SettingsHit::IdleBlank(*min)));
             }
             ry += 46;
+            // 性能 HUD（§5.10）：**默认关**。说明里写清"显示的是真实数字"，
+            // 因为本项目对假数据零容忍 —— 用户有权知道这块面板值不值得信。
+            let hud = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
+            toggle_row(buf, w, h, mouse, tr, hud, "性能 HUD",
+                       Some("右下角显示真实帧时间与内存占用（排障用，默认关）"),
+                       s.perf_hud, SettingsHit::TogglePerfHud, hits);
+            ry += 58;
             // 恢复默认（批次 L-1）：用户改坏了能回去。**真的重置**，不是只改显示。
             let reset = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
             widgets::row(buf, w, h, reset, "恢复默认外观",

@@ -66,6 +66,9 @@ pub struct Settings {
     /// 空闲多少分钟后息屏（**0 = 永不**）。取值只允许 `IDLE_BLANK_OPTIONS` 里的档位 ——
     /// 任意分钟数没有意义（用户只会在这几档里选），也避免设置文件被改成 99999。
     pub idle_blank_min: u16,
+    /// 性能 HUD（§5.10）：显示**真实**帧时间与内存占用。**默认关** ——
+    /// 它是排障工具，不是装饰；常开会让界面多一块与日常使用无关的信息。
+    pub perf_hud: bool,
 }
 
 /// 界面缩放的允许档位。
@@ -125,6 +128,7 @@ impl Default for Settings {
             notify_sound: true,
             locale: 0,
             idle_blank_min: 10,
+            perf_hud: false,
         }
     }
 }
@@ -182,6 +186,9 @@ impl Settings {
         if let Some(n) = v.get("locale").and_then(Value::as_u64) {
             s.locale = (n as u8).min(LOCALE_COUNT.saturating_sub(1));
         }
+        if let Some(b) = v.get("perf_hud").and_then(Value::as_bool) {
+            s.perf_hud = b;
+        }
         if let Some(n) = v.get("idle_blank_min").and_then(Value::as_u64) {
             // 不在档位里的值**吸附到最近的合法档**（而不是原样接受）——
             // 否则手工改过的设置文件会让界面显示一个选不中的值
@@ -228,6 +235,7 @@ impl Settings {
             "notify_sound": self.notify_sound,
             "locale": self.locale,
             "idle_blank_min": self.idle_blank_min,
+            "perf_hud": self.perf_hud,
         });
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
     }
@@ -327,6 +335,8 @@ pub enum SettingsHit {
     ResetDefaults,
     /// 息屏档位（§3.6）：分钟数，0 = 永不。非法值由 `apply_hit` 吸附。
     IdleBlank(u16),
+    /// 性能 HUD 开关（§5.10）
+    TogglePerfHud,
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -399,6 +409,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::IdleBlank(min) => {
             s.idle_blank_min = snap_idle_blank(min);
         }
+        SettingsHit::TogglePerfHud => s.perf_hud = !s.perf_hud,
     }
 }
 
@@ -432,6 +443,7 @@ mod tests {
             notify_sound: false,
             locale: 1,
             idle_blank_min: 10,
+            perf_hud: false,
         };
         assert_eq!(Settings::from_json(&s.to_json()), s);
     }
@@ -523,6 +535,7 @@ mod tests {
             notify_sound: false,
             locale: 1,
             idle_blank_min: 10,
+            perf_hud: false,
         };
         s.save(path).expect("写设置应当成功（父目录会自动建）");
         assert_eq!(Settings::load(path, 8 * 60), s, "写进去什么，读出来就该是什么");
@@ -687,6 +700,7 @@ mod restart_action_tests {
             notify_sound: false,
             locale: 1,
             idle_blank_min: 10,
+            perf_hud: false,
             ..Settings::default()
         };
         let mut page = 1usize;
@@ -788,6 +802,26 @@ mod restart_action_tests {
         // 类型不对（字符串）→ 走默认，不 panic
         let bad = Settings::from_json(r#"{"idle_blank_min": "十分钟"}"#);
         assert_eq!(bad.idle_blank_min, Settings::default().idle_blank_min);
+    }
+
+    /// §5.10：性能 HUD 默认**关**（排障工具，不是常显装饰），且能往返持久化。
+    #[test]
+    fn perf_hud_defaults_off_and_round_trips() {
+        assert!(!Settings::default().perf_hud, "HUD 必须默认关");
+        let mut st = Settings::default();
+        let mut page = 0usize;
+        apply_hit(&mut st, &mut page, SettingsHit::TogglePerfHud);
+        assert!(st.perf_hud, "点一下应打开");
+        apply_hit(&mut st, &mut page, SettingsHit::TogglePerfHud);
+        assert!(!st.perf_hud, "再点应关闭");
+        assert_eq!(page, 0, "开关不该切页");
+
+        let on = Settings { perf_hud: true, ..Settings::default() };
+        assert!(Settings::from_json(&on.to_json()).perf_hud, "开启状态要能存下来");
+        // 旧文件缺该键 → 默认关（不会因为升级就冒出一块 HUD）
+        assert!(!Settings::from_json(r#"{"dark_mode":true}"#).perf_hud);
+        // 类型不对 → 默认，不 panic
+        assert!(!Settings::from_json(r#"{"perf_hud":"开"}"#).perf_hud);
     }
 
 }
