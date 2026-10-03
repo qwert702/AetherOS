@@ -11,6 +11,7 @@ mod intent;
 mod llm;
 mod clipboard;
 mod modelcfg;
+mod netset;
 mod perm;
 mod router;
 mod server;

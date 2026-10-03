@@ -89,6 +89,43 @@ pub enum Request {
     SystemPower {
         action: PowerAction,
     },
+    /// 写入一项系统设置（**会改系统配置**，必须经确认）。
+    ///
+    /// 键是 [`SettingKey`] 白名单（不是任意字符串）：未知键在**解码阶段**就被拒绝 ——
+    /// "任何字符串都能当键"的实现里，键名会一路流到拼路径/拼命令的地方，
+    /// 那正是路径遍历与配置注入的入口。
+    SetSetting {
+        key: SettingKey,
+        value: String,
+    },
+}
+
+/// 可写的系统设置项（**白名单**）。
+///
+/// 只列真正有消费者、能立即生效的项。静态 IP 暂不列入：它需要 aether-init 侧
+/// 开机读取并配置，否则写了没人读 —— 那是假功能，不是"未完成的功能"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingKey {
+    /// DNS 服务器列表（写入 `/etc/resolv.conf`，立即生效）。
+    Dns,
+}
+
+impl SettingKey {
+    /// 线上表示（与 `serde` 的 rename 保持一致；两侧各写一份必然分叉，故有断言钉住）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SettingKey::Dns => "dns",
+        }
+    }
+
+    /// 从字符串解析（白名单；**未知一律 `None`**）。
+    pub fn parse(s: &str) -> Option<SettingKey> {
+        match s {
+            "dns" => Some(SettingKey::Dns),
+            _ => None,
+        }
+    }
 }
 
 /// 系统服务 → 客户端的响应。
@@ -113,6 +150,15 @@ pub enum Response {
         output: String,
     },
     SysInfo(SysReport),
+    /// 设置写入回执（`Request::SetSetting` 的应答）。
+    ///
+    /// `ok = false` 时 `message` 说的是**为什么拒绝**（校验不过 / 权限不足 / 写失败），
+    /// 而不是空话 —— 设置页要把它原样显示给用户。
+    SettingAck {
+        key: String,
+        ok: bool,
+        message: String,
+    },
     ServiceAck {
         unit: String,
         ok: bool,
@@ -541,6 +587,23 @@ mod tests {
         // **fail-closed**：读不到身份必须拒绝（最关键的一条）
         assert!(!peer_uid_allowed_with(None, 0));
         assert!(!peer_uid_allowed_with(None, 1000));
+    }
+
+    #[test]
+    fn setting_key_whitelist_rejects_unknown_and_matches_wire_form() {
+        // 白名单：只有已知键能解析
+        assert_eq!(SettingKey::parse("dns"), Some(SettingKey::Dns));
+        assert_eq!(SettingKey::parse(""), None);
+        assert_eq!(SettingKey::parse("DNS"), None, "大小写不敏感会扩大攻击面，明确要求小写");
+        // 危险形状一律拒绝（这些是"任意字符串当键"实现里最容易出事的形式）
+        for evil in ["../etc/passwd", "dns\n", "dns ", " dns", "dns;reboot", "aetherd.sock"] {
+            assert_eq!(SettingKey::parse(evil), None, "不该接受 {evil:?}");
+        }
+        // 线上表示必须与 as_str 一致（两侧各写一份必然分叉）
+        let json = serde_json::to_string(&SettingKey::Dns).unwrap();
+        assert_eq!(json, format!("\"{}\"", SettingKey::Dns.as_str()));
+        // 未知键在**解码阶段**就被拒（不是等到用的时候才检查）
+        assert!(serde_json::from_str::<SettingKey>("\"nope\"").is_err());
     }
 
 }

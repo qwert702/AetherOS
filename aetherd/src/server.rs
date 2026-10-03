@@ -563,6 +563,56 @@ fn handle_request(
                 ),
             }]
         }
+        Request::SetSetting { key, value } => {
+            // 写系统设置与"服务控制"同一门槛：**必须**由已注册的 UI 通道发起。
+            //
+            // 为什么不开给 AI 工具：AI 的动作要经确认卡片（L3），而"改 DNS"的正确入口
+            // 是用户在设置页里明确输入。**一条路径比两条更容易审** ——
+            // 两条入口意味着两处鉴权、两处审计、两处可能忘记同步的校验。
+            if !*is_ui {
+                audit_or_warn(gate, "set_setting", Level::L2, verdict::REJECTED_NO_UI);
+                eprintln!(
+                    "[aetherd] 拒绝写设置 {}：本连接未注册为 UI 通道",
+                    key.as_str()
+                );
+                return vec![Response::Error {
+                    code: 403,
+                    message: "写系统设置必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            // 审计参数走 audit_call（Gate 内部统一脱敏）。DNS 地址不是秘密，
+            // 但仍走同一条路径，避免"新增一处直接落盘"的口子。
+            let args = serde_json::json!({ "key": key.as_str(), "value": value });
+            match crate::netset::apply(key, &value) {
+                Ok(message) => {
+                    if let Err(e) =
+                        gate.audit_call("set_setting", Level::L2, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 设置已写入：{} —— {message}", key.as_str());
+                    vec![Response::SettingAck {
+                        key: key.as_str().to_string(),
+                        ok: true,
+                        message,
+                    }]
+                }
+                Err(e) => {
+                    // 失败（含校验不通过）也留痕：审计要能回答"有没有人试图改设置、被什么挡下"
+                    if let Err(e2) =
+                        gate.audit_call("set_setting", Level::L2, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 写设置被拒：{} —— {e}", key.as_str());
+                    vec![Response::SettingAck {
+                        key: key.as_str().to_string(),
+                        ok: false,
+                        message: e,
+                    }]
+                }
+            }
+        }
         Request::ServiceControl { unit, action } => {
             // 服务控制是"改系统状态"，与剪贴板/配置重载同一门槛：**必须**由已注册的
             // UI 通道发起。此前这里是个桩（直接回 ok:false + "M3 就绪后生效"），

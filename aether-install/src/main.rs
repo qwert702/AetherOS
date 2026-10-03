@@ -254,6 +254,11 @@ pub fn set_disk_signature(mbr: &mut [u8; 512], sig: u32) {
 
 /// 生成一个**非零**随机磁盘签名。
 ///
+/// 只在 Linux 与测试下编译：唯一的生产调用点在 `setup_persist`（`cfg(target_os = "linux")`）里，
+/// 而测试要在**所有**平台都能跑（否则这段逻辑在开发机上永远没被执行过）。
+/// 不加这个 cfg 的话，Windows 构建会报"函数未使用"警告。
+#[cfg(any(target_os = "linux", test))]
+///
 /// 非零是硬要求：0 是"未设置"的常见初值，用它会让"没绑定"与"绑定到 0"混淆 ——
 /// 而 aether-init 侧的判据是 fail-closed，混淆的代价是分区挂不上。
 /// 随机源取 `/dev/urandom`；拿不到就退回时间戳混合（可用性优先，安全性由"非零 + 随机"保证）。

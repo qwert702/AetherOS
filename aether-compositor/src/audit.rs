@@ -84,6 +84,12 @@ pub struct AuditInfo {
 /// 纯函数（`now` 由调用方给）—— 于是"导出内容包含什么"可以单测，
 /// 不必真的写文件。**导出必须包含文件路径与解析失败计数**：前者让读者知道数据来源，
 /// 后者防止"日志格式变了但导出看起来一切正常"（那种静默最误导人）。
+/// 导出成便于贴进 issue 的纯文本。
+///
+/// 只在 Linux 与测试下编译：唯一的生产调用点在 `export_audit()` 的 Linux 分支里
+/// （非 Linux 分支没有审计文件可写，直接返回错误）。测试要在所有平台跑，
+/// 所以带上 `test` —— 否则这个纯函数在开发机上从未被执行过。
+#[cfg(any(target_os = "linux", test))]
 pub fn export_text(info: &AuditInfo, now: u64) -> String {
     let mut s = String::new();
     s.push_str("AetherOS 审计日志导出\n");
