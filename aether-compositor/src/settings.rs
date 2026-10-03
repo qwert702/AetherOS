@@ -63,6 +63,8 @@ pub struct Settings {
     /// 提示音开关（批次 K 接音频；无音频设备时该项**无效果但可保存**，
     /// 界面必须如实显示"无音频设备"而不是假装静音成功）。
     pub notify_sound: bool,
+    /// 提示音主题下标（§5.12）。0=经典 1=柔和 2=明亮；越界退回经典。
+    pub sound_theme: u8,
     /// 界面语言：0 = 中文，1 = English（下标，见 [`LOCALE_COUNT`]）。
     pub locale: u8,
     /// 首次启动向导是否已走完（或跳过）（§5.8）。
@@ -135,6 +137,7 @@ impl Default for Settings {
             ui_scale_pct: 100,
             default_app: 0,
             notify_sound: true,
+            sound_theme: 0,
             locale: 0,
             idle_blank_min: 10,
             perf_hud: false,
@@ -197,6 +200,10 @@ impl Settings {
         }
         if let Some(b) = v.get("notify_sound").and_then(Value::as_bool) {
             s.notify_sound = b;
+        }
+        // §5.12：主题下标越界一律夹取（设置文件可被手改，不能信任）
+        if let Some(n) = v.get("sound_theme").and_then(Value::as_u64) {
+            s.sound_theme = (n as u8).min(crate::audio::THEME_COUNT.saturating_sub(1));
         }
         if let Some(n) = v.get("locale").and_then(Value::as_u64) {
             s.locale = (n as u8).min(LOCALE_COUNT.saturating_sub(1));
@@ -265,6 +272,7 @@ impl Settings {
             "ui_scale_pct": self.ui_scale_pct,
             "default_app": self.default_app,
             "notify_sound": self.notify_sound,
+            "sound_theme": self.sound_theme,
             "locale": self.locale,
             "idle_blank_min": self.idle_blank_min,
             "perf_hud": self.perf_hud,
@@ -341,6 +349,10 @@ pub enum SettingsHit {
     InstallApp(usize),
     /// 重新扫描商店目录（§5.11）。
     RefreshStore,
+    /// 开关提示音（§5.12）。**这个字段本来就有、也被读，但界面上一直没有开关。**
+    ToggleNotifySound,
+    /// 切换提示音主题（§5.12）。点击后**试听一次**，否则「可换」是看不见的。
+    CycleSoundTheme,
     /// 卸载第 `i` 个已安装应用（§5.11）。服务端会**移入回收站**（不是直接删）。
     RemoveApp(usize),
     /// 立刻对一次时（§3.3）。
@@ -561,6 +573,12 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::ToggleDark => s.dark_mode = !s.dark_mode,
         SettingsHit::ToggleContrast => s.high_contrast = !s.high_contrast,
         SettingsHit::Locale(i) => s.locale = i.min(LOCALE_COUNT.saturating_sub(1)),
+        SettingsHit::ToggleNotifySound => s.notify_sound = !s.notify_sound,
+        SettingsHit::CycleSoundTheme => {
+            // 循环到下一个主题（到末尾回绕到 0）
+            let next = s.sound_theme.saturating_add(1);
+            s.sound_theme = if next >= crate::audio::THEME_COUNT { 0 } else { next };
+        }
         SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
         // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序/电源动作），
         // 放这里只是为了让 `apply_hit` 对枚举保持穷尽（漏一个变体会编译不过）。
@@ -636,6 +654,7 @@ mod tests {
             ui_scale_pct: 125,
             default_app: 2,
             notify_sound: false,
+            sound_theme: 0,
             locale: 1,
             idle_blank_min: 10,
             perf_hud: false,
@@ -732,6 +751,7 @@ mod tests {
             ui_scale_pct: 150,
             default_app: 1,
             notify_sound: false,
+            sound_theme: 0,
             locale: 1,
             idle_blank_min: 10,
             perf_hud: false,
@@ -1220,6 +1240,46 @@ mod restart_action_tests {
         // 退化文档（没有字段）**不算**"用过系统"：向导该弹
         assert!(!Settings::from_json("null").setup_done, "null 不该被当成设置文件");
         assert!(!Settings::from_json("{}").setup_done, "空对象不该被当成设置文件");
+    }
+
+    /// §5.12：提示音主题要能存下来、越界要夹取、点击要能循环回起点。
+    #[test]
+    fn sound_theme_round_trips_clamps_and_cycles() {
+        // 默认是经典（0），与改造前的声音一致
+        assert_eq!(Settings::default().sound_theme, 0);
+        // 存下来能读回
+        let s = Settings { sound_theme: 2, ..Settings::default() };
+        assert_eq!(Settings::from_json(&s.to_json()).sound_theme, 2);
+        // 越界夹取（设置文件可被手改：写成 99 不该让界面 panic 或显示空白）
+        assert_eq!(
+            Settings::from_json(r#"{"sound_theme":99}"#).sound_theme,
+            crate::audio::THEME_COUNT - 1
+        );
+        // 类型不对 → 退回默认
+        assert_eq!(Settings::from_json(r#"{"sound_theme":"亮"}"#).sound_theme, 0);
+        // 缺键 → 默认（老文件）
+        assert_eq!(Settings::from_json(r#"{"dark_mode":true}"#).sound_theme, 0);
+        // 点击循环：走真实 apply_hit 路径，转一圈回到起点
+        let mut st = Settings::default();
+        let mut page = 0usize;
+        let mut seen = vec![st.sound_theme];
+        for _ in 0..crate::audio::THEME_COUNT {
+            apply_hit(&mut st, &mut page, SettingsHit::CycleSoundTheme);
+            seen.push(st.sound_theme);
+        }
+        assert_eq!(seen.first(), seen.last(), "转一圈要回到起点：{seen:?}");
+        assert_eq!(
+            seen.len() as u8 - 1,
+            crate::audio::THEME_COUNT,
+            "每个主题都该轮到一次：{seen:?}"
+        );
+        // 提示音开关也要能切（这个字段此前只有值、没有界面）
+        let mut st2 = Settings::default();
+        assert!(st2.notify_sound);
+        apply_hit(&mut st2, &mut page, SettingsHit::ToggleNotifySound);
+        assert!(!st2.notify_sound);
+        apply_hit(&mut st2, &mut page, SettingsHit::ToggleNotifySound);
+        assert!(st2.notify_sound);
     }
 
 }

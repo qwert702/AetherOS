@@ -910,7 +910,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 提示音（批次 K）：AI 回复完成 = 正反馈。可关（settings.notify_sound），
                     // 无音频设备时 play() 自己会静默返回（界面上已经如实显示过了）
                     if renderer.settings.notify_sound {
-                        audio.play(audio::Cue::Done);
+                        audio.play_with(audio::SoundTheme::of(renderer.settings.sound_theme), audio::Cue::Done);
                     }
                 }
                 AiEvent::Error(text) => {
@@ -931,7 +931,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 提示音（批次 K）：确认卡片需要用户注意 —— 这是三种提示音里
                     // 唯一"必须被听见"的一种（用户可能正在看别处）
                     if renderer.settings.notify_sound {
-                        audio.play(audio::Cue::Confirm);
+                        audio.play_with(audio::SoundTheme::of(renderer.settings.sound_theme), audio::Cue::Confirm);
                     }
                 }
                 AiEvent::ToolDone { ok, output, origin } => {
@@ -940,7 +940,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 失败要**听得出来**（批次 K）：与成功音不同音高/时长，
                     // 这样用户不必盯着屏幕也知道"刚才那下没成"
                     if !ok && renderer.settings.notify_sound {
-                        audio.play(audio::Cue::Error);
+                        audio.play_with(audio::SoundTheme::of(renderer.settings.sound_theme), audio::Cue::Error);
                     }
                     match origin {
                         ConfirmOrigin::Installer => {
@@ -1147,6 +1147,24 @@ fn run_fbdev() -> anyhow::Result<()> {
                             renderer.time.mark_pending();
                             write_timezone(ai_tx.clone(), name.clone());
                             push_toast(&mut toast, &mut renderer.notifs, format!("正在写入系统时区：{name}"), notifications::Kind::Info);
+                        }
+                    }
+                    // §5.12：提示音主题切换 —— **切换即试听**（否则"可换"是看不见的：
+                    // 用户点一下听不到差别，只会以为功能坏了）
+                    if let settings::SettingsHit::CycleSoundTheme = hit {
+                        settings::apply_hit(
+                            &mut renderer.settings,
+                            &mut renderer.settings_page,
+                            settings::SettingsHit::CycleSoundTheme,
+                        );
+                        if renderer.settings.notify_sound {
+                            audio.play_with(
+                                audio::SoundTheme::of(renderer.settings.sound_theme),
+                                audio::Cue::Done,
+                            );
+                        }
+                        if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
+                            eprintln!("[aether-compositor] 保存提示音主题失败：{e}");
                         }
                     }
                     // §5.3「工具权限」页：进入该页时**自动取一次**（否则会是空白，

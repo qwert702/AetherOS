@@ -3572,6 +3572,38 @@ fn draw_settings_content(
                 color::text_dim(),
                 0.75,
             );
+            // §5.12 声音：开关 + 主题（这个开关此前**只有字段没有界面**）
+            ry += 8;
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("提示音", "Sounds"), Some(tr),
+            );
+            ry += 22;
+            let r_on = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            toggle_row(
+                buf, w, h, mouse, tr, r_on,
+                crate::i18n::tr("提示音", "Notification sounds"),
+                Some(crate::i18n::tr(
+                    "AI 完成 / 需要确认 / 失败各用不同音高",
+                    "Different tones for done / confirm / error",
+                )),
+                s.notify_sound, SettingsHit::ToggleNotifySound, hits,
+            );
+            ry += 46;
+            let theme = crate::audio::SoundTheme::of(s.sound_theme);
+            let r_theme = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf, w, h, r_theme,
+                &format!(
+                    "{}：{}",
+                    crate::i18n::tr("提示音主题", "Sound theme"),
+                    crate::i18n::pick(crate::i18n::lang(), theme.label(), theme.label_en())
+                ),
+                Some(crate::i18n::tr("点击切换并试听（经典 / 柔和 / 明亮）", "Click to cycle and preview")),
+                widgets::States::at(r_theme, mouse), Some(tr),
+            );
+            hits.push((r_theme, SettingsHit::CycleSoundTheme));
+
         }
         _ => {}
     }

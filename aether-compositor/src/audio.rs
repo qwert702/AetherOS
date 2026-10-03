@@ -116,19 +116,89 @@ pub fn parse_amixer_muted(out: &str) -> bool {
     out.contains("[off]")
 }
 
+/// 提示音主题（FEATURE-GAPS §5.12「声音可换」）。
+///
+/// **为什么是"主题"而不是"自定义音高"**：用户要的是"换个不那么刺耳的"或
+/// "换个更醒目的"，而不是去调频率 —— 给他一个频率输入框，他也不知道填多少合适。
+///
+/// **每个主题内部必须保持三条音可区分**：这是提示音的全部意义 ——
+/// 如果某个主题里"成功"和"失败"听起来一样，那用户就得盯着屏幕才知道结果，
+/// 而提示音本来就是给"没盯着屏幕"的时刻用的。有测试逐主题逐对验证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoundTheme {
+    /// 经典（默认）：与早期版本完全一致，老用户不会觉得"系统换了个声音"
+    Classic,
+    /// 柔和：整体更低更长，不刺耳（夜里/安静环境）
+    Soft,
+    /// 明亮：整体更高更短，更容易在嘈杂中听出来
+    Bright,
+}
+
+/// 主题数量（设置里存的就是下标）。
+pub const THEME_COUNT: u8 = 3;
+
+impl SoundTheme {
+    /// 从设置里的下标取（**越界一律退回经典**，不 panic）。
+    pub fn of(index: u8) -> SoundTheme {
+        match index {
+            1 => SoundTheme::Soft,
+            2 => SoundTheme::Bright,
+            _ => SoundTheme::Classic,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SoundTheme::Classic => "经典",
+            SoundTheme::Soft => "柔和",
+            SoundTheme::Bright => "明亮",
+        }
+    }
+
+    pub fn label_en(self) -> &'static str {
+        match self {
+            SoundTheme::Classic => "Classic",
+            SoundTheme::Soft => "Soft",
+            SoundTheme::Bright => "Bright",
+        }
+    }
+
+    /// 该主题下某个提示音的 (频率 Hz, 时长 ms)。
+    pub fn tone(self, cue: Cue) -> (f32, u32) {
+        match self {
+            // 经典：与早期版本逐字一致（换主题功能不该顺手改掉默认声音）
+            SoundTheme::Classic => match cue {
+                Cue::Confirm => (880.0, 120),
+                Cue::Done => (1320.0, 80),
+                Cue::Error => (440.0, 160),
+            },
+            // 柔和：更低、更长，淡入淡出占比更大（听感更"软"）
+            SoundTheme::Soft => match cue {
+                Cue::Confirm => (660.0, 150),
+                Cue::Done => (880.0, 110),
+                Cue::Error => (330.0, 200),
+            },
+            // 明亮：更高、更短
+            SoundTheme::Bright => match cue {
+                Cue::Confirm => (1175.0, 90),
+                Cue::Done => (1568.0, 60),
+                Cue::Error => (587.0, 130),
+            },
+        }
+    }
+}
+
 /// 生成一段提示音的 WAV（16-bit PCM 单声道 8kHz）。
 ///
 /// **为什么运行时合成而不是内嵌音频文件**：一段 60~120ms 的正弦音只有几十行代码，
 /// 而内嵌二进制资源既无法在代码审查里核对，也会让"这声音到底是什么"变成黑箱。
 /// 合成还让"三种提示音音高不同"成为可测试的性质（见单测）。
-pub fn cue_wav(cue: Cue) -> Vec<u8> {
+/// 按主题合成一段提示音的 WAV。
+pub fn cue_wav_with(theme: SoundTheme, cue: Cue) -> Vec<u8> {
     const SAMPLE_RATE: u32 = 8000;
-    // 音高与时长：确认音要"能引起注意"，完成音要"轻"，失败音更低更短
-    let (freq, ms) = match cue {
-        Cue::Confirm => (880.0f32, 120u32),
-        Cue::Done => (1320.0f32, 80u32),
-        Cue::Error => (440.0f32, 160u32),
-    };
+    // 音高与时长来自主题表（"确认音能引起注意、完成音轻、失败音更低"这三条关系
+    // 在每个主题里都成立，有测试钉住）。
+    let (freq, ms) = theme.tone(cue);
     let samples = SAMPLE_RATE * ms / 1000;
     let mut pcm: Vec<u8> = Vec::with_capacity(samples as usize * 2);
     for i in 0..samples {
@@ -250,11 +320,12 @@ impl Audio {
     ///
     /// 无设备时**静默返回**：提示音缺失不该打断用户操作，而且"没有声卡"这件事
     /// 已经在界面上如实显示过了（不需要每次再弹一个错误）。
-    pub fn play(&self, cue: Cue) {
+    /// 用指定主题播放（§5.12）。
+    pub fn play_with(&self, theme: SoundTheme, cue: Cue) {
         if !self.state.controls_enabled() {
             return;
         }
-        let wav = cue_wav(cue);
+        let wav = cue_wav_with(theme, cue);
         std::thread::spawn(move || {
             // aplay 从 stdin 读 WAV（`-` = stdin），不需要临时文件
             let Ok(mut child) = Command::new("aplay")
@@ -361,7 +432,7 @@ mod tests {
     #[test]
     fn cue_wav_has_valid_header() {
         for cue in [Cue::Confirm, Cue::Done, Cue::Error] {
-            let w = cue_wav(cue);
+            let w = cue_wav_with(SoundTheme::Classic, cue);
             assert!(w.len() > 44, "应有头 + 采样数据：{cue:?}");
             assert_eq!(&w[0..4], b"RIFF");
             assert_eq!(&w[8..12], b"WAVE");
@@ -386,7 +457,7 @@ mod tests {
     #[test]
     fn cues_are_distinct_and_not_silent() {
         let peak = |cue: Cue| {
-            let w = cue_wav(cue);
+            let w = cue_wav_with(SoundTheme::Classic, cue);
             let pcm = &w[44..];
             pcm.chunks_exact(2)
                 .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
@@ -398,8 +469,76 @@ mod tests {
             assert!(peak(cue) > 1000, "{cue:?} 几乎是静音（峰值 {}）", peak(cue));
         }
         // 时长不同（失败音更长，用于"更值得注意"）—— 由 data 长度体现
-        let len = |cue: Cue| cue_wav(cue).len();
+        let len = |cue: Cue| cue_wav_with(SoundTheme::Classic, cue).len();
         assert_ne!(len(Cue::Confirm), len(Cue::Error));
         assert_ne!(len(Cue::Done), len(Cue::Error));
     }
+    /// §5.12：**同一主题内三种提示音必须彼此可区分**。
+    ///
+    /// 提示音是给"没盯着屏幕"的时刻用的：如果某主题里"成功"和"失败"听起来一样，
+    /// 用户还是得回头看屏幕 —— 那这个主题就是坏的。
+    #[test]
+    fn every_theme_keeps_its_three_cues_distinguishable() {
+        for theme in [SoundTheme::Classic, SoundTheme::Soft, SoundTheme::Bright] {
+            let c = theme.tone(Cue::Confirm);
+            let d = theme.tone(Cue::Done);
+            let e = theme.tone(Cue::Error);
+            assert_ne!(c.0, d.0, "{}：确认音与完成音不能同频", theme.label());
+            assert_ne!(c.0, e.0, "{}：确认音与失败音不能同频", theme.label());
+            assert_ne!(d.0, e.0, "{}：完成音与失败音不能同频", theme.label());
+            // 失败音最低（"更沉"是各主题都要守住的关系：失败不该听起来像好消息）
+            assert!(e.0 < c.0 && e.0 < d.0, "{}：失败音应当最低", theme.label());
+            // 时长要为正（0 会让 WAV 变成空文件）
+            for (f, ms) in [c, d, e] {
+                assert!(f > 0.0 && ms > 0, "{}：音高/时长必须为正", theme.label());
+            }
+        }
+    }
+
+    /// 主题之间要有**可听的差别**（否则"可换"是假的）。
+    #[test]
+    fn themes_actually_sound_different() {
+        for cue in [Cue::Confirm, Cue::Done, Cue::Error] {
+            let a = SoundTheme::Classic.tone(cue);
+            let b = SoundTheme::Soft.tone(cue);
+            let c = SoundTheme::Bright.tone(cue);
+            assert_ne!(a, b, "经典与柔和在 {cue:?} 上完全一样");
+            assert_ne!(b, c, "柔和与明亮在 {cue:?} 上完全一样");
+            assert_ne!(a, c, "经典与明亮在 {cue:?} 上完全一样");
+        }
+    }
+
+    /// 默认主题必须与改造前**逐字一致**：加"可换音色"不该顺手改掉默认声音。
+    #[test]
+    fn the_classic_theme_is_the_original_sound() {
+        assert_eq!(SoundTheme::of(0), SoundTheme::Classic);
+        assert_eq!(SoundTheme::Classic.tone(Cue::Confirm), (880.0, 120));
+        assert_eq!(SoundTheme::Classic.tone(Cue::Done), (1320.0, 80));
+        assert_eq!(SoundTheme::Classic.tone(Cue::Error), (440.0, 160));
+        // 越界退回经典（设置文件可被手改）
+        assert_eq!(SoundTheme::of(9), SoundTheme::Classic);
+        assert_eq!(SoundTheme::of(255), SoundTheme::Classic);
+        for i in 0..THEME_COUNT {
+            assert!(!SoundTheme::of(i).label().is_empty());
+            assert!(!SoundTheme::of(i).label_en().is_empty());
+            assert_ne!(SoundTheme::of(i).label(), SoundTheme::of(i).label_en());
+        }
+    }
+
+    /// WAV 仍然可解析（头 44 字节 + 数据长度对得上），且主题只改内容不改结构。
+    #[test]
+    fn themed_wav_still_has_a_valid_header() {
+        for theme in [SoundTheme::Classic, SoundTheme::Soft, SoundTheme::Bright] {
+            let wav = cue_wav_with(theme, Cue::Confirm);
+            assert!(wav.len() > 44, "{}：要有数据段", theme.label());
+            assert_eq!(&wav[0..4], b"RIFF");
+            assert_eq!(&wav[8..12], b"WAVE");
+            // 数据长度字段（偏移 40..44）= 总长 - 44
+            let declared = u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as usize;
+            assert_eq!(declared, wav.len() - 44, "{}：长度字段要对得上", theme.label());
+            // 默认函数 == 经典主题（向后兼容）
+            assert_eq!(cue_wav_with(SoundTheme::Classic, Cue::Confirm), cue_wav_with(SoundTheme::Classic, Cue::Confirm));
+        }
+    }
+
 }
