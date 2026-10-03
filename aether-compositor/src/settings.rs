@@ -380,6 +380,102 @@ pub const PAGES: &[PageDef] = &[
 ];
 
 /// 左栏默认选中的页（第一个可用的页）。
+/// 「网络」设置页里 DNS 输入框的状态（§2.4 网络写入的界面侧）。
+///
+/// **为什么单独一个类型**：输入框要用到光标、还要"边输边判"给即时反馈。
+/// 把光标逻辑与校验都塞进 `Settings` 会让那个结构变成杂物间；
+/// 分成一个小组件后，它的行为可以脱离界面单独测（本文件末尾就是这些用例）。
+///
+/// 光标复用 [`crate::textview::TextCursor`] —— **不重写**：插入/退格/删除/多字节
+/// 字符定位都已经有实现和测试，再写一份就是两份会分叉的编辑逻辑。
+#[derive(Debug, Clone, Default)]
+pub struct DnsField {
+    pub text: String,
+    pub cursor: crate::textview::TextCursor,
+    /// 是否处于编辑态（点「编辑」后为 true，回车提交或按 Esc 后为 false）。
+    pub editing: bool,
+    /// 上一次提交的结果（成功说明 / 拒绝理由），显示在输入框下方。
+    pub feedback: Option<String>,
+}
+
+impl DnsField {
+    /// 允许的最大输入长度（按**字符**计）。
+    ///
+    /// 为什么要上限：这是从键盘逐字符进来的字段，没有上限时按住键能把它撑到任意长，
+    /// 而它每次按键都要跑一遍校验并重画 —— 那是自找的卡顿。
+    /// 3 个 IPv4 加分隔符最多 50 字符左右，给 64 足够宽松。
+    pub const MAX_CHARS: usize = 64;
+
+    /// 进入编辑态，并把当前值放进输入框（用户从现状开始改，而不是从空白开始）。
+    pub fn begin(&mut self, current: &str) {
+        self.text = current.to_string();
+        self.cursor = crate::textview::TextCursor::default();
+        self.cursor.end(self.text.chars().count());
+        self.editing = true;
+        self.feedback = None;
+    }
+
+    /// 退出编辑态（放弃未提交的改动）。返回是否本来在编辑。
+    pub fn cancel(&mut self) -> bool {
+        let was = self.editing;
+        self.editing = false;
+        self.text.clear();
+        self.feedback = None;
+        was
+    }
+
+    /// 插入一个字符。超过上限则**忽略**（而不是截断已有内容 —— 悄悄吃掉用户输入更糟）。
+    pub fn insert(&mut self, ch: char) -> bool {
+        if self.text.chars().count() >= Self::MAX_CHARS {
+            return false;
+        }
+        self.cursor.insert(&mut self.text, ch);
+        self.feedback = None;
+        true
+    }
+
+    pub fn backspace(&mut self) -> bool {
+        self.feedback = None;
+        self.cursor.backspace(&mut self.text)
+    }
+
+    pub fn delete(&mut self) -> bool {
+        self.feedback = None;
+        self.cursor.delete(&mut self.text)
+    }
+
+    pub fn left(&mut self) {
+        self.cursor.left();
+    }
+
+    pub fn right(&mut self) {
+        let len = self.text.chars().count();
+        self.cursor.right(len);
+    }
+
+    /// 提交前校验（**用共享实现**，与写入侧同一份判据）。
+    ///
+    /// 界面**不重复实现**校验规则：两侧各写一份必然分叉，而分叉的后果是
+    /// "界面说可以、服务端拒绝"或更糟的反过来。
+    pub fn validate(&self) -> Result<Vec<std::net::Ipv4Addr>, String> {
+        aether_ipc::parse_dns_list(&self.text)
+    }
+
+    /// 记录提交结果并退出编辑态（成功时保留文本，失败时**保留原文**让用户接着改）。
+    pub fn finish(&mut self, result: Result<String, String>) {
+        match result {
+            Ok(msg) => {
+                self.feedback = Some(msg);
+                self.editing = false;
+            }
+            Err(why) => {
+                // 失败时**不退出编辑态**：用户正要改，把他踢出去等于让他重来一遍
+                self.feedback = Some(why);
+            }
+        }
+    }
+}
+
 pub fn first_enabled_page() -> usize {
     PAGES.iter().position(|p| p.enabled).unwrap_or(0)
 }
@@ -866,6 +962,104 @@ mod restart_action_tests {
         let off = Settings { record_notifications: false, ..Settings::default() };
         assert!(!Settings::from_json(&off.to_json()).record_notifications, "关闭状态要能存下来");
         assert!(Settings::from_json(r#"{"dark_mode":true}"#).record_notifications, "旧文件走默认（开）");
+    }
+
+    /// §2.4 界面侧：DNS 输入字段的行为（脱离界面可测）。
+    #[test]
+    fn dns_field_edits_like_a_text_box() {
+        let mut f = DnsField::default();
+        assert!(!f.editing);
+        f.begin("1.1.1.1");
+        assert!(f.editing);
+        // begin 把光标放在末尾（用户从现状接着改）
+        assert_eq!(f.cursor.pos(), "1.1.1.1".chars().count());
+        // 继续输入
+        for c in ", 8.8.8.8".chars() {
+            assert!(f.insert(c));
+        }
+        assert_eq!(f.text, "1.1.1.1, 8.8.8.8");
+        assert!(f.validate().is_ok());
+        // 退格
+        assert!(f.backspace());
+        assert_eq!(f.text, "1.1.1.1, 8.8.8.");
+        assert!(f.validate().is_err(), "退格后应当不合法");
+        // 取消：清空并退出
+        assert!(f.cancel());
+        assert!(!f.editing && f.text.is_empty());
+        assert!(!f.cancel(), "已退出时再取消应返回 false");
+    }
+
+    /// 上限是**忽略**新输入，而不是截断已有内容（悄悄吃掉用户输入更糟）。
+    #[test]
+    fn dns_field_caps_length_without_eating_input() {
+        let mut f = DnsField::default();
+        f.begin("");
+        for _ in 0..DnsField::MAX_CHARS {
+            assert!(f.insert('a'));
+        }
+        let before = f.text.clone();
+        assert!(!f.insert('b'), "超过上限应被忽略");
+        assert_eq!(f.text, before, "不应改动已有内容");
+        assert_eq!(f.text.chars().count(), DnsField::MAX_CHARS);
+    }
+
+    /// 提交失败时**留在编辑态**并把理由显示出来（用户接着改，不用重来）。
+    #[test]
+    fn dns_field_keeps_editing_on_rejection() {
+        let mut f = DnsField::default();
+        f.begin("999.1.1.1");
+        f.finish(Err("越界".into()));
+        assert!(f.editing, "被拒时应仍在编辑态");
+        assert_eq!(f.feedback.as_deref(), Some("越界"));
+        assert_eq!(f.text, "999.1.1.1", "被拒时不得清空用户输入");
+        // 成功则退出编辑态
+        f.begin("1.1.1.1");
+        f.finish(Ok("DNS 已设为 1.1.1.1".into()));
+        assert!(!f.editing);
+        assert!(f.feedback.unwrap().contains("1.1.1.1"));
+    }
+
+    /// 校验必须走**共享实现**（与写入侧同一份判据），不在这里重写规则。
+    #[test]
+    fn dns_field_validation_matches_the_writer() {
+        let mut f = DnsField::default();
+        for (input, ok) in [
+            ("1.1.1.1", true),
+            ("1.1.1.1, 8.8.8.8, 9.9.9.9", true),
+            ("", false),
+            ("01.2.3.4", false),
+            ("::1", false),
+            ("1.1.1.1; reboot", false),
+        ] {
+            f.begin(input);
+            assert_eq!(
+                f.validate().is_ok(),
+                ok,
+                "{input:?} 的判定应与写入侧一致（共享 parse_dns_list）"
+            );
+        }
+    }
+
+    /// 多字节字符下光标不能切坏字符串（复用 TextCursor 的意义所在）。
+    #[test]
+    fn dns_field_handles_multibyte_input_safely() {
+        let mut f = DnsField::default();
+        f.begin("中文");
+        // begin 把光标放在**末尾**（pos = 2）
+        assert_eq!(f.cursor.pos(), 2);
+        f.insert('好');
+        assert_eq!(f.text, "中文好");
+        assert_eq!(f.cursor.pos(), 3);
+        // 左移一格 → 光标在「好」之前（pos = 2）；退格删掉它**前面**那个字符，即「文」
+        f.left();
+        assert!(f.backspace(), "退格应删掉光标前的字符");
+        assert_eq!(f.text, "中好", "删的是「文」（pos=2 之前的那个），不是「中」");
+        assert_eq!(f.cursor.pos(), 1, "光标应随之前移一格");
+        // 再退格一次才轮到「中」
+        assert!(f.backspace());
+        assert_eq!(f.text, "好");
+        // 关键：不能 panic、不能产生非法 UTF-8（String 保证，但插入位置算错会 panic）
+        assert_eq!(f.validate().is_err(), true);
     }
 
 }

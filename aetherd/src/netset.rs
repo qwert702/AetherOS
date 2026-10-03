@@ -20,7 +20,7 @@
 //!   跟着写会改到我们没打算改的目标（与安全审计 H-4 同一条教训）；
 //! * **备份只做一次**：保留**原系统文件**，而不是我们上一次写的内容。
 
-use aether_ipc::SettingKey;
+use aether_ipc::{parse_dns_list, SettingKey};
 
 /// DNS 配置的目标文件。
 pub const RESOLV_CONF: &str = "/etc/resolv.conf";
@@ -28,56 +28,9 @@ pub const RESOLV_CONF: &str = "/etc/resolv.conf";
 /// 首次写入前的备份路径（保存**原系统文件**，之后不再覆盖它）。
 pub const RESOLV_BACKUP: &str = "/etc/resolv.conf.aether-bak";
 
-/// 允许的 DNS 服务器数量上限。
-pub const MAX_DNS: usize = 3;
-
 /// 写入文件的头部：**说清楚谁在管**，免得用户手改后被覆盖却不知原因。
 const MANAGED_HEADER: &str =
     "# 本文件由 AetherOS 设置中心写入；首次写入前的原文件备份在 /etc/resolv.conf.aether-bak\n";
-
-/// 解析 DNS 服务器列表：逗号或空白分隔，1~[`MAX_DNS`] 个 IPv4 地址。
-///
-/// **纯函数**（收字符串、不碰文件），所以边界能在开发机上全部测到。
-/// 拒绝的理由都写进返回值 —— 设置页要把它原样显示给用户，不能只说"格式错误"。
-pub fn parse_dns_list(input: &str) -> Result<Vec<std::net::Ipv4Addr>, String> {
-    let parts: Vec<&str> = input
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
-        return Err("DNS 不能为空：请填 1~3 个 IPv4 地址，例如 1.1.1.1, 8.8.8.8".into());
-    }
-    if parts.len() > MAX_DNS {
-        return Err(format!(
-            "最多 {MAX_DNS} 个 DNS 服务器，收到了 {} 个",
-            parts.len()
-        ));
-    }
-    let mut out = Vec::with_capacity(parts.len());
-    for p in parts {
-        // 含冒号的多半是想填 IPv6：明确说明，别让用户对着"格式错误"猜
-        if p.contains(':') {
-            return Err(format!(
-                "暂不支持 IPv6 DNS（{p}）：本版只写 IPv4 的 nameserver 行"
-            ));
-        }
-        match p.parse::<std::net::Ipv4Addr>() {
-            Ok(ip) => {
-                // 回环地址不是有效的上游 DNS：接受它只会让解析静默失败
-                if ip.is_loopback() {
-                    return Err(format!("{p} 是回环地址，不能作为上游 DNS"));
-                }
-                out.push(ip);
-            }
-            Err(_) => {
-                return Err(format!(
-                    "「{p}」不是合法的 IPv4 地址（要四段 0~255，且不能有前导零）"
-                ))
-            }
-        }
-    }
-    Ok(out)
-}
 
 /// 渲染 `/etc/resolv.conf` 的内容（纯函数）。
 pub fn render_resolv(servers: &[std::net::Ipv4Addr]) -> String {

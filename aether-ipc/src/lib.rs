@@ -100,6 +100,57 @@ pub enum Request {
     },
 }
 
+/// 允许的 DNS 服务器数量上限。
+pub const MAX_DNS: usize = 3;
+
+/// 解析 DNS 服务器列表：逗号或空白分隔，1~[`MAX_DNS`] 个 IPv4 地址。
+///
+/// **为什么放在共享 crate**：写入侧（`aetherd`）要先校验再落盘，界面侧要"边输边判"
+/// 给即时反馈。两边各写一份就是**两份会分叉的校验** —— 安全审计 S-2 的教训。
+/// 这里只有一份，且 `aether-ipc` 在 musl 检查范围内（两侧的编译都会被查）。
+///
+/// **纯函数**（收字符串、不碰文件），所以边界能在开发机上全部测到。
+/// 拒绝的理由都写进返回值 —— 界面要把它原样显示给用户，不能只说"格式错误"。
+pub fn parse_dns_list(input: &str) -> Result<Vec<std::net::Ipv4Addr>, String> {
+    let parts: Vec<&str> = input
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Err("DNS 不能为空：请填 1~3 个 IPv4 地址，例如 1.1.1.1, 8.8.8.8".into());
+    }
+    if parts.len() > MAX_DNS {
+        return Err(format!(
+            "最多 {MAX_DNS} 个 DNS 服务器，收到了 {} 个",
+            parts.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    for p in parts {
+        // 含冒号的多半是想填 IPv6：明确说明，别让用户对着"格式错误"猜
+        if p.contains(':') {
+            return Err(format!(
+                "暂不支持 IPv6 DNS（{p}）：本版只写 IPv4 的 nameserver 行"
+            ));
+        }
+        match p.parse::<std::net::Ipv4Addr>() {
+            Ok(ip) => {
+                // 回环地址不是有效的上游 DNS：接受它只会让解析静默失败
+                if ip.is_loopback() {
+                    return Err(format!("{p} 是回环地址，不能作为上游 DNS"));
+                }
+                out.push(ip);
+            }
+            Err(_) => {
+                return Err(format!(
+                    "「{p}」不是合法的 IPv4 地址（要四段 0~255，且不能有前导零）"
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// 可写的系统设置项（**白名单**）。
 ///
 /// 只列真正有消费者、能立即生效的项。静态 IP 暂不列入：它需要 aether-init 侧
@@ -604,6 +655,31 @@ mod tests {
         assert_eq!(json, format!("\"{}\"", SettingKey::Dns.as_str()));
         // 未知键在**解码阶段**就被拒（不是等到用的时候才检查）
         assert!(serde_json::from_str::<SettingKey>("\"nope\"").is_err());
+    }
+
+    #[test]
+    fn dns_validator_is_shared_and_strict() {
+        assert_eq!(parse_dns_list("1.1.1.1").unwrap().len(), 1);
+        assert_eq!(parse_dns_list("1.1.1.1, 8.8.8.8").unwrap().len(), 2);
+        // 顺序即优先级，不能被改动
+        let v = parse_dns_list("9.9.9.9, 1.1.1.1").unwrap();
+        assert_eq!(v[0].to_string(), "9.9.9.9");
+        // 拒绝路径（每条理由都要非空 —— 界面直接显示它）
+        for (bad, why) in [
+            ("", "空"),
+            ("1.1.1.1, 8.8.8.8, 9.9.9.9, 4.4.4.4", "超 3 个"),
+            ("::1", "IPv6"),
+            ("1.1.1", "段数不足"),
+            ("999.1.1.1", "越界"),
+            ("01.2.3.4", "前导零"),
+            ("1.1.1.1; reboot", "注入形状"),
+            ("127.0.0.1", "回环"),
+            ("localhost", "域名不是地址"),
+        ] {
+            let r = parse_dns_list(bad);
+            assert!(r.is_err(), "{bad:?}（{why}）应被拒绝");
+            assert!(!r.unwrap_err().is_empty(), "{bad:?} 的理由不能为空");
+        }
     }
 
 }
