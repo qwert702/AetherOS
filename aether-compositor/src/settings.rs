@@ -341,6 +341,8 @@ pub enum SettingsHit {
     InstallApp(usize),
     /// 重新扫描商店目录（§5.11）。
     RefreshStore,
+    /// 卸载第 `i` 个已安装应用（§5.11）。服务端会**移入回收站**（不是直接删）。
+    RemoveApp(usize),
     /// 立刻对一次时（§3.3）。
     SyncTimeNow,
     /// 切换待写入的时区名候选（§3.3）。
@@ -574,6 +576,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         | SettingsHit::RefreshPolicy
         // 「应用商店」的安装与重扫同理：要发 IPC，由事件循环处理。
         | SettingsHit::InstallApp(_)
+        | SettingsHit::RemoveApp(_)
         | SettingsHit::RefreshStore
         // §3.3 的三条同理：要发 IPC，由事件循环处理。
         | SettingsHit::SyncTimeNow

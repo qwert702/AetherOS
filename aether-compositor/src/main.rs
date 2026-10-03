@@ -970,14 +970,10 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 // 装成功了：**重新读一遍已安装列表**，那一行才会变成「已安装」；
                                 // 同时刷新 Dock 的图标（新应用要出现在那里）。
                                 // 不"本地假装已装"：万一实际没装成，界面会一直骗人。
-                                let installed = load_installed_apps(&apps_root());
-                                renderer.store.set_installed(
-                                    installed
-                                        .iter()
-                                        .map(|(n, p)| (n.clone(), p.clone()))
-                                        .collect(),
-                                );
-                                renderer.installed_apps = installed;
+                                // 商店那份（id, 版本）与 Dock 那份（id, 名字）**各读各的**：
+                                // 它们的语义不同，混用正是 P-1 那个 bug 的成因。
+                                renderer.store.refresh_installed(&apps_root());
+                                renderer.installed_apps = load_installed_apps(&apps_root());
                             }
                         }
                     }
@@ -1172,32 +1168,62 @@ fn run_fbdev() -> anyhow::Result<()> {
                             .map(|p| p.title == "应用商店")
                             .unwrap_or(false);
                         if is_store && !renderer.store.is_scanned() {
-                            let installed: Vec<(String, String)> = renderer
-                                .installed_apps
-                                .iter()
-                                .map(|(n, p)| (n.clone(), p.clone()))
-                                .collect();
-                            renderer
-                                .store
-                                .refresh(std::path::Path::new(store::CATALOG_DIR), installed);
+                            // 两份都由商店自己读（版本语义只在一处确定 —— 见 P-1 那个 bug）
+                            renderer.store.refresh(
+                                std::path::Path::new(store::CATALOG_DIR),
+                                &apps_root(),
+                            );
                         }
                     }
                     // §5.11：重新扫描
                     if let settings::SettingsHit::RefreshStore = hit {
-                        let installed: Vec<(String, String)> = renderer
-                            .installed_apps
-                            .iter()
-                            .map(|(n, p)| (n.clone(), p.clone()))
-                            .collect();
-                        renderer
-                            .store
-                            .refresh(std::path::Path::new(store::CATALOG_DIR), installed);
+                        renderer.store.refresh(
+                            std::path::Path::new(store::CATALOG_DIR),
+                            &apps_root(),
+                        );
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
                             "已重新扫描商店目录".to_string(),
                             notifications::Kind::Info,
                         );
+                    }
+                    // §5.11：卸载。同样走 `send_tool_call`（L2 → 确认卡片）——
+                    // 服务端是**移入回收站**而不是直接删，所以文案要如实这么说。
+                    if let settings::SettingsHit::RemoveApp(i) = hit {
+                        match renderer.store.installed_id(i) {
+                            Some(id) => {
+                                let tx = ai_tx.clone();
+                                let arg = id.clone();
+                                push_toast(
+                                    &mut toast,
+                                    &mut renderer.notifs,
+                                    format!("正在请求卸载：{id}"),
+                                    notifications::Kind::Info,
+                                );
+                                std::thread::spawn(move || {
+                                    if let Err(e) = send_tool_call(
+                                        "app_remove".to_string(),
+                                        serde_json::json!({ "id": arg }),
+                                        None,
+                                        ConfirmOrigin::Store,
+                                        &tx,
+                                    ) {
+                                        let _ = tx.send(AiEvent::ToolDone {
+                                            ok: false,
+                                            output: format!("请求卸载失败：{e}"),
+                                            origin: ConfirmOrigin::Store,
+                                        });
+                                    }
+                                });
+                            }
+                            None => push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                "这一项已经不在已装列表里（可能刚被卸载）".to_string(),
+                                notifications::Kind::Info,
+                            ),
+                        }
                     }
                     // §5.11：安装。走**与 AI 工具调用、整盘安装完全同一条通路**
                     // （`send_tool_call` → 闸门判 L2 → 确认卡片 → 用户允许后执行）——

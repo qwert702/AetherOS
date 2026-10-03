@@ -137,7 +137,43 @@ pub fn scan_catalog(dir: &Path) -> Vec<CatalogItem> {
     out
 }
 
-/// 这一项现在该做什么。`installed` 是 (`id`, `version`) 列表（来自 `apps::list`）。
+/// 读**已安装**应用的 (`id`, `version`) 列表。
+///
+/// **为什么商店自己读、不用 Dock 那份**：`load_installed_apps`（Dock 用）返回的是
+/// `(id, name)`，而这里要的是 `(id, version)`。P-1 里我把那份 `(id, name)` 直接当成
+/// `(id, version)` 用，于是"版本一致"永远不成立 —— **所有已装应用都显示「重新安装」**。
+/// 测试没抓到，因为测试传的是 `(id, version)`、生产传的是 `(id, name)`：
+/// **测试与生产的语义不一致**。所以现在由商店自己读，读的就是它要的东西。
+pub fn scan_installed(root: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path.join(MANIFEST_NAME)) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        if !valid_id(id) {
+            continue;
+        }
+        out.push((
+            id.to_string(),
+            v.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        ));
+    }
+    out.sort();
+    out
+}
+
+/// 这一项现在该做什么。`installed` 是 (`id`, `version`) 列表（**版本**，见 `scan_installed`）。
 ///
 /// 版本都是空串时视为"已装" —— 造包工具默认不写版本，
 /// 若把"两边都空"判成需要重装，用户每次打开商店都会看到一排"重新安装"。
@@ -301,21 +337,31 @@ pub struct StoreView {
 }
 
 impl StoreView {
-    /// 重新扫描：读目录 + 记下当前已安装的应用。
+    /// 重新扫描：可安装目录 + 已安装目录**都由这里读**（版本语义只在一处确定）。
     ///
     /// 目录不存在**不算错误**：全新系统上还没有商店目录是正常的，
     /// 界面该说"还没有可安装的应用"，而不是弹一个吓人的错误。
-    pub fn refresh(&mut self, dir: &std::path::Path, installed: Vec<(String, String)>) {
+    pub fn refresh(&mut self, dir: &std::path::Path, installed_root: &std::path::Path) {
         self.dir = dir.to_path_buf();
         self.items = scan_catalog(dir);
-        self.installed = installed;
+        self.installed = scan_installed(installed_root);
         self.scanned = true;
         self.error = None;
     }
 
-    /// 只更新"已安装"这份信息（安装成功后调用，不必重扫目录）。
-    pub fn set_installed(&mut self, installed: Vec<(String, String)>) {
-        self.installed = installed;
+    /// 只重读"已安装"那份（装/卸完成后调用，不必重扫可安装目录）。
+    pub fn refresh_installed(&mut self, installed_root: &std::path::Path) {
+        self.installed = scan_installed(installed_root);
+    }
+
+    /// 已安装列表（`id`, `version`），按 id 排序。
+    pub fn installed(&self) -> &[(String, String)] {
+        &self.installed
+    }
+
+    /// 第 `i` 个已安装应用的 id（卸载时交给 `app_remove` 的 `id`）。
+    pub fn installed_id(&self, i: usize) -> Option<String> {
+        self.installed.get(i).map(|(id, _)| id.clone())
     }
 
     pub fn items(&self) -> &[CatalogItem] {
@@ -345,6 +391,16 @@ impl StoreView {
         Some(self.dir.join(&it.id))
     }
 
+    /// 版本变化提示（如 `1.0 → 1.2`）。没有版本信息或版本相同 → `None`。
+    pub fn version_note(&self, i: usize) -> Option<String> {
+        let it = self.items.get(i)?;
+        let (_, v) = self.installed.iter().find(|(id, _)| *id == it.id)?;
+        if *v == it.version || v.is_empty() || it.version.is_empty() {
+            return None;
+        }
+        Some(format!("{v} → {}", it.version))
+    }
+
     /// 行的副标题：版本 + 该做什么。
     pub fn row_hint(&self, i: usize, lang: crate::i18n::Lang) -> String {
         let Some(it) = self.items.get(i) else {
@@ -358,10 +414,15 @@ impl StoreView {
             &it.version
         };
         let desc = if it.desc.is_empty() { "" } else { &it.desc };
+        // 版本不同时说清"从哪到哪"：只说「重新安装」用户不知道值不值得点
+        let note = match self.version_note(i) {
+            Some(n) => format!(" ({n})"),
+            None => String::new(),
+        };
         if desc.is_empty() {
-            format!("{ver} · {label}")
+            format!("{ver} · {label}{note}")
         } else {
-            format!("{ver} · {label} · {desc}")
+            format!("{ver} · {label}{note} · {desc}")
         }
     }
 }
@@ -398,9 +459,13 @@ mod view_tests {
         write_pkg(&dir, "notes", "记事本", "1.0", "随手记");
         write_pkg(&dir, "paint", "画图", "2.0", "");
 
+        // 已装目录：notes 已装 1.0（版本从**目录里的清单**读，不靠外部传值）
+        let installed_root = tmpdir("scan-root");
+        write_pkg(&installed_root, "notes", "记事本", "1.0", "");
+
         let mut v = StoreView::default();
         assert!(!v.is_scanned());
-        v.refresh(&dir, vec![("notes".into(), "1.0".into())]);
+        v.refresh(&dir, &installed_root);
         assert!(v.is_scanned() && !v.is_empty());
         assert_eq!(v.items().len(), 2);
         assert_eq!(v.action_of(0), Some(StoreAction::UpToDate), "notes 已装且版本一致");
@@ -410,6 +475,7 @@ mod view_tests {
         assert_eq!(v.path_of(0), Some(dir.join("notes")));
         assert_eq!(v.path_of(9), None);
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&installed_root);
     }
 
     /// 安装成功后只更新"已安装"那份信息，不必重扫目录 —— 那一行立刻变成"已安装"。
@@ -417,20 +483,24 @@ mod view_tests {
     fn set_installed_flips_a_row_without_rescanning() {
         let dir = tmpdir("installed");
         write_pkg(&dir, "notes", "记事本", "1.0", "");
+        let installed_root = tmpdir("installed-root");
         let mut v = StoreView::default();
-        v.refresh(&dir, vec![]);
+        v.refresh(&dir, &installed_root);
         assert_eq!(v.action_of(0), Some(StoreAction::Install));
-        v.set_installed(vec![("notes".into(), "1.0".into())]);
+        // 装完：**再读一遍已装目录**（不"本地假装已装"——万一实际没装成，界面会一直骗人）
+        write_pkg(&installed_root, "notes", "记事本", "1.0", "");
+        v.refresh_installed(&installed_root);
         assert_eq!(v.action_of(0), Some(StoreAction::UpToDate), "装完那一行要变成已安装");
-        // 已装列表本身不暴露计数：状态由 `action_of` 如实反映（那才是界面用的东西）
+        assert_eq!(v.installed_id(0).as_deref(), Some("notes"));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&installed_root);
     }
 
     /// **目录不存在不是错误**：全新系统上还没有商店目录是正常的。
     #[test]
     fn a_missing_catalog_directory_is_not_an_error() {
         let mut v = StoreView::default();
-        v.refresh(&tmpdir("missing").join("nope"), vec![]);
+        v.refresh(&tmpdir("missing").join("nope"), &tmpdir("missing-root"));
         assert!(v.is_scanned(), "扫过就要记「扫过」，界面才好区分「还没扫」");
         assert!(v.is_empty());
         assert!(v.error().is_none(), "目录不存在不该报错");
@@ -442,19 +512,84 @@ mod view_tests {
         let dir = tmpdir("hint");
         write_pkg(&dir, "notes", "记事本", "1.0", "随手记");
         let mut v = StoreView::default();
-        v.refresh(&dir, vec![]);
+        v.refresh(&dir, &tmpdir("empty-root"));
         let zh = v.row_hint(0, Lang::Zh);
         assert!(zh.contains("1.0") && zh.contains("安装") && zh.contains("随手记"), "{zh}");
         let en = v.row_hint(0, Lang::En);
         assert!(en.contains("1.0") && en.contains("Install"), "{en}");
+        // 升级场景：提示里要出现「旧 → 新」，否则用户不知道这次装的是什么
+        let up_root = tmpdir("hint-up");
+        write_pkg(&up_root, "notes", "记事本", "0.9", "");
+        let mut v2 = StoreView::default();
+        v2.refresh(&dir, &up_root);
+        let zh2 = v2.row_hint(0, Lang::Zh);
+        assert!(zh2.contains("0.9 → 1.0"), "升级要说明从哪到哪：{zh2}");
+        let _ = std::fs::remove_dir_all(&up_root);
         // 没标版本要说清楚，而不是留一段空白
         let dir2 = tmpdir("hint2");
         write_pkg(&dir2, "x", "X", "", "");
         let mut v2 = StoreView::default();
-        v2.refresh(&dir2, vec![]);
+        v2.refresh(&dir2, &tmpdir("empty-root2"));
         assert!(v2.row_hint(0, Lang::Zh).contains("未标版本"));
         assert!(v2.row_hint(9, Lang::Zh).is_empty(), "越界给空串");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
     }
+    /// **P-1 的语义 bug 回归**：`installed` 的第二个元素必须是**版本**。
+    ///
+    /// 当时的做法是把 Dock 那份 `(id, name)` 直接塞进来，于是"版本一致"永远不成立，
+    /// 所有已装应用都显示「重新安装」。这条测试从**真实目录**读一遍，
+    /// 保证 `refresh` 拿到的是版本（而不是名字）。
+    #[test]
+    fn installed_scan_reads_versions_not_names() {
+        let dir = tmpdir("ver");
+        write_pkg(&dir, "notes", "记事本", "1.2", "");
+        let installed_root = tmpdir("ver-root");
+        write_pkg(&installed_root, "notes", "记事本", "1.2", "");
+
+        let mut v = StoreView::default();
+        v.refresh(&dir, &installed_root);
+        assert_eq!(
+            v.installed(),
+            &[("notes".to_string(), "1.2".to_string())],
+            "已装清单里必须是 (id, 版本)，不是 (id, 名字)"
+        );
+        // 版本一致 → 已安装（而不是「重新安装」）
+        assert_eq!(v.action_of(0), Some(StoreAction::UpToDate), "版本一致就该是已安装");
+        assert!(v.version_note(0).is_none(), "版本相同不需要提示");
+
+        // 升级场景：已装 1.0、可装 1.2 → 重新安装 + 说明从哪到哪
+        let installed_old = tmpdir("ver-old");
+        write_pkg(&installed_old, "notes", "记事本", "1.0", "");
+        let mut v2 = StoreView::default();
+        v2.refresh(&dir, &installed_old);
+        assert_eq!(v2.action_of(0), Some(StoreAction::Reinstall));
+        assert_eq!(v2.version_note(0).as_deref(), Some("1.0 → 1.2"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&installed_root);
+        let _ = std::fs::remove_dir_all(&installed_old);
+    }
+
+    /// 卸载入口：给出第 `i` 个已安装应用的 id（越界给 None）。
+    #[test]
+    fn installed_rows_give_the_id_to_remove() {
+        let catalog = tmpdir("rm-cat");
+        let root = tmpdir("rm-root");
+        write_pkg(&root, "alpha", "甲", "1", "");
+        write_pkg(&root, "beta", "乙", "2", "");
+        let mut v = StoreView::default();
+        v.refresh(&catalog, &root);
+        assert_eq!(v.installed().len(), 2);
+        assert_eq!(v.installed_id(0).as_deref(), Some("alpha"), "按 id 排序");
+        assert_eq!(v.installed_id(1).as_deref(), Some("beta"));
+        assert_eq!(v.installed_id(9), None, "越界给 None，不 panic");
+        // 卸掉之后重读：那一行应当消失
+        std::fs::remove_dir_all(root.join("alpha")).unwrap();
+        v.refresh_installed(&root);
+        assert_eq!(v.installed().len(), 1);
+        assert_eq!(v.installed_id(0).as_deref(), Some("beta"));
+        let _ = std::fs::remove_dir_all(&catalog);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
 }

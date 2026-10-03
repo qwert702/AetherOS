@@ -2715,6 +2715,18 @@ pub struct PageCtx<'a> {
     pub time: &'a crate::timeview::TimeView,
 }
 
+/// 测试用：与 `test_ctx` 相同，但可以注入一个**非空**的商店视图
+/// （验证"已安装/可安装"两种行各自登记了正确的命中）。
+#[cfg(test)]
+pub fn test_ctx_with_store<'a>(
+    tr: Option<&'a TextRenderer>,
+    store: &'a crate::store::StoreView,
+) -> PageCtx<'a> {
+    let mut ctx = test_ctx(tr);
+    ctx.store = store;
+    ctx
+}
+
 /// 测试用的上下文：四个视图对象借用**静态默认值**（测试不关心它们，但必须活得够久）。
 #[cfg(test)]
 pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
@@ -2988,6 +3000,42 @@ fn draw_settings_content(
                 }
             }
             let _ = st::CATALOG_DIR;
+
+            // ---- 已安装：可以卸载 ----
+            ry += 8;
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("已安装", "Installed"), Some(tr),
+            );
+            ry += 22;
+            if store.installed().is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("还没有安装任何应用", "No apps installed yet"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            }
+            // 显示的是 **id**（终端里敲的那个命令名），而不是显示名：
+            // ① 这里的数据源是已装目录的清单，它只有 id/版本；
+            // ② id 正是卸载与启动要用的标识，显示它用户能一眼对上终端里的命令。
+            for (i, (id, ver)) in store.installed().iter().enumerate() {
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                let hint = if ver.is_empty() {
+                    crate::i18n::tr("点击卸载（移入回收站，删错了还能捞回来）", "Click to uninstall (moved to trash, recoverable)").to_string()
+                } else {
+                    format!("{ver} · {}", crate::i18n::tr("点击卸载（移入回收站，删错了还能捞回来）", "Click to uninstall (moved to trash, recoverable)"))
+                };
+                widgets::row(
+                    buf, w, h, row, id, Some(&hint),
+                    widgets::States::at(row, mouse), Some(tr),
+                );
+                hits.push((row, SettingsHit::RemoveApp(i)));
+                ry += 46;
+                if ry > content.y + content.h - 60 {
+                    break;
+                }
+            }
 
             ry += 6;
             let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
@@ -5762,6 +5810,86 @@ mod blit_tests {
                 p.title
             );
         }
+    }
+
+    /// §5.11：应用商店页要**分别登记**「可安装」与「已安装」两类命中。
+    ///
+    /// 这条测试盯的是"点了没反应/点错了"这类问题：可安装的那行必须是 `InstallApp`、
+    /// 已安装的那行必须是 `RemoveApp`，而**已安装**与**未安装**的判断依据是商店
+    /// 自己读到的版本（P-1 曾因为把它当成"名字"而全部判成「重新安装」）。
+    #[test]
+    fn app_store_page_registers_install_and_remove_hits() {
+        let Some(tr) = crate::text::TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        // 造两个临时目录：可安装目录里有两个包，已装目录里只有一个（版本一致）
+        let root = std::env::temp_dir().join(format!(
+            "aether-storeui-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let (cat, inst) = (root.join("cat"), root.join("inst"));
+        for (base, id, name, ver) in [
+            (&cat, "alpha", "甲", "1.0"),
+            (&cat, "beta", "乙", "2.0"),
+            (&inst, "alpha", "甲", "1.0"),
+        ] {
+            std::fs::create_dir_all(base.join(id)).unwrap();
+            std::fs::write(
+                base.join(id).join("app.json"),
+                format!(r#"{{"id":"{id}","name":"{name}","version":"{ver}"}}"#),
+            )
+            .unwrap();
+        }
+        let mut view = crate::store::StoreView::default();
+        view.refresh(&cat, &inst);
+        assert_eq!(view.installed().len(), 1, "应读到 1 个已装应用");
+        assert_eq!(view.action_of(0), Some(crate::store::StoreAction::UpToDate));
+        assert_eq!(view.action_of(1), Some(crate::store::StoreAction::Install));
+
+        let (w, h) = (820usize, 620usize);
+        let mut buf = vec![0u32; w * h];
+        let r = crate::draw::Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+        let mut hits = Vec::new();
+        let page = crate::settings::PAGES
+            .iter()
+            .position(|p| p.title == "应用商店")
+            .expect("应用商店页必须存在");
+        crate::draw::draw_settings_content(
+            &mut buf, w, h, r,
+            crate::draw::test_ctx_with_store(Some(&tr), &view),
+            page, &mut hits,
+        );
+        use crate::settings::SettingsHit as H;
+        let installs: Vec<usize> = hits
+            .iter()
+            .filter_map(|(_, x)| match x {
+                H::InstallApp(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let removes: Vec<usize> = hits
+            .iter()
+            .filter_map(|(_, x)| match x {
+                H::RemoveApp(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        // 已安装的 alpha（下标 0）不该像按钮一样能点 → 只有 beta 是可点的安装项
+        assert_eq!(installs, vec![1], "只有未安装的 beta 该登记安装命中：{installs:?}");
+        assert_eq!(removes, vec![0], "已安装的 alpha 该登记卸载命中：{removes:?}");
+        // 命中区不能在窗口外（否则点不到）
+        for (rr, id) in &hits {
+            assert!(
+                rr.x >= r.x && rr.y >= r.y && rr.x + rr.w <= r.x + r.w && rr.y + rr.h <= r.y + r.h,
+                "命中区越界：{id:?} {rr:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
 }
