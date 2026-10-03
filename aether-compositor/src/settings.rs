@@ -337,6 +337,10 @@ pub enum SettingsHit {
     CycleToolPolicy(usize),
     /// 重新从 aetherd 取一次策略列表（§5.3）。
     RefreshPolicy,
+    /// 安装「应用商店」页的第 `i` 项（§5.11）。
+    InstallApp(usize),
+    /// 重新扫描商店目录（§5.11）。
+    RefreshStore,
     /// 切换到第 n 页
     Page(usize),
     /// 24 小时制开关
@@ -431,6 +435,8 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "关于", title_en: "About", group: "系统", group_en: "System", enabled: true },
     PageDef { title: "网络", title_en: "Network", group: "网络与共享", group_en: "Network & Sharing", enabled: true },
     PageDef { title: "应用", title_en: "Apps", group: "应用", group_en: "Applications", enabled: true },
+    // §5.11：应用商店（列出可安装包，点一下就装）。
+    PageDef { title: "应用商店", title_en: "App Store", group: "应用", group_en: "Applications", enabled: true },
     PageDef { title: "权限与隐私", title_en: "Privacy & Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §5.3：逐工具的权限策略编辑器。与上一页同组：都属"谁能动我的东西"。
     PageDef { title: "工具权限", title_en: "Tool Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
@@ -559,7 +565,10 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         | SettingsHit::EditDns
         // 「工具权限」的行点击与刷新：要发 IPC 与 aetherd 来回，由事件循环处理。
         | SettingsHit::CycleToolPolicy(_)
-        | SettingsHit::RefreshPolicy => {}
+        | SettingsHit::RefreshPolicy
+        // 「应用商店」的安装与重扫同理：要发 IPC，由事件循环处理。
+        | SettingsHit::InstallApp(_)
+        | SettingsHit::RefreshStore => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

@@ -43,6 +43,7 @@ mod palette;
 mod policyview;
 mod spaces;
 mod setup;
+mod store;
 mod auth;
 mod i18n;
 mod lock;
@@ -930,6 +931,28 @@ fn run_fbdev() -> anyhow::Result<()> {
                             let mark = if ok { "✓" } else { "✗" };
                             push_toast(&mut toast, &mut renderer.notifs, format!("{mark} {last}"), notifications::Kind::Info);
                         }
+                        ConfirmOrigin::Store => {
+                            let mark = if ok { "✓" } else { "✗" };
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!("{mark} {last}"),
+                                if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
+                            );
+                            if ok {
+                                // 装成功了：**重新读一遍已安装列表**，那一行才会变成「已安装」；
+                                // 同时刷新 Dock 的图标（新应用要出现在那里）。
+                                // 不"本地假装已装"：万一实际没装成，界面会一直骗人。
+                                let installed = load_installed_apps(&apps_root());
+                                renderer.store.set_installed(
+                                    installed
+                                        .iter()
+                                        .map(|(n, p)| (n.clone(), p.clone()))
+                                        .collect(),
+                                );
+                                renderer.installed_apps = installed;
+                            }
+                        }
                     }
                     // 电源的结果已经在上面用 toast 说清楚了；再加一句"已执行 · …"
                     // 会让人误以为"已经关机完成"（而实际只是受理）
@@ -1076,6 +1099,80 @@ fn run_fbdev() -> anyhow::Result<()> {
                             .unwrap_or(false);
                         if is_tools && !renderer.policy.is_loaded() {
                             fetch_policy(ai_tx.clone());
+                        }
+                    }
+                    // §5.11「应用商店」：进页面时扫一次目录（**不每帧扫**），
+                    // 否则界面是空白，用户不知道是"没有应用"还是"还没扫"。
+                    if let settings::SettingsHit::Page(i) = hit {
+                        let is_store = settings::PAGES
+                            .get(i)
+                            .map(|p| p.title == "应用商店")
+                            .unwrap_or(false);
+                        if is_store && !renderer.store.is_scanned() {
+                            let installed: Vec<(String, String)> = renderer
+                                .installed_apps
+                                .iter()
+                                .map(|(n, p)| (n.clone(), p.clone()))
+                                .collect();
+                            renderer
+                                .store
+                                .refresh(std::path::Path::new(store::CATALOG_DIR), installed);
+                        }
+                    }
+                    // §5.11：重新扫描
+                    if let settings::SettingsHit::RefreshStore = hit {
+                        let installed: Vec<(String, String)> = renderer
+                            .installed_apps
+                            .iter()
+                            .map(|(n, p)| (n.clone(), p.clone()))
+                            .collect();
+                        renderer
+                            .store
+                            .refresh(std::path::Path::new(store::CATALOG_DIR), installed);
+                        push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            "已重新扫描商店目录".to_string(),
+                            notifications::Kind::Info,
+                        );
+                    }
+                    // §5.11：安装。走**与 AI 工具调用、整盘安装完全同一条通路**
+                    // （`send_tool_call` → 闸门判 L2 → 确认卡片 → 用户允许后执行）——
+                    // 商店不是"绕过权限的快捷方式"，它只是同一个动作的另一个入口。
+                    if let settings::SettingsHit::InstallApp(i) = hit {
+                        match renderer.store.path_of(i) {
+                            Some(path) if renderer.store.action_of(i).map(|a| a.actionable()).unwrap_or(false) => {
+                                let tx = ai_tx.clone();
+                                let arg = path.display().to_string();
+                                push_toast(
+                                    &mut toast,
+                                    &mut renderer.notifs,
+                                    format!("正在请求安装：{}", renderer.store.items()[i].name),
+                                    notifications::Kind::Info,
+                                );
+                                // `send_tool_call` 会阻塞等回执（最长 300 秒），必须在独立线程里
+                                std::thread::spawn(move || {
+                                    if let Err(e) = send_tool_call(
+                                        "app_install".to_string(),
+                                        serde_json::json!({ "path": arg }),
+                                        None,
+                                        ConfirmOrigin::Store,
+                                        &tx,
+                                    ) {
+                                        let _ = tx.send(AiEvent::ToolDone {
+                                            ok: false,
+                                            output: format!("请求安装失败：{e}"),
+                                            origin: ConfirmOrigin::Store,
+                                        });
+                                    }
+                                });
+                            }
+                            _ => push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                "这一项已安装（或不可安装）".to_string(),
+                                notifications::Kind::Info,
+                            ),
                         }
                     }
                     // §5.3：点击一行 → 循环到下一个策略。**先标记 pending 再发请求**：
@@ -1526,6 +1623,8 @@ enum ConfirmOrigin {
     Installer,
     /// 控制中心的电源入口触发（结果只进 toast —— 没有对话气泡可挂）
     Power,
+    /// 「应用商店」点「安装」触发（结果进 toast，并刷新该行的状态）
+    Store,
 }
 
 /// 控制中心交回给主循环的**意图**。

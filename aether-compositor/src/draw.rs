@@ -1557,6 +1557,8 @@ pub struct Renderer {
     pub policy: crate::policyview::PolicyView,
     /// 首次启动向导（§5.8）。状态跨帧保留（走到第几步、还开不开）。
     pub setup: crate::setup::Setup,
+    /// 「应用商店」页的状态（§5.11）。目录扫描只在进页面/点重扫时做，不每帧做。
+    pub store: crate::store::StoreView,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1875,6 +1877,7 @@ impl Renderer {
         palette: Default::default(),
         policy: Default::default(),
         setup: Default::default(),
+        store: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -2072,7 +2075,7 @@ impl Renderer {
                 buf, w, h, win, i == desktop.active, ui.mouse, t, tr, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
                 &mut self.sidebar_hits, &mut self.crumb_hits,
-                self.settings, &self.dns, &self.policy, self.settings_page, &mut self.settings_hits,
+                self.settings, &self.dns, &self.policy, &self.store, self.settings_page, &mut self.settings_hits,
             );
         }
         mark!("windows");
@@ -2571,6 +2574,7 @@ fn draw_window(
     settings: crate::settings::Settings,
     dns_field: &crate::settings::DnsField,
     policy: &crate::policyview::PolicyView,
+    store: &crate::store::StoreView,
     settings_page: usize,
     settings_hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -2677,7 +2681,7 @@ fn draw_window(
         WinKind::Preview => draw_preview_content(buf, w, h, content, win.preview.as_ref(), tr),
         WinKind::Wayland => draw_wayland_content(buf, w, h, content, win.wayland.as_ref()),
         WinKind::Settings => draw_settings_content(
-            buf, w, h, content, mouse, tr, settings, dns_field, policy, settings_page, settings_hits,
+            buf, w, h, content, mouse, tr, settings, dns_field, policy, store, settings_page, settings_hits,
         ),
     }
 }
@@ -2699,6 +2703,7 @@ fn draw_settings_content(
     s: crate::settings::Settings,
     dns_field: &crate::settings::DnsField,
     policy: &crate::policyview::PolicyView,
+    store: &crate::store::StoreView,
     page: usize,
     hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -2873,6 +2878,81 @@ fn draw_settings_content(
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
                     "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
                     font::CAPTION, color::text_dim(), 0.7);
+        }
+        "应用商店" => {
+            // §5.11：列出可安装包。内容来自 `Renderer::store`（进页面时才扫描）——
+            // **绘制不读磁盘**：每帧扫一遍目录是自找的卡顿。
+            use crate::store as st;
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("可安装的应用", "Available apps"), Some(tr),
+            );
+            ry += 24;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "点一行即安装（装之前会弹确认卡片，还会做依赖预检）。",
+                    "Click a row to install (a confirmation card appears; dependencies are pre-checked).",
+                ),
+                font::CAPTION, color::text_dim(), 0.85,
+            );
+            ry += 28;
+
+            if let Some(err) = store.error() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    &format!("{}：{err}", crate::i18n::tr("读取失败", "Failed to load")),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            } else if !store.is_scanned() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("正在扫描…", "Scanning…"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            } else if store.is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("还没有可安装的应用", "No apps available yet"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            }
+
+            let rows: Vec<(String, String)> = (0..store.items().len())
+                .map(|i| (store.items()[i].name.clone(), store.row_hint(i, lang)))
+                .collect();
+            for (i, (name, hint)) in rows.iter().enumerate() {
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                // 「已安装」那一行**不给命中区**：它不该像个按钮一样能点
+                let clickable = store.action_of(i).map(|a| a.actionable()).unwrap_or(false);
+                widgets::row(
+                    buf, w, h, row, name, Some(hint),
+                    widgets::States { disabled: !clickable, ..widgets::States::at(row, mouse) },
+                    Some(tr),
+                );
+                if clickable {
+                    hits.push((row, SettingsHit::InstallApp(i)));
+                }
+                ry += 46;
+                if ry > content.y + content.h - 60 {
+                    break;
+                }
+            }
+            let _ = st::CATALOG_DIR;
+
+            ry += 6;
+            let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf, w, h, act,
+                crate::i18n::tr("重新扫描", "Rescan"),
+                Some(crate::i18n::tr("再读一遍商店目录", "Read the catalog directory again")),
+                widgets::States::at(act, mouse), Some(tr),
+            );
+            hits.push((act, SettingsHit::RefreshStore));
         }
         "工具权限" => {
             // §5.3：逐工具策略。内容来自传入的 `policy` 视图（由事件循环异步取回），
@@ -5271,7 +5351,7 @@ mod blit_tests {
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-           &crate::policyview::PolicyView::default(), page, &mut hits,
+           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), page, &mut hits,
         );
 
         // 1) 命中区要齐：页面行 + 本页的真控件
@@ -5322,7 +5402,7 @@ mod blit_tests {
         draw_settings_content(
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(), &crate::settings::DnsField::default(),
-           &crate::policyview::PolicyView::default(), appear, &mut hits2,
+           &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(), appear, &mut hits2,
         );
         assert!(
             hits2.iter().any(|(_, x)| matches!(x, H::ToggleDark)),
@@ -5411,7 +5491,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(),
+            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
             page,
             &mut hits,
         );
@@ -5509,7 +5589,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(),
+            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
             page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
@@ -5549,7 +5629,7 @@ mod blit_tests {
             &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
             crate::settings::Settings::default(),
             &crate::settings::DnsField::default(),
-            &crate::policyview::PolicyView::default(),
+            &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
             page, &mut hits,
         );
         use crate::settings::SettingsHit as H;
@@ -5590,7 +5670,7 @@ mod blit_tests {
                 &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
                 crate::settings::Settings::default(),
                 &crate::settings::DnsField::default(),
-                &crate::policyview::PolicyView::default(),
+                &crate::policyview::PolicyView::default(), &crate::store::StoreView::default(),
                 i, &mut hits,
             );
             assert!(
