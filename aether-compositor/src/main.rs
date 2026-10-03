@@ -2657,6 +2657,10 @@ fn preview_main() -> anyhow::Result<()> {
 
     while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
         let t = start.elapsed().as_secs_f32();
+        // 通知记录开关（§3.2）：**预览循环也必须同步** —— 自查时发现只有 fbdev 循环同步，
+        // 于是主机预览里"关闭记录"会被忽略（两个循环各写一份状态，正是会产生
+        // 静默不一致的那类改动；这里补上，并留注释免得下次又只改一边）。
+        renderer.notifs.set_enabled(renderer.settings.record_notifications);
         let (mx, my) = window
             .get_mouse_pos(minifb::MouseMode::Discard)
             .unwrap_or((0.0, 0.0));
