@@ -1551,6 +1551,8 @@ pub struct Renderer {
     /// 锁屏状态（§2.3）。放在 Renderer 里是因为"锁"影响**每一帧的绘制**
     /// （整屏遮罩），而不只是某个页面。
     pub lock: crate::lock::LockScreen,
+    /// 命令面板（§5.5）。跨帧存在（查询、结果、选中项），所以要放在 Renderer 上。
+    pub palette: crate::palette::Palette,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1669,6 +1671,101 @@ fn draw_lock_screen(
     }
 }
 
+/// 命令面板覆层（§5.5）。
+///
+/// 三件事决定它的样子：
+/// * **居中偏上**：眼睛先看那里，且不挡住下方的输入焦点；
+/// * **只画前 `MAX_ROWS` 条**（候选多于展示条数是 `Palette` 的既有语义）；
+/// * 选中项要有**明确的高亮**：键盘操作时没有鼠标指针做参照，画不出"当前在哪条"
+///   就等于没法用。
+fn draw_palette(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    p: &crate::palette::Palette,
+    tr: Option<&TextRenderer>,
+) {
+    use crate::draw::theme::color;
+    // 压暗背景：面板是模态的，视觉上也该如此
+    fill_rect(
+        buf,
+        w,
+        h,
+        Rect { x: 0, y: 0, w: w as i32, h: h as i32 },
+        color::scrim(),
+        0.18,
+    );
+    let Some(tr) = tr else { return };
+    let panel_w = 520.0f32.min(w as f32 - 80.0);
+    let row_h = 34.0f32;
+    let rows = p.visible().len();
+    let panel_h = 56.0 + row_h * rows as f32;
+    let px = (w as f32 - panel_w) / 2.0;
+    let py = (h as f32 * 0.18).max(24.0);
+    fill_rect(
+        buf,
+        w,
+        h,
+        Rect { x: px as i32, y: py as i32, w: panel_w as i32, h: panel_h as i32 },
+        color::glass(),
+        0.98,
+    );
+
+    // 输入行：与设置页的口令/ DNS 输入框同一视觉语言（掩码会藏内容，这里要明文）
+    let input = if p.query.is_empty() {
+        crate::i18n::tr("输入以搜索应用、设置与文件…", "Search apps, settings and files…").to_string()
+    } else {
+        format!("{}▏", p.query)
+    };
+    tr.draw_bold(
+        buf, w, h, px + 18.0, py + 18.0, &input, font::BODY,
+        if p.query.is_empty() { color::text_faint() } else { color::text() },
+        if p.query.is_empty() { 0.6 } else { 0.95 },
+    );
+
+    // 结果行
+    for (i, hit) in p.visible().iter().enumerate() {
+        let y = py + 56.0 + row_h * i as f32;
+        let it = &p.items[hit.item];
+        let sel = i == p.selected;
+        if sel {
+            fill_rect(
+                buf, w, h,
+                Rect { x: px as i32 + 8, y: y as i32, w: panel_w as i32 - 16, h: row_h as i32 - 4 },
+                color::surface_3(),
+                0.95,
+            );
+        }
+        tr.draw_bold(
+            buf, w, h, px + 20.0, y + 8.0, &it.title, font::BODY,
+            if sel { color::text() } else { color::text_dim() },
+            if sel { 0.98 } else { 0.85 },
+        );
+        // 类别右对齐：一眼分清"这是应用还是文件"
+        let hint = crate::i18n::pick(
+            crate::i18n::lang(),
+            it.kind.label(),
+            match it.kind {
+                crate::palette::Kind::App => "App",
+                crate::palette::Kind::Setting => "Setting",
+                crate::palette::Kind::File => "File",
+            },
+        );
+        let hw = tr.measure(hint, font::CAPTION);
+        tr.draw(
+            buf, w, h, px + panel_w - 20.0 - hw, y + 11.0, hint, font::CAPTION,
+            color::text_faint(), 0.7,
+        );
+    }
+
+    if rows == 0 {
+        tr.draw(
+            buf, w, h, px + 20.0, py + 64.0,
+            crate::i18n::tr("没有匹配项", "No matches"), font::BODY, color::text_dim(), 0.7,
+        );
+    }
+}
+
 impl Renderer {
     pub fn new(w: usize, h: usize) -> Self {
         Self {
@@ -1686,6 +1783,7 @@ impl Renderer {
             settings_page: crate::settings::first_enabled_page(),
             dns: Default::default(),
         lock: Default::default(),
+        palette: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -1900,6 +1998,11 @@ impl Renderer {
         }
         if ui.open_menu.is_some() {
             self.draw_dropdown(buf, w, h, ui, tr);
+        }
+        // 命令面板（§5.5）：在普通浮层之上、锁屏之下。
+        if self.palette.open {
+            draw_palette(buf, w, h, &self.palette, tr);
+            mark!("palette");
         }
         if let Some((reply, kind, age)) = ui.ai_reply {
             draw_reply(buf, w, h, reply, kind, age, tr);

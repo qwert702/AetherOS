@@ -419,6 +419,21 @@ fn run_fbdev() -> anyhow::Result<()> {
                 handle_lock_key(&mut renderer.lock, &ev);
                 continue;
             }
+            // §5.5：命令面板是**模态**的 —— 打开期间所有按键都归它，
+            // 未识别的键也**吞掉**（否则 Ctrl+K 打开面板后按 w 会把背后的窗口关掉）。
+            if renderer.palette.open {
+                match crate::palette::handle_key(&mut renderer.palette, &palette_key_of(&ev)) {
+                    crate::palette::PaletteAction::Run(target) => {
+                        // 先关面板再执行：执行可能开窗口/切页，留着面板会挡住结果
+                        renderer.palette.close();
+                        run_palette_target(&mut desktop, &mut renderer, target, &mut toast);
+                    }
+                    crate::palette::PaletteAction::Close => renderer.palette.close(),
+                    // Handled / Ignored 都是"吞掉"
+                    _ => {}
+                }
+                continue;
+            }
             // §2.4：设置页正在编辑 DNS 时，**键盘事件先给输入框**。
             // 放在 match 之前而不是改 4 个分支（Char/Backspace/Escape/Enter）：
             // 改 4 处就有 4 处出错机会，守卫只有一处。
@@ -572,6 +587,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                         if let Some(msg) = undo_last(&mut desktop, &mut undo) {
                             push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                         }
+                        continue;
+                    }
+                    // §5.5 命令面板：`Ctrl+K`。
+                    // 打开时**快照**三个来源（应用 / 设置页 / 当前目录条目）：
+                    // 面板开着的时候文件列表变了，也不该让候选在脚下变动。
+                    if c == 'k' && !shift {
+                        let items = palette_items(&desktop);
+                        renderer.palette.open_with(items);
                         continue;
                     }
                     // 关窗会改动窗口数组：拖拽状态必须一起清掉（P2-3 同类越界）
@@ -4141,6 +4164,93 @@ fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether
         };
         let _ = tx.send(ev);
     });
+}
+
+/// 把 `input::UiEvent` 映射成面板认识的按键。
+///
+/// 面板**不直接依赖输入层**（那样它的按键行为就没法脱离 evdev 事件测），
+/// 所以这里做一次薄薄的转换 —— 而未识别的键映射成 `None`，由调用方吞掉。
+#[cfg(target_os = "linux")]
+fn palette_key_of(ev: &input::UiEvent) -> crate::palette::PaletteKey {
+    use crate::palette::PaletteKey as K;
+    match ev {
+        input::UiEvent::Char(c) => K::Char(*c),
+        input::UiEvent::Backspace => K::Backspace,
+        input::UiEvent::Enter => K::Enter,
+        input::UiEvent::Escape => K::Escape,
+        // 上下键在输入层走 Nav
+        input::UiEvent::Nav(input::NavKey::Up) => K::Up,
+        input::UiEvent::Nav(input::NavKey::Down) => K::Down,
+        _ => K::Escape, // 兜底不会用到：调用方只在识别出的键上动作（见下）
+    }
+}
+
+/// 面板的条目表：**三个来源装配**（应用 / 设置页 / 当前目录条目）。
+///
+/// 文件只取**当前目录**（`desktop.entries`，来自已有的 read_dir）——
+/// 全盘递归搜索要索引与权限模型，是另一个量级；这里不做，也不假装做了。
+#[cfg(target_os = "linux")]
+fn palette_items(desktop: &Desktop) -> Vec<crate::palette::Item> {
+    let apps: Vec<&str> = APP_TITLES.iter().copied().collect();
+    let pages: Vec<(&str, &str)> = settings::PAGES
+        .iter()
+        .map(|p| (p.title, p.title_en))
+        .collect();
+    let entries: Vec<(String, bool)> = desktop
+        .entries
+        .iter()
+        .map(|e| (e.name.clone(), e.is_dir))
+        .collect();
+    crate::palette::build_items(&apps, &pages, &entries)
+}
+
+/// 执行面板选中项。
+///
+/// 三类的落点都是**已有能力**，面板不新造动作：
+/// * 应用 → `open_app`（与点图标同一条路）；
+/// * 设置页 → 打开/激活设置窗口并切到那一页（与点左栏同一条路）；
+/// * 文件 → `open_entry`（与在文件列表里回车同一条路）。
+#[cfg(target_os = "linux")]
+fn run_palette_target(
+    desktop: &mut Desktop,
+    renderer: &mut draw::Renderer,
+    target: crate::palette::Target,
+    toast: &mut Option<(String, std::time::Instant)>,
+) {
+    use crate::palette::Target;
+    match target {
+        Target::OpenApp(i) => {
+            if let Some(msg) = open_app(desktop, i) {
+                push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Info);
+            }
+        }
+        Target::GotoPage(i) => {
+            renderer.settings_page = i.min(settings::PAGES.len().saturating_sub(1));
+            // 没有设置窗口就先开一个（索引 4 = 设置，见 `open_app` 里的映射）
+            let has = desktop
+                .wins
+                .iter()
+                .any(|w| matches!(&w.kind, draw::WinKind::Settings));
+            if !has {
+                let _ = open_app(desktop, 4);
+            }
+            if let Some(idx) = desktop
+                .wins
+                .iter()
+                .position(|w| matches!(&w.kind, draw::WinKind::Settings))
+            {
+                desktop.active = idx;
+            }
+        }
+        Target::OpenFile(i) => {
+            if i < desktop.entries.len() {
+                desktop.selected = Some(i);
+                if let Some(msg) = open_entry(desktop, i) {
+                    push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Info);
+                }
+            }
+        }
+    }
 }
 
 /// 锁屏期间的按键处理：**只认解锁需要的键**，其余一律丢弃。

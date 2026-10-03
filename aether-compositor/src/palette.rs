@@ -19,11 +19,10 @@
 //! 同分时按**标题短者优先**，再按**原始顺序**（稳定）—— 稳定很重要：
 //! 同一查询连打两次，结果顺序变了会让人以为搜到了别的东西。
 
-// 本模块的消费者是**命令面板覆层**（Ctrl+K），在下一批接线。
-// 这个 allow 是**有期限的**，不是长期豁免 —— 接线那一批应当删掉它。
-// （前几批的同类 allow 都是这么处理的：接线后即删，不留永久豁免。）
-#![cfg_attr(not(test), allow(dead_code))]
-
+// 生产消费者是 **Linux 的 fbdev 事件循环**（`Ctrl+K` 与模态守卫）。
+// 绘制侧（`draw_palette`）在 Windows 上也会调用，但「搜索 → 状态机 → 执行」
+// 这条链只在目标平台上被生产代码用到 —— 与 `auth`/`lock` 同一处理方式。
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// 条目类别（决定展示时的分组与图标语义）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -120,10 +119,17 @@ fn subsequence_span(text: &str, query: &str) -> Option<i32> {
 
 /// 搜索并返回**条目下标**（按分排序，稳定）。
 ///
-/// `query` 为空 → 返回前 `limit` 条（保持原始顺序）：命令面板刚打开时应当"列出来"，
-/// 而不是空白 —— 空白让人不知道能搜什么。
+/// `query` 为空 → 返回前 `limit` 条，**保持原始顺序**：命令面板刚打开时应当"列出来"，
+/// 而不是空白（空白让人不知道能搜什么），而且列出的顺序应当是**刻意排好的**
+/// （应用 → 设置页 → 文件），不是"标题最短的排最前"。
 pub fn search(query: &str, items: &[Item], limit: usize) -> Vec<usize> {
     let q = query.trim();
+    // 空查询：**保持装配顺序**（应用 → 设置 → 文件，那是刻意排的浏览顺序），
+    // 只截断到 limit。不按标题长度重排 —— 长度是"打分平局"的规则，
+    // 用它改变浏览顺序会让刚打开面板时看到的排序毫无道理。
+    if q.is_empty() {
+        return (0..items.len().min(limit)).collect();
+    }
     let mut scored: Vec<(i32, usize)> = Vec::new();
     for (i, it) in items.iter().enumerate() {
         // 标题与副标题都参与匹配：用户可能记得"Terminal"或"应用"
@@ -180,6 +186,185 @@ pub fn build_items(
         });
     }
     out
+}
+
+
+// ---------------------------------------------------------------------------
+// 面板状态机
+// ---------------------------------------------------------------------------
+
+/// 命令面板的状态（§5.5）。
+///
+/// 放在这里而不是绘制模块：它**没有界面依赖**，因此行为能脱离绘制单独测
+/// （`open → 输入 → 选中 → 取目标` 这条链是本模块的核心，也是最该被钉住的部分）。
+#[derive(Debug, Clone, Default)]
+pub struct Palette {
+    pub open: bool,
+    pub query: String,
+    pub cursor: crate::textview::TextCursor,
+    /// 三个来源装配出来的全部条目（打开时快照一次）。
+    pub items: Vec<Item>,
+    /// 当前查询命中的条目下标（由 [`Palette::refresh`] 算）。
+    pub results: Vec<Indexed>,
+    /// 选中第几条**结果**（不是条目下标）。
+    pub selected: usize,
+}
+
+/// 结果里的一个候选（带上条目下标与分数，便于界面显示与调试）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Indexed {
+    pub item: usize,
+    pub score: i32,
+}
+
+impl Palette {
+    /// 一次最多展示多少条结果。
+    ///
+    /// 上限是刻意的：面板太高会盖住整个桌面，而候选超过一屏时用户也不会往下数 ——
+    /// 他宁愿多打两个字符。**限制展示条数比加滚动条更符合使用习惯**。
+    pub const MAX_ROWS: usize = 8;
+
+    /// 打开面板并把条目表快照进来（`items` 由调用方从三个来源装配）。
+    ///
+    /// **打开时清空查询**：上次搜的东西留着会让人以为已经搜过了。
+    pub fn open_with(&mut self, items: Vec<Item>) {
+        self.open = true;
+        self.items = items;
+        self.query.clear();
+        self.cursor = crate::textview::TextCursor::default();
+        self.selected = 0;
+        self.refresh();
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.query.clear();
+        self.results.clear();
+        self.selected = 0;
+        // 条目表也清掉：关着的时候留一份快照会让"文件列表变了却搜到旧的"这种问题变隐蔽
+        self.items.clear();
+    }
+
+    /// 按当前查询重算结果，并把选中项夹回合法范围。
+    ///
+    /// 查询上限取 `MAX_ROWS * 4`：多算一些，用户按上下键时不会"到头了但还有候选"，
+    /// 但也不至于把上千条文件全排序一遍（上限之外的结果本来就滚不到）。
+    pub fn refresh(&mut self) {
+        let hits = search(&self.query, &self.items, Self::MAX_ROWS * 4);
+        self.results = hits
+            .into_iter()
+            .map(|item| Indexed {
+                item,
+                score: score(&self.query, &self.items[item].title).unwrap_or(0),
+            })
+            .collect();
+        if self.selected >= self.results.len() {
+            self.selected = self.results.len().saturating_sub(1);
+        }
+    }
+
+    pub fn insert(&mut self, c: char) {
+        if self.query.chars().count() >= 128 {
+            return;
+        }
+        self.cursor.insert(&mut self.query, c);
+        self.refresh();
+        // 改了查询就从第一条重新选：否则"打了一个字，选中项还停在原来的位置"
+        self.selected = 0;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor.backspace(&mut self.query) {
+            self.refresh();
+            self.selected = 0;
+        }
+    }
+
+    /// 上移选中项（**到头就停住**，不绕回 —— 绕回会让"按一下跳到最底"变成常见操作）。
+    pub fn up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+
+    /// 下移选中项（到底停住）。
+    pub fn down(&mut self) {
+        if self.selected + 1 < self.results.len() {
+            self.selected += 1;
+        }
+    }
+
+    /// 当前选中的条目（没有结果时是 `None` —— 调用方据此决定回车什么都不做）。
+    pub fn selected_item(&self) -> Option<&Item> {
+        let r = self.results.get(self.selected)?;
+        self.items.get(r.item)
+    }
+
+    /// 展示用的结果切片（最多 [`Palette::MAX_ROWS`] 条）。
+    pub fn visible(&self) -> &[Indexed] {
+        let n = self.results.len().min(Self::MAX_ROWS);
+        &self.results[..n]
+    }
+}
+
+
+/// 面板按键的处理结果。
+///
+/// **只描述"要做什么"，不回传也没法回传"怎么做"**：执行要碰 `desktop`（开窗口、
+/// 开文件），而本模块不认识那些类型。这样处理后，键盘行为能在这里单独测，
+/// 执行则集中在事件循环里一处 —— 两件事分开，各自都不会偷偷变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteAction {
+    /// 已消费，无需额外动作（例如输入了一个字符）。
+    Handled,
+    /// 什么都不做（未识别的按键 —— 调用方会**吞掉它**，面板是模态的）。
+    Ignored,
+    /// 关闭面板。
+    Close,
+    /// 执行选中项。
+    Run(Target),
+}
+
+/// 面板按键处理。
+///
+/// 面板是**模态**的：打开期间所有按键都归它（调用方负责 `continue`），
+/// 未识别的键返回 `Ignored` 而不是"漏下去" —— 否则 Ctrl+K 打开面板后按 `w`
+/// 会把背后的窗口关掉。
+pub fn handle_key(p: &mut Palette, ev: &PaletteKey) -> PaletteAction {
+    match ev {
+        PaletteKey::Char(c) => {
+            p.insert(*c);
+            PaletteAction::Handled
+        }
+        PaletteKey::Backspace => {
+            p.backspace();
+            PaletteAction::Handled
+        }
+        PaletteKey::Up => {
+            p.up();
+            PaletteAction::Handled
+        }
+        PaletteKey::Down => {
+            p.down();
+            PaletteAction::Handled
+        }
+        PaletteKey::Escape => PaletteAction::Close,
+        PaletteKey::Enter => match p.selected_item() {
+            // 没有结果时回车**什么都不做**（不是"关掉面板"—— 用户可能是想补打两个字）
+            None => PaletteAction::Ignored,
+            Some(it) => PaletteAction::Run(it.target),
+        },
+    }
+}
+
+/// 面板认识的按键。**不从 `input::UiEvent` 直接取**：那样本模块就依赖输入层，
+/// 而这些用例要能在不构造 evdev 事件的情况下跑。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteKey {
+    Char(char),
+    Backspace,
+    Up,
+    Down,
+    Enter,
+    Escape,
 }
 
 #[cfg(test)]
@@ -330,4 +515,161 @@ mod tests {
         let got_file = search("notes", &items, 10);
         assert_eq!(items[got_file[0]].kind, Kind::File);
     }
+    // ---- 面板状态机 ----
+
+    fn three_items() -> Vec<Item> {
+        vec![
+            item("终端", 0),
+            item("设置中心", 1),
+            item("文件", 2),
+        ]
+    }
+
+    #[test]
+    fn opening_snapshots_items_and_clears_the_query() {
+        let mut p = Palette::default();
+        assert!(!p.open);
+        p.query = "上次搜的东西".to_string();
+        p.open_with(three_items());
+        assert!(p.open);
+        assert!(p.query.is_empty(), "打开时必须清空上次的查询");
+        assert_eq!(p.items.len(), 3);
+        assert_eq!(p.results.len(), 3, "空查询应列出全部（受上限约束）");
+        assert_eq!(p.selected, 0);
+    }
+
+    /// 输入会把选中项**复位到第一条**：否则"打了一个字，选中项还停在原位"会让人误选中。
+    #[test]
+    fn typing_filters_and_resets_selection() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        p.down();
+        assert_eq!(p.selected, 1);
+        p.insert('文');
+        assert_eq!(p.selected, 0, "改了查询应回到第一条");
+        assert_eq!(p.results.len(), 1, "「文」只应命中「文件」");
+        assert_eq!(p.items[p.results[0].item].title, "文件");
+        // 退格回到全部
+        p.backspace();
+        assert!(p.query.is_empty());
+        assert_eq!(p.results.len(), 3);
+    }
+
+    #[test]
+    fn selection_stops_at_both_ends() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        p.up();
+        assert_eq!(p.selected, 0, "第一条再上移应停住");
+        p.down();
+        p.down();
+        assert_eq!(p.selected, 2);
+        p.down();
+        assert_eq!(p.selected, 2, "最后一条再下移应停住");
+    }
+
+    /// 查询变化后结果变少时，选中项必须被夹回合法范围（否则会取到不存在的项）。
+    #[test]
+    fn selection_is_clamped_when_results_shrink() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        p.down();
+        p.down();
+        assert_eq!(p.selected, 2);
+        p.insert('终');
+        assert_eq!(p.results.len(), 1);
+        assert_eq!(p.selected, 0, "结果变少后选中项要夹回范围内");
+        assert!(p.selected_item().is_some());
+    }
+
+    #[test]
+    fn selected_item_follows_the_selection_and_is_none_when_empty() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        assert_eq!(p.selected_item().unwrap().title, "终端");
+        p.down();
+        assert_eq!(p.selected_item().unwrap().title, "设置中心");
+        // 搜不到任何东西时：没有可执行项，回车应当什么都不做
+        for c in "zzzz".chars() {
+            p.insert(c);
+        }
+        assert!(p.results.is_empty());
+        assert!(p.selected_item().is_none());
+    }
+
+    #[test]
+    fn closing_clears_everything() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        p.insert('终');
+        p.close();
+        assert!(!p.open);
+        assert!(p.query.is_empty());
+        assert!(p.results.is_empty());
+        assert!(p.items.is_empty(), "关掉后不该留着条目快照");
+    }
+
+    /// 展示条数受 `MAX_ROWS` 限制，但**候选**可以更多（上下键不会"到头了却还有"）。
+    #[test]
+    fn visible_is_capped_but_results_are_not() {
+        let many: Vec<Item> = (0..40).map(|i| item(&format!("应用{i:02}"), i)).collect();
+        let mut p = Palette::default();
+        p.open_with(many);
+        assert!(p.results.len() > Palette::MAX_ROWS, "候选应多于展示条数");
+        assert_eq!(p.visible().len(), Palette::MAX_ROWS, "展示条数应被限制");
+        // 能一路选到超过展示条数的地方（说明结果没被截断）
+        for _ in 0..(Palette::MAX_ROWS + 2) {
+            p.down();
+        }
+        assert!(p.selected >= Palette::MAX_ROWS);
+    }
+
+    // ---- 键盘处理 ----
+
+    use super::PaletteKey as K;
+
+    #[test]
+    fn typing_and_moving_are_consumed() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        assert_eq!(handle_key(&mut p, &K::Char('文')), PaletteAction::Handled);
+        assert_eq!(p.query, "文");
+        assert_eq!(handle_key(&mut p, &K::Backspace), PaletteAction::Handled);
+        assert!(p.query.is_empty());
+        assert_eq!(handle_key(&mut p, &K::Down), PaletteAction::Handled);
+        assert_eq!(p.selected, 1);
+        assert_eq!(handle_key(&mut p, &K::Up), PaletteAction::Handled);
+        assert_eq!(p.selected, 0);
+    }
+
+    /// 回车执行**选中项的目标**（不是"第一条"）—— 上下键选了哪条就执行哪条。
+    #[test]
+    fn enter_runs_the_selected_target() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        p.down(); // 第二条：设置中心
+        let act = handle_key(&mut p, &K::Enter);
+        assert_eq!(act, PaletteAction::Run(Target::OpenApp(1)));
+    }
+
+    /// 没有结果时回车什么都不做（用户可能是想继续打字，不是想关面板）。
+    #[test]
+    fn enter_with_no_results_does_nothing() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        for c in "zzzz".chars() {
+            p.insert(c);
+        }
+        assert!(p.results.is_empty());
+        assert_eq!(handle_key(&mut p, &K::Enter), PaletteAction::Ignored);
+        assert!(p.open, "面板应仍然开着");
+    }
+
+    #[test]
+    fn escape_closes() {
+        let mut p = Palette::default();
+        p.open_with(three_items());
+        assert_eq!(handle_key(&mut p, &K::Escape), PaletteAction::Close);
+    }
+
 }

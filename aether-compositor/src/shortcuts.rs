@@ -53,6 +53,13 @@ pub const SHORTCUTS: &[Shortcut] = &[
         in_input: false,
     },
     Shortcut {
+        keys: "Ctrl+K",
+        desc: "打开命令面板（搜应用 / 设置页 / 当前目录文件）",
+        desc_en: "Open the command palette (apps / settings / files in the current folder)",
+        probe: "if c == 'k' && !shift {",
+        in_input: false,
+    },
+    Shortcut {
         keys: "Ctrl+Z",
         desc: "撤销上一步 AI 的桌面改动",
         desc_en: "Undo the last desktop change made by AI",
