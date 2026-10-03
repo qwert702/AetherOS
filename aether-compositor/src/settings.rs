@@ -277,6 +277,10 @@ pub enum SettingsHit {
     /// 不需要确认：它是**可恢复**的（桌面几秒后回来），且当前没有账户体系 ——
     /// 假装它是"安全敏感操作"反而不诚实（见 FEATURE-GAPS §2.3）。
     Logout,
+    /// 选择壁纸（批次 L-1）。越界由 `apply_hit` 夹取。
+    Wallpaper(u8),
+    /// 恢复默认外观（批次 L-1）：**保留时区**（它来自系统/发行配置，不是"外观"）。
+    ResetDefaults,
 }
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
@@ -334,6 +338,18 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         | SettingsHit::RestartService(_)
         | SettingsHit::Power(_)
         | SettingsHit::Logout => {}
+        // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
+        SettingsHit::Wallpaper(i) => {
+            s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));
+        }
+        // 恢复默认：重置除时区外的全部字段。
+        // **为什么保留时区**：它来自系统/发行配置（`TZ`），不是"外观偏好" ——
+        // 把用户所在时区重置成 +8 属于"顺手改了一个他没要求改的东西"。
+        SettingsHit::ResetDefaults => {
+            let tz = s.tz_offset_min;
+            *s = Settings::default();
+            s.tz_offset_min = tz;
+        }
     }
 }
 
@@ -587,5 +603,74 @@ mod restart_action_tests {
         }
         assert_eq!(page, 2, "动作类命中不得切换设置页");
         assert_eq!(st, before, "动作类命中不得改动任何设置值");
+    }
+
+    /// 批次 L-1：壁纸选择必须**夹取**（设置文件/命中参数都可能越界），且真的写进状态。
+    #[test]
+    fn wallpaper_hit_clamps_and_applies() {
+        let mut st = Settings::default();
+        let mut page = 0usize;
+        apply_hit(&mut st, &mut page, SettingsHit::Wallpaper(3));
+        assert_eq!(st.wallpaper, 3, "合法值应写入");
+        apply_hit(&mut st, &mut page, SettingsHit::Wallpaper(200));
+        assert_eq!(
+            st.wallpaper,
+            WALLPAPER_COUNT - 1,
+            "越界应夹取到最后一档，而不是溢出或 panic"
+        );
+        assert_eq!(page, 0, "选壁纸不该切页");
+    }
+
+    /// 批次 L-1：**恢复默认真的重置**，但**保留时区**。
+    ///
+    /// 时区来自系统/发行配置（`TZ`），不是"外观偏好" —— 顺手把它重置成 +8
+    /// 属于"改了一个用户没要求改的东西"，是这类按钮最容易犯的错。
+    #[test]
+    fn reset_defaults_resets_all_but_timezone() {
+        let mut st = Settings {
+            tz_offset_min: -330, // UTC-05:30（用户所在时区）
+            dark_mode: true,
+            wallpaper: 4,
+            ui_scale_pct: 150,
+            default_app: 2,
+            notify_sound: false,
+            locale: 1,
+            ..Settings::default()
+        };
+        let mut page = 1usize;
+        apply_hit(&mut st, &mut page, SettingsHit::ResetDefaults);
+        assert_eq!(st.tz_offset_min, -330, "时区必须保留");
+        let want = Settings::default();
+        assert_eq!(st.dark_mode, want.dark_mode);
+        assert_eq!(st.wallpaper, want.wallpaper);
+        assert_eq!(st.ui_scale_pct, want.ui_scale_pct);
+        assert_eq!(st.default_app, want.default_app);
+        assert_eq!(st.notify_sound, want.notify_sound);
+        assert_eq!(st.locale, want.locale);
+        assert_eq!(page, 1, "恢复默认不该切页");
+    }
+
+    /// 批次 L-1：色板表必须是**真的不同**，且索引 0 = 跟随主题（默认行为不变）。
+    #[test]
+    fn wallpaper_palette_is_distinct_and_index0_follows_theme() {
+        // 索引 0 必须与主题色一致：否则"默认壁纸"会被静默改掉（等于给所有人换了壁纸）
+        let (top, bottom) = crate::draw::wallpaper_colors(0, false);
+        assert_eq!((top, bottom), crate::draw::wallpaper_colors(0, true), "0 = 跟随主题");
+        // 各档之间必须可区分（否则"能换"是假的）
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..WALLPAPER_COUNT {
+            let (t, b) = crate::draw::wallpaper_colors(i, false);
+            assert!(seen.insert((t, b)), "第 {i} 档与前面某档配色相同（换了个寂寞）");
+        }
+        // 越界必须回退到默认，而不是 panic
+        assert_eq!(
+            crate::draw::wallpaper_colors(99, false),
+            crate::draw::wallpaper_colors(0, false)
+        );
+        // 深色模式下同一档必须给出不同（更暗）的配色，否则深色主题下色板会刺眼
+        let (light_top, _) = crate::draw::wallpaper_colors(1, false);
+        let (dark_top, _) = crate::draw::wallpaper_colors(1, true);
+        let lum = |c: [u8; 3]| c[0] as u32 + c[1] as u32 + c[2] as u32;
+        assert!(lum(dark_top) < lum(light_top), "深色档应更暗");
     }
 }

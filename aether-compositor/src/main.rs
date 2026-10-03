@@ -763,6 +763,18 @@ fn run_fbdev() -> anyhow::Result<()> {
                         let dark = renderer.settings.dark_mode; // 先取值，避免同时可变借用 renderer
                         apply_theme(&mut renderer, dark);
                     }
+                    // 壁纸（批次 L-1）：换壁纸要重建背景缓存 —— 与换主题同一条机制。
+                    // 不重建的话画面会保持旧壁纸直到某次偶然的缓存失效，看起来像"没生效"。
+                    if matches!(hit, settings::SettingsHit::Wallpaper(_)) {
+                        renderer.bg_dirty = true;
+                    }
+                    // 恢复默认：可能同时改了主题与壁纸，两件事都要做
+                    if matches!(hit, settings::SettingsHit::ResetDefaults) {
+                        let dark = renderer.settings.dark_mode;
+                        apply_theme(&mut renderer, dark);
+                        renderer.bg_dirty = true;
+                        toast = Some(("外观已恢复默认".into(), Instant::now()));
+                    }
                     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                         // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
                         toast = Some((format!("设置未能写入磁盘：{e}"), Instant::now()));

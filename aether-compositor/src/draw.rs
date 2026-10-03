@@ -1532,7 +1532,7 @@ impl Renderer {
         if self.bg.len() < w * h {
             self.bg = vec![0u32; w * h];
         }
-        draw_background(&mut self.bg, w, h, t);
+        draw_background(&mut self.bg, w, h, t, self.settings.wallpaper, self.settings.dark_mode);
         self.bg_row = h; // 背景已完整
         self.shadow_key = 0; // 合成层作废 → 下一帧重新烘焙（与 prepare_background 同一手法）
     }
@@ -1549,7 +1549,7 @@ impl Renderer {
         if self.bg.len() != w * h {
             self.bg = vec![0; w * h];
         }
-        draw_background(&mut self.bg, w, h, t);
+        draw_background(&mut self.bg, w, h, t, self.settings.wallpaper, self.settings.dark_mode);
         self.bg_w = w;
         self.bg_h = h;
         self.bg_row = h;
@@ -1614,7 +1614,16 @@ impl Renderer {
         }
         if self.bg_row < h {
             let y1 = (self.bg_row + BG_ROWS_PER_FRAME).min(h);
-            draw_background_rows(&mut self.bg, w, h, t, self.bg_row, y1);
+            draw_background_rows(
+                &mut self.bg,
+                w,
+                h,
+                t,
+                self.bg_row,
+                y1,
+                self.settings.wallpaper,
+                self.settings.dark_mode,
+            );
             self.bg_row = y1;
             self.frames_since_bg = 0;
         }
@@ -1746,19 +1755,60 @@ impl Renderer {
 /// 而不是"卡一下再整屏跳出"。取更小的值会让铺满时间变长，取更大则开始掉帧。
 pub const BG_ROWS_PER_FRAME: usize = 32;
 
+/// 可选壁纸的配色（**低饱和中性渐变**）。
+///
+/// 索引 0 = 跟随主题（与改动前的行为完全一致，所以默认值不会让任何人"被换壁纸"）；
+/// 1..=4 = 固定色相的深浅渐变。全部是低饱和中性色 —— 本项目不做装饰性图案/动效，
+/// 壁纸的作用是"让人一眼分清自己的机器"，不是"好看"。
+///
+/// 越界索引**回退到默认**而不是 panic：设置文件是可以被手工改的。
+pub fn wallpaper_colors(index: u8, dark: bool) -> ([u8; 3], [u8; 3]) {
+    match index {
+        0 => (color::bg_top(), color::bg_bottom()),
+        1 => {
+            if dark { ([38, 46, 54], [24, 30, 36]) } else { ([236, 242, 246], [212, 226, 234]) }
+        }
+        2 => {
+            if dark { ([50, 45, 40], [30, 27, 24]) } else { ([246, 242, 235], [232, 222, 210]) }
+        }
+        3 => {
+            if dark { ([36, 48, 42], [22, 30, 27]) } else { ([235, 246, 239], [210, 232, 218]) }
+        }
+        4 => {
+            if dark { ([46, 38, 52], [28, 24, 32]) } else { ([244, 238, 248], [226, 216, 238]) }
+        }
+        // 第 5 档（批次 L-1 自查补）：`WALLPAPER_COUNT` 是 6，但表里只有 0..=4 时，
+        // 第 5 档会落到下面的兜底分支 —— 于是"选第 5 档"看起来和默认一样（选了像没选）。
+        // 是单测的"各档必须互不相同"把它抓出来的。
+        5 => {
+            if dark { ([52, 43, 44], [32, 26, 27]) } else { ([248, 241, 241], [236, 221, 221]) }
+        }
+        _ => (color::bg_top(), color::bg_bottom()),
+    }
+}
+
 /// 生成壁纸的 `[y0, y1)` 行。
 ///
 /// **分帧生成的基础**：整屏逐像素生成要 0.4–0.6 秒，压在一帧里就是开机后
 /// 一次肉眼可见的卡死（实测首帧 561ms）。切成行带后每帧只付 1/N 的成本，
 /// 而且因为绘制目标是与屏幕分离的 `bg` 缓冲，未完成前屏幕上不会出现横向接缝。
-pub fn draw_background_rows(buf: &mut [u32], w: usize, h: usize, _t: f32, y0: usize, y1: usize) {
+pub fn draw_background_rows(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    _t: f32,
+    y0: usize,
+    y1: usize,
+    wallpaper: u8,
+    dark: bool,
+) {
     let y1 = y1.min(h);
     if y0 >= y1 || buf.len() < w * h {
         return;
     }
     // 2026-09-29 P0：壁纸改为**静态**——低饱和中性 + 极浅的垂直层次。
     // 逐像素的极光/柔光团/颗粒/暗角移除；每行一次 lerp、整行同色，成本大幅下降。
-    let (top, bottom) = (color::bg_top(), color::bg_bottom());
+    let (top, bottom) = wallpaper_colors(wallpaper, dark);
     for y in y0..y1 {
         let t = y as f32 / h.max(1) as f32;
         let rgb = [
@@ -1776,8 +1826,8 @@ pub fn draw_background_rows(buf: &mut [u32], w: usize, h: usize, _t: f32, y0: us
 
 /// 整屏一次生成（单帧模式与等价性测试用）。
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 单帧整屏生成，仅走查/测试路径调用
-pub fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32) {
-    draw_background_rows(buf, w, h, t, 0, h);
+pub fn draw_background(buf: &mut [u32], w: usize, h: usize, t: f32, wallpaper: u8, dark: bool) {
+    draw_background_rows(buf, w, h, t, 0, h, wallpaper, dark);
 }
 
 // 2026-09-29 P0：light_wallpaper_rows 移除（静态壁纸见 draw_background_rows）。
@@ -2443,9 +2493,37 @@ fn draw_settings_content(
             ry += 58;
             widgets::group_header(buf, w, h, content.x + 24, ry, "当前配色", Some(tr));
             ry += 22;
+            // 壁纸色板（批次 L-1）：**真的能换** —— 点一下立即生效并落盘。
+            // 色板用壁纸自身的配色画，所见即所得（不做"点了才知道什么颜色"的控件）。
+            widgets::group_header(buf, w, h, content.x + 24, ry, "壁纸", Some(tr));
+            ry += 24;
+            for i in 0..crate::settings::WALLPAPER_COUNT {
+                let sw = Rect { x: content.x + 24 + (i as i32) * 46, y: ry, w: 38, h: 30 };
+                let (top, bottom) = wallpaper_colors(i, s.dark_mode);
+                // 竖直两段近似渐变：色板只是"这个壁纸长什么样"的缩略，不必逐像素
+                let half = sw.h / 2;
+                rounded_rect(buf, w, h, Rect { x: sw.x, y: sw.y, w: sw.w, h: half }, 3.0,
+                             top, 1.0);
+                rounded_rect(buf, w, h, Rect { x: sw.x, y: sw.y + half, w: sw.w, h: sw.h - half }, 3.0,
+                             bottom, 1.0);
+                // 当前选中：外框高亮（不是"更亮一点"这种看不清的差别）
+                if i == s.wallpaper {
+                    rounded_outline(buf, w, h, sw, 3.0, color::accent(), 0.95);
+                } else {
+                    rounded_outline(buf, w, h, sw, 3.0, color::hairline(), 0.35);
+                }
+                hits.push((sw, SettingsHit::Wallpaper(i)));
+            }
+            ry += 44;
+            // 恢复默认（批次 L-1）：用户改坏了能回去。**真的重置**，不是只改显示。
+            let reset = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(buf, w, h, reset, "恢复默认外观",
+                         Some("主题/壁纸/时钟/输入等恢复出厂值（时区保留）"),
+                         widgets::States::at(reset, mouse), Some(tr));
+            hits.push((reset, SettingsHit::ResetDefaults));
+            ry += 52;
             for (k, v) in [
                 ("主色", "teal（单一强调色，AI 元素同色）"),
-                ("壁纸", "静态中性：浅色纯白 → #F4F5F7"),
                 ("圆角", "4 / 6 / 8"),
                 ("层次", "两层轻影 + 1px 描边"),
             ] {
@@ -4591,11 +4669,11 @@ mod blit_tests {
         for &mode in &[color::Mode::Light, color::Mode::Dark] {
             color::set_mode(mode);
             let (mut whole, mut banded) = (vec![0u32; w * h], vec![0u32; w * h]);
-            draw_background(&mut whole, w, h, 1.2);
+            draw_background(&mut whole, w, h, 1.2, 0, false);
             let mut y = 0;
             while y < h {
                 let y1 = (y + 8).min(h);
-                draw_background_rows(&mut banded, w, h, 1.2, y, y1);
+                draw_background_rows(&mut banded, w, h, 1.2, y, y1, 0, false);
                 y = y1;
             }
             assert_eq!(whole, banded, "mode={mode:?}: 分帧生成与整屏生成不一致");
@@ -4608,9 +4686,9 @@ mod blit_tests {
     fn background_rows_clamps_out_of_range() {
         let (w, h) = (8usize, 8usize);
         let mut buf = vec![0u32; w * h];
-        draw_background_rows(&mut buf, w, h, 1.0, h, h + 5); // y0 == h
-        draw_background_rows(&mut buf, w, h, 1.0, 100, 200); // 完全越界
-        draw_background_rows(&mut buf, w, h, 1.0, 5, 2); // 反向区间
+        draw_background_rows(&mut buf, w, h, 1.0, h, h + 5, 0, false); // y0 == h
+        draw_background_rows(&mut buf, w, h, 1.0, 100, 200, 0, false); // 完全越界
+        draw_background_rows(&mut buf, w, h, 1.0, 5, 2, 0, false); // 反向区间
         assert!(buf.iter().all(|&p| p == 0), "越界行带不应写入任何像素");
     }
 }
