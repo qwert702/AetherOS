@@ -12,6 +12,7 @@ mod llm;
 mod clipboard;
 mod modelcfg;
 mod netset;
+mod policy;
 mod perm;
 mod router;
 mod server;
