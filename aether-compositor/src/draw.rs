@@ -2651,6 +2651,37 @@ fn draw_settings_content(
                     "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
                     font::CAPTION, color::text_dim(), 0.7);
         }
+        "快捷键" => {
+            // §5.9：总览页。内容**只来自 `shortcuts::SHORTCUTS`** ——
+            // 那张表的每条都带探针测试，所以这里画出来的每一条在源码里都有落点。
+            // 不在绘制里另写一份文字：两份必然分叉，而分叉的那份就是"界面上写着但代码里没有"。
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("全部快捷键", "All shortcuts"), Some(tr),
+            );
+            ry += 26;
+            for sc in crate::shortcuts::SHORTCUTS {
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                // 标题 = 键位，副标题 = 说明（两种语言都有，且有测试保证非空）
+                widgets::row(
+                    buf, w, h, row, sc.keys, Some(sc.desc_in(lang)),
+                    widgets::States::at(row, mouse), Some(tr),
+                );
+                ry += 46;
+            }
+            ry += 6;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "以上每条都在源码里有落点（有测试逐条核对）",
+                    "Every entry above is verified against the source by a test",
+                ),
+                font::CAPTION, color::text_dim(), 0.8,
+            );
+            // 注意：分支末尾不要再写 `ry += 24;` —— 没有后续行读它，会被判为死赋值
+            // （门禁把警告当失败）。
+        }
         "网络" => {
             // 真值来自内核（`/sys/class/net/*`、`/proc/net/route`、`/proc/net/fib_trie`、
             // `/etc/resolv.conf`）—— 解析逻辑与单测见 `net.rs`。
@@ -5234,6 +5265,38 @@ mod blit_tests {
         );
         for (rect, _) in locale_hits {
             assert!(rect.w > 0 && rect.h > 0, "语言开关命中区是零面积：{rect:?}");
+        }
+    }
+
+    /// 冒烟测试：**每个可用的设置页都要能画出来而不 panic**。
+    ///
+    /// 新加一页（如 §5.9 的快捷键页）时最容易忘的就是"能画"——
+    /// 而这类问题只在真机打开那一页时才暴露。这条测试一次覆盖所有页。
+    #[test]
+    fn every_enabled_settings_page_draws_without_panicking() {
+        let Some(tr) = crate::text::TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        let (w, h) = (820usize, 620usize);
+        let r = crate::draw::Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+        for (i, p) in crate::settings::PAGES.iter().enumerate() {
+            if !p.enabled {
+                continue;
+            }
+            let mut buf = vec![0u32; w * h];
+            let mut hits = Vec::new();
+            crate::draw::draw_settings_content(
+                &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
+                crate::settings::Settings::default(),
+                &crate::settings::DnsField::default(),
+                i, &mut hits,
+            );
+            assert!(
+                hits.iter().any(|(_, x)| matches!(x, crate::settings::SettingsHit::Page(_))),
+                "页「{}」没有登记左栏导航命中区",
+                p.title
+            );
         }
     }
 

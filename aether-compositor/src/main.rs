@@ -38,6 +38,7 @@ mod widgets;
 
 /// 用户设置的持久化与声明（P3 设置中心）：`/var/lib/aether/settings.json`。
 mod settings;
+mod shortcuts;
 mod auth;
 mod i18n;
 mod lock;

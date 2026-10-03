@@ -401,6 +401,8 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "外观", title_en: "Appearance", group: "个性化", group_en: "Personalization", enabled: true },
     PageDef { title: "时钟与时区", title_en: "Date & Time", group: "系统", group_en: "System", enabled: true },
     PageDef { title: "输入", title_en: "Input", group: "设备", group_en: "Devices", enabled: true },
+    // §5.9：快捷键总览。放在「输入」之后 —— 两者都是"怎么操作"这条线上的。
+    PageDef { title: "快捷键", title_en: "Shortcuts", group: "设备", group_en: "Devices", enabled: true },
     PageDef { title: "AI", title_en: "AI", group: "智能", group_en: "Intelligence", enabled: true },
     PageDef { title: "关于", title_en: "About", group: "系统", group_en: "System", enabled: true },
     PageDef { title: "网络", title_en: "Network", group: "网络与共享", group_en: "Network & Sharing", enabled: true },
