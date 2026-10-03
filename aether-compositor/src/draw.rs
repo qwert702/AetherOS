@@ -1631,7 +1631,7 @@ fn draw_lock_screen(
     let Some(tr) = tr else { return };
     let cx = w as f32 / 2.0;
     let cy = h as f32 / 2.0;
-    let title = "已锁定";
+    let title = crate::i18n::tr("已锁定", "Locked");
     let tw = tr.measure(title, font::TITLE);
     tr.draw_bold(buf, w, h, cx - tw / 2.0, cy - 90.0, title, font::TITLE, color::text(), 0.95);
 
@@ -1658,12 +1658,12 @@ fn draw_lock_screen(
     let hint = lock
         .message()
         .map(|s| s.to_string())
-        .unwrap_or_else(|| "输入口令后回车解锁".to_string());
+            .unwrap_or_else(|| crate::i18n::tr("输入口令后回车解锁", "Type your password and press Enter").to_string());
     let hw = tr.measure(&hint, font::CAPTION);
     tr.draw(buf, w, h, cx - hw / 2.0, by + 60.0, &hint, font::CAPTION, color::text_dim(), 0.9);
 
     if lock.attempts() > 0 {
-        let n = format!("已尝试 {} 次", lock.attempts());
+        let n = format!("{} {} {}", crate::i18n::tr("已尝试", "Attempts:"), lock.attempts(), crate::i18n::tr("次", ""));
         let nw = tr.measure(&n, font::CAPTION);
         tr.draw(buf, w, h, cx - nw / 2.0, by + 84.0, &n, font::CAPTION, color::text_dim(), 0.7);
     }
@@ -2514,12 +2514,18 @@ fn draw_settings_content(
     // ---- 左栏：分组标题 + 页行 ----
     let mut y = r.y + 12;
     let mut group = "";
+    // 语言取一次即可（绘制期不变）。
+    // 注意：这里必须写全限定 `crate::i18n::tr` —— 本文件的 `tr` 是**文本渲染器**的
+    // 局部变量名，直接用 `tr(...)` 会被它遮蔽（编译报"not callable"）。
+    let lang = crate::i18n::lang();
     for (i, p) in PAGES.iter().enumerate() {
+        // **按原文比较**（`p.group`），只在绘制时翻译：拿翻译后的文本互相比较的话，
+        // 同一分组会因为两次取到的文本不同而重复出标题。
         if p.group != group {
             if !group.is_empty() {
                 y += 10;
             }
-            widgets::group_header(buf, w, h, r.x + 16, y, p.group, Some(tr));
+            widgets::group_header(buf, w, h, r.x + 16, y, p.group_in(lang), Some(tr));
             y += 20;
             group = p.group;
         }
@@ -2530,17 +2536,18 @@ fn draw_settings_content(
             disabled: !p.enabled,
             ..Default::default()
         };
-        widgets::row(buf, w, h, row, p.title, None, st, Some(tr));
+        widgets::row(buf, w, h, row, p.title_in(lang), None, st, Some(tr));
         if p.enabled {
             hits.push((row, SettingsHit::Page(i)));
         } else {
             // 不可用的页如实标注，而不是让用户点进去发现是空壳
-            let tag = tr.measure("待接入", font::LABEL);
+            let tag_text = crate::i18n::tr("待接入", "Coming soon");
+            let tag = tr.measure(tag_text, font::LABEL);
             tr.draw(
                 buf, w, h,
                 (row.x + row.w - 8) as f32 - tag,
                 tr.vcenter(row.y as f32, row.h as f32, font::LABEL),
-                "待接入", font::LABEL, color::text_dim(), 0.5,
+                tag_text, font::LABEL, color::text_dim(), 0.5,
             );
         }
         y += 32;
@@ -2755,6 +2762,26 @@ fn draw_settings_content(
             // §3.4 无障碍：高对比度。紧跟主题开关 —— 它是"看得清"这条线上的第二项。
             // 说明文字直接给出**可验证的依据**（WCAG AA），而不是"更清楚"这种主观话。
             let r_hc = Rect { x: r1.x, y: r1.y + 56, w: r1.w, h: r1.h };
+            // §3.5 语言：**用该语言自己写语言名**（英文界面里出现"英语"两个字是半成品的样子）。
+            // 开关语义 = "是否英文"，`Locale` 的值由当前状态算出。
+            let r_lang = Rect { x: r1.x, y: r1.y + 112, w: r1.w, h: r1.h };
+            let lang = crate::i18n::lang();
+            let lang_title = crate::i18n::tr("界面语言", "Language");
+            // 提示里带上**当前语言名**（用该语言自身拼写）——
+            // 这比只给一个开关更能让人确认"我现在看的是哪种语言"。
+            let lang_hint = format!(
+                "{} · {}",
+                lang.label(),
+                crate::i18n::tr(
+                    "切换后左栏与页标题立即生效；正文尚未翻译（见缺口清单 §3.5）",
+                    "Sidebar and titles switch immediately; page bodies are not translated yet",
+                )
+            );
+            let next_locale = if s.locale == 1 { 0 } else { 1 };
+            toggle_row(buf, w, h, mouse, tr, r_lang, lang_title, Some(&lang_hint),
+                       s.locale == 1, SettingsHit::Locale(next_locale), hits);
+            let _ = lang;
+
             toggle_row(buf, w, h, mouse, tr, r_hc, "高对比度",
                        Some("把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交"),
                        s.high_contrast, SettingsHit::ToggleContrast, hits);
@@ -5165,6 +5192,48 @@ mod blit_tests {
             if matches!(x, H::ToggleContrast) {
                 assert!(rect.w > 0 && rect.h > 0, "高对比度开关命中区是零面积：{rect:?}");
             }
+        }
+    }
+
+    /// §3.5：「外观」页必须登记**语言开关**。
+    ///
+    /// 此前 `locale` 字段存在、能落盘，却**既改不了也不生效** ——
+    /// 这条测试盯的就是"存了不用"这种半拉子状态不许再出现。
+    #[test]
+    fn appearance_page_registers_the_language_switch() {
+        // 本模块没有 import Rect，用函数内 use
+        use crate::draw::Rect;
+        let Some(tr) = crate::text::TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        let (w, h) = (820usize, 620usize);
+        let mut buf = vec![0u32; w * h];
+        let r = Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+        let mut hits = Vec::new();
+        let page = crate::settings::PAGES
+            .iter()
+            .position(|p| p.title == "外观")
+            .expect("应存在「外观」页");
+        crate::draw::draw_settings_content(
+            &mut buf, w, h, r, (0.0, 0.0), Some(&tr),
+            crate::settings::Settings::default(),
+            &crate::settings::DnsField::default(),
+            page, &mut hits,
+        );
+        use crate::settings::SettingsHit as H;
+        let locale_hits: Vec<_> = hits.iter().filter(|(_, x)| matches!(x, H::Locale(_))).collect();
+        assert!(
+            !locale_hits.is_empty(),
+            "外观页缺少语言开关（`locale` 又会变成「存了不用」）"
+        );
+        // 默认中文下，点它应当切到 English（下标 1）
+        assert!(
+            locale_hits.iter().any(|(_, x)| matches!(x, H::Locale(1))),
+            "默认中文时，语言开关应指向 English"
+        );
+        for (rect, _) in locale_hits {
+            assert!(rect.w > 0 && rect.h > 0, "语言开关命中区是零面积：{rect:?}");
         }
     }
 

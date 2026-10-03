@@ -311,6 +311,8 @@ pub enum SettingsHit {
     /// 「网络」页：开始编辑 DNS（§2.4）。**只改编辑态**，真正的写入在按下回车后
     /// 经 aetherd 执行 —— 界面不直接改系统配置。
     EditDns,
+    /// 切换界面语言（§3.5）。值是 `Settings::locale` 的下标。
+    Locale(u8),
     /// 切换到第 n 页
     Page(usize),
     /// 24 小时制开关
@@ -366,6 +368,10 @@ pub enum SettingsHit {
 
 /// 设置页的声明（左栏与内容区共用同一份，避免两处各写一遍页名）。
 pub struct PageDef {
+    /// 英文页名（§3.5）。**每页都必须有** —— 有一条测试扫全表，空的会变红。
+    pub title_en: &'static str,
+    /// 英文分组名。
+    pub group_en: &'static str,
     /// 页标题
     pub title: &'static str,
     /// 左栏分组
@@ -377,18 +383,32 @@ pub struct PageDef {
 /// 左栏页面清单。
 ///
 /// **不可用的页如实标出**：本项目不允许"点进去发现是空壳"的假页面。
+impl PageDef {
+    /// 按语言取页名。
+    ///
+    /// 注意：**分组比较仍用 `group`（原文）**，只在绘制时翻译 ——
+    /// 若拿翻译后的文本互相比较，同一分组在两种语言下会因文本不同而重复出标题。
+    pub fn title_in(&self, lang: crate::i18n::Lang) -> &'static str {
+        crate::i18n::pick(lang, self.title, self.title_en)
+    }
+
+    pub fn group_in(&self, lang: crate::i18n::Lang) -> &'static str {
+        crate::i18n::pick(lang, self.group, self.group_en)
+    }
+}
+
 pub const PAGES: &[PageDef] = &[
-    PageDef { title: "外观", group: "个性化", enabled: true },
-    PageDef { title: "时钟与时区", group: "系统", enabled: true },
-    PageDef { title: "输入", group: "设备", enabled: true },
-    PageDef { title: "AI", group: "智能", enabled: true },
-    PageDef { title: "关于", group: "系统", enabled: true },
-    PageDef { title: "网络", group: "网络与共享", enabled: true },
-    PageDef { title: "应用", group: "应用", enabled: true },
-    PageDef { title: "权限与隐私", group: "隐私和安全性", enabled: true },
+    PageDef { title: "外观", title_en: "Appearance", group: "个性化", group_en: "Personalization", enabled: true },
+    PageDef { title: "时钟与时区", title_en: "Date & Time", group: "系统", group_en: "System", enabled: true },
+    PageDef { title: "输入", title_en: "Input", group: "设备", group_en: "Devices", enabled: true },
+    PageDef { title: "AI", title_en: "AI", group: "智能", group_en: "Intelligence", enabled: true },
+    PageDef { title: "关于", title_en: "About", group: "系统", group_en: "System", enabled: true },
+    PageDef { title: "网络", title_en: "Network", group: "网络与共享", group_en: "Network & Sharing", enabled: true },
+    PageDef { title: "应用", title_en: "Apps", group: "应用", group_en: "Applications", enabled: true },
+    PageDef { title: "权限与隐私", title_en: "Privacy & Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §3.2：通知页（是否记录 + 清空历史）。放在最后一页：它是"回头看"的地方，
     // 不是日常要改的设置。
-    PageDef { title: "通知", group: "系统", enabled: true },
+    PageDef { title: "通知", title_en: "Notifications", group: "系统", group_en: "System", enabled: true },
 ];
 
 /// 左栏默认选中的页（第一个可用的页）。
@@ -498,6 +518,7 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::ImeDefault => s.ime_default = !s.ime_default,
         SettingsHit::ToggleDark => s.dark_mode = !s.dark_mode,
         SettingsHit::ToggleContrast => s.high_contrast = !s.high_contrast,
+        SettingsHit::Locale(i) => s.locale = i.min(LOCALE_COUNT.saturating_sub(1)),
         SettingsHit::MouseSpeed(p) => s.mouse_speed_pct = p.clamp(MOUSE_SPEED_MIN, MOUSE_SPEED_MAX),
         // 动作类命中**不改设置状态**：它们由事件循环执行（打开窗口/程序/电源动作），
         // 放这里只是为了让 `apply_hit` 对枚举保持穷尽（漏一个变体会编译不过）。
@@ -1082,6 +1103,46 @@ mod restart_action_tests {
         assert!(!s.high_contrast, "再点一次应关闭");
         // 旧文件没有这个字段 → 走默认（关），不能因此读失败
         assert!(!Settings::from_json(r#"{"dark_mode":true}"#).high_contrast);
+    }
+
+    /// §3.5：**每一页都必须有非空英文名**。
+    ///
+    /// 这是防"翻了一半"的断言：新增页面时忘了写英文名，界面上会是一片空白，
+    /// 而这在中文环境下根本看不出来（写这条测试的作者也是中文用户）。
+    #[test]
+    fn every_page_has_an_english_title_and_group() {
+        use crate::i18n::Lang;
+        for (i, p) in PAGES.iter().enumerate() {
+            assert!(
+                !p.title_en.trim().is_empty(),
+                "第 {i} 页（{}）缺少英文页名",
+                p.title
+            );
+            assert!(
+                !p.group_en.trim().is_empty(),
+                "第 {i} 页（{}）缺少英文分组名",
+                p.title
+            );
+            // 英文名不该和中文名一模一样（那多半是没翻、直接复制过来的）
+            if p.title.chars().any(|c| !c.is_ascii()) {
+                assert_ne!(p.title, p.title_en, "第 {i} 页的英文名与中文名相同");
+            }
+            // 两种语言都能取到
+            assert_eq!(p.title_in(Lang::Zh), p.title);
+            assert_eq!(p.title_in(Lang::En), p.title_en);
+        }
+    }
+
+    /// §3.5：语言开关要走真实的 `apply_hit` 路径，并且**越界会被夹取**。
+    #[test]
+    fn locale_hit_clamps_to_known_languages() {
+        let mut s = Settings::default();
+        let mut page = 0usize;
+        assert_eq!(s.locale, 0, "默认中文");
+        apply_hit(&mut s, &mut page, SettingsHit::Locale(1));
+        assert_eq!(s.locale, 1);
+        apply_hit(&mut s, &mut page, SettingsHit::Locale(99));
+        assert_eq!(s.locale, LOCALE_COUNT - 1, "越界要夹到最后一档，而不是越界");
     }
 
 }

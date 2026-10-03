@@ -39,6 +39,7 @@ mod widgets;
 /// 用户设置的持久化与声明（P3 设置中心）：`/var/lib/aether/settings.json`。
 mod settings;
 mod auth;
+mod i18n;
 mod lock;
 mod sha512crypt;
 /// 网络状态（P4.2 设置中心「网络」页）：读内核真值（/sys/class/net、/proc/net/*），不新增 IPC。
@@ -888,6 +889,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
 
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
+                    // §3.5：语言切换同样**立即生效**（左栏与各项标题下一帧就变）。
+                    if matches!(hit, settings::SettingsHit::Locale(_)) {
+                        crate::i18n::set_lang(crate::i18n::Lang::from_locale(
+                            renderer.settings.locale,
+                        ));
+                    }
                     if matches!(
                         hit,
                         settings::SettingsHit::ToggleDark | settings::SettingsHit::ToggleContrast
@@ -2642,6 +2649,8 @@ fn main() -> anyhow::Result<()> {
         _ => {
             // 读用户设置（读不到就是默认值 = 明亮）
             let saved = settings::Settings::load(settings::SETTINGS_PATH, text::tz_offset_min());
+            // 语言也要在**第一帧之前**生效，否则开机会先闪一屏中文（§3.5）。
+            crate::i18n::set_lang(crate::i18n::Lang::from_locale(saved.locale));
             // 无障碍设置与主题一起应用（§3.4）：高对比度也要在**第一帧之前**生效，
             // 否则开机瞬间会闪一下低对比界面。
             draw::theme::color::set_high_contrast(saved.high_contrast);
