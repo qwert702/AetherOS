@@ -345,6 +345,13 @@ fn handle_conn<R: Read, W: Write>(
 /// `docs/AI权限模型（AI-PERMISSIONS）-2026-09-05.md` 机制 2 承诺"审计写入失败不阻断执行，但**不允许静默
 /// 零留痕**"。用 `let _ = gate.audit(...)` 恰恰就是静默 —— 磁盘满之后审计会停止，
 /// 而系统继续正常运行，没有任何人会发现。这里把它显式化。
+
+/// 上次对时的偏移（毫秒）。`i64::MIN` = **从未对过** —— 不假装是 0：
+/// "偏移 0" 是一个有意义的结果（完全准），与"没对过"必须区分开。
+static LAST_OFFSET_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
+/// 上次对时的 Unix 秒（0 = 从未对过）。
+static LAST_SYNC_UNIX: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
 fn audit_or_warn(gate: &Gate, tool: &str, level: Level, verdict: &str) {
     if let Err(e) = gate.audit_note(tool, level, verdict) {
         eprintln!("[aetherd] 审计日志写入失败（{tool}/{verdict}）: {e}");
@@ -561,6 +568,116 @@ fn handle_request(
                      不接受直接下发的 {}",
                     action.as_str()
                 ),
+            }]
+        }
+        Request::SyncTime => {
+            if !*is_ui {
+                audit_or_warn(gate, "sync_time", Level::L1, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "对时必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            match crate::timesync::query().and_then(|t| {
+                let (now_s, now_ns) = crate::timesync::now_unix();
+                // 偏移 = 服务器时间 - 本机时间
+                let offset_ms = (t.unix_secs - now_s) * 1000
+                    + (t.nanos as i64 - now_ns as i64) / 1_000_000;
+                crate::timesync::apply_offset(offset_ms).map(|how| (offset_ms, how))
+            }) {
+                Ok((offset_ms, how)) => {
+                    LAST_OFFSET_MS.store(offset_ms, std::sync::atomic::Ordering::Relaxed);
+                    LAST_SYNC_UNIX.store(
+                        crate::timesync::now_unix().0,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    let what = match how {
+                        crate::timesync::Adjustment::None => "已在误差范围内，未调整",
+                        crate::timesync::Adjustment::Slew => "已平滑调整（不跳变）",
+                        crate::timesync::Adjustment::Step => "已直接校正（偏移较大）",
+                    };
+                    let args = serde_json::json!({ "offset_ms": offset_ms });
+                    if let Err(e) =
+                        gate.audit_call("sync_time", Level::L1, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 对时完成：偏移 {offset_ms} ms（{what}）");
+                    vec![Response::TimeSync {
+                        ok: true,
+                        message: format!("偏移 {offset_ms} ms · {what}"),
+                        offset_ms,
+                    }]
+                }
+                Err(e) => {
+                    let args = serde_json::json!({ "error": e });
+                    if let Err(e2) =
+                        gate.audit_call("sync_time", Level::L1, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 对时失败：{e}");
+                    vec![Response::TimeSync {
+                        ok: false,
+                        message: e,
+                        offset_ms: 0,
+                    }]
+                }
+            }
+        }
+        Request::SetTimezone { name } => {
+            if !*is_ui {
+                audit_or_warn(gate, "set_timezone", Level::L1, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "写系统时区必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let args = serde_json::json!({ "name": &name });
+            match crate::timesync::set_timezone(&name) {
+                Ok(path) => {
+                    if let Err(e) =
+                        gate.audit_call("set_timezone", Level::L1, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 系统时区已写入：{name}（{}）", path.display());
+                    vec![Response::SettingAck {
+                        key: "timezone".into(),
+                        ok: true,
+                        message: format!("系统时区已设为 {name}"),
+                    }]
+                }
+                Err(e) => {
+                    if let Err(e2) =
+                        gate.audit_call("set_timezone", Level::L1, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 写系统时区失败：{name} —— {e}");
+                    vec![Response::SettingAck {
+                        key: "timezone".into(),
+                        ok: false,
+                        message: format!("失败：{e}"),
+                    }]
+                }
+            }
+        }
+        Request::GetTimeStatus => {
+            if !*is_ui {
+                audit_or_warn(gate, "get_time_status", Level::L0, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "读取时间状态必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let timezone = std::fs::read_to_string(crate::timesync::TIMEZONE_FILE)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            vec![Response::TimeStatus {
+                timezone,
+                last_offset_ms: LAST_OFFSET_MS.load(std::sync::atomic::Ordering::Relaxed),
+                last_sync_unix: LAST_SYNC_UNIX.load(std::sync::atomic::Ordering::Relaxed),
             }]
         }
         Request::GetPolicy => {

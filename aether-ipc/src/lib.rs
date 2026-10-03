@@ -103,6 +103,15 @@ pub enum Request {
     /// 只允许已注册的 UI 通道：策略决定"什么能自动执行"，能读它就知道系统的
     /// 安全边界长什么样（属于侦察信息）。
     GetPolicy,
+    /// 立刻对一次时（§3.3）。服务端会发 SNTP 查询并按偏移决定"平滑/跳变"。
+    SyncTime,
+    /// 把时区写进系统（§3.3）。`name` 是 IANA 名（如 `Asia/Shanghai`），
+    /// 服务端会校验合法性（**它是路径的一部分**）。
+    SetTimezone {
+        name: String,
+    },
+    /// 查询时间同步状态（上次偏移、当前系统时区）。
+    GetTimeStatus,
     /// 设置某个工具的策略。**工具名必须存在于注册表**（服务端会校验）——
     /// 允许写入不存在的工具名会留下"死配置"：用户以为禁了某个东西，其实没有。
     SetToolPolicy {
@@ -252,6 +261,22 @@ pub enum Response {
     /// 策略列表（`Request::GetPolicy` 的应答）。
     PolicyList {
         entries: Vec<PolicyEntryWire>,
+    },
+    /// 对时结果（`Request::SyncTime` 的应答）。
+    TimeSync {
+        ok: bool,
+        message: String,
+        /// 相对系统时钟的偏移（毫秒，正 = 服务器比本机快）
+        offset_ms: i64,
+    },
+    /// 时间同步状态（`Request::GetTimeStatus` 的应答）。
+    TimeStatus {
+        /// 当前系统时区名（读不到就是空串）
+        timezone: String,
+        /// 上次对时的偏移（毫秒）；从未对过时为 `i64::MIN`（**不假装是 0**）
+        last_offset_ms: i64,
+        /// 上次对时的 Unix 秒；从未对过为 0
+        last_sync_unix: i64,
     },
     /// 策略写入回执（`Request::SetToolPolicy` 的应答）。
     PolicyAck {
@@ -756,6 +781,40 @@ mod tests {
         };
         let json = serde_json::to_string(&e).unwrap();
         assert_eq!(serde_json::from_str::<PolicyEntryWire>(&json).unwrap(), e);
+    }
+
+    #[test]
+    fn time_messages_round_trip() {
+        // 本 crate 内部的测试用 `crate::`（不能用 `aether_ipc::` —— 那是外部视角）
+        // `Request`/`Response` **没有实现 `PartialEq`**（也不该为了测试加一个 derive），
+        // 所以这里用"解码后再编码、与原串比对"+ 逐字段匹配来验往返。
+        let req = Request::SetTimezone { name: "Asia/Shanghai".into() };
+        let s = crate::encode(&req);
+        match crate::decode::<Request>(&s).expect("应当能解码") {
+            Request::SetTimezone { name } => assert_eq!(name, "Asia/Shanghai"),
+            other => panic!("解错了：{other:?}"),
+        }
+        assert_eq!(crate::encode(&crate::decode::<Request>(&s).unwrap()), s, "编码要稳定");
+
+        let st = Response::TimeStatus {
+            timezone: "Asia/Shanghai".into(),
+            last_offset_ms: i64::MIN,
+            last_sync_unix: 0,
+        };
+        let s2 = crate::encode(&st);
+        // 「从未对过」用 i64::MIN 表示：0 是一个合法的偏移（完全准），两者不能混
+        match crate::decode::<Response>(&s2).expect("应当能解码") {
+            Response::TimeStatus { timezone, last_offset_ms, last_sync_unix } => {
+                assert_eq!(timezone, "Asia/Shanghai");
+                assert_eq!(last_offset_ms, i64::MIN);
+                assert_eq!(last_sync_unix, 0);
+            }
+            other => panic!("解错了：{other:?}"),
+        }
+        // 对时回执也要能往返
+        let ts = Response::TimeSync { ok: true, message: "偏移 12 ms".into(), offset_ms: 12 };
+        let s3 = crate::encode(&ts);
+        assert_eq!(crate::encode(&crate::decode::<Response>(&s3).unwrap()), s3);
     }
 
 }

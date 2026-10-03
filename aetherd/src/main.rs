@@ -13,6 +13,7 @@ mod clipboard;
 mod modelcfg;
 mod netset;
 mod policy;
+mod timesync;
 mod perm;
 mod router;
 mod server;
