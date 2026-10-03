@@ -205,11 +205,53 @@ fn is_our_persist_partition(dev: &str) -> Result<(), String> {
     }
 }
 
+/// fsck 的结论（**纯逻辑**，跨平台可测）。
+///
+/// 抽出来的理由：这个判断决定"要不要把一个可能损坏的文件系统 rw 挂上去"，
+/// 属于最该有测试盯着的地方 —— 而它的输入只是两个值（退出码、工具在不在）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FsckVerdict {
+    /// 干净或已自动修复 → 可挂载
+    Ok,
+    /// 有未纠正的错误 → **不挂载**（把损坏的文件系统 rw 挂上去比暂时不挂更糟）
+    Uncorrected,
+    /// 镜像里**确实没有** fsck 工具 → 允许挂载，但必须留下"未检查"的明确记录
+    ToolMissing,
+    /// 工具在，但**执行失败**（权限/资源/二进制损坏）→ 这是异常，**不挂载**
+    ToolFailed,
+}
+
+impl FsckVerdict {
+    /// 是否允许挂载。
+    pub fn allows_mount(&self) -> bool {
+        matches!(self, FsckVerdict::Ok | FsckVerdict::ToolMissing)
+    }
+}
+
+/// fsck 结论判定（纯函数）。
+///
+/// `exit_code = None` 表示进程**没有正常退出码**（被信号杀死等）——
+/// 那与"报错退出"同样是异常，按未纠正处理（原实现也是这么做的，此处保持）。
+///
+/// **fail-open 只剩一种情况**：镜像里确实没有这个工具。
+/// 审计 #12 指出"工具缺失/执行失败都放行"与"三道门缺一不可"的表述不符；
+/// 现在"执行失败"已改为 fail-closed —— 工具在却跑不起来不是"没工具"，是异常。
+pub fn fsck_verdict(exit_code: Option<i32>, tool_present: bool) -> FsckVerdict {
+    if !tool_present {
+        return FsckVerdict::ToolMissing;
+    }
+    match exit_code {
+        Some(code) if code < FSCK_UNCORRECTED_CODE => FsckVerdict::Ok,
+        Some(_) => FsckVerdict::Uncorrected,
+        None => FsckVerdict::ToolFailed,
+    }
+}
+
 /// 挂载前的文件系统检查。返回 `true` = 可以挂载。
 ///
 /// 判据用 fsck 的退出码（权威）：0/1 = 干净或已自动修复；≥4 = 有未纠正的错误 →
-/// **不挂载**（把可能损坏的文件系统以 rw 挂上去，比暂时不挂更糟）。
-/// 工具缺失时返回 true 并明确提示：不因缺工具而让系统失去持久化能力。
+/// **不挂载**。工具缺失时返回 true 并明确提示：不因缺工具而让系统失去持久化能力
+/// （这是**唯一**的 fail-open，理由见 `fsck_verdict`）。
 #[cfg(target_os = "linux")]
 fn fsck_before_mount(dev: &str) -> bool {
     const FSCK_TOOLS: [&str; 2] = ["/sbin/fsck.ext4", "/usr/sbin/fsck.ext4"];
@@ -217,27 +259,37 @@ fn fsck_before_mount(dev: &str) -> bool {
         if !std::path::Path::new(tool).exists() {
             continue;
         }
-        match std::process::Command::new(tool).arg("-p").arg(dev).status() {
+        let (code, verdict) = match std::process::Command::new(tool).arg("-p").arg(dev).status() {
             Ok(st) => {
-                let code = st.code().unwrap_or(FSCK_UNCORRECTED_CODE);
-                if code < FSCK_UNCORRECTED_CODE {
-                    println!("[aether-init] fsck {dev}: 通过（退出码 {code}）");
-                    return true;
-                }
+                let c = st.code();
+                (c, fsck_verdict(c, true))
+            }
+            Err(e) => {
+                // 工具在却执行不起来：异常，不再"跳过检查并继续"
+                println!("[aether-init] 拒绝挂载 {dev}：fsck 存在但执行失败（{e}）");
+                return fsck_verdict(None, true).allows_mount();
+            }
+        };
+        match verdict {
+            FsckVerdict::Ok => {
                 println!(
-                    "[aether-init] 拒绝挂载 {dev}：fsck 报未纠正的错误（退出码 {code}），\
-                     请手工修复后再启动"
+                    "[aether-init] fsck {dev}: 通过（退出码 {}）",
+                    code.map(|c| c.to_string()).unwrap_or_else(|| "无（被信号终止）".into())
+                );
+                return true;
+            }
+            FsckVerdict::Uncorrected | FsckVerdict::ToolFailed => {
+                println!(
+                    "[aether-init] 拒绝挂载 {dev}：fsck 未通过（退出码 {:?}），请手工修复后再启动",
+                    code
                 );
                 return false;
             }
-            Err(e) => {
-                println!("[aether-init] 警告：fsck {dev} 执行失败（{e}）—— 跳过检查并继续");
-                return true;
-            }
+            FsckVerdict::ToolMissing => {}
         }
     }
-    println!("[aether-init] 提示：镜像内没有 fsck.ext4，跳过文件系统检查");
-    true
+    println!("[aether-init] 提示：镜像内没有 fsck.ext4，跳过文件系统检查（**未检查**，非通过）");
+    fsck_verdict(Some(0), false).allows_mount()
 }
 
 /// 启动记录行：`<unix秒> 启动（第 N 次）`。安装行不计入启动次数。
@@ -420,4 +472,32 @@ mod tests {
         );
         assert_eq!(opts.len(), 3, "不应有意外选项：{PERSIST_MOUNT_OPTS}");
     }
+    /// 审计 #12：fsck 的 fail-open 只能有一种情况 —— **镜像里确实没有工具**。
+    ///
+    /// 这条测试的价值在于把"哪种情况放行"钉死：回滚成"执行失败也放行"会立刻变红。
+    #[test]
+    fn fsck_fail_open_only_when_tool_is_missing() {
+        // 干净 / 已自动修复 → 放行
+        assert_eq!(fsck_verdict(Some(0), true), FsckVerdict::Ok);
+        assert_eq!(fsck_verdict(Some(1), true), FsckVerdict::Ok);
+        assert!(fsck_verdict(Some(0), true).allows_mount());
+        // 有未纠正的错误 → 不放行
+        assert_eq!(fsck_verdict(Some(4), true), FsckVerdict::Uncorrected);
+        assert_eq!(fsck_verdict(Some(8), true), FsckVerdict::Uncorrected);
+        assert!(!fsck_verdict(Some(4), true).allows_mount());
+        // 没有退出码（被信号杀死）→ 异常，不放行
+        assert_eq!(fsck_verdict(None, true), FsckVerdict::ToolFailed);
+        assert!(!fsck_verdict(None, true).allows_mount(), "被信号终止不得放行");
+        // **唯一**的 fail-open：工具确实缺失
+        assert_eq!(fsck_verdict(None, false), FsckVerdict::ToolMissing);
+        assert!(fsck_verdict(None, false).allows_mount());
+        assert!(
+            fsck_verdict(Some(0), false).allows_mount(),
+            "工具缺失时无论退出码如何都只能走 ToolMissing"
+        );
+        // 边界：恰好等于阈值 4 就是"未纠正"（阈值语义不能差一）
+        assert_eq!(fsck_verdict(Some(FSCK_UNCORRECTED_CODE - 1), true), FsckVerdict::Ok);
+        assert_eq!(fsck_verdict(Some(FSCK_UNCORRECTED_CODE), true), FsckVerdict::Uncorrected);
+    }
+
 }
