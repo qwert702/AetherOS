@@ -143,6 +143,11 @@ pub enum Request {
     },
     /// 列出显示输出（§3.8 最小切片：如实报告，不驱动第二个输出）。
     GetDisplays,
+    /// 列出检测到的外设（§3.7 最小切片，**只读**）。
+    ///
+    /// 与 `GetDisplays` / `ListRemovable` 同一性质：只报告"看到了什么"，
+    /// 不做任何动作。蓝牙的配对与打印的作业提交都**不在本版范围**。
+    ListPeripherals,
     /// 列出人类账户（§2.3，**只读**）。
     ///
     /// 范围说明：项目自己的决定是「先做单用户 + 口令；多用户留 M3」，
@@ -280,6 +285,27 @@ pub fn is_valid_user_name(name: &str) -> bool {
     }
     name.chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// 一条**检测到的外设**（§3.7 最小切片）。
+///
+/// **只读**：这里没有任何"配对/打印"的动作，只有"看到了什么"。
+/// 字段按种类分开（不用一个 `detail` 打包成文本）—— 措辞由界面渲染，协议只带事实。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeripheralWire {
+    /// 种类：`"bluetooth"` / `"printing"`。
+    pub kind: String,
+    /// 蓝牙是适配器名（`hci0`）；打印是 `"CUPS"`。
+    pub name: String,
+    /// 蓝牙：设备地址（sysfs 不一定给，所以是 `Option`）。
+    #[serde(default)]
+    pub address: Option<String>,
+    /// 打印：`printers.conf` 里配置的队列名。
+    #[serde(default)]
+    pub queues: Vec<String>,
+    /// 打印：CUPS 是否在（socket 或配置存在）。
+    #[serde(default)]
+    pub cups: bool,
 }
 
 /// 一个**人类账户**的只读信息（§2.3）。
@@ -518,6 +544,10 @@ pub enum Response {
         outputs: Vec<crate::DisplayWire>,
     },
     /// 可移动设备列表（`Request::ListRemovable` 的应答）。
+    /// 检测到的外设列表（§3.7 最小切片，只读）。
+    PeripheralList {
+        list: Vec<PeripheralWire>,
+    },
     /// 人类账户列表（§2.3，只读）。
     UserList {
         list: Vec<UserInfo>,

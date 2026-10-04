@@ -1878,6 +1878,10 @@ pub struct Renderer {
     pub users: Vec<aether_ipc::UserInfo>,
     /// 是否已经读过一次（区分"正在读取"与"确实没有账户"）。
     pub users_loaded: bool,
+    /// §3.7：检测到的外设（只读，来自 aetherd 的 `ListPeripherals`）。
+    pub peripherals: Vec<aether_ipc::PeripheralWire>,
+    /// 是否已经读过一次。
+    pub peripherals_loaded: bool,
     /// 锁屏状态（§2.3）。放在 Renderer 里是因为"锁"影响**每一帧的绘制**
     /// （整屏遮罩），而不只是某个页面。
     pub lock: crate::lock::LockScreen,
@@ -2288,6 +2292,8 @@ impl Renderer {
             pass_form: crate::settings::PassForm::default(),
             users: Vec::new(),
             users_loaded: false,
+            peripherals: Vec::new(),
+            peripherals_loaded: false,
         lock: Default::default(),
         palette: Default::default(),
         policy: Default::default(),
@@ -2511,6 +2517,8 @@ impl Renderer {
                     pass: &self.pass_form,
                     users: &self.users,
                     users_loaded: self.users_loaded,
+                    peripherals: &self.peripherals,
+                    peripherals_loaded: self.peripherals_loaded,
             audit_query: &self.audit_query,
                     policy: &self.policy,
                     store: &self.store,
@@ -3247,6 +3255,9 @@ pub struct PageCtx<'a> {
     /// §2.3 账户列表（只读）
     pub users: &'a [aether_ipc::UserInfo],
     pub users_loaded: bool,
+    /// §3.7 外设（只读）
+    pub peripherals: &'a [aether_ipc::PeripheralWire],
+    pub peripherals_loaded: bool,
     /// §5.2 时间线的搜索词（由事件循环维护，绘制只读）
     pub audit_query: &'a str,
     pub policy: &'a crate::policyview::PolicyView,
@@ -3299,6 +3310,8 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
     pass: PASS.get_or_init(Default::default),
     users: &[],
     users_loaded: false,
+    peripherals: &[],
+    peripherals_loaded: false,
         policy: POLICY.get_or_init(Default::default),
         store: STORE.get_or_init(Default::default),
         time: TIME.get_or_init(Default::default),
@@ -3339,6 +3352,8 @@ fn draw_settings_content(
         pass: pass_form,
         users,
         users_loaded,
+        peripherals,
+        peripherals_loaded,
         audit_query,
         policy,
         store,
@@ -3833,6 +3848,100 @@ fn draw_settings_content(
                     hits.push((row, SettingsHit::ToggleRemovable(i)));
                 }
                 ry += theme::size::px(theme::size::ROW_TALL);
+            }
+
+            // ---- §3.7 外设：蓝牙 / 打印（**只读检测 + 如实报告**）----
+            //
+            // 与「显示输出」同一做法：能如实看到的就显示，做不到的明说做不到。
+            // 配对、连接、提交打印作业**都不在本版范围** —— 那需要 BlueZ / CUPS 一整套。
+            ry += theme::size::px(theme::size::GAP_WIDE);
+            widgets::group_header(
+                buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry,
+                crate::i18n::tr("外设（只读检测）", "Peripherals (read-only)"), Some(tr),
+            );
+            ry += theme::size::px(theme::size::GROUP_GAP);
+            if !peripherals_loaded {
+                tr.draw(
+                    buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+                    crate::i18n::tr("正在检测…", "Detecting…"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                // 本分支之后不再用 ry（下面另起一节），所以不推进
+            } else {
+                // 蓝牙：一个适配器一行
+                let bt: Vec<&aether_ipc::PeripheralWire> =
+                    peripherals.iter().filter(|p| p.kind == "bluetooth").collect();
+                if bt.is_empty() {
+                    tr.draw(
+                        buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+                        crate::i18n::tr(
+                            "蓝牙：未检测到适配器（/sys/class/bluetooth 为空）",
+                            "Bluetooth: no adapter detected (/sys/class/bluetooth is empty)",
+                        ),
+                        font::CAPTION, color::text_dim(), 0.9,
+                    );
+                    ry += theme::size::px(theme::size::LINE_GAP);
+                } else {
+                    for a in bt {
+                        let line = match &a.address {
+                            Some(addr) => format!("{} · {}", a.name, addr),
+                            // 地址读不到就如实说"未知"，不编一个
+                            None => format!("{} · {}", a.name, crate::i18n::tr("地址未知", "address unknown")),
+                        };
+                        tr.draw(
+                            buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+                            &line, font::CAPTION, color::text(), 0.9,
+                        );
+                        ry += theme::size::px(theme::size::LINE_GAP);
+                    }
+                }
+                // 打印：**如实三分**
+                let pr = peripherals.iter().find(|p| p.kind == "printing");
+                let text = match pr {
+                    Some(p) if !p.cups => crate::i18n::tr(
+                        "打印：未检测到打印子系统（没有 CUPS）",
+                        "Printing: no printing subsystem detected (no CUPS)",
+                    )
+                    .to_string(),
+                    Some(p) if p.queues.is_empty() => crate::i18n::tr(
+                        "打印：CUPS 在，但没有配置任何队列",
+                        "Printing: CUPS is present but no queue is configured",
+                    )
+                    .to_string(),
+                    Some(p) => {
+                        // 这句带数字，**不能用 `pick`** —— 它只收 `&'static str`；
+                        // 与项目其它带参文案一样，按语言各写一遍。
+                        if lang == crate::i18n::Lang::En {
+                            format!(
+                                "Printing: CUPS has {} queue(s): {}",
+                                p.queues.len(),
+                                p.queues.join(", ")
+                            )
+                        } else {
+                            format!(
+                                "打印：CUPS 已配置 {} 个队列：{}",
+                                p.queues.len(),
+                                p.queues.join("、")
+                            )
+                        }
+                    }
+                    None => crate::i18n::tr("打印：未检测到", "Printing: not detected").to_string(),
+                };
+                tr.draw(
+                    buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+                    &text, font::CAPTION, color::text(), 0.9,
+                );
+                ry += theme::size::px(theme::size::LINE_GAP);
+                // 边界：一句话说清这一节**不做**什么
+                tr.draw(
+                    buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+                    crate::i18n::tr(
+                        "配对 / 连接 / 提交打印作业都不在本版范围（需 BlueZ / CUPS 一整套）",
+                        "Pairing, connecting and submitting print jobs are out of scope (they need BlueZ / CUPS)",
+                    ),
+                    font::CAPTION, color::text_dim(), 0.75,
+                );
+                // 这里是本页最后一行，不再需要推进 ry（推了也没人读）
             }
         }
         "显示输出" => {

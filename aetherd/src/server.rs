@@ -1182,6 +1182,43 @@ fn handle_request(
                 }
             }
         }
+        // §3.7 最小切片：检测外设（**只读**）。
+        // 与 `GetDisplays` / `ListRemovable` 同一性质：只报告"看到了什么"，
+        // 不做任何动作 —— 蓝牙配对与打印作业都**不在本版范围**。
+        Request::ListPeripherals => {
+            if !*is_ui {
+                return vec![Response::Error {
+                    code: 403,
+                    message: "listing peripherals requires a registered UI channel".into(),
+                }];
+            }
+            let (adapters, printing) = crate::peripherals::list();
+            let mut list: Vec<aether_ipc::PeripheralWire> = adapters
+                .into_iter()
+                .map(|a| aether_ipc::PeripheralWire {
+                    kind: "bluetooth".into(),
+                    name: a.name,
+                    address: a.address,
+                    queues: Vec::new(),
+                    cups: false,
+                })
+                .collect();
+            // 打印**总是报一行**：`cups: false` 就是"这台机器没有打印子系统"这个事实本身，
+            // 让界面去推断"没有这一行 = 没检测到"更容易出错。
+            let (cups, queues) = match printing {
+                crate::peripherals::Printing::NoSubsystem => (false, Vec::new()),
+                crate::peripherals::Printing::NoQueues => (true, Vec::new()),
+                crate::peripherals::Printing::Queues(q) => (true, q),
+            };
+            list.push(aether_ipc::PeripheralWire {
+                kind: "printing".into(),
+                name: "CUPS".into(),
+                address: None,
+                queues,
+                cups,
+            });
+            vec![Response::PeripheralList { list }]
+        }
         // §2.3：列出人类账户（只读）。门槛与其它 UI 通道请求一致。
         Request::ListUsers => {
             if !*is_ui {
@@ -1793,6 +1830,9 @@ mod ipc_gating_tests {
             // §2.3：列出人类账户 —— 只读（读 /etc/passwd 里 uid 落在 [1000,65534) 的项），
             // 不含口令哈希，也不改任何状态，所以不落审计。
             "ListUsers",
+            // §3.7：检测外设 —— 只读（读 /sys/class/bluetooth 与 CUPS 的路径），
+            // 不配对、不打印、不改任何状态。
+            "ListPeripherals",
         ];
 
         // 收集 `Request::X` 分支及其正文

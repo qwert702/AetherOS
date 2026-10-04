@@ -934,6 +934,10 @@ fn run_fbdev() -> anyhow::Result<()> {
                     if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
                 );
             }
+            AiEvent::PeripheralsLoaded { list } => {
+                renderer.peripherals = list;
+                renderer.peripherals_loaded = true;
+            }
             AiEvent::RemovablesLoaded { devices } => {
                     renderer.removables = devices;
                     renderer.removables_loaded = true;
@@ -1384,11 +1388,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                             .map(|p| p.title == "可移动设备")
                             .unwrap_or(false);
                         if is_rem && !renderer.removables_loaded {
+                            // §3.7：外设与可移动设备在同一页，一起读
+                            fetch_peripherals(ai_tx.clone());
                             fetch_removables(ai_tx.clone());
                         }
                     }
                     // §3.7：重新扫描
                     if let settings::SettingsHit::RefreshRemovables = hit {
+                        fetch_peripherals(ai_tx.clone());
                         fetch_removables(ai_tx.clone());
                     }
                     // §3.7：点一下设备 —— **挂载还是卸载由这一刻的真实状态决定**，
@@ -2315,6 +2322,29 @@ fn form_problem_text(lang: crate::i18n::Lang, p: crate::settings::FormProblem) -
 // 非 Linux 上不会被调用：设置命中的处理块在 Linux 专属路径里（非 Linux 不连 aetherd）。
 // 如实标注而不是删掉功能 —— 这一页在目标平台上是要用的。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// §3.7：读一次外设检测（只读）。
+///
+/// 与 `fetch_removables` 同一架构：开一个线程发一次请求，把结果包成事件送回主循环。
+fn fetch_peripherals(tx: mpsc::Sender<AiEvent>) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        // 非 Linux 不连 aetherd —— 如实报"检测不到"，而不是假装成功
+        let _ = tx.send(AiEvent::PeripheralsLoaded { list: Vec::new() });
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::ListPeripherals) {
+            Ok(Response::PeripheralList { list }) => AiEvent::PeripheralsLoaded { list },
+            _ => AiEvent::PeripheralsLoaded { list: Vec::new() },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+// 非 Linux 上不会被调用：设置命中的处理块在 Linux 专属路径里（非 Linux 不连 aetherd）。
+// 如实标注而不是删掉功能 —— 这一页在目标平台上是要用的。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// §2.3：读一次账户列表。
 ///
 /// 与 `fetch_removables` 同一架构：**开一个线程发一次请求**，把结果包成事件送回主循环。
@@ -2538,6 +2568,8 @@ enum AiEvent {
     /// §2.3：改口令的结果（同上：非 Linux 不构造）
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     PasswordAck { ok: bool, message: String },
+    /// §3.7：外设（蓝牙适配器 / 打印子系统）检测结果
+    PeripheralsLoaded { list: Vec<aether_ipc::PeripheralWire> },
     RemovablesLoaded {
         devices: Vec<aether_ipc::RemovableWire>,
     },
@@ -4766,6 +4798,10 @@ fn preview_main() -> anyhow::Result<()> {
                     message,
                     if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
                 );
+            }
+            AiEvent::PeripheralsLoaded { list } => {
+                renderer.peripherals = list;
+                renderer.peripherals_loaded = true;
             }
             AiEvent::RemovablesLoaded { devices } => {
                     renderer.removables = devices;
