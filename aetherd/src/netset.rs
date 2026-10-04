@@ -78,7 +78,12 @@ pub fn apply_to(
     match key {
         SettingKey::Dns => {
             // 1) 校验（纯函数，失败即返回，绝不碰文件）
-            let servers = parse_dns_list(value)?;
+            // `parse_dns_list` 现在返回 `DnsError`（协议层不决定文案）。
+            // aetherd 拿不到界面语言，所以回一句**中文兜底**：正常路径下界面自己
+            // 已经本地校验过（`settings.rs` 用同一份逻辑），这一句只在
+            // "绕过界面直接发 IPC"时才会被看到。
+            let servers = parse_dns_list(value)
+                .map_err(|e| format!("DNS 设置被拒（{}）：{e}", e.as_str()))?;
 
             // 2) 拒绝覆盖符号链接：跟着写会改到别的目标
             if let Ok(md) = std::fs::symlink_metadata(path) {
@@ -177,7 +182,11 @@ mod tests {
         for (input, why) in bad {
             let r = parse_dns_list(input);
             assert!(r.is_err(), "{input:?}（{why}）应被拒绝，却通过成 {r:?}");
-            let msg = r.unwrap_err();
+            // parse_dns_list 现在返回 DnsError（协议层不决定文案）：
+        // 这里用 Display 取中性描述，够这条测试校验理由不能是空话、不能含换行。
+        let e = r.unwrap_err();
+        assert!(!e.as_str().is_empty(), "机器名不能为空");
+        let msg = e.to_string();
             assert!(!msg.is_empty(), "{input:?} 的拒绝理由不能是空话");
             // 拒绝理由里**不能回显原始输入**（它可能含控制字符/换行，直接进日志与界面）
             if input.contains('\n') {

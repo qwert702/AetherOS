@@ -562,7 +562,10 @@ impl DnsField {
     /// 界面**不重复实现**校验规则：两侧各写一份必然分叉，而分叉的后果是
     /// "界面说可以、服务端拒绝"或更糟的反过来。
     pub fn validate(&self) -> Result<Vec<std::net::Ipv4Addr>, String> {
+        // §3.5：协议层只说"为什么失败"（`DnsError`），**文案由界面层渲染**成当前语言。
+        // 所以这里 `map_err` 一次 —— 校验规则仍是共享的那一份，没有分叉。
         aether_ipc::parse_dns_list(&self.text)
+            .map_err(|e| dns_error_text(crate::i18n::lang(), &e))
     }
 
     /// 记录提交结果并退出编辑态（成功时保留文本，失败时**保留原文**让用户接着改）。
@@ -591,6 +594,53 @@ pub fn first_enabled_page() -> usize {
 ///
 /// 两条规则：**不可用的页拒绝切换**（否则左栏那几行"待接入"会点出空页），
 /// **数值改动一律走夹取**（时区不能跑到 UTC+99）。
+/// 把协议层的 `DnsError` 渲染成**给用户看的一句话**（§3.5）。
+///
+/// 抽成纯函数（而不是在调用点写 `match`）：这样中英文两套文案**都有测试**，
+/// 而且"五种失败原因是否都被覆盖"由编译器保证（`match` 穷尽）。
+pub fn dns_error_text(lang: crate::i18n::Lang, e: &aether_ipc::DnsError) -> String {
+    use aether_ipc::DnsError as E;
+    use crate::i18n::{pick, Lang};
+    match e {
+        E::Empty => pick(
+            lang,
+            "DNS 不能为空：请填 1~3 个 IPv4 地址，例如 1.1.1.1, 8.8.8.8",
+            "DNS must not be empty: give 1-3 IPv4 addresses, e.g. 1.1.1.1, 8.8.8.8",
+        )
+        .to_string(),
+        E::TooMany { got } => {
+            if lang == Lang::En {
+                format!("At most 3 DNS servers, got {got}")
+            } else {
+                format!("最多 3 个 DNS 服务器，收到了 {got} 个")
+            }
+        }
+        E::Ipv6 { got } => {
+            if lang == Lang::En {
+                format!(
+                    "IPv6 DNS is not supported yet ({got}): this version only writes IPv4 nameserver lines"
+                )
+            } else {
+                format!("暂不支持 IPv6 DNS（{got}）：本版只写 IPv4 的 nameserver 行")
+            }
+        }
+        E::NotIpv4 { got } => {
+            if lang == Lang::En {
+                format!("{got} is not a valid IPv4 address (four octets 0-255, no leading zeros)")
+            } else {
+                format!("「{got}」不是合法的 IPv4 地址（要四段 0~255，且不能有前导零）")
+            }
+        }
+        E::Loopback { got } => {
+            if lang == Lang::En {
+                format!("{got} is a loopback address and cannot be used as an upstream DNS")
+            } else {
+                format!("{got} 是回环地址，不能作为上游 DNS")
+            }
+        }
+    }
+}
+
 pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
     match hit {
         SettingsHit::Page(i) => {
@@ -1364,6 +1414,50 @@ mod restart_action_tests {
         assert_eq!(Settings::from_json(r#"{"ui_scale_pct":137}"#).ui_scale_pct, 125);
         assert_eq!(Settings::from_json(r#"{"ui_scale_pct":99999}"#).ui_scale_pct, 150);
         assert_eq!(Settings::from_json(r#"{"ui_scale_pct":"大"}"#).ui_scale_pct, 100);
+    }
+
+    /// §3.5：DNS 失败原因的**两套文案**，五种原因全覆盖。
+    ///
+    /// 这条测试能存在，正因为文案被抽成了纯函数（`dns_error_text`）——
+    /// 之前文案住在协议层、又是一句中文，既不可测也会让界面无从翻译。
+    #[test]
+    fn dns_error_text_covers_all_five_reasons_in_both_languages() {
+        use crate::i18n::Lang;
+        use aether_ipc::DnsError as E;
+        let cases: Vec<E> = vec![
+            E::Empty,
+            E::TooMany { got: 5 },
+            E::Ipv6 { got: "::1".into() },
+            E::NotIpv4 { got: "abc".into() },
+            E::Loopback { got: "127.0.0.1".into() },
+        ];
+        for e in &cases {
+            let zh = dns_error_text(Lang::Zh, e);
+            let en = dns_error_text(Lang::En, e);
+            assert!(!zh.is_empty() && !en.is_empty(), "{e:?} 两种语言都要有文案");
+            // 机器名必须稳定（日志与 IPC 回执靠它）
+            assert!(!e.as_str().is_empty());
+            if e != &E::Empty {
+                // 带参数的三种：参数必须出现在文案里（否则用户不知道该改什么）
+                let got = match e {
+                    E::TooMany { got } => got.to_string(),
+                    E::Ipv6 { got } => got.clone(),
+                    E::NotIpv4 { got } => got.clone(),
+                    E::Loopback { got } => got.clone(),
+                    E::Empty => unreachable!(),
+                };
+                assert!(zh.contains(&got), "中文文案要带参数 {got}：{zh}");
+                assert!(en.contains(&got), "英文文案要带参数 {got}：{en}");
+            }
+        }
+        // 英文文案不许混进汉字（半翻译最糟）
+        for e in &cases {
+            let en = dns_error_text(Lang::En, e);
+            assert!(
+                !en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "英文文案里有汉字：{en}"
+            );
+        }
     }
 
 }

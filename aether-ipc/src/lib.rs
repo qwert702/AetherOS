@@ -218,40 +218,86 @@ pub const MAX_DNS: usize = 3;
 ///
 /// **纯函数**（收字符串、不碰文件），所以边界能在开发机上全部测到。
 /// 拒绝的理由都写进返回值 —— 界面要把它原样显示给用户，不能只说"格式错误"。
-pub fn parse_dns_list(input: &str) -> Result<Vec<std::net::Ipv4Addr>, String> {
+/// DNS 列表校验失败的原因（§3.5）。
+///
+/// **为什么是枚举而不是中文句子**：项目要中英文两种界面文案，而这一层是协议层 ——
+/// 让它依赖 `i18n` 会把分层搞坏，让它在内部维护中英对照表则是"同一事实两处维护"。
+/// 所以协议层只回答「**为什么**失败」（连参数一起带上），**措辞交给界面**。
+///
+/// `Display` 用的是**中性英文**：它的用途是 `?` 与 `anyhow` 的错误链、
+/// 以及日志 —— 不是给最终用户看的文案。给用户看的中文/英文由界面层渲染。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DnsError {
+    /// 一个地址都没填
+    Empty,
+    /// 超过上限
+    TooMany { got: usize },
+    /// 填了 IPv6（本版只写 IPv4 的 nameserver 行）
+    Ipv6 { got: String },
+    /// 不是合法的 IPv4
+    NotIpv4 { got: String },
+    /// 是回环地址（接受它只会让解析静默失败）
+    Loopback { got: String },
+}
+
+impl DnsError {
+    /// 机器可读的名字（写日志 / IPC 回执用，**不是**用户文案）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DnsError::Empty => "empty",
+            DnsError::TooMany { .. } => "too_many",
+            DnsError::Ipv6 { .. } => "ipv6_unsupported",
+            DnsError::NotIpv4 { .. } => "not_ipv4",
+            DnsError::Loopback { .. } => "loopback",
+        }
+    }
+}
+
+impl std::fmt::Display for DnsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DnsError::Empty => write!(f, "no DNS server given"),
+            DnsError::TooMany { got } => {
+                write!(f, "too many DNS servers: {got} (max {MAX_DNS})")
+            }
+            DnsError::Ipv6 { got } => write!(f, "IPv6 DNS not supported: {got}"),
+            DnsError::NotIpv4 { got } => write!(f, "not a valid IPv4 address: {got}"),
+            DnsError::Loopback { got } => {
+                write!(f, "loopback address cannot be an upstream DNS: {got}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DnsError {}
+
+pub fn parse_dns_list(input: &str) -> Result<Vec<std::net::Ipv4Addr>, DnsError> {
     let parts: Vec<&str> = input
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|s| !s.is_empty())
         .collect();
     if parts.is_empty() {
-        return Err("DNS 不能为空：请填 1~3 个 IPv4 地址，例如 1.1.1.1, 8.8.8.8".into());
+        return Err(DnsError::Empty);
     }
     if parts.len() > MAX_DNS {
-        return Err(format!(
-            "最多 {MAX_DNS} 个 DNS 服务器，收到了 {} 个",
-            parts.len()
-        ));
+        return Err(DnsError::TooMany { got: parts.len() });
     }
     let mut out = Vec::with_capacity(parts.len());
     for p in parts {
         // 含冒号的多半是想填 IPv6：明确说明，别让用户对着"格式错误"猜
         if p.contains(':') {
-            return Err(format!(
-                "暂不支持 IPv6 DNS（{p}）：本版只写 IPv4 的 nameserver 行"
-            ));
+            return Err(DnsError::Ipv6 { got: p.to_string() });
         }
         match p.parse::<std::net::Ipv4Addr>() {
             Ok(ip) => {
                 // 回环地址不是有效的上游 DNS：接受它只会让解析静默失败
                 if ip.is_loopback() {
-                    return Err(format!("{p} 是回环地址，不能作为上游 DNS"));
+                    return Err(DnsError::Loopback { got: p.to_string() });
                 }
                 out.push(ip);
             }
             Err(_) => {
-                return Err(format!(
-                    "「{p}」不是合法的 IPv4 地址（要四段 0~255，且不能有前导零）"
-                ))
+                return Err(DnsError::NotIpv4 { got: p.to_string() })
             }
         }
     }
@@ -851,7 +897,13 @@ mod tests {
         ] {
             let r = parse_dns_list(bad);
             assert!(r.is_err(), "{bad:?}（{why}）应被拒绝");
-            assert!(!r.unwrap_err().is_empty(), "{bad:?} 的理由不能为空");
+            // 现在断言的是**枚举**（不再绑定文案措辞）：既能说清理由，
+            // 也不会因为改一句话就让测试红
+            let e = r.unwrap_err();
+            assert!(
+                !e.to_string().is_empty() && !e.as_str().is_empty(),
+                "{bad:?} 的理由不能为空（Display 与机器名都要有）"
+            );
         }
     }
 
