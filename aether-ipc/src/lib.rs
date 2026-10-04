@@ -126,6 +126,16 @@ pub enum Request {
     StageUpdate {
         name: String,
     },
+    /// 列出可移动存储设备（§3.7 最小切片）。
+    ListRemovable,
+    /// 只读挂载一个可移动设备（`dev` 必须是**扫描到的**设备名）。
+    MountRemovable {
+        dev: String,
+    },
+    /// 卸载一个由本系统挂载的可移动设备。
+    UnmountRemovable {
+        dev: String,
+    },
     /// 设置某个工具的策略。**工具名必须存在于注册表**（服务端会校验）——
     /// 允许写入不存在的工具名会留下"死配置"：用户以为禁了某个东西，其实没有。
     SetToolPolicy {
@@ -149,6 +159,15 @@ pub enum ToolPolicyWire {
     Allow,
     /// 禁止（优先于一切）
     Deny,
+}
+
+/// 一个可移动设备（界面要显示的信息）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovableWire {
+    pub dev: String,
+    pub bytes: u64,
+    /// 已挂载的位置（没挂载为 `None`）
+    pub mounted_at: Option<String>,
 }
 
 /// 一条快照（只带界面要显示的信息）。
@@ -313,6 +332,15 @@ pub enum Response {
         current_version: String,
         /// 是否有已暂存、等待重启应用的包
         staged_version: Option<String>,
+    },
+    /// 可移动设备列表（`Request::ListRemovable` 的应答）。
+    RemovableList {
+        devices: Vec<crate::RemovableWire>,
+    },
+    /// 挂载/卸载的回执。
+    RemovableAck {
+        ok: bool,
+        message: String,
     },
     /// 暂存更新的回执。
     UpdateStaged {

@@ -16,6 +16,7 @@ mod policy;
 mod timesync;
 mod snapshots;
 mod update;
+mod removable;
 mod perm;
 mod router;
 mod server;

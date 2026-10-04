@@ -570,6 +570,96 @@ fn handle_request(
                 ),
             }]
         }
+        Request::ListRemovable => {
+            // 可移动设备列表会暴露"这台机器上插了什么" —— 与快照/更新同一门槛。
+            if !*is_ui {
+                audit_or_warn(gate, "list_removable", Level::L0, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "读取可移动设备列表必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let scanned = crate::removable::scan(std::path::Path::new("/sys/block"));
+            let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+            let with = crate::removable::with_mounts(scanned, &mounts);
+            let devices: Vec<aether_ipc::RemovableWire> = with
+                .iter()
+                .map(|r| aether_ipc::RemovableWire {
+                    dev: r.dev.clone(),
+                    bytes: r.bytes,
+                    mounted_at: r.mounted_at.clone(),
+                })
+                .collect();
+            vec![Response::RemovableList { devices }]
+        }
+        Request::MountRemovable { dev } => {
+            if !*is_ui {
+                audit_or_warn(gate, "mount_removable", Level::L2, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "挂载可移动设备必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            // **核心安全规则**：只允许挂载"本次扫描到的"设备（`mount()` 内部会再查一遍）
+            let scanned = crate::removable::scan(std::path::Path::new("/sys/block"));
+            let args = serde_json::json!({ "dev": &dev });
+            match crate::removable::mount(&dev, &scanned) {
+                Ok(mp) => {
+                    if let Err(e) =
+                        gate.audit_call("mount_removable", Level::L2, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 已只读挂载 {dev} → {mp}");
+                    vec![Response::RemovableAck {
+                        ok: true,
+                        message: format!("已只读挂载 {dev} → {mp}"),
+                    }]
+                }
+                Err(e) => {
+                    if let Err(e2) =
+                        gate.audit_call("mount_removable", Level::L2, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 挂载失败：{dev} —— {e}");
+                    vec![Response::RemovableAck { ok: false, message: e }]
+                }
+            }
+        }
+        Request::UnmountRemovable { dev } => {
+            if !*is_ui {
+                audit_or_warn(gate, "unmount_removable", Level::L2, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "卸载可移动设备必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let scanned = crate::removable::scan(std::path::Path::new("/sys/block"));
+            let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+            let with = crate::removable::with_mounts(scanned, &mounts);
+            let args = serde_json::json!({ "dev": &dev });
+            match crate::removable::umount(&dev, &with) {
+                Ok(msg) => {
+                    if let Err(e) =
+                        gate.audit_call("unmount_removable", Level::L2, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] {msg}");
+                    vec![Response::RemovableAck { ok: true, message: msg }]
+                }
+                Err(e) => {
+                    if let Err(e2) =
+                        gate.audit_call("unmount_removable", Level::L2, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 卸载失败：{dev} —— {e}");
+                    vec![Response::RemovableAck { ok: false, message: e }]
+                }
+            }
+        }
         Request::ListUpdates => {
             // 更新包的清单会暴露"这台机器在跑什么版本、要装什么" —— 与快照同一门槛。
             if !*is_ui {
