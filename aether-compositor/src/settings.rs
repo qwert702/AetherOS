@@ -355,6 +355,12 @@ pub enum SettingsHit {
     CycleSoundTheme,
     /// 切换界面字号（§3.4）。循环 `UI_SCALE_STEPS`。
     CycleUiScale,
+    /// 创建一个配置快照（§5.6）。
+    CreateSnapshot,
+    /// 点击第 `i` 条快照：**第一次只是选中，第二次才回滚**（两步确认）。
+    RestoreSnapshot(usize),
+    /// 取消待确认的回滚（§5.6）。
+    CancelRestore,
     /// 卸载第 `i` 个已安装应用（§5.11）。服务端会**移入回收站**（不是直接删）。
     RemoveApp(usize),
     /// 立刻对一次时（§3.3）。
@@ -462,6 +468,8 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "权限与隐私", title_en: "Privacy & Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §5.3：逐工具的权限策略编辑器。与上一页同组：都属"谁能动我的东西"。
     PageDef { title: "工具权限", title_en: "Tool Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
+    // §5.6：配置快照与回滚。放在"隐私和安全性"之后、同属"系统状态"这条线。
+    PageDef { title: "快照与回滚", title_en: "Snapshots & Rollback", group: "系统", group_en: "System", enabled: true },
     // §3.2：通知页（是否记录 + 清空历史）。放在最后一页：它是"回头看"的地方，
     // 不是日常要改的设置。
     PageDef { title: "通知", title_en: "Notifications", group: "系统", group_en: "System", enabled: true },
@@ -606,7 +614,11 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         // §3.3 的三条同理：要发 IPC，由事件循环处理。
         | SettingsHit::SyncTimeNow
         | SettingsHit::CycleTimezoneName
-        | SettingsHit::SetTimezoneNow => {}
+        | SettingsHit::SetTimezoneNow
+        // §5.6 快照：创建/回滚要发 IPC；「取消」只改界面状态，也由事件循环处理。
+        | SettingsHit::CreateSnapshot
+        | SettingsHit::RestoreSnapshot(_)
+        | SettingsHit::CancelRestore => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

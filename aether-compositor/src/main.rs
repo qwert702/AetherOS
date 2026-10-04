@@ -45,6 +45,7 @@ mod spaces;
 mod setup;
 mod store;
 mod timeview;
+mod snapview;
 mod auth;
 mod i18n;
 mod lock;
@@ -832,6 +833,34 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
+                AiEvent::SnapshotsLoaded(items) => {
+                    renderer.snapshots.on_list(items);
+                }
+                AiEvent::SnapshotDone { ok, message, notes } => {
+                    if ok {
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        // 回滚的逐文件说明：只说"已回滚"信息太少，用户想知道到底换了哪些文件
+                        if !notes.is_empty() {
+                            let brief: String = notes
+                                .iter()
+                                .take(2)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("；");
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!("{brief}（共 {} 项）", notes.len()),
+                                notifications::Kind::Info,
+                            );
+                        }
+                        // 成功后**重新取一次清单**：本地不猜（列表要如实反映磁盘上的快照）
+                        fetch_snapshots(ai_tx.clone());
+                    } else {
+                        renderer.snapshots.on_failure(message.clone());
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                    }
+                }
                 AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix } => {
                     renderer.time.on_status(timezone, last_offset_ms, last_sync_unix);
                 }
@@ -1113,6 +1142,54 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                     // 导出审计日志（§5.2）：**动作类**，成功给出确切路径，
                     // 失败给出原因（不静默、不谎报"已导出"）
+                    // §5.6「快照与回滚」页：进入时取一次清单
+                    if let settings::SettingsHit::Page(i) = hit {
+                        let is_snap = settings::PAGES
+                            .get(i)
+                            .map(|p| p.title == "快照与回滚")
+                            .unwrap_or(false);
+                        if is_snap && !renderer.snapshots.is_loaded() {
+                            // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，不做「再取一次」
+                        }
+                    }
+                    // §5.6：创建快照
+                    if let settings::SettingsHit::CreateSnapshot = hit {
+                        if renderer.snapshots.is_pending() {
+                            push_toast(&mut toast, &mut renderer.notifs, "上一步还没完成，请稍候".to_string(), notifications::Kind::Info);
+                        } else {
+                            renderer.snapshots.mark_pending();
+                            create_snapshot(ai_tx.clone());
+                            push_toast(&mut toast, &mut renderer.notifs, "正在创建配置快照…".to_string(), notifications::Kind::Info);
+                        }
+                    }
+                    // §5.6：**两步确认的回滚**。
+                    // 第一次点击只选中（提示"再点一次"），第二次才真发请求 ——
+                    // 回滚改的是系统配置，误点一次就换掉了用户当前能用的设置。
+                    if let settings::SettingsHit::RestoreSnapshot(i) = hit {
+                        if let Some(id) = renderer.snapshots.items().get(i).map(|s| s.id.clone()) {
+                            match renderer.snapshots.take_confirmed(&id) {
+                                Some(confirmed) => {
+                                    renderer.snapshots.mark_pending();
+                                    restore_snapshot(ai_tx.clone(), confirmed.clone());
+                                    push_toast(
+                                        &mut toast,
+                                        &mut renderer.notifs,
+                                        format!("正在回滚到 {confirmed}…"),
+                                        notifications::Kind::Info,
+                                    );
+                                }
+                                None => {
+                                    // 还没选中（或选的是别的）：这一步只改状态，不发请求
+                                    let _ = renderer.snapshots.begin_confirm(&id);
+                                }
+                            }
+                        }
+                    }
+                    // §5.6：取消待确认的回滚（两步确认必须能退出来）
+                    if let settings::SettingsHit::CancelRestore = hit {
+                        renderer.snapshots.cancel_confirm();
+                        push_toast(&mut toast, &mut renderer.notifs, "已取消回滚".to_string(), notifications::Kind::Info);
+                    }
                     // §3.3「时钟与时区」页：进入该页时取一次状态（否则显示不出系统时区与上次偏移）。
                     if let settings::SettingsHit::Page(i) = hit {
                         let is_clock = settings::PAGES
@@ -1868,6 +1945,14 @@ enum AiEvent {
     TimezoneSet {
         ok: bool,
         message: String,
+    },
+    /// 快照清单取回来了（§5.6）。
+    SnapshotsLoaded(Vec<aether_ipc::SnapshotWire>),
+    /// 快照创建/回滚的回执（`notes` 是回滚时逐文件的说明）。
+    SnapshotDone {
+        ok: bool,
+        message: String,
+        notes: Vec<String>,
     },
 }
 
@@ -3665,6 +3750,34 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
+                AiEvent::SnapshotsLoaded(items) => {
+                    renderer.snapshots.on_list(items);
+                }
+                AiEvent::SnapshotDone { ok, message, notes } => {
+                    if ok {
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        // 回滚的逐文件说明：只说"已回滚"信息太少，用户想知道到底换了哪些文件
+                        if !notes.is_empty() {
+                            let brief: String = notes
+                                .iter()
+                                .take(2)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("；");
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!("{brief}（共 {} 项）", notes.len()),
+                                notifications::Kind::Info,
+                            );
+                        }
+                        // 成功后**重新取一次清单**：本地不猜（列表要如实反映磁盘上的快照）
+                        // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，不做「再取一次」
+                    } else {
+                        renderer.snapshots.on_failure(message.clone());
+                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                    }
+                }
                 AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix } => {
                     renderer.time.on_status(timezone, last_offset_ms, last_sync_unix);
                 }
@@ -4894,11 +5007,59 @@ fn handle_dns_key(
     }
 }
 
+/// 取一次快照清单（§5.6）。
+#[cfg(target_os = "linux")]
+fn fetch_snapshots(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::GetSnapshots) {
+            Ok(Response::SnapshotList { items }) => AiEvent::SnapshotsLoaded(items),
+            Ok(Response::Error { code, message }) => {
+                AiEvent::SnapshotDone { ok: false, message: format!("读取快照被拒绝（{code}）：{message}"), notes: Vec::new() }
+            }
+            Ok(_) => AiEvent::SnapshotDone { ok: false, message: "读取快照：收到意外响应".into(), notes: Vec::new() },
+            Err(e) => AiEvent::SnapshotDone { ok: false, message: format!("连接 aetherd 失败：{e}"), notes: Vec::new() },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 创建一个配置快照（§5.6）。
+#[cfg(target_os = "linux")]
+fn create_snapshot(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::CreateSnapshot) {
+            Ok(Response::SnapshotAck { ok, message, notes }) => AiEvent::SnapshotDone { ok, message, notes },
+            Ok(Response::Error { code, message }) => {
+                AiEvent::SnapshotDone { ok: false, message: format!("被拒绝（{code}）：{message}"), notes: Vec::new() }
+            }
+            Ok(_) => AiEvent::SnapshotDone { ok: false, message: "创建快照：收到意外响应".into(), notes: Vec::new() },
+            Err(e) => AiEvent::SnapshotDone { ok: false, message: format!("连接 aetherd 失败：{e}"), notes: Vec::new() },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 回滚到某个快照（§5.6）。**只应由两步确认的第二步调用。**
+#[cfg(target_os = "linux")]
+fn restore_snapshot(tx: mpsc::Sender<AiEvent>, id: String) {
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::RestoreSnapshot { id }) {
+            Ok(Response::SnapshotAck { ok, message, notes }) => AiEvent::SnapshotDone { ok, message, notes },
+            Ok(Response::Error { code, message }) => {
+                AiEvent::SnapshotDone { ok: false, message: format!("被拒绝（{code}）：{message}"), notes: Vec::new() }
+            }
+            Ok(_) => AiEvent::SnapshotDone { ok: false, message: "回滚：收到意外响应".into(), notes: Vec::new() },
+            Err(e) => AiEvent::SnapshotDone { ok: false, message: format!("连接 aetherd 失败：{e}"), notes: Vec::new() },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
 /// 取一次时间同步状态（§3.3）。与 `fetch_policy` 同一套路。
 #[cfg(target_os = "linux")]
 fn fetch_time_status(tx: mpsc::Sender<AiEvent>) {
     std::thread::spawn(move || {
-        let ev = match time_request(&Request::GetTimeStatus) {
+        let ev = match admin_request(&Request::GetTimeStatus) {
             Ok(Response::TimeStatus { timezone, last_offset_ms, last_sync_unix }) => {
                 AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix }
             }
@@ -4916,7 +5077,7 @@ fn fetch_time_status(tx: mpsc::Sender<AiEvent>) {
 #[cfg(target_os = "linux")]
 fn sync_time_now(tx: mpsc::Sender<AiEvent>) {
     std::thread::spawn(move || {
-        let ev = match time_request(&Request::SyncTime) {
+        let ev = match admin_request(&Request::SyncTime) {
             // 只取 ok/message：偏移数值服务端已经写进 message（见 TimeSynced 的说明）
             Ok(Response::TimeSync { ok, message, .. }) => AiEvent::TimeSynced { ok, message },
             Ok(Response::Error { code, message }) => AiEvent::TimeSynced {
@@ -4937,7 +5098,7 @@ fn sync_time_now(tx: mpsc::Sender<AiEvent>) {
 #[cfg(target_os = "linux")]
 fn write_timezone(tx: mpsc::Sender<AiEvent>, name: String) {
     std::thread::spawn(move || {
-        let ev = match time_request(&Request::SetTimezone { name }) {
+        let ev = match admin_request(&Request::SetTimezone { name }) {
             Ok(Response::SettingAck { ok, message, .. }) => AiEvent::TimezoneSet { ok, message },
             Ok(Response::Error { code, message }) => {
                 AiEvent::TimezoneSet { ok: false, message: format!("被拒绝（{code}）：{message}") }
@@ -4949,9 +5110,12 @@ fn write_timezone(tx: mpsc::Sender<AiEvent>, name: String) {
     });
 }
 
-/// 发一个"时间类"请求并读回执（三个函数共用的那一段接线）。
+/// 发一个"管理类"请求并读回执（时间、快照这些共用同一段接线）。
+///
+/// 原本叫 `time_request` —— 快照也用它之后就改名了：名字要跟着职责走，
+/// 否则下一个人会以为它只能问时间。
 #[cfg(target_os = "linux")]
-fn time_request(req: &Request) -> anyhow::Result<Response> {
+fn admin_request(req: &Request) -> anyhow::Result<Response> {
     let mut stream = IpcStream::connect(Duration::from_secs(2))?;
     // 对时要等网络（服务端最长几秒），给足读超时
     stream.set_read_timeout(Some(Duration::from_secs(20))).ok();

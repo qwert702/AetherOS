@@ -1605,6 +1605,8 @@ pub struct Renderer {
     pub store: crate::store::StoreView,
     /// 「时钟与时区」页的对时/系统时区状态（§3.3）。
     pub time: crate::timeview::TimeView,
+    /// 「快照与回滚」页的状态（§5.6）。
+    pub snapshots: crate::snapview::SnapView,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1925,6 +1927,7 @@ impl Renderer {
         setup: Default::default(),
         store: Default::default(),
         time: Default::default(),
+        snapshots: Default::default(),
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -2128,6 +2131,7 @@ impl Renderer {
                     policy: &self.policy,
                     store: &self.store,
                     time: &self.time,
+                    snapshots: &self.snapshots,
                 },
                 t, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
@@ -2757,6 +2761,7 @@ pub struct PageCtx<'a> {
     pub policy: &'a crate::policyview::PolicyView,
     pub store: &'a crate::store::StoreView,
     pub time: &'a crate::timeview::TimeView,
+    pub snapshots: &'a crate::snapview::SnapView,
 }
 
 /// 测试用：与 `test_ctx` 相同，但可以注入一个**非空**的商店视图
@@ -2779,6 +2784,7 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
     static POLICY: OnceLock<crate::policyview::PolicyView> = OnceLock::new();
     static STORE: OnceLock<crate::store::StoreView> = OnceLock::new();
     static TIME: OnceLock<crate::timeview::TimeView> = OnceLock::new();
+    static SNAPS: OnceLock<crate::snapview::SnapView> = OnceLock::new();
     PageCtx {
         mouse: (0.0, 0.0),
         tr,
@@ -2787,6 +2793,7 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
         policy: POLICY.get_or_init(Default::default),
         store: STORE.get_or_init(Default::default),
         time: TIME.get_or_init(Default::default),
+        snapshots: SNAPS.get_or_init(Default::default),
     }
 }
 
@@ -2807,7 +2814,7 @@ fn draw_settings_content(
     hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
     // 解构成**与原来同名**的局部变量：这样函数体一行都不用改（重构风险最低的做法）
-    let PageCtx { mouse, tr, settings: s, dns: dns_field, policy, store, time } = ctx;
+    let PageCtx { mouse, tr, settings: s, dns: dns_field, policy, store, time, snapshots } = ctx;
     use crate::settings::{SettingsHit, PAGES};
     use crate::widgets;
     const SIDEBAR_W: i32 = 168;
@@ -3090,6 +3097,89 @@ fn draw_settings_content(
                 widgets::States::at(act, mouse), Some(tr),
             );
             hits.push((act, SettingsHit::RefreshStore));
+        }
+        "快照与回滚" => {
+            // §5.6：**配置**快照（不是盘镜像）。文案必须这么说，
+            // 否则用户会以为"回滚能救回我删掉的照片"。
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("配置快照", "Config snapshots"), Some(tr),
+            );
+            ry += 22;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "只包含 /etc 与 /var/lib/aether 下的几个配置文件；不含应用与用户数据。回滚需点两次确认。",
+                    "Covers a few config files only; no apps or user data. Rollback needs two clicks.",
+                ),
+                font::CAPTION, color::text_dim(), 0.85,
+            );
+            ry += 26;
+
+            if let Some(err) = snapshots.error() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    &format!("{}：{err}", crate::i18n::tr("读取失败", "Failed")),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            } else if !snapshots.is_loaded() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("正在读取…", "Loading…"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            }
+
+            // 创建
+            let r_new = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+            widgets::row(
+                buf, w, h, r_new,
+                crate::i18n::tr("创建快照", "Create snapshot"),
+                Some(crate::i18n::tr("把当前配置存一份", "Save the current configuration")),
+                widgets::States::at(r_new, mouse), Some(tr),
+            );
+            hits.push((r_new, SettingsHit::CreateSnapshot));
+            ry += 50;
+
+            if snapshots.is_loaded() && snapshots.is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("还没有快照", "No snapshots yet"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            }
+            let rows: Vec<(String, String)> = (0..snapshots.items().len())
+                .map(|i| (snapshots.items()[i].id.clone(), snapshots.row_hint(i, lang)))
+                .collect();
+            for (i, (id, hint)) in rows.iter().enumerate() {
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                let selected = snapshots.confirming() == Some(id.as_str());
+                widgets::row(
+                    buf, w, h, row, id, Some(hint),
+                    widgets::States { selected, ..widgets::States::at(row, mouse) },
+                    Some(tr),
+                );
+                hits.push((row, SettingsHit::RestoreSnapshot(i)));
+                ry += 46;
+                if ry > content.y + content.h - 60 {
+                    break;
+                }
+            }
+            // 待确认时给一条"取消"（两步确认必须能退出来）
+            if snapshots.confirming().is_some() {
+                let r_cancel = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 36 };
+                widgets::row(
+                    buf, w, h, r_cancel,
+                    crate::i18n::tr("取消回滚", "Cancel rollback"),
+                    Some(crate::i18n::tr("保留当前配置", "Keep the current configuration")),
+                    widgets::States::at(r_cancel, mouse), Some(tr),
+                );
+                hits.push((r_cancel, SettingsHit::CancelRestore));
+            }
         }
         "工具权限" => {
             // §5.3：逐工具策略。内容来自传入的 `policy` 视图（由事件循环异步取回），

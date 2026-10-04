@@ -18,6 +18,46 @@
 // 但「对时 / 换候选 / 写系统时区」这条链在 Linux 的 fbdev 事件循环里，
 // 因此非目标平台上这些方法只有测试在用 —— 与 palette/spaces/setup 同一处理。
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// 当前 Unix 秒（拿不到就 0）。
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// "多久以前"的**共用**文案（时间页与快照页都用它）。
+///
+/// 抽出来是因为：两个页面各写一份，必然在某个边界上分叉
+/// （一个说"刚刚"、另一个说"0 分钟前"），而用户看到两套说法会以为是两件事。
+pub fn relative_ago(now: i64, then: i64, lang: crate::i18n::Lang) -> String {
+    let ago = (now - then).max(0);
+    if ago < 60 {
+        crate::i18n::pick(lang, "刚刚", "just now").to_string()
+    } else if ago < 3600 {
+        format!(
+            "{} {} {}",
+            crate::i18n::pick(lang, "约", "about"),
+            ago / 60,
+            crate::i18n::pick(lang, "分钟前", "min ago")
+        )
+    } else if ago < 86_400 {
+        format!(
+            "{} {} {}",
+            crate::i18n::pick(lang, "约", "about"),
+            ago / 3600,
+            crate::i18n::pick(lang, "小时前", "h ago")
+        )
+    } else {
+        format!(
+            "{} {} {}",
+            crate::i18n::pick(lang, "约", "about"),
+            ago / 86_400,
+            crate::i18n::pick(lang, "天前", "d ago")
+        )
+    }
+}
+
 /// 常见时区候选（够用就好：全量 IANA 有几百条，塞进设置页只会更难找）。
 pub const TZ_CANDIDATES: &[&str] = &[
     "UTC",
@@ -106,18 +146,7 @@ impl TimeView {
                     String::new()
                 } else {
                     // 只显示相对时间：绝对时间在不同时区/不同步的机器上都会误导人
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let ago = (now - self.last_sync_unix).max(0);
-                    if ago < 60 {
-                        format!(" · {}", crate::i18n::pick(lang, "刚刚", "just now"))
-                    } else if ago < 3600 {
-                        format!(" · {} {} {}", crate::i18n::pick(lang, "约", "about"), ago / 60, crate::i18n::pick(lang, "分钟前", "min ago"))
-                    } else {
-                        format!(" · {} {} {}", crate::i18n::pick(lang, "约", "about"), ago / 3600, crate::i18n::pick(lang, "小时前", "h ago"))
-                    }
+                    format!(" · {}", relative_ago(now_unix(), self.last_sync_unix, lang))
                 };
                 if off == 0 {
                     format!(
