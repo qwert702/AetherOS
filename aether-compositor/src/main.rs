@@ -775,8 +775,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                         renderer.palette.open_with(items);
                         continue;
                     }
-                    // 关窗会改动窗口数组：拖拽状态必须一起清掉（P2-3 同类越界）
-                    let closed = !shift && c == 'w';
+                    // 关窗会改动窗口数组：拖拽状态必须一起清掉（P2-3 同类越界）。
+                    // **"哪个键会关窗"由 `ctrl_intent` 定义**（与 `apply_ctrl` 同源）——
+                    // 原来是手抄的 `!shift && c == 'w'`，两处会各自漂移。
+                    let intent = ctrl_intent(c, shift);
+                    let closed = matches!(intent, CtrlIntent::CloseWindow);
                     if let Some(msg) = apply_ctrl(&mut desktop, c, shift) {
                         if closed {
                             drag = None;
@@ -5776,18 +5779,53 @@ fn clipboard_paste(desktop: &mut Desktop) -> Option<String> {
 ///
 /// 规则：`Ctrl+W` 关窗；`Ctrl+Shift+C/V` 复制粘贴。**带 Shift 的才做剪贴板** ——
 /// 终端里 `Ctrl+C` 必须留给 shell（中断命令），不区分 shift 就会两件事抢一个键。
-fn apply_ctrl(desktop: &mut Desktop, c: char, shift: bool) -> Option<String> {
+/// `Ctrl+键` 的分类。**纯数据**，由 [`ctrl_intent`] 产出。
+///
+/// 存在的理由（批次 AR-1）："哪个键会关窗"这件事原本在**两处**各写了一遍 ——
+/// `apply_ctrl` 里一处、事件循环判断"要不要清拖拽状态"时又手抄了一处。
+/// 两处现在一致，但哪天有人只改一处，就会出现
+/// **窗口数组变了而拖拽状态还指着旧下标**（批次 P2-3 那次越界的成因）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtrlIntent {
+    /// `Ctrl+Shift+C`：复制（终端里的复制是另一条路，见 `feed_terminal`）
+    Copy,
+    /// `Ctrl+Shift+V`：粘贴（换行会被压成空格）
+    Paste,
+    /// `Ctrl+W`：关闭当前窗口 —— **唯一会改动窗口数组的那个**，
+    /// 所以调用方必须据此清掉拖拽与吸附预览
+    CloseWindow,
+    /// 其余：不做任何事
+    Unhandled,
+}
+
+/// 判断一个 `Ctrl+键` 想做什么。**判断与执行分开**（同 [`super_intent`] 的理由）。
+///
+/// 注意这里是**唯一**定义"哪个键做什么"的地方：`apply_ctrl` 按它匹配，
+/// 事件循环也用它判断"要不要清拖拽状态"。
+pub fn ctrl_intent(c: char, shift: bool) -> CtrlIntent {
     match (c, shift) {
-        ('c', true) => clipboard_copy(desktop),
-        ('v', true) => clipboard_paste(desktop).map(|t| {
+        ('c', true) => CtrlIntent::Copy,
+        ('v', true) => CtrlIntent::Paste,
+        ('w', false) => CtrlIntent::CloseWindow,
+        _ => CtrlIntent::Unhandled,
+    }
+}
+
+fn apply_ctrl(desktop: &mut Desktop, c: char, shift: bool) -> Option<String> {
+    match ctrl_intent(c, shift) {
+        // 按 `ctrl_intent` 匹配：**"哪个键做什么"只在这里定义一次**
+        CtrlIntent::Copy => clipboard_copy(desktop),
+        CtrlIntent::Paste => clipboard_paste(desktop).map(|t| {
             // 粘贴到单行输入框：换行折成空格，避免出现看不见的换行
             let one_line: String = t.replace(['\r', '\n'], " ");
             let n = one_line.chars().count();
             desktop.clipboard = one_line;
             format!("已粘贴 {n} 个字符")
         }),
-        ('w', false) => close_window(desktop, desktop.active),
-        _ => None,
+        // **唯一**调用 `close_window` 的地方（有源码探针守着）——
+        // 调用方据此清拖拽状态，见 `CtrlIntent::CloseWindow` 的说明
+        CtrlIntent::CloseWindow => close_window(desktop, desktop.active),
+        CtrlIntent::Unhandled => None,
     }
 }
 
@@ -7043,6 +7081,51 @@ mod wayland_sync_tests {
         assert!(
             src.contains("(d as usize) <= spaces.count()"),
             "Super+数字 的判断要基于当前桌面数"
+        );
+    }
+
+    /// `ctrl_intent` 的分类（**纯函数**，所以"哪个键做什么"这件事终于有测试了）。
+    #[test]
+    fn ctrl_intent_classifies_the_documented_keys() {
+        assert_eq!(ctrl_intent('c', true), CtrlIntent::Copy);
+        assert_eq!(ctrl_intent('v', true), CtrlIntent::Paste);
+        assert_eq!(ctrl_intent('w', false), CtrlIntent::CloseWindow);
+        // 带 Shift 的 Ctrl+W 不关窗（也不该被当成别的动作）
+        assert_eq!(ctrl_intent('w', true), CtrlIntent::Unhandled);
+        // 不带 Shift 的 Ctrl+C/V 不是复制粘贴（终端里另有通路）
+        assert_eq!(ctrl_intent('c', false), CtrlIntent::Unhandled);
+        assert_eq!(ctrl_intent('v', false), CtrlIntent::Unhandled);
+        // 其余一律 Unhandled（**明确的兜底**，不是"忘了处理"）
+        for c in ['a', 'x', 'q', 'z', 'k', '1'] {
+            assert_eq!(ctrl_intent(c, false), CtrlIntent::Unhandled, "Ctrl+{c}");
+            assert_eq!(ctrl_intent(c, true), CtrlIntent::Unhandled, "Ctrl+Shift+{c}");
+        }
+    }
+
+    /// **探针（批次 AR-1）**：`apply_ctrl` 里只允许一处 `close_window(` 调用。
+    ///
+    /// 理由：`CtrlIntent::CloseWindow` 是"会改动窗口数组"的唯一标记，
+    /// 调用方（事件循环）据此清掉拖拽与吸附预览。若有人绕过它、
+    /// 直接在 `apply_ctrl` 别处关窗，两处就会再次分叉（P2-3 那类越界的成因）。
+    ///
+    /// 允许的是**一处**：`CtrlIntent::CloseWindow => close_window(...)`。
+    #[test]
+    fn only_one_place_in_apply_ctrl_closes_a_window() {
+        let src = include_str!("main.rs");
+        // 只看 `apply_ctrl` 的函数体：从它的签名到下一个顶层 `fn `
+        let start = src.find("fn apply_ctrl(").expect("找不到 apply_ctrl");
+        let rest = &src[start..];
+        let end = rest.find("\nfn ").unwrap_or(rest.len());
+        let body = &rest[..end];
+        let needle = concat!("close_", "window(");
+        assert_eq!(
+            body.matches(needle).count(),
+            1,
+            "apply_ctrl 里应当只有一处关窗（且必须在 CtrlIntent::CloseWindow 分支）"
+        );
+        assert!(
+            body.contains("CtrlIntent::CloseWindow =>"),
+            "那一处必须在 CtrlIntent::CloseWindow 分支里"
         );
     }
 

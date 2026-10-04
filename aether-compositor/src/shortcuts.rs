@@ -90,7 +90,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
         keys: "Ctrl+W",
         desc: "关闭当前窗口",
         desc_en: "Close the active window",
-        probe: "let closed = !shift && c == 'w';",
+        // 探针跟着实现走：§4.1 抽出 `ctrl_intent` 之后，这条锚点从"循环里手抄的判断"
+        // 换成了**分类函数里的那一行** —— 那现在才是"哪个键会关窗"的唯一真相。
+        probe: "('w', false) => CtrlIntent::CloseWindow,",
         in_input: false,
     },
     Shortcut {

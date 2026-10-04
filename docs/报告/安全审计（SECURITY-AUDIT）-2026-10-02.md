@@ -1506,3 +1506,52 @@ AN-1 的源码探针原本锚在 `if c == 'l' && !shift {` 上 —— 那段文�
 * 事件循环里剩余的源码探针（锁屏只一处、桌面数用动态值、守卫顺序）
   **仍然是探针而不是测试** —— 它们能防复发，但不会发现新问题。
   要让这一层真正可测，得继续按这个方法往外抽。
+
+---
+
+## 附录 S：同一事实写了两遍 —— `Ctrl` 键的分类（2026-10-04 批次 AR-1）
+
+### S.1 问题（低，但属会咬人的那一类）
+
+事件循环里有一句：
+
+```rust
+let closed = !shift && c == 'w';        // ← 手抄的「哪个键会关窗」
+…
+if let Some(msg) = apply_ctrl(&mut desktop, c, shift) {
+    if closed { drag = None; snap_zone = layout::Snap::None; }
+```
+
+而「哪个键会关窗」的**真正定义**在 `apply_ctrl` 里（当时只有 `('w', false)`）。
+两处**现在**恰好一致，但这是**同一事实写了两遍**：谁哪天在 `apply_ctrl` 里再加一个
+关窗键（例如 `Ctrl+Q`），循环里的 `closed` 不会跟着变 →
+**窗口数组变了而拖拽状态还指着旧下标**，也就是批次 P2-3 那次越界的成因。
+
+这与附录 Q 的 Q-1（手抄的 `clamp(0, 3)`）是同一类：
+**手抄的事实副本**。区别是 Q-1 抄的是常量，这次抄的是**规则**。
+
+### S.2 修法
+
+抽出纯函数 `ctrl_intent(c, shift) -> CtrlIntent`：
+
+* `apply_ctrl` **按它匹配** → 「哪个键做什么」只剩一处定义；
+* 事件循环用**同一个函数**算 `closed`（`matches!(intent, CtrlIntent::CloseWindow)`）。
+
+再加一条**源码探针**：`apply_ctrl` 里 `close_window(` 只允许出现**一次**，
+且必须在 `CtrlIntent::CloseWindow` 分支里 —— 防止有人绕过分类直接在别处关窗。
+
+### S.3 验证
+
+* `ctrl_intent_classifies_the_documented_keys`：`Ctrl+Shift+C/V`、`Ctrl+W`、
+  `Ctrl+Shift+W`（**不关窗**，这是最容易写错的组合）、其余 `Unhandled`；
+* `only_one_place_in_apply_ctrl_closes_a_window`（源码探针，见上）；
+* **快捷键总览的探针又逮住一次**：`Ctrl+W` 那条原本锚在
+  `let closed = !shift && c == 'w';` 上，重构后立即变红 →
+  锚点改为 `ctrl_intent` 里的 `('w', false) => CtrlIntent::CloseWindow,`。
+  这是本项目探针机制第四、五次发挥作用的记录（附录 R 里有前两次）。
+
+### S.4 仍未处理
+
+* `Char` / `Nav` / `Enter` 三个分支仍是「判断写在执行里」（本轮没动，
+  那里要碰 IME、终端与 AI 词条，风险更高）；
+* 「手抄的事实副本」这一族**没有系统性排查**：目前是"碰上一处、修一处、加一条测试"。
