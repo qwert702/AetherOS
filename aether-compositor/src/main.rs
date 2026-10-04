@@ -2096,11 +2096,49 @@ fn demo_desktop_sized(_w: usize, _h: usize) -> Desktop {
     // P4.1：**默认桌面不开任何窗口**（用户要求）—— 窗口改由桌面图标 / Dock 打开。
     // 走查与预览路径仍用 `demo_desktop()`（3 窗口布局演示），不受影响。
     let wins: Vec<Win> = Vec::new();
-    let cwd = draw::default_cwd();
-    let (entries, dir_error) = draw::read_dir_entries(&cwd);
+    let (cwd, entries, dir_error) = match shot_fixture() {
+        Some(f) => f,
+        None => {
+            let cwd = draw::default_cwd();
+            let (entries, dir_error) = draw::read_dir_entries(&cwd);
+            (cwd, entries, dir_error)
+        }
+    };
     let mut d = Desktop { wins, active: 0, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), sidebar: sidebar_targets(), dir_error };
     sync_files_title(&mut d);
     d
+}
+
+/// 走查夹具：一份**固定**的目录清单（§4.1 的截图回归判据需要可复现的输出）。
+///
+/// 为什么需要它：`demo_desktop()` 会去读 `$HOME` 的真实内容 ——
+/// 于是同一个构建连跑两遍，文件窗口里看到的东西就不同，截图没法当"像素回归"的判据
+/// （实测见审计附录 CD.3）。
+///
+/// 用 `AETHER_SHOT_FIXTURE=1` 打开（与 `AETHER_FAKE_UTC` 同一风格的环境钩子）。
+/// 夹具是**中文名 + 英文名 + 不同大小**的组合：走查时要能看出列宽与大小格式化。
+fn shot_fixture() -> Option<(String, Vec<draw::FsEntry>, Option<String>)> {
+    if std::env::var("AETHER_SHOT_FIXTURE").is_err() {
+        return None;
+    }
+    let f = |name: &str, is_dir: bool, size: u64| draw::FsEntry {
+        name: name.to_string(),
+        is_dir,
+        size,
+    };
+    Some((
+        "/home/aether".to_string(),
+        vec![
+            f("文档", true, 0),
+            f("图片", true, 0),
+            f("下载", true, 0),
+            f("笔记.txt", false, 1284),
+            f("预算.csv", false, 20480),
+            f("安装说明.md", false, 3072),
+            f("readme.md", false, 512),
+        ],
+        None,
+    ))
 }
 
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
@@ -2116,8 +2154,15 @@ fn demo_desktop() -> Desktop {
         w.rect = tg[i].unwrap();
     }
     let active = wins.len() - 1;
-    let cwd = draw::default_cwd();
-    let (entries, dir_error) = draw::read_dir_entries(&cwd);
+    // 确定模式（`AETHER_SHOT_FIXTURE=1`）下用固定夹具，不去读真实目录
+    let (cwd, entries, dir_error) = match shot_fixture() {
+        Some(f) => f,
+        None => {
+            let cwd = draw::default_cwd();
+            let (entries, dir_error) = draw::read_dir_entries(&cwd);
+            (cwd, entries, dir_error)
+        }
+    };
     let mut d = Desktop { wins, active, layout: Layout::TwoCol, cwd, entries, selected: None, scroll: 0, clipboard: String::new(), sidebar: sidebar_targets(), dir_error };
     // 文件窗口的标题要跟随当前目录，而不是写死的"文件"
     sync_files_title(&mut d);

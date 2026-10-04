@@ -5745,7 +5745,10 @@ impl Renderer {
             let cx = caret_x as i32 + i * 8;
             rounded_rect(buf, w, h, Rect { x: cx, y: bar.y + 23, w: 5, h: 5 }, 2.5, color::accent(), a);
         }
-    } else if ((t_now() * 2.0) as i32) % 2 == 0 {
+    // 用**传入的 `t`**，不用 `t_now()`：渲染必须是输入的纯函数，
+        // 否则同一个状态会画出不同的画面（走查图与像素回归都做不了）。
+        // 与本函数上面算焦点环脉动用的是同一个时钟。
+        } else if ((t * 2.0) as i32) % 2 == 0 {
         fill_rect(buf, w, h, Rect { x: caret_x as i32, y: bar.y + 16, w: 2, h: 20 }, color::accent(), 0.9);
     }
 
@@ -5851,12 +5854,6 @@ fn visible_window<'a>(tr: &TextRenderer, text: &'a str, caret: usize, max_w: f32
     (&text[start..], &text[start..caret_byte])
 }
 
-fn t_now() -> f32 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_millis() as f32 / 1000.0)
-        .unwrap_or(0.0)
-}
 
 /// 回复气泡：出现在指令条上方。三类样式一眼可分——
 /// 用户指令（中性底、偏右）/ AI 回复（青紫环）/ 工具调用（左侧状态条）。
