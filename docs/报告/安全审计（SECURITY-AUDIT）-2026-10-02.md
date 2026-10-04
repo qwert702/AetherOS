@@ -2458,3 +2458,62 @@ help: consider importing this function instead
 * 本批**没有新增测试**（同前几批：依赖全局语言状态）—— 如实写，不假装被覆盖；
 * **未实机验证**：真机切英文看安装器与确认卡片（这两个界面在真机上才会出现，
   安装器更是**本会话禁止触碰**的路径 —— 只做代码级验证）。
+
+---
+
+## 附录 AH：预览错误改成枚举 —— 以及**同一个坑第二次**（2026-10-04 批次 BF-1）
+
+### AH.1 本批做了什么
+
+执行附录 AG 的计划：`read_preview` 不再返回中文句子，而是返回**枚举**：
+
+```rust
+pub enum PreviewError { IsDir, TooLarge(String), Binary, Io(String), Message(String) }
+pub fn preview_error_text(lang: Lang, e: &PreviewError) -> String   // 纯函数，有测试
+```
+
+四种"为什么预览不了" + 两种**原样透传**（`Io` 是系统的文本、`Message` 是界面自己的文案）。
+`draw_preview_content` 通过渲染函数显示；新增测试覆盖四种原因 × 两种语言，
+并断言**英文文案里不许有汉字**。
+
+### AH.2 一个**意外发现**：通知中心复用了 `PreviewData`
+
+改完之后编译器报 `main.rs` 两处类型不符 —— 那里在构造 `PreviewData` 表达
+通知中心的**空态**（"还没有通知" / "通知记录已关闭…"）。
+所以 `Message(String)` 这个变体不是"设计上的优雅"，而是**被现实逼出来的**：
+那两句是**界面**说的，不是数据层说的；界面按语言取好后放进去，
+数据层只负责带着它走（与 `Io` 同等对待）。
+
+顺带把这两句也双语了 —— 它们属于"通知"这条线，是**计划外**的收获。
+
+### AH.3 同一个坑，**第二次**（这次没有借口）
+
+我把 `PreviewError` 插到了 `#[derive(Clone, Debug)]` 与 `pub struct PreviewData` **之间** ——
+derive 于是落到了我的枚举上，而枚举自己也带 derive，编译器报
+"conflicting implementations of trait `Clone`"。
+
+**这个坑在第 48 轮已经踩过并写进过注释**（当时是 `#[derive]` + `enum Layout`、
+以及 `#[cfg(...)]` + `fn spawn`）。同一轮里我还犯了第二次：搬家时**只搬走了枚举**、
+把 `preview_error_text` 函数留在原地，于是 derive 又落到了函数上（"derive may only be
+applied to structs"）。
+
+**把规矩再写一遍，这次写在附录里**：插入代码时，
+**永远不要贴在"属性与它修饰的条目"之间**；搬家时，
+**先确认这一块到底包含哪些条目**（我这次只搬了半个块）。
+两个错误各花了一轮编译，而且都是**已经写下来过的教训**。
+
+### AH.4 仍未做
+
+* 通知窗口**标题**（`main.rs` 里 `format!("通知（共 {} 条）")`）—— 与它的测试断言绑在一起，
+  要一起改（下一批）；
+* **通知正文**：几十个 `push_toast`/`notifications` 调用点 —— 剩下最大的一块。
+
+### AH.5 验证
+
+* 新增 `preview_error_text_covers_all_reasons_in_both_languages`（四种原因 × 两语言 +
+  英文无汉字 + 带参数者参数必须出现 + `Io`/`Message` 原样透传）；
+* `cargo test` **728 项全绿**（+1）；Windows 与 **musl** 双目标 **0 警告**；
+* 两处**测试断言**跟着改了：枚举之后不能再把错误当字符串断言
+  （改成用 `preview_error_text(Lang::Zh, …)` 取文案再断言）——
+  这次**测试是跟着实现走的**，不是放宽断言；
+* **未实机验证**：真机切英文点开一个目录/二进制文件看预览提示。

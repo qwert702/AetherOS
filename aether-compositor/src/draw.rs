@@ -1032,15 +1032,71 @@ pub fn path_leaf(path: &str) -> String {
     }
 }
 
+/// 预览失败的原因（§3.5）。
+///
+/// 与 `aether_ipc::DnsError` 同一套理由：这一层是**数据层**，
+/// 让它出中英两套文案就得依赖 `i18n`（分层坏掉）或维护对照表（必然漂移）。
+/// 所以它只回答「**为什么**预览不了」，措辞交给界面（`preview_error_text`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewError {
+    /// 目标是目录
+    IsDir,
+    /// 文件太大（带**已经格式化好的**大小文字，避免这一层再依赖 `text::human_bytes` 之外的规则）
+    TooLarge(String),
+    /// 看起来是二进制
+    Binary,
+    /// 读文件失败（系统的错误文本原样带过来 —— 那不是我们的话，不该改）
+    Io(String),
+    /// **界面自己的**说明文字（已经按语言取好）。
+    ///
+    /// 存在的理由：通知中心复用 `PreviewData` 表达"空态"（"还没有通知" /
+    /// "通知记录已关闭…"），那两句是**界面**说的，不是数据层说的 ——
+    /// 所以由界面按语言取好后放进这个变体，数据层只负责带着它走。
+    Message(String),
+}
+
+/// 把 `PreviewError` 渲染成**给用户看的一句话**（§3.5）。
+///
+/// 抽成纯函数：中英文两套文案都有测试，且"几种原因是否都覆盖"由编译器保证（`match` 穷尽）。
+pub fn preview_error_text(lang: crate::i18n::Lang, e: &PreviewError) -> String {
+    use crate::i18n::{pick, Lang};
+    match e {
+        PreviewError::IsDir => pick(
+            lang,
+            "这是一个目录",
+            "This is a folder",
+        )
+        .to_string(),
+        PreviewError::TooLarge(size) => {
+            if lang == Lang::En {
+                format!("File too large ({size}) — preview not supported yet")
+            } else {
+                format!("文件过大（{size}），暂不支持预览")
+            }
+        }
+        PreviewError::Binary => pick(
+            lang,
+            "二进制文件，无法以文本预览",
+            "Binary file — cannot preview as text",
+        )
+        .to_string(),
+        // 系统错误与界面自带文案都原样显示：它们不是本模块的话，不该改
+        PreviewError::Io(msg) => msg.clone(),
+        PreviewError::Message(msg) => msg.clone(),
+    }
+}
+
 /// 文本预览内容。
 #[derive(Clone, Debug)]
+
+
 pub struct PreviewData {
     /// 被打开文件的完整路径（标题栏显示）
     pub path: String,
     /// 已按行切好的内容（限长）
     pub lines: Vec<String>,
-    /// 读取失败的原因；有值时窗口内显示它而不是内容
-    pub error: Option<String>,
+    /// 读取失败的原因；有值时窗口内显示它而不是内容（§3.5：**枚举**，文案由界面渲染）
+    pub error: Option<PreviewError>,
     /// 是否因超长被截断
     pub truncated: bool,
     /// 滚动偏移（2.4：长文件能翻页，不再只能看前 N 行）。
@@ -1060,13 +1116,15 @@ pub fn read_preview(path: &str) -> PreviewData {
     let meta = std::fs::metadata(path);
     if let Ok(m) = &meta {
         if m.is_dir() {
-            return PreviewData { path: path.into(), lines: Vec::new(), error: Some("这是一个目录".into()), truncated: false, scroll: Default::default() };
+            return PreviewData { path: path.into(), lines: Vec::new(), error: Some(PreviewError::IsDir), truncated: false, scroll: Default::default() };
         }
         if m.len() > PREVIEW_MAX_BYTES {
             return PreviewData {
                 path: path.into(),
                 lines: Vec::new(),
-                error: Some(format!("文件过大（{}），暂不支持预览", FsEntry { name: String::new(), is_dir: false, size: m.len() }.size_label())),
+                error: Some(PreviewError::TooLarge(
+                    FsEntry { name: String::new(), is_dir: false, size: m.len() }.size_label(),
+                )),
                 truncated: false,
                 scroll: Default::default(),
             };
@@ -1078,7 +1136,7 @@ pub fn read_preview(path: &str) -> PreviewData {
             let text = match String::from_utf8(bytes) {
                 Ok(t) => t,
                 Err(_) => {
-                    return PreviewData { path: path.into(), lines: Vec::new(), error: Some("二进制文件，无法以文本预览".into()), truncated: false, scroll: Default::default() };
+                    return PreviewData { path: path.into(), lines: Vec::new(), error: Some(PreviewError::Binary), truncated: false, scroll: Default::default() };
                 }
             };
             let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -1088,7 +1146,10 @@ pub fn read_preview(path: &str) -> PreviewData {
             }
             PreviewData { path: path.into(), lines, error: None, truncated, scroll: Default::default() }
         }
-        Err(e) => PreviewData { path: path.into(), lines: Vec::new(), error: Some(format!("{e}")), truncated: false, scroll: Default::default() },
+        Err(e) => PreviewData {
+            path: path.into(),
+            lines: Vec::new(),
+            error: Some(PreviewError::Io(e.to_string())), truncated: false, scroll: Default::default() },
     }
 }
 
@@ -5141,7 +5202,9 @@ fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Opti
 
     if let Some(err) = &d.error {
         draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, crate::i18n::pick(lang, "无法预览", "Cannot preview"), font::BODY, color::danger_text(), 0.95);
-        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 40) as f32, err, font::CAPTION, color::text_dim(), 0.9);
+        // §3.5：错误原因来自数据层的枚举，文案在这里按语言渲染
+        let msg = crate::draw::preview_error_text(crate::i18n::lang(), err);
+        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 40) as f32, &msg, font::CAPTION, color::text_dim(), 0.9);
         return;
     }
 
@@ -6996,6 +7059,40 @@ mod blit_tests {
                 "第 {i} 行登记的必须是它对应的条目下标"
             );
         }
+    }
+
+    /// §3.5：预览失败原因的**两套文案**，四种原因全覆盖。
+    ///
+    /// 这条测试能存在，正因为文案被抽成了纯函数（`preview_error_text`）——
+    /// 之前文案住在 `read_preview` 里、又只有中文，既不可测也没法翻译。
+    #[test]
+    fn preview_error_text_covers_all_reasons_in_both_languages() {
+        use crate::i18n::Lang;
+        use crate::draw::{preview_error_text, PreviewError};
+        let cases: Vec<PreviewError> = vec![
+            PreviewError::IsDir,
+            PreviewError::TooLarge("12.3 MB".into()),
+            PreviewError::Binary,
+        ];
+        for e in &cases {
+            let zh = preview_error_text(Lang::Zh, e);
+            let en = preview_error_text(Lang::En, e);
+            assert!(!zh.is_empty() && !en.is_empty(), "{e:?} 两种语言都要有文案");
+            assert!(
+                !en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "英文文案里有汉字：{en}"
+            );
+        }
+        // 带参数的那种：大小文字必须出现在两种文案里（否则用户不知道到底多大）
+        let big = PreviewError::TooLarge("12.3 MB".into());
+        assert!(preview_error_text(Lang::Zh, &big).contains("12.3 MB"));
+        assert!(preview_error_text(Lang::En, &big).contains("12.3 MB"));
+        // Io / Message 原样透传：它们不是本模块的话，不该被改写
+        let io = PreviewError::Io("permission denied".into());
+        assert_eq!(preview_error_text(Lang::Zh, &io), "permission denied");
+        assert_eq!(preview_error_text(Lang::En, &io), "permission denied");
+        let m = PreviewError::Message("界面自己取好的话".into());
+        assert_eq!(preview_error_text(Lang::En, &m), "界面自己取好的话");
     }
 
 }

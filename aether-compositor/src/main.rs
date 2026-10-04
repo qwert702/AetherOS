@@ -2941,10 +2941,26 @@ fn open_notifications(
         // **两种空要分开说**：从没记过 vs 用户自己关了记录 —— 后者如果只说"还没有通知"，
         // 用户会以为是功能坏了，而其实是他自己关的。
         error: if empty {
+            // §3.5：这两句是**界面**说的（通知中心的空态），所以在这里按语言取好，
+            // 再交给 `PreviewError::Message` 带着走
             Some(if notifs.enabled() {
-                "还没有通知".to_string()
+                draw::PreviewError::Message(
+                    crate::i18n::pick(
+                        crate::i18n::lang(),
+                        "还没有通知",
+                        "No notifications yet",
+                    )
+                    .to_string(),
+                )
             } else {
-                "通知记录已关闭（可在 设置 → 通知 打开）".to_string()
+                draw::PreviewError::Message(
+                    crate::i18n::pick(
+                        crate::i18n::lang(),
+                        "通知记录已关闭（可在 设置 → 通知 打开）",
+                        "Notification history is off (enable it in Settings → Notifications)",
+                    )
+                    .to_string(),
+                )
             })
         } else {
             None
@@ -6958,14 +6974,29 @@ mod wayland_sync_tests {
         assert!(data.path.starts_with("通知（共 "), "标题应带总数：{}", data.path);
         assert!(data.error.is_some(), "空历史应给出说明而不是空白");
         // 开着记录时的空 = "还没有通知"
-        assert!(data.error.as_deref().unwrap().contains("还没有"),
-                "开着记录时应说'还没有通知'：{:?}", data.error);
+        // §3.5：错误原因是**枚举**了，所以先按语言渲染成文案再断言
+        let msg = draw::preview_error_text(
+            crate::i18n::Lang::Zh,
+            data.error.as_ref().unwrap(),
+        );
+        assert!(msg.contains("还没有"), "开着记录时应说'还没有通知'：{msg}");
         // 关掉记录时的空必须**说明原因**（否则用户以为功能坏了，其实是他自己关的）
         let mut n2 = notifications::Notifications::new();
         n2.set_enabled(false);
         let mut d2 = demo_desktop();
         let _ = open_notifications(&mut d2, &mut n2, 480);
-        let off = d2.wins.last().unwrap().preview.as_ref().unwrap().error.clone().unwrap();
+        let off = draw::preview_error_text(
+            crate::i18n::Lang::Zh,
+            d2.wins
+                .last()
+                .unwrap()
+                .preview
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap(),
+        );
         assert!(off.contains("记录已关闭"), "关闭记录时的空文案应说明原因：{off}");
 
         // 记两条（类别不同 → 不会合并），再打开
