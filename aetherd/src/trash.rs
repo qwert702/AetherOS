@@ -130,9 +130,14 @@ pub fn trash(root: &Path, path: &Path) -> Result<String> {
 
     std::fs::create_dir_all(root)
         .with_context(|| format!("无法创建回收站 {}", root.display()))?;
+    // **回收站必须只有 root 能进**：里面是被"删掉"的文件，
+    // 而删除给人的预期就是"别人看不到了"。默认权限（umask 022 → 0755）
+    // 会让任何本机用户读到这些文件（见安全审计附录 N）。
+    set_dir_mode(root, trash_dir_mode())?;
     let name = entry_name(root)?;
     let dir = root.join(&name);
     std::fs::create_dir_all(&dir)?;
+    set_dir_mode(&dir, trash_dir_mode())?;
 
     // 先写 origin 再搬 payload：中途失败最多留下一个**空条目**，
     // 而不是"数据没了但不知道原来在哪"
@@ -142,6 +147,29 @@ pub fn trash(root: &Path, path: &Path) -> Result<String> {
         return Err(anyhow::anyhow!("移入回收站失败（{}）: {e}", abs.display()));
     }
     Ok(name)
+}
+
+/// 回收站目录应当用的权限位（**纯函数**，任何平台都能测）。
+///
+/// 0700 = 只有属主能进、能读。回收站里是"已经被删掉"的东西，
+/// 用默认权限会让它变成"删了但谁都能看"。
+pub fn trash_dir_mode() -> u32 {
+    0o700
+}
+
+/// 设置目录权限（非 Unix 上是空操作 —— 那里没有这套权限模型）。
+fn set_dir_mode(p: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode))
+            .with_context(|| format!("设置回收站权限失败 {}", p.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (p, mode);
+    }
+    Ok(())
 }
 
 /// 列出回收站条目，**最新在前**。
@@ -411,4 +439,19 @@ mod tests {
         assert!(list(&d.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
+    /// **审计发现（附录 N）**：回收站目录必须是 0700（纯函数，跨平台可测）。
+    ///
+    /// 为什么单测这条：Linux 上真去验目录权限要 `#[cfg(unix)]`，
+    /// 而"用什么权限"这个**决策**在任何平台都该被钉住 —— 有人把它改回默认值时要立刻红。
+    #[test]
+    fn trash_directories_are_private() {
+        assert_eq!(trash_dir_mode(), 0o700, "回收站不能让别的用户读");
+        // 明确否定"默认权限"这类值（它们都等于把删除变成"谁都能看"）
+        for bad in [0o755, 0o775, 0o777, 0o644] {
+            assert_ne!(trash_dir_mode(), bad);
+        }
+        // 也不该是 0700 之外的稀奇值：只允许属主 rwx
+        assert_eq!(trash_dir_mode() & 0o077, 0, "组/其他人不许有任何权限");
+    }
+
 }

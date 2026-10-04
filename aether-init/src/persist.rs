@@ -30,6 +30,13 @@ pub const PERSIST_LABEL: &str = "AETHER";
 const EXT_HEAD_LEN: usize = 2048;
 
 /// /var 下需要存在的目录（挂载覆盖后可能为空，运行时补齐）。
+///
+/// **关于权限的一点说明**（审计附录 N）：这三个目录用默认权限创建（umask 022 → 0755）。
+/// 其中 `/var/tmp` 与惯例不同 —— FHS 下 `/var/tmp` 通常是 `1777`（sticky、人人可写），
+/// 而这里是 0755：**非 root 应用写不进 `/var/tmp`**。这是本系统的取向
+/// （单用户设备上"人人可写 + sticky"没有收益，却多一块可写的攻击面），
+/// 但它是**一个决定而不是疏忽**，所以写在这里；哪天应用需要写 `/var/tmp`，
+/// 要连同这条取向一起重新评估，而不是顺手改成 1777。
 pub const VAR_DIRS: [&str; 3] = ["/var/log/aether", "/var/diag", "/var/tmp"];
 
 /// 挂载选项。
