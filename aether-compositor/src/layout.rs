@@ -10,6 +10,23 @@ use crate::draw::Rect;
 // （TOP_BAR = 菜单栏高度的工作区视角别名）。
 pub use crate::draw::theme::metric::{BOTTOM_DOCK, GAP, MENUBAR_H as TOP_BAR};
 
+/// 数字键（`Alt+1..4`）对应的布局。**纯函数**，所以这条映射有单元测试。
+///
+/// 两处刻意写法：
+/// * 用 `Layout::ALL.len()` 而不是手抄一个数字 —— 用户按的键与布局表**必须**同源，
+///   否则加一个布局时会出现"按了没反应"或"按第 5 个却跳到最后一个"（批次 AO-1 那类）；
+/// * `saturating_sub(1)`：`UiEvent::LayoutKey(usize)` 是公开变体，
+///   不能假设"每个产生者都保证 n>=1"（那是跨文件不变量，改一处就断）。
+///
+/// 调用点在 `main.rs` 的 fbdev 循环里（**只在 Linux 编译**），
+/// 所以非 Linux 上只有测试用它 —— 按平台 allow，而不是把它删掉：
+/// 它的单元测试在任何平台都跑，那正是这条映射该有的保障。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn for_key(n: usize) -> Layout {
+    let idx = n.saturating_sub(1).min(Layout::ALL.len().saturating_sub(1));
+    Layout::ALL[idx]
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layout {
     /// 自由布局：窗口保持手动位置
@@ -182,4 +199,18 @@ mod tests {
             assert_eq!((r.x, r.y, r.w, r.h), (W.x, W.y, W.w, W.h));
         }
     }
+    /// `for_key` 的边界：0 不 panic、正常 1..=4 对得上、越界落到最后一个。
+    #[test]
+    fn layout_for_key_is_total_and_matches_the_table() {
+        assert_eq!(Layout::ALL.len(), 4, "布局表长度变了就要一起看这条测试");
+        // 正常映射：1..=4 与 ALL 一一对应
+        for (i, lay) in Layout::ALL.iter().enumerate() {
+            assert_eq!(for_key(i + 1), *lay, "第 {} 个布局对不上", i + 1);
+        }
+        // **0 不 panic**（公开变体，不假设产生者守规矩）—— 落到第一个
+        assert_eq!(for_key(0), Layout::ALL[0], "0 该退到第一个而不是下溢");
+        // 越界落到最后一个（而不是 panic）
+        assert_eq!(for_key(99), *Layout::ALL.last().unwrap());
+    }
+
 }

@@ -762,7 +762,9 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::LayoutKey(n) => {
-                    if let Some(msg) = set_layout(&mut desktop, layout::Layout::ALL[(n - 1).clamp(0, 3)]) {
+                    // `layout::for_key` 是**纯函数**（有单测）：越界/0 都不 panic，
+                    // 且与 `Layout::ALL` 同源 —— 见它的注释（批次 AP-1）
+                    if let Some(msg) = set_layout(&mut desktop, layout::for_key(n)) {
                         push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
@@ -3576,7 +3578,7 @@ fn main() -> anyhow::Result<()> {
         let lay = args
             .get(pos + 1)
             .and_then(|s| s.parse::<usize>().ok())
-            .map(|i| Layout::ALL[(i - 1).clamp(0, 3)])
+            .map(layout::for_key)
             .unwrap_or(Layout::TwoCol);
         let mut buf = vec![0u32; WIDTH * HEIGHT];
         let mut desktop = demo_desktop();
