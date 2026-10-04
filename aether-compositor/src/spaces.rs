@@ -41,11 +41,14 @@ impl<W> Default for Spaces<W> {
 }
 
 impl<W> Spaces<W> {
-    /// 空间数量。
-    ///
-    /// 固定 4 个而不是"可增删"：快捷键是 `Super+1..4`（与 Windows/macOS 的习惯一致），
-    /// 而"增删空间"要一套管理界面。先把"切"和"搬"做扎实，数量留常量。
+    /// **默认**空间数量（首次启动就是这么多）。
     pub const COUNT: usize = 4;
+
+    /// 空间数量上限。
+    ///
+    /// 为什么有上限：切换靠 `Super+1..9`，超过 9 个就没有对应的键了；
+    /// 8 是个够用又不会让快捷键与界面都变得拥挤的数字。
+    pub const MAX: usize = 8;
 
     pub fn new() -> Self {
         Self {
@@ -61,7 +64,7 @@ impl<W> Spaces<W> {
     }
 
     pub fn count(&self) -> usize {
-        Self::COUNT
+        self.parked.len()
     }
 
     /// 第 `i` 个空间里的窗口数。当前空间的要看调用方的向量（传进来）。
@@ -78,7 +81,7 @@ impl<W> Spaces<W> {
     /// 做法是**交换**：当前向量 ⇄ `parked[current]`，再 `parked[i]` ⇄ 当前向量。
     /// 交换完 `parked[current]` 恰好为空（不变量，有测试盯着）。
     pub fn switch(&mut self, i: usize, wins: &mut Vec<W>, active: &mut usize) -> bool {
-        if i >= Self::COUNT || i == self.current {
+        if i >= self.count() || i == self.current {
             return false;
         }
         self.saved_active[self.current] = *active;
@@ -95,7 +98,7 @@ impl<W> Spaces<W> {
     /// 搬走的窗口**追加**到目标空间末尾（保持目标空间原有顺序）；
     /// 源空间的焦点随后夹回合法范围。
     pub fn move_active(&mut self, i: usize, wins: &mut Vec<W>, active: &mut usize) -> bool {
-        if i >= Self::COUNT || i == self.current || wins.is_empty() || *active >= wins.len() {
+        if i >= self.count() || i == self.current || wins.is_empty() || *active >= wins.len() {
             return false;
         }
         let w = wins.remove(*active);
@@ -105,7 +108,60 @@ impl<W> Spaces<W> {
         true
     }
 
-    /// 不变量的自检：当前空间那一格必须是空的。
+    /// 追加一个空空间。返回新空间的下标；已达上限则返回 `None`。
+    ///
+    /// 新空间一律**空**：从别处"复制"一个桌面没有明确的语义
+    /// （是复制窗口？还是复制布局？），不做这种含糊的事。
+    pub fn add_space(&mut self) -> Option<usize> {
+        if self.count() >= Self::MAX {
+            return None;
+        }
+        self.parked.push(Vec::new());
+        self.saved_active.push(0);
+        Some(self.count() - 1)
+    }
+
+    /// 删除第 `i` 个空间。返回是否删掉了。
+    ///
+    /// 三条规则（**都不是"顺手"能省的**）：
+    /// 1. 至少保留一个空间；
+    /// 2. **空间里还有窗口就不能删** —— 那会把窗口连同它的终端会话一起丢掉，
+    ///    而用户点的是"删桌面"，不是"删掉里面的东西"；
+    /// 3. 删**当前**空间时，只有它是空的才允许：然后切到前一个（或第 0 个）。
+    pub fn remove_space(&mut self, i: usize, wins: &mut Vec<W>, active: &mut usize) -> bool {
+        if self.count() <= 1 || i >= self.count() {
+            return false;
+        }
+        if i == self.current {
+            // 当前空间的窗口在这个向量里
+            if !wins.is_empty() {
+                return false;
+            }
+            let target = i.saturating_sub(1);
+            // 先切过去（此时当前空间是空的，切换不会丢东西），再删
+            if target == i || !self.switch(target, wins, active) {
+                return false;
+            }
+            // 切换后，被删的那个空间的下标可能变了（删的是原来那个 i）
+            let victim = i;
+            self.parked.remove(victim);
+            self.saved_active.remove(victim);
+            return true;
+        }
+        // 非当前空间：它的窗口在 parked[i] 里
+        if !self.parked[i].is_empty() {
+            return false;
+        }
+        self.parked.remove(i);
+        self.saved_active.remove(i);
+        // 被删的空间在当前空间之前 → 当前下标要往前挪一格
+        if i < self.current {
+            self.current -= 1;
+        }
+        true
+    }
+
+    /// 停放中的窗口总数（诊断/测试用：切来切去不该丢窗口）。
     ///
     /// 提供成方法而不是只在测试里写：这是一条**每次操作后都该成立**的断言，
     /// 集成测试可以随时查（真出问题时能立刻指出是哪一步破坏的）。
@@ -248,4 +304,77 @@ mod tests {
         assert_eq!(sp.len_of(1, wins.len()), 3, "其它空间看 parked");
         assert_eq!(sp.len_of(9, wins.len()), 0, "越界当成空");
     }
+    /// §5.4：**增删空间的三条规则**（每一条都对应一种"会丢东西"的可能）。
+    #[test]
+    fn adding_and_removing_spaces_follows_the_rules() {
+        // 这个用例只加空间、不动窗口，所以 wins/active 不必可变、也不必命名
+        let (mut sp, _, _) = setup(&[&[1]]);
+        // 默认 4 个；加到上限
+        assert_eq!(sp.count(), 4);
+        assert!(sp.add_space().is_some());
+        assert_eq!(sp.count(), 5);
+        while sp.add_space().is_some() {}
+        assert_eq!(sp.count(), Spaces::<u32>::MAX, "不该超过上限");
+        assert!(sp.add_space().is_none(), "到上限后返回 None（而不是 panic 或无限加）");
+
+        // **规则 1：不能少于 1 个** —— 逐个删到最后 1 个，再删就不行
+        let (mut sp2, mut wins2, mut active2) = setup(&[&[]]);
+        while sp2.count() > 1 {
+            assert!(sp2.remove_space(sp2.count() - 1, &mut wins2, &mut active2));
+        }
+        assert_eq!(sp2.count(), 1);
+        assert!(!sp2.remove_space(0, &mut wins2, &mut active2), "最后一个不能删");
+
+        // **规则 2：非空空间不能删**（窗口会被连同终端会话一起丢掉）
+        // 注意 `setup` 造的是**默认 4 个**空间（不是"数组长度"），所以删不掉时数量仍是 4。
+        let (mut sp3, mut wins3, mut active3) = setup(&[&[1], &[7, 8]]);
+        assert!(!sp3.remove_space(1, &mut wins3, &mut active3), "里面有窗口，不能删");
+        assert_eq!(sp3.count(), 4, "删不掉就数量不变");
+        assert_eq!(sp3.len_of(1, wins3.len()), 2, "窗口不该受影响");
+
+        // 空空间可以删；删掉当前空间**之前**的那个，当前下标要跟着挪
+        let (mut sp4, mut wins4, mut active4) = setup(&[&[1], &[], &[9]]);
+        sp4.switch(2, &mut wins4, &mut active4);
+        assert_eq!(sp4.current(), 2);
+        assert!(sp4.remove_space(1, &mut wins4, &mut active4), "空空间可以删");
+        assert_eq!(sp4.count(), 3, "4 个删掉 1 个 → 3 个");
+        assert_eq!(sp4.current(), 1, "删掉前面的空间后，当前下标要往前挪");
+        assert_eq!(wins4, vec![9], "当前空间的内容不该变");
+
+        // **规则 3：删当前空间** —— 里面有窗口就不行；空的可以（并自动切走）
+        let (mut sp5, mut wins5, mut active5) = setup(&[&[1], &[]]);
+        sp5.switch(1, &mut wins5, &mut active5);
+        assert!(wins5.is_empty(), "前提：当前空间是空的");
+        assert!(sp5.remove_space(1, &mut wins5, &mut active5), "空的当前空间可以删");
+        assert_eq!(sp5.count(), 3);
+        assert_eq!(sp5.current(), 0, "删掉当前空间后要切到还存在的那个");
+
+        let (mut sp6, mut wins6, mut active6) = setup(&[&[1], &[7]]);
+        sp6.switch(1, &mut wins6, &mut active6);
+        assert!(!sp6.remove_space(1, &mut wins6, &mut active6), "当前空间有窗口，不能删");
+        assert_eq!(wins6, vec![7], "窗口必须还在");
+
+        // 越界与删自己（只有一个空间时）都返回 false 而不是 panic
+        let (mut sp7, mut wins7, mut active7) = setup(&[&[1], &[2]]);
+        assert!(!sp7.remove_space(9, &mut wins7, &mut active7));
+    }
+
+    /// 增删之后，切来切去**仍然不丢窗口**（不变量也要继续成立）。
+    #[test]
+    fn windows_survive_add_and_remove_cycles() {
+        let (mut sp, mut wins, mut active) = setup(&[&[1, 2], &[3], &[4, 5]]);
+        let total = (0..sp.count()).map(|i| sp.len_of(i, wins.len())).sum::<usize>();
+        assert_eq!(total, 5);
+        for _ in 0..3 {
+            sp.add_space();
+            assert!(sp.invariant_holds());
+            sp.switch(sp.count() - 1, &mut wins, &mut active);
+            assert!(sp.invariant_holds());
+            assert!(sp.remove_space(sp.current(), &mut wins, &mut active));
+            assert!(sp.invariant_holds());
+            let now = (0..sp.count()).map(|i| sp.len_of(i, wins.len())).sum::<usize>();
+            assert_eq!(now, total, "增删空间不该丢窗口");
+        }
+    }
+
 }

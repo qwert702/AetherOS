@@ -1387,6 +1387,8 @@ pub mod control_layout {
     pub const POWER_ROWS: i32 = 3;
     /// 音量行（批次 K-2）：一条可点击设定的音量轨道
     pub const VOLUME_ROWS: i32 = 1;
+    /// 虚拟桌面行（§5.4）：新增桌面 / 移除当前桌面
+    pub const SPACE_ROWS: i32 = 2;
 
     /// 开关行高（含行距）
     pub const ROW_H_SWITCH: i32 = 36;
@@ -1407,6 +1409,8 @@ pub mod control_layout {
         + JUMP_ROWS * ROW_H_ACTION
         + SECTION
         + VOLUME_ROWS * ROW_H_ACTION
+        + SECTION
+        + SPACE_ROWS * ROW_H_ACTION
         + SECTION
         + POWER_ROWS * ROW_H_ACTION;
 
@@ -1440,6 +1444,10 @@ pub enum ControlHit {
     VolumeTrack,
     /// **动作类**：打开通知中心（§3.2）
     Notifications,
+    /// **动作类**：新增一个虚拟桌面（§5.4）
+    AddSpace,
+    /// **动作类**：移除当前虚拟桌面（§5.4）。**里面有窗口时会拒绝**并说明原因。
+    RemoveSpace,
 }
 
 /// 画一个应用图标：彩色底座 + 白色几何符号（全部纯 rect/圆，不依赖字体字形覆盖）。
@@ -1615,6 +1623,9 @@ pub struct Renderer {
     pub time: crate::timeview::TimeView,
     /// 「快照与回滚」页的状态（§5.6）。
     pub snapshots: crate::snapview::SnapView,
+    /// 当前虚拟桌面数量（§5.4）。绘制要用它显示"N 个桌面"——
+    /// 桌面状态住在事件循环的 `spaces` 里（那里才拿得到窗口），所以这里只镜像一个数字。
+    pub space_count: usize,
     /// 设置面板本帧登记的可交互项（绘制期登记、事件循环消费）
     pub settings_hits: Vec<(Rect, crate::settings::SettingsHit)>,
     /// 控制中心是否展开（P4）。状态放渲染器里：主循环直接读写，**不必动 `UiState`**
@@ -1936,6 +1947,7 @@ impl Renderer {
         store: Default::default(),
         time: Default::default(),
         snapshots: Default::default(),
+        space_count: crate::spaces::Spaces::<Win>::COUNT,
             settings_hits: Vec::new(),
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
@@ -2559,6 +2571,34 @@ impl Renderer {
                              widgets::States::at(r, ui.mouse), Some(tr));
                 // **不登记命中区**：不可用时点不动，也就不该有可点击区域
             }
+            y += control_layout::ROW_H_ACTION;
+        }
+
+        // ⑦ 虚拟桌面（§5.4）：把"切"之外的"增删"也放到手边
+        //
+        // 为什么放在控制中心而不是再占一个快捷键：`Super+1..9` 已经是"切到第 N 个"，
+        // 再给增删各配一个组合键既难记又容易误触；而"给桌面加一个"是低频动作，
+        // 收进控制中心正合适。行数由 `control_layout::SPACE_ROWS` 决定（面板自动变高）。
+        widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
+        y += 8;
+        widgets::group_header(
+            buf, w, h, panel.x + 16, y,
+            &format!(
+                "{}（{}）",
+                crate::i18n::tr("虚拟桌面", "Virtual desktops"),
+                self.space_count
+            ),
+            Some(tr),
+        );
+        y += 20;
+        for (zh, en, hit) in [
+            ("新增桌面", "New desktop", ControlHit::AddSpace),
+            ("移除当前桌面", "Remove this desktop", ControlHit::RemoveSpace),
+        ] {
+            let r = row(y);
+            let label = crate::i18n::pick(crate::i18n::lang(), zh, en);
+            widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
+            self.control_hits.push((r, hit));
             y += control_layout::ROW_H_ACTION;
         }
 

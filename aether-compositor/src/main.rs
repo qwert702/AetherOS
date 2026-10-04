@@ -1080,7 +1080,59 @@ fn run_fbdev() -> anyhow::Result<()> {
                 &mut intent,
             );
             if let Some(i) = intent {
-                apply_ui_intent(i, &ai_tx, &mut toast, &mut renderer, &mut audio);
+                // §5.4 的增删桌面**在这里执行**（而不是塞进 `apply_ui_intent`）：
+                // 它们要动的是循环里的 `desktop`/`spaces`/`drag`/`snap_zone`，
+                // 而那个函数里一个都没有 —— 硬塞进去就得改它的签名、把这些
+                // 循环局部一路传下去，得不偿失。
+                match i {
+                    UiIntent::AddSpace => match spaces.add_space() {
+                        Some(idx) => {
+                            renderer.space_count = spaces.count();
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!(
+                                    "已新增桌面（共 {} 个）· Super+{} 可切过去",
+                                    spaces.count(),
+                                    idx + 1
+                                ),
+                                notifications::Kind::Info,
+                            );
+                        }
+                        None => push_toast(
+                            &mut toast,
+                            &mut renderer.notifs,
+                            format!("桌面数量已达上限（{}）", spaces::Spaces::<draw::Win>::MAX),
+                            notifications::Kind::Info,
+                        ),
+                    },
+                    UiIntent::RemoveSpace => {
+                        let cur = spaces.current();
+                        if spaces.remove_space(cur, &mut desktop.wins, &mut desktop.active) {
+                            renderer.space_count = spaces.count();
+                            // 窗口数组与当前空间都变了：拖拽与吸附预览必须一起清掉
+                            drag = None;
+                            snap_zone = layout::Snap::None;
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!("已移除桌面（还剩 {} 个）", spaces.count()),
+                                notifications::Kind::Info,
+                            );
+                        } else {
+                            // **删不掉必须说明原因**（只说"失败"等于让用户猜）：
+                            // 最常见的是"当前桌面里还有窗口"——那会连带丢掉终端会话
+                            let why = if spaces.count() <= 1 {
+                                "至少要保留一个桌面".to_string()
+                            } else {
+                                "当前桌面里还有窗口：先用 Super+Shift+数字 把它们移走，或关掉它们"
+                                    .to_string()
+                            };
+                            push_toast(&mut toast, &mut renderer.notifs, why, notifications::Kind::Info);
+                        }
+                    }
+                    other => apply_ui_intent(other, &ai_tx, &mut toast, &mut renderer, &mut audio),
+                }
             }
             consumed
         } {
@@ -1830,6 +1882,12 @@ enum UiIntent {
     Logout,
     /// 设定音量（0..=100）：由点击音量轨道的位置算出（批次 K-2）
     SetVolume(u8),
+    /// 新增一个虚拟桌面（§5.4）。与电源同理：**判定与执行分开** ——
+    /// `control_center_click` 是纯逻辑（单测覆盖、Windows 上也跑），
+    /// 而增删要碰事件循环里的 `spaces` 与窗口数组。
+    AddSpace,
+    /// 移除当前虚拟桌面（§5.4）。里面有窗口时会被拒绝（并把原因告诉用户）。
+    RemoveSpace,
 }
 
 impl ConfirmRequest {
@@ -2717,6 +2775,13 @@ fn apply_ui_intent(
     audio: &mut audio::Audio,
 ) {
     match intent {
+        // 这两个意图**在调用点处理**（见那里的注释）：它们要动的是循环里的
+        // `desktop`/`spaces`/`drag`/`snap_zone`，本函数一个都拿不到。
+        // 这里显式列出并忽略 —— 不是"忘了处理"，而是**明确说明它们不属于这里**；
+        // 若将来有人直接调用本函数传入它们，编译器不会拦，但代码里写着它不做。
+        UiIntent::AddSpace | UiIntent::RemoveSpace => {
+            debug_assert!(false, "这两个意图应当在调用点处理（见 fbdev 循环里的注释）");
+        }
         UiIntent::Power(action) => {
             let a = action.as_str();
             let label = if action == aether_ipc::PowerAction::PowerOff { "关机" } else { "重启" };
@@ -2838,6 +2903,14 @@ fn control_center_click(
                 // 通知历史在 renderer 上、桌面在 desktop 上：两个不相交的可变借用
                 let tz = renderer.settings.tz_offset_min;
                 let _ = open_notifications(desktop, &mut renderer.notifs, tz);
+            }
+            // §5.4 虚拟桌面的增删同属"判定与执行分开"：这里只登记意图
+            //（执行要碰 `spaces` 与窗口数组，那些住在事件循环里）。
+            ControlHit::AddSpace => {
+                *intent = Some(UiIntent::AddSpace);
+            }
+            ControlHit::RemoveSpace => {
+                *intent = Some(UiIntent::RemoveSpace);
             }
             // 电源三个入口**只判定意图**，执行交给主循环（理由见 UiIntent 的说明）：
             // 单测里点一下"关机"绝不该真的去发 IPC 或退出进程。
@@ -5497,11 +5570,13 @@ mod control_center_tests {
     fn control_panel_is_tall_enough_for_all_rows() {
         use draw::control_layout as L;
         // 最后一行的底部（相对面板顶）：HEAD + SECTION + 开关行 + SECTION + 跳转行
-        //                                + SECTION + 音量行 + SECTION + 电源行
+        //                       + SECTION + 音量行 + SECTION + 虚拟桌面行 + SECTION + 电源行
         let last_row_bottom = 12 + 26
             + (8 + 20) + L::SWITCH_ROWS * L::ROW_H_SWITCH
             + (8 + 20) + L::JUMP_ROWS * L::ROW_H_ACTION
             + (8 + 20) + L::VOLUME_ROWS * L::ROW_H_ACTION
+            // §5.4：虚拟桌面那一段（加段时**这里也要跟着加** —— 这条测试正是为此存在）
+            + (8 + 20) + L::SPACE_ROWS * L::ROW_H_ACTION
             + (8 + 20) + L::POWER_ROWS * L::ROW_H_ACTION;
         assert_eq!(
             last_row_bottom,
