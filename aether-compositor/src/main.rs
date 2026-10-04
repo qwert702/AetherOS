@@ -17,10 +17,6 @@ mod audio;
 mod fbdev;
 // 输入事件层：事件类型与键位翻译跨平台（可在开发机上单测），仅采集后端限 Linux
 mod input;
-
-/// 无界面 e2e 的注入脚本格式（§4.1）。见 `e2e.rs` 的模块文档。
-#[cfg(test)]
-mod e2e;
 // 中文输入法（2.3）：拼音 → 候选 → 上屏，词表自建
 mod ime;
 #[cfg(target_os = "linux")]
@@ -2492,8 +2488,16 @@ fn run_e2e_script(
     script: &str,
     desktop: &mut Desktop,
     undo: &mut UndoStack,
+    spaces: &mut spaces::Spaces<draw::Win>,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    // §4.1：注入用的 UI 侧状态。
+    // 为什么只到这里为止：`dispatch_nav` 是**两条真实输入路径共用**的分流器，
+    // 所以用同一个函数就等于注入到了真实逻辑上，而不是另写一套按键处理。
+    let mut inj_input = String::new();
+    let mut inj_cursor = textview::TextCursor::default();
+    let mut inj_ime = ime::Ime::default();
+    let (inj_tx, _inj_rx) = mpsc::channel::<AiEvent>();
     for (idx, raw) in script.lines().enumerate() {
         let lineno = idx + 1;
         let line = raw.trim();
@@ -2520,6 +2524,9 @@ fn run_e2e_script(
                     "layout" => emit("query", true, desktop.layout.label(), &mut out),
                     "windows" => emit("query", true, &desktop.wins.len().to_string(), &mut out),
                     "active" => emit("query", true, &desktop.active.to_string(), &mut out),
+                    // §4.1：注入之后要**断得准**，所以把注入产生的结果也做成可查询状态
+                    "ai_input" => emit("query", true, &inj_input, &mut out),
+                    "space" => emit("query", true, &spaces.current().to_string(), &mut out),
                     // 窗口标题用连接符分隔：脚本据此判断"打开的是不是设置窗口"
                     "titles" => {
                         let names: Vec<&str> =
@@ -2532,6 +2539,56 @@ fn run_e2e_script(
                         &format!("未知查询「{other}」（可用：layout / windows / active / titles）"),
                         &mut out,
                     ),
+                }
+            }
+            // §4.1 键盘注入：`{"action":"nav","args":{"key":"down"}}`
+            // 走 `dispatch_nav`（真机 evdev 与预览 minifb 共用它），
+            // 所以"注入"跑的就是真实分流，不是平行实现。
+            "nav" => {
+                let key = args.get("key").and_then(|k| k.as_str()).unwrap_or("");
+                let nav = match key {
+                    "up" => Some(input::NavKey::Up),
+                    "down" => Some(input::NavKey::Down),
+                    "left" => Some(input::NavKey::Left),
+                    "right" => Some(input::NavKey::Right),
+                    "home" => Some(input::NavKey::Home),
+                    "end" => Some(input::NavKey::End),
+                    "pageup" | "pgup" => Some(input::NavKey::PageUp),
+                    "pagedown" | "pgdn" => Some(input::NavKey::PageDown),
+                    "delete" | "del" => Some(input::NavKey::Delete),
+                    _ => None,
+                };
+                match nav {
+                    Some(nav) => {
+                        let _ = dispatch_nav(
+                            desktop,
+                            nav,
+                            &mut inj_input,
+                            &mut inj_cursor,
+                            &mut inj_ime,
+                            &inj_tx,
+                        );
+                        emit("nav", true, key, &mut out);
+                    }
+                    None => emit(
+                        "nav",
+                        false,
+                        &format!("未知导航键「{key}」（up/down/left/right/home/end/pageup/pagedown/delete）"),
+                        &mut out,
+                    ),
+                }
+            }
+            // §4.1 字符注入：`{"action":"key","args":{"ch":"a"}}` —— 打进 AI 指令条
+            "key" => {
+                let ch = args.get("ch").and_then(|c| c.as_str()).unwrap_or("");
+                let mut it = ch.chars();
+                match (it.next(), it.next()) {
+                    (Some(c), None) => {
+                        inj_input.push(c);
+                        inj_cursor.end(inj_input.chars().count());
+                        emit("key", true, ch, &mut out);
+                    }
+                    _ => emit("key", false, "ch 必须是恰好一个字符", &mut out),
                 }
             }
             "undo" => match undo_last(desktop, undo) {
@@ -3751,7 +3808,8 @@ fn main() -> anyhow::Result<()> {
         std::io::stdin().read_to_string(&mut script)?;
         let mut desktop = demo_desktop();
         let mut undo = UndoStack::new();
-        for line in run_e2e_script(&script, &mut desktop, &mut undo) {
+        let mut spaces: spaces::Spaces<draw::Win> = spaces::Spaces::new();
+        for line in run_e2e_script(&script, &mut desktop, &mut undo, &mut spaces) {
             println!("{line}");
         }
         return Ok(());
@@ -6208,6 +6266,35 @@ fn snap_now(desktop: &mut Desktop, lay: Layout) {
 
 #[cfg(test)]
 mod control_center_tests {
+    /// §4.1：`--e2e` 现在能**注入键盘**，并且注入结果可以被查询断言。
+    ///
+    /// 跑的是真实脚本字符串 → JSONL，中间走 `dispatch_nav`
+    /// （真机 evdev 与预览 minifb **共用**的分流器），所以不是"另一个实现"的测试。
+    #[test]
+    fn e2e_script_can_inject_keys_and_assert_on_them() {
+        let script = r#"
+            {"action":"key","args":{"ch":"h"}}
+            {"action":"key","args":{"ch":"i"}}
+            {"action":"query","args":{"what":"ai_input"}}
+            {"action":"nav","args":{"key":"down"}}
+            {"action":"nav","args":{"key":"sideways"}}
+        "#;
+        let mut desktop = demo_desktop();
+        let mut undo = UndoStack::new();
+        let mut spaces: spaces::Spaces<draw::Win> = spaces::Spaces::new();
+        let out = run_e2e_script(script, &mut desktop, &mut undo, &mut spaces);
+        let joined = out.join("\n");
+        assert!(joined.contains(r#""result":"hi""#), "注入两个字符后应能查到 hi：{joined}");
+        assert!(joined.contains(r#""action":"nav","ok":true,"result":"down""#), "导航键应成功：{joined}");
+        assert!(joined.contains("sideways"), "未知导航键要被报告：{joined}");
+        // key 必须**恰好一个字符**
+        let bad = run_e2e_script(
+            r#"{"action":"key","args":{"ch":"ab"}}"#,
+            &mut desktop, &mut undo, &mut spaces,
+        );
+        assert!(bad.join("\n").contains(r#""ok":false"#), "两个字符应报错：{bad:?}");
+    }
+
     use super::*;
 
     /// L-14 回归：合成器的 `read_line_capped` 边界（与 aetherd 那份同一套规则）。
@@ -7285,7 +7372,7 @@ mod wayland_sync_tests {
 {"action":"undo"}
 {"action":"query","args":{"what":"windows"}}
 "#;
-        let out = run_e2e_script(script, &mut d, &mut u);
+        let out = run_e2e_script(script, &mut d, &mut u, &mut spaces::Spaces::new());
         // 7 条有效动作（注释与空行不产生输出）
         assert_eq!(out.len(), 7, "应逐条输出：{out:#?}");
         // 每条都是带行号的 JSON
@@ -7330,7 +7417,7 @@ mod wayland_sync_tests {
 {"action":"query","args":{"what":"不存在的查询"}}
 {"action":"query","args":{"what":"windows"}}
 "#;
-        let out = run_e2e_script(script, &mut d, &mut u);
+        let out = run_e2e_script(script, &mut d, &mut u, &mut spaces::Spaces::new());
         assert_eq!(out.len(), 4, "四条都应产生输出：{out:#?}");
         assert!(out[0].contains("\"ok\":false") && out[0].contains("不是合法 JSON"), "{}", out[0]);
         assert!(out[1].contains("\"ok\":false") && out[1].contains("未知动作"), "{}", out[1]);
@@ -7348,7 +7435,7 @@ mod wayland_sync_tests {
 {"action":"open_app","args":{"app":"设置"}}
 {"action":"query","args":{"what":"titles"}}
 "#;
-        let out = run_e2e_script(script, &mut d, &mut u);
+        let out = run_e2e_script(script, &mut d, &mut u, &mut spaces::Spaces::new());
         assert!(out[1].contains("设置"), "标题里应能看到设置窗口：{}", out[1]);
     }
 
