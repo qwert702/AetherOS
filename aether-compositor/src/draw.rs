@@ -4647,6 +4647,8 @@ fn draw_term_content(
     t: f32,
     tr: Option<&TextRenderer>,
 ) {
+    // §3.5：本函数的文案双语
+    let lang = crate::i18n::lang();
     let r = term_content_rect(win_rect);
     // 终端底色固定深色（理由见 term::ansi_rgb）：内容区之外也要铺满，
     // 否则窗口体（浅色）会从内边距里透出来，看起来像没画完
@@ -4656,7 +4658,7 @@ fn draw_term_content(
     let Some(term) = term else {
         draw_text(
             tr, buf, w, h, (r.x + 6) as f32, (r.y + 4) as f32,
-            "（终端会话未建立）", font::MONO, color::text_faint(), 0.9,
+            crate::i18n::pick(lang, "（终端会话未建立）", "(no terminal session)"), font::MONO, color::text_faint(), 0.9,
         );
         return;
     };
@@ -4731,7 +4733,11 @@ fn draw_term_content(
     match term.status() {
         crate::term::TermStatus::Running => {}
         crate::term::TermStatus::Exited(code) => {
-            let msg = format!("会话已结束（状态 {code}）· 点 Dock 里的终端可再开一个");
+            let msg = if crate::i18n::is_en() {
+                    format!("Session ended (status {code}) · click Terminal in the Dock to open a new one")
+                } else {
+                    format!("会话已结束（状态 {code}）· 点 Dock 里的终端可再开一个")
+                };
             draw_text(
                 tr, buf, w, h, (r.x + 6) as f32, (r.y + r.h - 18) as f32,
                 &msg, font::LABEL, color::text_faint(), 0.95,
@@ -4763,6 +4769,8 @@ fn draw_files_content(
     sidebar_hits: &mut Vec<(Rect, usize)>,
     crumb_hits: &mut Vec<(Rect, String)>,
 ) {
+    // §3.5：本函数的文案双语
+    let lang = crate::i18n::lang();
     *up = Rect { x: 0, y: 0, w: 0, h: 0 };
     const SIDEBAR_W: i32 = 150;
     const STATUS_H: i32 = 26;
@@ -4791,7 +4799,7 @@ fn draw_files_content(
                 tr, buf, w, h,
                 (row.x + 14) as f32,
                 tr.vcenter(row.y as f32, row.h as f32, font::BODY),
-                "← 上级目录", font::BODY,
+                crate::i18n::pick(lang, "← 上级目录", "← Parent folder"), font::BODY,
                 if hovered { color::text() } else { color::text_dim() },
                 if hovered { 0.98 } else { 0.88 },
             );
@@ -4831,14 +4839,33 @@ fn draw_files_content(
     if let Some(tr) = tr {
         // 读目录失败时优先显示原因 —— 否则用户看到的是"空目录"，与"没权限"无法区分
         let left = match fv.error {
-            Some(e) => format!("无法读取目录：{e}"),
+            Some(e) => {
+            if crate::i18n::is_en() {
+                format!("Cannot read directory: {e}")
+            } else {
+                format!("无法读取目录：{e}")
+            }
+        }
             None => {
                 // 有滚动时给出**可见区间**（"1–8 / 76"），而不是只说"显示 8"——
                 // 后者让用户不知道下面还有没有内容、也不知道自己看到哪儿了
                 if fv.entries.len() > shown && shown > 0 {
-                    format!("{}–{} / {} 项", fv.scroll + 1, fv.scroll + shown, fv.entries.len())
+                    if crate::i18n::is_en() {
+                        format!(
+                            "{}–{} / {} items",
+                            fv.scroll + 1,
+                            fv.scroll + shown,
+                            fv.entries.len()
+                        )
+                    } else {
+                        format!("{}–{} / {} 项", fv.scroll + 1, fv.scroll + shown, fv.entries.len())
+                    }
                 } else {
-                    format!("{} 项", fv.entries.len())
+                    if crate::i18n::is_en() {
+                        format!("{} items", fv.entries.len())
+                    } else {
+                        format!("{} 项", fv.entries.len())
+                    }
                 }
             }
         };
@@ -5098,16 +5125,18 @@ pub fn preview_visible_lines(rect: Rect) -> usize {
 /// 出错时**在窗口内显示原因**（而不是空白）—— "打不开"和"文件是空的"必须能区分，
 /// 否则用户只会看到一个空窗口，不知道该重试还是该换个文件。
 fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Option<&PreviewData>, tr: Option<&TextRenderer>) {
+    // §3.5：本函数的文案双语
+    let lang = crate::i18n::lang();
     fill_clipped(buf, w, h, r, r, radius::LG, color::surface_2(), 0.42);
     let Some(tr) = tr else { return };
 
     let Some(d) = data else {
-        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, "（无内容）", font::BODY, color::text_faint(), 0.9);
+        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, crate::i18n::pick(lang, "（无内容）", "(empty)"), font::BODY, color::text_faint(), 0.9);
         return;
     };
 
     if let Some(err) = &d.error {
-        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, "无法预览", font::BODY, color::danger_text(), 0.95);
+        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, crate::i18n::pick(lang, "无法预览", "Cannot preview"), font::BODY, color::danger_text(), 0.95);
         draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 40) as f32, err, font::CAPTION, color::text_dim(), 0.9);
         return;
     }
@@ -5140,17 +5169,29 @@ fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Opti
     // 三种情况都要给提示：向上滚过、还有下文、**文件被截断**
     if start > 0 || end < total || d.truncated {
         let msg = if total == 0 {
-            "… 空文件".to_string()
+            crate::i18n::pick(lang, "… 空文件", "… empty file").to_string()
         } else if d.truncated {
             // 截断时 "共 N 行" 是**已载入的**行数，不是文件的真实行数 ——
             // 不加这句，用户会以为文件就这么长（改滚动时差点丢掉这个区分）
-            format!(
-                "… 第 {}-{} 行 / 已载入 {total} 行（文件过长，未全部载入）",
-                start + 1,
-                end
-            )
+            if crate::i18n::is_en() {
+                format!(
+                    "… lines {}-{} / {total} loaded (file too long, not fully loaded)",
+                    start + 1,
+                    end
+                )
+            } else {
+                format!(
+                    "… 第 {}-{} 行 / 已载入 {total} 行（文件过长，未全部载入）",
+                    start + 1,
+                    end
+                )
+            }
+        } else {
+            if crate::i18n::is_en() {
+            format!("… lines {}-{} / {total} total", start + 1, end)
         } else {
             format!("… 第 {}-{} 行 / 共 {total} 行", start + 1, end)
+        }
         };
         draw_text(tr, buf, w, h, (r.x + GUTTER + 10) as f32, (r.y + r.h - 24) as f32, &msg, font::LABEL, color::text_faint(), 0.85);
     }
