@@ -736,18 +736,34 @@ pub(crate) fn collect_sys_report() -> aether_ipc::SysReport {
 }
 
 /// 快速意图用：当前系统状态一句话摘要（真实数据，离线可用）。
-pub fn sys_brief() -> String {
+pub fn sys_brief(en: bool) -> String {
     let r = collect_sys_report();
     if r.services.is_empty() && r.mem_total_mb.is_none() {
-        return "系统状态暂时取不到（aether-init 未响应）。".into();
+        return if en {
+            "System status is unavailable right now (aether-init did not respond).".into()
+        } else {
+            "系统状态暂时取不到（aether-init 未响应）。".into()
+        };
     }
     let mem = match (r.mem_used_mb, r.mem_total_mb) {
-        (Some(u), Some(t)) => format!("内存 {u}/{t}MB"),
-        _ => "内存未知".into(),
+        (Some(u), Some(t)) => {
+            if en {
+                format!("memory {u}/{t}MB")
+            } else {
+                format!("内存 {u}/{t}MB")
+            }
+        }
+        _ => if en { "memory unknown".into() } else { "内存未知".into() },
     };
     let up = r
         .uptime_secs
-        .map(|s| format!("，已运行 {} 分钟", s / 60))
+        .map(|s| {
+            if en {
+                format!(", up {} min", s / 60)
+            } else {
+                format!("，已运行 {} 分钟", s / 60)
+            }
+        })
         .unwrap_or_default();
     let ok = r.services.iter().filter(|s| s.state == "Running").count();
     let detail = r
@@ -759,7 +775,14 @@ pub fn sys_brief() -> String {
         })
         .collect::<Vec<_>>()
         .join(" ");
-    format!("{mem}{up}；{ok}/{} 服务运行中（{detail}）。", r.services.len())
+    if en {
+        format!(
+            "{mem}{up}; {ok}/{} services running ({detail}).",
+            r.services.len()
+        )
+    } else {
+        format!("{mem}{up}；{ok}/{} 服务运行中（{detail}）。", r.services.len())
+    }
 }
 
 /// 快速意图用：HH:MM 时钟（预览期按北京时间简化处理）。
@@ -797,7 +820,7 @@ mod tests {
     #[test]
     fn sys_brief_degrades_gracefully() {
         // 非 Linux/拿不到数据时必须返回降级文案而非 panic
-        let s = sys_brief();
+        let s = sys_brief(false);
         assert!(!s.is_empty());
     }
 }

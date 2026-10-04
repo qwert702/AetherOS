@@ -415,7 +415,9 @@ fn handle_request(
                 }],
             }
         }
-        Request::Chat { session_id, text } => handle_chat(&session_id, &text, cfg, gate, approvals, *is_ui),
+        Request::Chat { session_id, text, en } => {
+            handle_chat(&session_id, &text, en, cfg, gate, approvals, *is_ui)
+        }
         Request::ToolCall { tool, arguments, approval, .. } => {
             // 闸门的第一道：**资源敏感的工具**（剪贴板读写）必须由已注册的 UI 通道发起。
             //
@@ -1166,12 +1168,13 @@ fn tool_level(name: &str) -> Level {
 fn handle_chat(
     session_id: &str,
     text: &str,
+    en: bool,
     cfg: &Config,
     gate: &Gate,
     approvals: &Approvals,
     is_ui: bool,
 ) -> Vec<Response> {
-    if let Some((reply, action)) = intent::try_handle(text) {
+    if let Some((reply, action)) = intent::try_handle(text, en) {
         let mut out = Vec::new();
         if let Some(a) = action {
             out.push(Response::Action { name: a.name, arguments: a.arguments });

@@ -16,6 +16,14 @@ pub enum Request {
     Chat {
         session_id: String,
         text: String,
+        /// 请求方界面是否英文（§3.5）。
+        ///
+        /// 为什么放在协议里而不是让 `aetherd` 去读设置文件：
+        /// 合成器**就是**语言的来源，随请求带过来是显式的；让两个进程各读一份
+        /// 同一文件则是隐式耦合。`#[serde(default)]` 保证旧请求（不带此字段）
+        /// 仍然可用，默认中文。
+        #[serde(default)]
+        en: bool,
     },
     /// 请求 AI 执行一个已授权的工具调用。
     ToolCall {
@@ -694,11 +702,35 @@ pub fn check_peer(_stream: &std::os::unix::net::UnixStream) -> Result<(), String
 mod tests {
     use super::*;
 
+    /// §3.5：`en` 是后加的字段，**旧版本发来的请求里没有它**也必须能解析。
+    ///
+    /// 不手写 JSON：协议是 `type` 内部标签的形式，手写容易写成别的形状
+    /// （第一版我就写错了，是这条测试自己报的错）。
+    /// 这里从 `encode` 的真实输出里**删掉 `en` 字段**，得到"旧版本会发的东西"。
+    #[test]
+    fn chat_request_without_lang_field_still_decodes() {
+        let line = encode(&Request::Chat {
+            session_id: "s1".into(),
+            text: "hi".into(),
+            en: false,
+        });
+        let without = line.replace(",\"en\":false", "");
+        assert_ne!(line, without, "删不掉 en 字段说明编码形状变了，测试需要更新");
+        match decode(&without).expect("旧请求应当能解析") {
+            Request::Chat { en, text, .. } => {
+                assert!(!en, "缺省应当是中文（en=false）");
+                assert_eq!(text, "hi");
+            }
+            other => panic!("应是 Chat，实得 {other:?}"),
+        }
+    }
+
     #[test]
     fn request_roundtrip() {
         let req = Request::Chat {
             session_id: "s1".into(),
             text: "把窗口排成两列".into(),
+            en: false,
         };
         let line = encode(&req);
         assert!(line.ends_with('\n'));

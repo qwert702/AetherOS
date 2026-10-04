@@ -2558,7 +2558,11 @@ fn query_aether(text: String, timeout_secs: u64, tx: mpsc::Sender<AiEvent>) {
         // 先注册为 UI 通道：否则 AI 触发的 L2+ 操作拿不到确认令牌（P1-8）
         register_ui(&mut stream, &mut reader)?;
         stream.write_all(
-            aether_ipc::encode(&Request::Chat { session_id: "shell-preview".into(), text }).as_bytes(),
+            aether_ipc::encode(&Request::Chat {
+        session_id: "shell-preview".into(),
+        text,
+        en: crate::i18n::is_en(),
+    }).as_bytes(),
         )?;
         // 响应行在循环里读（每轮覆盖），这里不预置初值 —— 预置了反而会得到
         // "赋值后从未读取"的警告，而且容易让人以为它有意义。
