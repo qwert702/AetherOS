@@ -3879,26 +3879,68 @@ fn draw_settings_content(
             // （门禁把警告当失败）。
         }
         "网络" => {
+            // §3.5：本页 chrome 双语。**注意**：DNS 校验失败的原因来自协议层
+            // （`parse_dns_list` 返回中文句子），那一处仍会是中文 —— 见附录 AA 的计划，
+            // 正确修法是协议层返回枚举、界面映射文案。不在这里假装已双语。
+            let lang = crate::i18n::lang();
             // 真值来自内核（`/sys/class/net/*`、`/proc/net/route`、`/proc/net/fib_trie`、
             // `/etc/resolv.conf`）—— 解析逻辑与单测见 `net.rs`。
             //
             // **只在打开这一页时读**（几个小文件，µs 级），不做缓存、更不伪造：
             // 读不到就写"未发现网络接口"，绝不写"已连接"。
             let n = crate::net::read();
-            widgets::group_header(buf, w, h, content.x + 24, ry, "状态", Some(tr));
+            widgets::group_header(
+                buf,
+                w,
+                h,
+                content.x + 24,
+                ry,
+                crate::i18n::pick(lang, "状态", "Status"),
+                Some(tr),
+            );
             ry += 24;
             tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, &n.summary(), font::BODY, color::text(), 0.92);
             ry += row_h;
             let (name, mac, gw, up) = match &n.iface {
                 Some(i) => (i.name.clone(), i.mac.clone(), i.gateway.clone(), i.up),
-                None => ("（无）".to_string(), String::new(), String::new(), false),
+                None => (
+                    crate::i18n::pick(lang, "（无）", "(none)").to_string(),
+                    String::new(),
+                    String::new(),
+                    false,
+                ),
             };
-            let dns = if n.dns.is_empty() { "（未配置）".to_string() } else { n.dns.join("   ") };
+            let dns = if n.dns.is_empty() {
+                crate::i18n::pick(lang, "（未配置）", "(not configured)").to_string()
+            } else {
+                n.dns.join("   ")
+            };
             for (k, v) in [
-                ("接口", name),
-                ("MAC", if mac.is_empty() { "（无）".to_string() } else { mac }),
-                ("链路", if up { "已连接".to_string() } else { "断开".to_string() }),
-                ("网关", if gw.is_empty() { "（无）".to_string() } else { gw }),
+                (crate::i18n::pick(lang, "接口", "Interface"), name),
+                (
+                    "MAC",
+                    if mac.is_empty() {
+                        crate::i18n::pick(lang, "（无）", "(none)").to_string()
+                    } else {
+                        mac
+                    },
+                ),
+                (
+                    crate::i18n::pick(lang, "链路", "Link"),
+                    if up {
+                        crate::i18n::pick(lang, "已连接", "connected").to_string()
+                    } else {
+                        crate::i18n::pick(lang, "断开", "down").to_string()
+                    },
+                ),
+                (
+                    crate::i18n::pick(lang, "网关", "Gateway"),
+                    if gw.is_empty() {
+                        crate::i18n::pick(lang, "（无）", "(none)").to_string()
+                    } else {
+                        gw
+                    },
+                ),
                 ("DNS", dns),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
@@ -3918,15 +3960,31 @@ fn draw_settings_content(
                 let hint = dns_field
                     .feedback
                     .clone()
-                    .unwrap_or_else(|| "回车保存 · Esc 取消".to_string());
+                    .unwrap_or_else(|| {
+                        crate::i18n::pick(lang, "回车保存 · Esc 取消", "Enter to save · Esc to cancel")
+                            .to_string()
+                    });
                 widgets::row(buf, w, h, dns_act, &shown, Some(&hint),
                              widgets::States::at(dns_act, mouse), Some(tr));
             } else {
                 let hint = dns_field
                     .feedback
                     .clone()
-                    .unwrap_or_else(|| "点击后输入，例如 1.1.1.1, 8.8.8.8".to_string());
-                let label = if dns_field.text.is_empty() { "修改 DNS".to_string() } else { format!("修改 DNS（{}）", dns_field.text) };
+                    .unwrap_or_else(|| {
+                        crate::i18n::pick(
+                            lang,
+                            "点击后输入，例如 1.1.1.1, 8.8.8.8",
+                            "Click to type, e.g. 1.1.1.1, 8.8.8.8",
+                        )
+                        .to_string()
+                    });
+                let label = if dns_field.text.is_empty() {
+                crate::i18n::pick(lang, "修改 DNS", "Change DNS").to_string()
+            } else if crate::i18n::is_en() {
+                format!("Change DNS ({})", dns_field.text)
+            } else {
+                format!("修改 DNS（{}）", dns_field.text)
+            };
                 widgets::row(buf, w, h, dns_act, &label, Some(&hint),
                              widgets::States::at(dns_act, mouse), Some(tr));
             }
@@ -3935,12 +3993,26 @@ fn draw_settings_content(
 
             // 唯一一个"重启服务"的动作（P4.4）：走 aetherd → init，不是本地假动作
             let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
-            widgets::row(buf, w, h, act, "重启网络服务", Some("断开后重新连接（经 aetherd 转交 init）"),
+                        widgets::row(
+                buf,
+                w,
+                h,
+                act,
+                crate::i18n::pick(lang, "重启网络服务", "Restart network service"),
+                Some(crate::i18n::pick(
+                    lang,
+                    "断开后重新连接（经 aetherd 转交 init）",
+                    "Disconnect and reconnect (handed to init via aetherd)",
+                )),
                          widgets::States::at(act, mouse), Some(tr));
             hits.push((act, SettingsHit::RestartService("network")));
             ry += 50;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::pick(
+                    lang,
                     "配置项本身仍是只读；改动类操作一律经 aetherd 执行。",
+                    "The config itself stays read-only; every change goes through aetherd.",
+                ),
                     font::CAPTION, color::text_dim(), 0.75);
             if !n.note.is_empty() {
                 ry += 20;
