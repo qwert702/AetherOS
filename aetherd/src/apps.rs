@@ -262,12 +262,22 @@ pub fn install(root: &Path, src: &Path) -> Result<(Installed, Preflight)> {
     ))
 }
 
+/// 加上可执行位之后的权限 —— **纯函数**，任何平台都能测。
+///
+/// 为什么要先 `& 0o7777`：`PermissionsExt::mode()` 给的是完整 `st_mode`，
+/// **含文件类型位**（`S_IFREG` = 0o100000 等）。把它们一起传给 `chmod` 是错的用法
+/// —— Linux 内核恰好会掩掉，所以现在看不出问题；换平台就可能出错。
+/// （与本会话快照那批的 `restore_mode()` 同一处理。）
+pub fn exec_mode(mode: u32) -> u32 {
+    (mode & 0o7777) | 0o755
+}
+
 #[cfg(unix)]
 fn make_executable(p: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let md = std::fs::metadata(p)?;
     let mut perm = md.permissions();
-    perm.set_mode(perm.mode() | 0o755);
+    perm.set_mode(exec_mode(perm.mode()));
     std::fs::set_permissions(p, perm)?;
     Ok(())
 }
@@ -351,13 +361,14 @@ pub fn wrapper_script(app: &Installed) -> String {
     }
     format!(
         "#!/bin/sh\n\
-         # 由 `aetherd app link` 生成（AetherOS 已装应用包装脚本），请勿手改。\n\
+         # {marker}（AetherOS 已装应用包装脚本），请勿手改。\n\
          # 系统区在内存盘里，重启会还原 —— 每次开机重新生成。\n\
          LD_LIBRARY_PATH={lib}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\n\
          export LD_LIBRARY_PATH\n\
          TERMINFO_DIRS={ti}${{TERMINFO_DIRS:+:$TERMINFO_DIRS}}\n\
          export TERMINFO_DIRS\n\
          exec {entry} {fixed_args}\"$@\"\n",
+        marker = MARKER,
         lib = shell_quote(&lib),
         ti = shell_quote(&terminfo),
         entry = shell_quote(&entry),
@@ -374,6 +385,11 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// 生成脚本里的标记（清理时用它认自己的产物）。
+const MARKER: &str = "由 `aetherd app link` 生成";
+/// 判断"是不是我们生成的脚本"时最多看多少字节。
+const HEAD_BYTES: usize = 512;
+
 /// 把已装应用挂进 `bindir`（默认由 `/init` 调）。返回写入的命令名。
 ///
 /// 先清掉上次生成的脚本再重建：否则卸载过的应用会留下一个指向空目录的死脚本，
@@ -383,12 +399,24 @@ pub fn link_all(root: &Path, bindir: &Path) -> Result<Vec<String>> {
         .with_context(|| format!("建目录失败 {}", bindir.display()))?;
     let apps = list(root);
 
-    // 清理：bindir 里所有带本工具标记的脚本
+    // 清理上次生成的脚本。
+    //
+    // 判据必须**同时**满足三条，不能只看"内容里有那串标记"：
+    //   ① 是普通文件；② 首行就是 `#!/bin/sh`；③ 前 512 字节内含生成标记。
+    // 只看内容的话，用户自己在 bindir 放的文件只要内容里有那串中文就会被删掉 ——
+    // 而且原来用 `read_to_string` 会把**任意文件**（含大二进制）整个读进内存。
     if let Ok(rd) = std::fs::read_dir(bindir) {
         for e in rd.flatten() {
             let p = e.path();
-            let Ok(head) = std::fs::read_to_string(&p) else { continue };
-            if head.contains("由 `aetherd app link` 生成") {
+            if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let mut head = [0u8; HEAD_BYTES];
+            let Ok(mut f) = std::fs::File::open(&p) else { continue };
+            use std::io::Read;
+            let Ok(n) = f.read(&mut head) else { continue };
+            let head = String::from_utf8_lossy(&head[..n]);
+            if head.starts_with("#!/bin/sh") && head.contains(MARKER) {
                 let _ = std::fs::remove_file(&p);
             }
         }
@@ -1288,4 +1316,53 @@ mod tests {
         assert!(s.contains("export TERMINFO_DIRS"), "必须 export 出去:\n{s}");
         assert!(!s.contains('\r') && !s.contains('\\'), "仍是给 Linux 跑的脚本:\n{s}");
     }
+    /// `exec_mode` 必须**去掉文件类型位**再加可执行位（跨平台测试）。
+    ///
+    /// 为什么值得单测：Linux 内核恰好会掩掉类型位，所以"把 st_mode 直接传给 chmod"
+    /// 现在看不出问题 —— 这类"依赖未定义行为"的写法最容易一直活到换平台才炸。
+    #[test]
+    fn exec_mode_strips_type_bits_and_adds_exec() {
+        // 普通文件的完整 st_mode（0o100644）
+        assert_eq!(exec_mode(0o100644), 0o755, "类型位要去掉，权限变成 0755");
+        assert_eq!(exec_mode(0o100600), 0o755, "0600 + 可执行位 → 0755");
+        assert_eq!(exec_mode(0o100755), 0o755, "已经是 0755 就还是 0755");
+        // 没有类型位时也要对
+        assert_eq!(exec_mode(0o644), 0o755);
+        // 目录的 st_mode（0o040755）也不能把类型位带进去
+        assert_eq!(exec_mode(0o040755), 0o755);
+        // 特殊位（setuid 等）也不能被无意加上：只保留 07777 范围内的原值
+        assert_eq!(exec_mode(0o100644) & 0o7000, 0, "不该凭空多出 setuid/setgid/sticky");
+    }
+
+    /// **审计发现**：清理 bindir 时不能"只看内容里有没有那串标记" ——
+    /// 用户自己的文件只要含这串中文就会被误删。
+    #[test]
+    fn link_all_only_removes_its_own_generated_scripts() {
+        let root = std::env::temp_dir().join(format!("aether-apps-link-{}", std::process::id()));
+        let apps = root.join("apps");
+        let bindir = root.join("bin");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&bindir).unwrap();
+        // ① 看起来像我们的产物（首行 + 标记）→ 应当被清理掉
+        let generated = bindir.join("stale-app");
+        std::fs::write(
+            &generated,
+            format!("#!/bin/sh\n# {MARKER}（包装脚本），请勿手改。\nexec true\n"),
+        )
+        .unwrap();
+        // ② 用户自己放的数据文件，**内容里有那串标记但不是脚本** → 不许删
+        let user_data = bindir.join("notes.txt");
+        std::fs::write(&user_data, format!("我的笔记：{MARKER} 这行是抄来的\n")).unwrap();
+        // ③ 二进制/非脚本文件，恰好前几字节含标记 → 不许删
+        let user_bin = bindir.join("weird.bin");
+        std::fs::write(&user_bin, format!("{MARKER}binary")).unwrap();
+
+        let names = link_all(&apps, &bindir).unwrap();
+        assert!(names.is_empty(), "没有装任何应用：{names:?}");
+        assert!(!generated.exists(), "我们自己生成的脚本应当被清掉");
+        assert!(user_data.exists(), "用户的数据文件不该被删（判据太宽的老问题）");
+        assert!(user_bin.exists(), "非脚本文件不该被删");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
 }
