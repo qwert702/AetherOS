@@ -1625,6 +1625,12 @@ pub struct Renderer {
     pub snapshots: crate::snapview::SnapView,
     /// 「系统更新」页的状态（§3.1）。
     pub update: crate::updateview::UpdateView,
+    /// 显示输出（§3.8）：**只读**，没有交互状态，所以直接存列表而不是单开视图模块。
+    pub displays: Vec<aether_ipc::DisplayWire>,
+    /// 合成器驱动的输出下标（由 aetherd 告知，约定见 `aetherd::display::DRIVEN_INDEX`）。
+    pub driven_index: u32,
+    /// 是否已经拉过一次（决定"正在读取"还是"没有输出"）
+    pub displays_loaded: bool,
     /// 当前虚拟桌面数量（§5.4）。绘制要用它显示"N 个桌面"——
     /// 桌面状态住在事件循环的 `spaces` 里（那里才拿得到窗口），所以这里只镜像一个数字。
     pub space_count: usize,
@@ -1950,6 +1956,9 @@ impl Renderer {
         time: Default::default(),
         snapshots: Default::default(),
         update: Default::default(),
+        displays: Vec::new(),
+        driven_index: 0,
+        displays_loaded: false,
         space_count: crate::spaces::Spaces::<Win>::COUNT,
             settings_hits: Vec::new(),
             control_open: false,
@@ -2156,6 +2165,9 @@ impl Renderer {
                     time: &self.time,
                     snapshots: &self.snapshots,
                     update: &self.update,
+                    displays: &self.displays,
+                    driven_index: self.driven_index,
+                    displays_loaded: self.displays_loaded,
                 },
                 t, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
@@ -2839,6 +2851,10 @@ pub struct PageCtx<'a> {
     pub time: &'a crate::timeview::TimeView,
     pub snapshots: &'a crate::snapview::SnapView,
     pub update: &'a crate::updateview::UpdateView,
+    pub displays: &'a [aether_ipc::DisplayWire],
+    pub driven_index: u32,
+    /// 是否已经读过一次（区分「正在读取」与「确实没有输出」）
+    pub displays_loaded: bool,
 }
 
 /// 测试用：与 `test_ctx` 相同，但可以注入一个**非空**的商店视图
@@ -2873,6 +2889,9 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
         time: TIME.get_or_init(Default::default),
         snapshots: SNAPS.get_or_init(Default::default),
         update: UPD.get_or_init(Default::default),
+        displays: &[],
+        driven_index: 0,
+        displays_loaded: false,
     }
 }
 
@@ -2903,6 +2922,9 @@ fn draw_settings_content(
         time,
         snapshots,
         update,
+        displays,
+        driven_index,
+        displays_loaded,
     } = ctx;
     use crate::settings::{SettingsHit, PAGES};
     use crate::widgets;
@@ -3186,6 +3208,85 @@ fn draw_settings_content(
                 widgets::States::at(act, mouse), Some(tr),
             );
             hits.push((act, SettingsHit::RefreshStore));
+        }
+        "显示输出" => {
+            // §3.8：**只读报告**。这里要说清两件不同的事：
+            // ① 系统在绘制哪个输出；② 息屏会作用到哪些输出。
+            // 笼统写成"支持多显示器"就是骗人。
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("检测到的输出", "Detected outputs"), Some(tr),
+            );
+            ry += 22;
+            let r_refresh = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 36 };
+            widgets::row(
+                buf, w, h, r_refresh,
+                crate::i18n::tr("重新读取", "Refresh"),
+                None,
+                widgets::States::at(r_refresh, mouse), Some(tr),
+            );
+            hits.push((r_refresh, SettingsHit::RefreshDisplays));
+            ry += 44;
+
+            if !displays_loaded {
+                // 区分「还没读」与「读了确实没有」—— 这两件事在界面上不该长得一样
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("正在读取…", "Loading…"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            } else if displays.is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr(
+                        "没有读到显示输出（这台机器上 /sys/class/graphics 里没有 fb*）",
+                        "No display output found (no fb* under /sys/class/graphics)",
+                    ),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            }
+            let mut listed: Vec<(String, String)> = Vec::new();
+            for o in displays.iter() {
+                // 属性读不到就如实写 `?`，不替它编一个分辨率
+                let res = if o.xres > 0 && o.yres > 0 {
+                    format!("{}x{}", o.xres, o.yres)
+                } else {
+                    "?x?".to_string()
+                };
+                let bpp = if o.bpp > 0 { format!("{}", o.bpp) } else { "?".to_string() };
+                let state = if o.index == driven_index {
+                    crate::i18n::pick(lang, "系统正在绘制这个输出", "this is the output being drawn")
+                } else {
+                    crate::i18n::pick(lang, "未被绘制（只参与息屏）", "not drawn (blanking only)")
+                };
+                let name = if o.name.is_empty() {
+                    crate::i18n::pick(lang, "（驱动没给名字）", "(driver gave no name)").to_string()
+                } else {
+                    o.name.clone()
+                };
+                listed.push((format!("fb{} · {name}", o.index), format!("{res}@{bpp} · {state}")));
+            }
+            for (title, hint) in &listed {
+                if ry > content.y + content.h - 60 {
+                    break;
+                }
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                widgets::row(buf, w, h, row, title, Some(hint), widgets::States::at(row, mouse), Some(tr));
+                ry += 46;
+            }
+
+            ry += 8;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "本系统只绘制主输出；多显示器需要布局与坐标体系改造（见缺口清单 §3.8）",
+                    "Only the primary output is drawn; multi-monitor needs a layout/coordinate rework",
+                ),
+                font::CAPTION, color::text_dim(), 0.75,
+            );
         }
         "系统更新" => {
             // §3.1：**离线更新包**。界面只负责"列出来 + 点一下"，

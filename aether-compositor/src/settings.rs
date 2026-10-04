@@ -365,6 +365,8 @@ pub enum SettingsHit {
     StageUpdate(usize),
     /// 重新拉取更新列表（§3.1）。
     RefreshUpdates,
+    /// 重新拉取显示输出（§3.8 只读报告）。
+    RefreshDisplays,
     /// 卸载第 `i` 个已安装应用（§5.11）。服务端会**移入回收站**（不是直接删）。
     RemoveApp(usize),
     /// 立刻对一次时（§3.3）。
@@ -476,6 +478,8 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "快照与回滚", title_en: "Snapshots & Rollback", group: "系统", group_en: "System", enabled: true },
     // §3.1：系统更新（离线更新包：放进投递目录 → 校验暂存 → 重启生效）。
     PageDef { title: "系统更新", title_en: "System Update", group: "系统", group_en: "System", enabled: true },
+    // §3.8：显示输出（**只读报告** —— 不驱动第二个输出，如实说明边界）。
+    PageDef { title: "显示输出", title_en: "Display Outputs", group: "系统", group_en: "System", enabled: true },
     // §3.2：通知页（是否记录 + 清空历史）。放在最后一页：它是"回头看"的地方，
     // 不是日常要改的设置。
     PageDef { title: "通知", title_en: "Notifications", group: "系统", group_en: "System", enabled: true },
@@ -627,7 +631,9 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         | SettingsHit::CancelRestore
         // §3.1 更新：暂存要发 IPC；「刷新」也是事件循环的活。
         | SettingsHit::StageUpdate(_)
-        | SettingsHit::RefreshUpdates => {}
+        | SettingsHit::RefreshUpdates
+        // §3.8 显示输出：只读报告，「刷新」由事件循环处理。
+        | SettingsHit::RefreshDisplays => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

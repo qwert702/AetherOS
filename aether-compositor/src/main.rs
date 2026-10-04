@@ -848,6 +848,11 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
+                AiEvent::DisplaysLoaded { driven_index, outputs } => {
+                    renderer.displays = outputs;
+                    renderer.driven_index = driven_index;
+                    renderer.displays_loaded = true;
+                }
                 AiEvent::UpdatesLoaded { packages, current, staged } => {
                     renderer.update.on_list(packages, current, staged);
                 }
@@ -1240,6 +1245,20 @@ fn run_fbdev() -> anyhow::Result<()> {
                             create_snapshot(ai_tx.clone());
                             push_toast(&mut toast, &mut renderer.notifs, "正在创建配置快照…".to_string(), notifications::Kind::Info);
                         }
+                    }
+                    // §3.8「显示输出」页：进入时读一次（只读报告）
+                    if let settings::SettingsHit::Page(i) = hit {
+                        let is_disp = settings::PAGES
+                            .get(i)
+                            .map(|p| p.title == "显示输出")
+                            .unwrap_or(false);
+                        if is_disp && !renderer.displays_loaded {
+                            fetch_displays(ai_tx.clone());
+                        }
+                    }
+                    // §3.8：重新读取显示输出
+                    if let settings::SettingsHit::RefreshDisplays = hit {
+                        fetch_displays(ai_tx.clone());
                     }
                     // §3.1「系统更新」页：进入时取一次列表
                     if let settings::SettingsHit::Page(i) = hit {
@@ -2085,6 +2104,11 @@ enum AiEvent {
         ok: bool,
         message: String,
         version: Option<String>,
+    },
+    /// 显示输出取回来了（§3.8 只读报告）。
+    DisplaysLoaded {
+        driven_index: u32,
+        outputs: Vec<aether_ipc::DisplayWire>,
     },
 }
 
@@ -3951,6 +3975,11 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
+                AiEvent::DisplaysLoaded { driven_index, outputs } => {
+                    renderer.displays = outputs;
+                    renderer.driven_index = driven_index;
+                    renderer.displays_loaded = true;
+                }
                 AiEvent::UpdatesLoaded { packages, current, staged } => {
                     renderer.update.on_list(packages, current, staged);
                 }
@@ -5218,6 +5247,30 @@ fn handle_dns_key(
         }
         _ => false,
     }
+}
+
+/// 取一次显示输出（§3.8）。**只读**：本系统不驱动第二个输出，这里只是如实报告。
+#[cfg(target_os = "linux")]
+fn fetch_displays(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::GetDisplays) {
+            Ok(Response::DisplayList { driven_index, outputs }) => {
+                AiEvent::DisplaysLoaded { driven_index, outputs }
+            }
+            // 失败就把列表清空 + 标记已读：界面会显示「没有读到」
+            // （比一直显示「正在读取…」诚实 —— 读取确实结束了，只是没成功）
+            Ok(Response::Error { code, message }) => {
+                eprintln!("aether-compositor: 读取显示输出被拒绝（{code}）：{message}");
+                AiEvent::DisplaysLoaded { driven_index: 0, outputs: Vec::new() }
+            }
+            Ok(_) => AiEvent::DisplaysLoaded { driven_index: 0, outputs: Vec::new() },
+            Err(e) => {
+                eprintln!("aether-compositor: 读取显示输出失败：{e}");
+                AiEvent::DisplaysLoaded { driven_index: 0, outputs: Vec::new() }
+            }
+        };
+        let _ = tx.send(ev);
+    });
 }
 
 /// 取一次更新列表（§3.1）。

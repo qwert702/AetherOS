@@ -126,6 +126,8 @@ pub enum Request {
     StageUpdate {
         name: String,
     },
+    /// 列出显示输出（§3.8 最小切片：如实报告，不驱动第二个输出）。
+    GetDisplays,
     /// 列出可移动存储设备（§3.7 最小切片）。
     ListRemovable,
     /// 只读挂载一个可移动设备（`dev` 必须是**扫描到的**设备名）。
@@ -159,6 +161,16 @@ pub enum ToolPolicyWire {
     Allow,
     /// 禁止（优先于一切）
     Deny,
+}
+
+/// 一个显示输出（界面要显示的信息）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayWire {
+    pub index: u32,
+    pub name: String,
+    pub xres: u32,
+    pub yres: u32,
+    pub bpp: u32,
 }
 
 /// 一个可移动设备（界面要显示的信息）。
@@ -332,6 +344,12 @@ pub enum Response {
         current_version: String,
         /// 是否有已暂存、等待重启应用的包
         staged_version: Option<String>,
+    },
+    /// 显示输出列表（`Request::GetDisplays` 的应答）。
+    DisplayList {
+        /// 合成器实际驱动的输出下标（约定见 `aetherd::display::DRIVEN_INDEX`）
+        driven_index: u32,
+        outputs: Vec<crate::DisplayWire>,
     },
     /// 可移动设备列表（`Request::ListRemovable` 的应答）。
     RemovableList {

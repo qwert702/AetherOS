@@ -570,6 +570,31 @@ fn handle_request(
                 ),
             }]
         }
+        Request::GetDisplays => {
+            // 只读的诊断信息；但仍然要求 UI 通道 —— 与其它"读取系统状态"的入口一致。
+            if !*is_ui {
+                audit_or_warn(gate, "get_displays", Level::L0, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "读取显示输出必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let outputs: Vec<aether_ipc::DisplayWire> =
+                crate::display::scan(std::path::Path::new("/sys/class/graphics"))
+                    .into_iter()
+                    .map(|o| aether_ipc::DisplayWire {
+                        index: o.index,
+                        name: o.name,
+                        xres: o.xres,
+                        yres: o.yres,
+                        bpp: o.bpp,
+                    })
+                    .collect();
+            vec![Response::DisplayList {
+                driven_index: crate::display::DRIVEN_INDEX,
+                outputs,
+            }]
+        }
         Request::ListRemovable => {
             // 可移动设备列表会暴露"这台机器上插了什么" —— 与快照/更新同一门槛。
             if !*is_ui {
