@@ -419,26 +419,29 @@ fn run_fbdev() -> anyhow::Result<()> {
                 // 不吞：息屏时用户按的第一个键就是他想按的那个键（吞掉会让人以为键盘失灵）。
                 set_fb_blank(false, &mut idle_blanked);
             }
-            // 终端拿到焦点时按键归 shell（否则 Ctrl+C 会被当成关窗、方向键会去翻文件列表）。
-            // 但模态弹窗优先：确认卡片/安装向导打开时，键盘仍归它们，否则用户无法回答。
-            if confirm.is_none() && !installer.open && focused_terminal(&desktop) {
-                if let Some(k) = term_key_from_ui(&ev) {
-                    if feed_terminal(&mut desktop, k, &mut ime) {
-                        continue;
-                    }
-                }
-            }
+            // §4.1：**一个事件交给谁，只在这一处决定**（顺序即安全决策，见 `key_route`）。
+            //
+            // 这里曾经把"终端"守卫放在最上面，于是锁屏时按键先落进背后的 shell：
+            // 既是锁屏旁路，也让用户按不出解锁密码（安全审计附录 K，高危）。
+            let route = key_route(
+                renderer.lock.is_locked(),
+                renderer.setup.open,
+                renderer.palette.open,
+                renderer.dns.editing,
+                confirm.is_some() || installer.open,
+                focused_terminal(&desktop),
+            );
             // §2.3：**锁屏时吞掉所有输入** —— 这是「锁屏」的定义。
             // 只处理解锁需要的键，其余（鼠标、快捷键、导航、设置页输入）一律丢弃：
             // 否则锁屏就只是「盖了一层图」，后面的窗口照样能被点到。
             // 放在 match 之前、且排在 DNS 守卫之前：锁着的时候一切输入都归锁屏。
-            if renderer.lock.is_locked() {
+            if matches!(route, KeyRoute::Lock) {
                 handle_lock_key(&mut renderer.lock, &ev);
                 continue;
             }
             // §5.8 首次启动向导：**优先级高于命令面板与 DNS 编辑** ——
             // 开机第一次进来时它是当前唯一该做的事，别的浮层不该抢键。
-            if renderer.setup.open {
+            if matches!(route, KeyRoute::Setup) {
                 let act = match &ev {
                     input::UiEvent::Char(c) => setup::handle_key(renderer.setup.step, *c),
                     input::UiEvent::Enter => setup::Action::Next,
@@ -532,7 +535,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             }
             // §5.5：命令面板是**模态**的 —— 打开期间所有按键都归它，
             // 未识别的键也**吞掉**（否则 Ctrl+K 打开面板后按 w 会把背后的窗口关掉）。
-            if renderer.palette.open {
+            if matches!(route, KeyRoute::Palette) {
                 match crate::palette::handle_key(&mut renderer.palette, &palette_key_of(&ev)) {
                     crate::palette::PaletteAction::Run(target) => {
                         // 先关面板再执行：执行可能开窗口/切页，留着面板会挡住结果
@@ -549,8 +552,19 @@ fn run_fbdev() -> anyhow::Result<()> {
             // 放在 match 之前而不是改 4 个分支（Char/Backspace/Escape/Enter）：
             // 改 4 处就有 4 处出错机会，守卫只有一处。
             // **只拦键盘** —— 鼠标等事件继续走下面的匹配，否则编辑态下界面会僵住。
-            if renderer.dns.editing && handle_dns_key(&mut renderer.dns, &ev, &ai_tx) {
+            if matches!(route, KeyRoute::Dns) && handle_dns_key(&mut renderer.dns, &ev, &ai_tx) {
                 continue;
+            }
+
+            // 终端拿到焦点时按键归 shell（否则 Ctrl+C 会被当成关窗、方向键会去翻文件列表）。
+            // 放在这里（而不是最前面）：模态浮层与编辑态都该优先于它 ——
+            // 原来在最前面时，锁屏 / 向导 / 命令面板 / DNS 输入框都被终端抢了键。
+            if matches!(route, KeyRoute::Terminal) {
+                if let Some(k) = term_key_from_ui(&ev) {
+                    if feed_terminal(&mut desktop, k, &mut ime) {
+                        continue;
+                    }
+                }
             }
 
             match ev {
@@ -2760,6 +2774,60 @@ fn push_toast(
     let msg = msg.into();
     notifs.push(&msg, kind, crate::text::now_utc_secs());
     *toast = Some((msg, Instant::now()));
+}
+
+/// 一个输入事件该交给谁 —— **守卫顺序的唯一真相**（§4.1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// 锁屏：**最高优先级**，吞掉一切输入（这是"锁屏"的定义）。
+    Lock,
+    /// 首次启动向导（模态，高于命令面板与 DNS）。
+    Setup,
+    /// 命令面板（模态）。
+    Palette,
+    /// DNS 输入框（设置页里正在编辑）。
+    Dns,
+    /// 终端（终端有焦点时按键归 shell，否则 Ctrl+C 会被当成关窗）。
+    Terminal,
+    /// 其余：全局快捷键、窗口操作、AI 条。
+    Global,
+}
+
+/// 决定一个输入事件交给谁。
+///
+/// **顺序本身就是安全决策**，不是随手排的：
+///
+/// 1. **锁屏在最前** —— 它必须排在终端之前。原来终端守卫在最上面，
+///    结果是"锁着屏但终端有焦点"时按键进到背后的 shell：既是**锁屏旁路**
+///    （锁屏状态下能执行命令），又让用户按不出解锁密码（见安全审计附录 K）；
+/// 2. 向导与面板是**模态**：开着的时候别的浮层不该抢键；
+/// 3. DNS 是**编辑态**：正在输入框里打字时按键不该跑到别处；
+/// 4. 终端只在前四者都不成立时接手 —— 但**只要没有模态弹窗**（`modal_open` 为假）
+///    它就接手，因为终端有焦点时 Ctrl+C 等该归 shell。
+pub fn key_route(
+    locked: bool,
+    setup_open: bool,
+    palette_open: bool,
+    dns_editing: bool,
+    modal_open: bool,
+    terminal_focused: bool,
+) -> KeyRoute {
+    if locked {
+        return KeyRoute::Lock;
+    }
+    if setup_open {
+        return KeyRoute::Setup;
+    }
+    if palette_open {
+        return KeyRoute::Palette;
+    }
+    if dns_editing {
+        return KeyRoute::Dns;
+    }
+    if terminal_focused && !modal_open {
+        return KeyRoute::Terminal;
+    }
+    KeyRoute::Global
 }
 
 /// 执行控制中心交回来的意图（**有副作用的部分**）。
@@ -6523,6 +6591,85 @@ mod wayland_sync_tests {
 "#;
         let out = run_e2e_script(script, &mut d, &mut u);
         assert!(out[1].contains("设置"), "标题里应能看到设置窗口：{}", out[1]);
+    }
+
+    /// §4.1：**守卫顺序**是可测的（它同时也是安全决策）。
+    #[test]
+    fn key_route_prefers_the_most_restrictive_subsystem() {
+        // 全部关着 → 全局
+        assert_eq!(key_route(false, false, false, false, false, false), KeyRoute::Global);
+        // 终端有焦点且无模态 → 终端
+        assert_eq!(
+            key_route(false, false, false, false, false, true),
+            KeyRoute::Terminal
+        );
+        // 有模态弹窗（确认卡片/安装向导）→ 不给终端（否则用户无法回答）
+        assert_eq!(
+            key_route(false, false, false, false, true, true),
+            KeyRoute::Global,
+            "模态弹窗打开时终端不该抢键"
+        );
+        // DNS 编辑态优先于终端
+        assert_eq!(
+            key_route(false, false, false, true, false, true),
+            KeyRoute::Dns
+        );
+        // 面板优先于 DNS 与终端
+        assert_eq!(
+            key_route(false, false, true, true, false, true),
+            KeyRoute::Palette
+        );
+        // 向导优先于面板
+        assert_eq!(
+            key_route(false, true, true, true, false, true),
+            KeyRoute::Setup
+        );
+    }
+
+    /// **回归测试（安全审计附录 K，高危）**：锁屏必须排在最前。
+    ///
+    /// 修之前，`run_fbdev` 里的守卫顺序是"终端 → 锁屏"，于是锁屏时按键先进背后的 shell：
+    /// 既是**锁屏旁路**（锁屏状态下能执行命令），也让用户按不出解锁密码。
+    /// 这条测试把一个**状态组合**钉死 —— 只要有人把顺序改回去，它立刻红。
+    #[test]
+    fn lock_screen_beats_the_terminal() {
+        assert_eq!(
+            key_route(true, false, false, false, false, true),
+            KeyRoute::Lock,
+            "锁屏 + 终端有焦点：必须归锁屏（否则是锁屏旁路）"
+        );
+        // 锁屏压过一切
+        assert_eq!(key_route(true, true, true, true, true, true), KeyRoute::Lock);
+    }
+
+    /// **顺序探针**：`run_fbdev` 里的守卫顺序必须与 `key_route` 的优先级一致。
+    ///
+    /// `key_route` 的测试只能证明**函数**对；如果有人把循环里的 `matches!(route, ...)`
+    /// 守卫块调换位置（函数没动），行为照样会错。所以再扫一遍源码：
+    /// `KeyRoute::Lock` 必须出现在 `KeyRoute::Terminal` 之前。
+    /// （与快捷键总览那套探针同一思路。）
+    #[test]
+    fn the_loop_checks_lock_before_terminal() {
+        let src = include_str!("main.rs");
+        let lock = src
+            .find("matches!(route, KeyRoute::Lock)")
+            .expect("循环里应当有锁屏守卫");
+        let term = src
+            .find("matches!(route, KeyRoute::Terminal)")
+            .expect("循环里应当有终端守卫");
+        assert!(
+            lock < term,
+            "守卫顺序错了：锁屏（偏移 {lock}）必须在终端（偏移 {term}）之前"
+        );
+        // 向导、面板也都要在终端之前（模态浮层不该被终端抢键）
+        for (name, probe) in [
+            ("向导", "matches!(route, KeyRoute::Setup)"),
+            ("面板", "matches!(route, KeyRoute::Palette)"),
+            ("DNS", "matches!(route, KeyRoute::Dns)"),
+        ] {
+            let at = src.find(probe).unwrap_or_else(|| panic!("循环里应当有{name}守卫"));
+            assert!(at < term, "{name}守卫必须在终端之前（{at} vs {term}）");
+        }
     }
 
 }
