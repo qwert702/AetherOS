@@ -51,6 +51,13 @@ pub struct Entry {
     pub bytes: u64,
     /// 快照时这个文件是否存在。**`false` 也是信息**：回滚时不该把它"造"出来。
     pub existed: bool,
+    /// 快照那一刻的权限位（Unix；非 Unix 或旧清单为 0 = 未知）。
+    ///
+    /// **为什么必须记它**：回滚是"把文件写回去"，而写文件默认是 umask 后的权限
+    /// （022 → 0644）。`policy.json` 这类文件本来只有 root 能读（0600），
+    /// 回滚一次就变成所有人可读 —— 那是**回滚自己制造的权限降级**。
+    /// 未知时一律用 0600（宁紧勿松）。
+    pub mode: u32,
 }
 
 /// 一次快照。
@@ -59,6 +66,47 @@ pub struct Manifest {
     pub id: String,
     pub created_unix: i64,
     pub entries: Vec<Entry>,
+}
+
+/// 回滚时到底用哪个权限 —— **纯函数**，因此任何平台都能测这条安全决策。
+///
+/// 规则：清单里记了就用它；没记（`0` = 旧清单 / 非 Unix / 采集失败）就用 `0600`。
+/// **宁紧勿松**：多要一点权限用户能自己改回来，少要一点（相对宽松）可能就没发现了。
+pub fn restore_mode(recorded: u32) -> u32 {
+    if recorded == 0 {
+        0o600
+    } else {
+        // 只保留权限位，去掉文件类型位（S_IFREG 等）
+        recorded & 0o7777
+    }
+}
+
+/// 取一个文件的权限位（非 Unix 返回 0 = 未知）。
+pub fn file_mode(p: &Path) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return std::fs::metadata(p).map(|m| m.permissions().mode()).unwrap_or(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = p;
+        0
+    }
+}
+
+/// 设置权限位（非 Unix 上是空操作 —— 那里没有这套权限模型）。
+fn set_file_mode(p: &Path, mode: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (p, mode);
+        Ok(())
+    }
 }
 
 /// FNV-1a 64 位（十行，无依赖）。
@@ -111,8 +159,23 @@ pub fn id_for(unix_secs: i64) -> String {
 
 /// 创建一次快照。返回清单（同时已落盘）。
 pub fn create(root: &Path, now_unix: i64) -> std::io::Result<Manifest> {
-    let id = id_for(now_unix);
-    let dir = root.join(&id);
+    // **同一秒里创建两次不能互相覆盖**：id 只精确到秒，所以目录已存在就加后缀。
+    // （审计发现：原来直接用 `root.join(id)`，第二次会静默覆盖第一次的快照。）
+    let base = id_for(now_unix);
+    let mut id = base.clone();
+    let mut n = 2;
+    let mut dir = root.join(&id);
+    while dir.exists() {
+        id = format!("{base}-{n}");
+        dir = root.join(&id);
+        n += 1;
+        if n > 99 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("同一秒内快照过多（{base} 已有 {n} 份）"),
+            ));
+        }
+    }
     std::fs::create_dir_all(dir.join("files"))?;
     // 目录 0700：快照里可能含模型配置等，不该给别的用户看
     #[cfg(unix)]
@@ -138,6 +201,7 @@ pub fn create(root: &Path, now_unix: i64) -> std::io::Result<Manifest> {
             checksum: if existed { checksum(&bytes) } else { String::new() },
             bytes: bytes.len() as u64,
             existed,
+            mode: if existed { file_mode(p) } else { 0 },
         });
     }
     let m = Manifest { id: id.clone(), created_unix: now_unix, entries };
@@ -174,6 +238,20 @@ pub fn list(root: &Path) -> Vec<Manifest> {
 /// **逐文件写回**：快照里 `existed=false` 的条目**跳过**（不把当时不存在的文件造出来），
 /// 并在说明里如实写出来 —— 用户看到"少了一个文件"总比"莫名其妙多了一个"好。
 pub fn restore(root: &Path, id: &str) -> std::io::Result<Vec<String>> {
+    // 生产路径：只允许回滚 `FILES` 里列出的文件。
+    restore_allowed(root, id, FILES)
+}
+
+/// 同 [`restore`]，但可以指定"允许哪些路径"。
+///
+/// **为什么要这个参数**：白名单写死在函数里，测试就只能拿 `/etc/...` 当目标 ——
+/// 那既不能在 CI 里跑（要 root，还会动真实系统），也就等于"这条安全检查测不到"。
+/// 生产用 [`FILES`]，测试用临时白名单，**两边走同一条代码路径**。
+pub fn restore_allowed(
+    root: &Path,
+    id: &str,
+    allowed: &[&str],
+) -> std::io::Result<Vec<String>> {
     if !valid_id(id) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -187,6 +265,16 @@ pub fn restore(root: &Path, id: &str) -> std::io::Result<Vec<String>> {
     })?;
     let mut notes = Vec::new();
     for (i, e) in m.entries.iter().enumerate() {
+        // **鉴权先于工作**：白名单检查放在最前面 —— 清单是从磁盘读来的，
+        // "把读来的路径直接当写入目标"是不该有的习惯（工作区安全基线也这么要求）。
+        // 放在校验和之后的话，一份"指向 /etc/shadow 且内容损坏"的清单
+        // 会先报"损坏"，而真正该说的是"这个路径根本不允许写"。
+        if !allowed.contains(&e.path.as_str()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}：不在快照白名单内，拒绝回滚", e.path),
+            ));
+        }
         if !e.existed {
             notes.push(format!("{}：快照时不存在，未回滚", e.path));
             continue;
@@ -211,6 +299,9 @@ pub fn restore(root: &Path, id: &str) -> std::io::Result<Vec<String>> {
         // 原子替换：半截的配置文件比旧文件更糟
         let tmp = target.with_extension("aether-restore-tmp");
         std::fs::write(&tmp, &bytes)?;
+        // **权限要按快照那一刻设**：否则 0600 的配置文件回滚一次就变成所有人可读。
+        // 没有记录（旧清单 / 非 Unix）时用 0600（宁紧勿松）。
+        set_file_mode(&tmp, restore_mode(e.mode))?;
         std::fs::rename(&tmp, target)?;
         notes.push(format!("{}：已回滚（{} 字节）", e.path, bytes.len()));
     }
@@ -231,7 +322,8 @@ fn to_json(m: &Manifest) -> String {
         s.push_str(&format!("\"path\": \"{}\", ", e.path));
         s.push_str(&format!("\"checksum\": \"{}\", ", e.checksum));
         s.push_str(&format!("\"bytes\": {}, ", e.bytes));
-        s.push_str(&format!("\"existed\": {}", e.existed));
+        s.push_str(&format!("\"existed\": {}, ", e.existed));
+        s.push_str(&format!("\"mode\": {}", e.mode));
         s.push_str("}");
         if i + 1 < m.entries.len() {
             s.push(',');
@@ -259,6 +351,8 @@ fn parse_json(text: &str) -> Option<Manifest> {
             checksum: e.get("checksum").and_then(|c| c.as_str()).unwrap_or("").to_string(),
             bytes: e.get("bytes").and_then(|b| b.as_u64()).unwrap_or(0),
             existed,
+            // 旧清单没有这一项 → 0 = 未知 → 回滚时用 0600
+            mode: e.get("mode").and_then(|m| m.as_u64()).unwrap_or(0) as u32,
         });
     }
     Some(Manifest { id, created_unix, entries })
@@ -362,7 +456,8 @@ mod tests {
           "entries":[{"path":"/tmp/aether-restore-test.txt","checksum":"deadbeef","bytes":3,"existed":true}]}"#;
         std::fs::write(dir.join(MANIFEST), manifest).unwrap();
         std::fs::write(dir.join("files/00-aether-restore-test.txt"), b"abc").unwrap();
-        let err = restore(&snaps, "20261004T112233").unwrap_err();
+        let err = restore_allowed(&snaps, "20261004T112233", &["/tmp/aether-restore-test.txt"])
+            .unwrap_err();
         assert!(
             err.to_string().contains("损坏"),
             "校验和不符要明确说「损坏」并停止：{err}"
@@ -383,7 +478,14 @@ mod tests {
                "entries":[{"path":"/tmp/aether-should-not-be-created.txt","checksum":"","bytes":0,"existed":false}]}"#,
         )
         .unwrap();
-        let notes = restore(&snaps, "20261004T112233").unwrap();
+        // 白名单里给了它，所以流程能走到"跳过"这一步
+        // （不在白名单里的路径会被**直接拒绝**，那是另一条测试的事）
+        let notes = restore_allowed(
+            &snaps,
+            "20261004T112233",
+            &["/tmp/aether-should-not-be-created.txt"],
+        )
+        .unwrap();
         assert!(!Path::new("/tmp/aether-should-not-be-created.txt").exists(), "不许造出这个文件");
         assert!(notes[0].contains("未回滚"), "说明里要写清：{}", notes[0]);
         let _ = std::fs::remove_dir_all(&root);
@@ -411,7 +513,8 @@ mod tests {
         );
         std::fs::write(dir.join(MANIFEST), manifest).unwrap();
         std::fs::write(dir.join("files/00-policy.json"), old).unwrap();
-        let notes = restore(&snaps, id).unwrap();
+        let tp = target.display().to_string().replace('\\', "/");
+        let notes = restore_allowed(&snaps, id, &[tp.as_str()]).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), old, "内容要回到快照那一份");
         assert!(notes[0].contains("已回滚"), "{}", notes[0]);
         // 临时文件不该留下
@@ -423,4 +526,212 @@ mod tests {
     fn listing_a_missing_directory_is_empty_not_an_error() {
         assert!(list(Path::new("/var/lib/aether/nope-does-not-exist")).is_empty());
     }
+    /// **审计发现 1（中危）**：回滚必须按快照那一刻的权限写，不能是 umask 后的默认值。
+    ///
+    /// 具体危害：`policy.json` 这类文件本来是 0600，回滚一次变成 0644
+    /// （所有人可读）—— 那是**回滚自己制造的权限降级**。
+    #[cfg(unix)]
+    #[test]
+    fn restore_keeps_the_snapshot_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("mode");
+        let snaps = root.join("snaps");
+        let id = "20261004T112233";
+        let dir = snaps.join(id);
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        let old = b"{\"policy\":\"v1\"}";
+        let target = root.join("etc/policy.json");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        // 当前文件是"被改宽了"的 0644，而快照里记的是 0600
+        std::fs::write(&target, b"{\"policy\":\"v2\"}").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let tp = target.display().to_string().replace('\\', "/");
+        std::fs::write(
+            dir.join(MANIFEST),
+            format!(
+                "{{\"version\":1,\"id\":\"{id}\",\"created_unix\":1791112953,\"entries\":[\
+                 {{\"path\":\"{tp}\",\"checksum\":\"{}\",\"bytes\":{},\"existed\":true,\"mode\":416}}]}}",
+                checksum(old),
+                old.len()
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("files/00-policy.json"), old).unwrap();
+        let notes = restore_allowed(&snaps, id, &[tp.as_str()]).unwrap();
+        assert!(notes[0].contains("已回滚"), "{}", notes[0]);
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "回滚后应当是快照里的 0600，而不是 umask 后的 0644");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 老清单没有 `mode` 这一项 → **默认 0600**（宁紧勿松），不能是 umask 的 0644。
+    #[cfg(unix)]
+    #[test]
+    fn restore_defaults_to_0600_when_the_mode_is_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("unknown-mode");
+        let snaps = root.join("snaps");
+        let id = "20261004T112233";
+        let dir = snaps.join(id);
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        let body = b"x";
+        let target = root.join("etc/legacy.conf");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let tp = target.display().to_string().replace('\\', "/");
+        std::fs::write(
+            dir.join(MANIFEST),
+            format!(
+                "{{\"version\":1,\"id\":\"{id}\",\"created_unix\":1791112953,\"entries\":[\
+                 {{\"path\":\"{tp}\",\"checksum\":\"{}\",\"bytes\":1,\"existed\":true}}]}}",
+                checksum(body)
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("files/00-legacy.conf"), body).unwrap();
+        restore_allowed(&snaps, id, &[tp.as_str()]).unwrap();
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "未知 mode 时用 0600，不能留 umask 的默认值");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **审计发现 2（低危）**：同一秒里创建两次**不能互相覆盖** —— 那会静默丢掉前一份快照。
+    #[test]
+    fn two_snapshots_in_the_same_second_do_not_overwrite_each_other() {
+        let root = tmp("same-second");
+        let snaps = root.join("snaps");
+        let a = create(&snaps, 1_791_112_953).unwrap();
+        let b = create(&snaps, 1_791_112_953).unwrap();
+        assert_ne!(a.id, b.id, "同一秒的第二份快照必须换个 id");
+        assert!(b.id.starts_with(&a.id), "后缀形式：{} / {}", a.id, b.id);
+        assert_eq!(list(&snaps).len(), 2, "两份都要在列表里（都不该被覆盖）");
+        assert!(valid_id(&b.id), "带后缀的 id 仍要合法（它是路径的一部分）：{}", b.id);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **审计发现 3（低危）**：清单里的路径不在白名单内就**拒绝回滚**。
+    ///
+    /// 清单是 root 0700 下的文件，能改它的人已经是 root；但"把从磁盘读来的路径
+    /// 直接当写入目标"是不该有的习惯 —— 这条检查把"往任意路径写文件"挡在门外。
+    #[test]
+    fn restore_refuses_paths_outside_the_whitelist() {
+        let root = tmp("whitelist");
+        let snaps = root.join("snaps");
+        let id = "20261004T112233";
+        let dir = snaps.join(id);
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        // 清单里指向一个**不在白名单**的路径（模拟清单被改过）
+        let evil = root.join("etc/evil.conf");
+        let ep = evil.display().to_string().replace('\\', "/");
+        let body = b"pwned";
+        std::fs::write(
+            dir.join(MANIFEST),
+            format!(
+                "{{\"version\":1,\"id\":\"{id}\",\"created_unix\":1791112953,\"entries\":[\
+                 {{\"path\":\"{ep}\",\"checksum\":\"{}\",\"bytes\":5,\"existed\":true,\"mode\":384}}]}}",
+                checksum(body)
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("files/00-evil.conf"), body).unwrap();
+        // 传一个**不包含它**的白名单 → 必须拒绝，且文件不能被创建
+        let err = restore_allowed(&snaps, id, &["/etc/resolv.conf"]).unwrap_err();
+        assert!(
+            err.to_string().contains("白名单"),
+            "要明确说「不在白名单内」：{err}"
+        );
+        assert!(!evil.exists(), "被拒绝时不许留下文件");
+        // 把白名单放开就能回滚（证明拒绝的原因是白名单，而不是别的）
+        let notes = restore_allowed(&snaps, id, &[ep.as_str()]).unwrap();
+        assert!(notes[0].contains("已回滚"), "{}", notes[0]);
+        assert!(evil.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **生产路径的白名单确实生效**：`restore()` 用的是 `FILES`，
+    /// 所以任何不在 `/etc` 那几个文件里的路径都会被拒。
+    ///
+    /// （测试用 `restore_allowed` 传自己的白名单，这条专门盯着**生产入口**没有退化成
+    /// "谁能调就随便写"。）
+    #[test]
+    fn the_production_restore_only_touches_whitelisted_paths() {
+        let root = tmp("prod-whitelist");
+        let snaps = root.join("snaps");
+        let id = "20261004T112233";
+        let dir = snaps.join(id);
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        let target = root.join("etc/not-whitelisted.conf");
+        let tp = target.display().to_string().replace('\\', "/");
+        let body = b"zzz";
+        std::fs::write(
+            dir.join(MANIFEST),
+            format!(
+                "{{\"version\":1,\"id\":\"{id}\",\"created_unix\":1791112953,\"entries\":[\
+                 {{\"path\":\"{tp}\",\"checksum\":\"{}\",\"bytes\":3,\"existed\":true,\"mode\":384}}]}}",
+                checksum(body)
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("files/00-not-whitelisted.conf"), body).unwrap();
+        let err = restore(&snaps, id).unwrap_err();
+        assert!(err.to_string().contains("白名单"), "生产入口必须挡住：{err}");
+        assert!(!target.exists());
+        // 顺带确认：`/etc/resolv.conf` 这类白名单内的路径**不会**因为白名单被误拒
+        // （这里只检查"名单本身包含它"，不真的去写系统文件）
+        assert!(FILES.contains(&"/etc/resolv.conf"));
+        assert!(FILES.contains(&"/etc/aether/policy.json"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// mode 必须能**存进清单、读回清单**（跨平台测试）。
+    ///
+    /// 它是权限修复的命门：往返丢了 mode，回滚就只能用 0600 兜底（好一点）
+    /// 或干脆 heredoc 出 0644（坏）—— 而那两条权限测试是 `#[cfg(unix)]`，
+    /// 在 Windows 上不跑。这条负责在**任何平台**上守住"值没丢"。
+    #[test]
+    fn file_mode_round_trips_through_the_manifest() {
+        let m = Manifest {
+            id: "20261004T112233".to_string(),
+            created_unix: 1_791_112_953,
+            entries: vec![
+                Entry {
+                    path: "/etc/aether/policy.json".to_string(),
+                    checksum: "abcd".to_string(),
+                    bytes: 12,
+                    existed: true,
+                    mode: 0o600,
+                },
+                Entry {
+                    path: "/etc/resolv.conf".to_string(),
+                    checksum: String::new(),
+                    bytes: 0,
+                    existed: false,
+                    mode: 0,
+                },
+            ],
+        };
+        let json = to_json(&m);
+        assert!(json.contains("\"mode\": 384"), "0600 要写成 384：{json}");
+        let back = parse_json(&json).expect("自己写的清单必须能读回");
+        assert_eq!(back, m, "往返之后必须一模一样（含 mode）");
+        // 老清单（没有 mode 字段）要能读成 0 = 未知 → 回滚时用 0600 兜底
+        let legacy = r#"{"version":1,"id":"20261004T112233","created_unix":1791112953,
+            "entries":[{"path":"/etc/timezone","checksum":"x","bytes":1,"existed":true}]}"#;
+        let lm = parse_json(legacy).expect("老清单也要能读");
+        assert_eq!(lm.entries[0].mode, 0, "缺 mode 的旧清单读成 0（未知）");
+    }
+
+    /// **权限决策本身**（跨平台）：记了就用记的，没记就用 0600 —— 宁紧勿松。
+    ///
+    /// 这条测试在任何平台都跑：它守的是**决策**，而不是"文件系统真的改了权限"
+    /// （那两条只能 `#[cfg(unix)]`，而 aetherd 在这台机器上连 Linux 目标都编译不了）。
+    #[test]
+    fn restore_mode_is_fail_closed() {
+        assert_eq!(restore_mode(0), 0o600, "未知 → 0600（不能是 umask 后的 0644）");
+        assert_eq!(restore_mode(0o600), 0o600);
+        assert_eq!(restore_mode(0o644), 0o644, "记了 0644 就按 0644（用户自己设的宽权限要尊重）");
+        assert_eq!(restore_mode(0o400), 0o400);
+        // 只保留权限位：带上文件类型位（S_IFREG=0o100000）时不能被当成权限用
+        assert_eq!(restore_mode(0o100600), 0o600, "文件类型位要去掉");
+    }
+
 }
