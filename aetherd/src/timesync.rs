@@ -99,6 +99,11 @@ pub enum Adjustment {
     Slew,
     /// 大幅偏移：直接设置（`clock_settime`）
     Step,
+    /// **拒绝**：偏移超出合理性上限，**没有动时钟**。
+    ///
+    /// 与"调整失败"是两件事：这是"我不接受这个偏移"。
+    /// 独立成一个结论，是为了让界面能说清"是拒绝，不是出错"。
+    Refused,
 }
 
 /// 偏移超过这个值就"跳"而不是"平滑"。
@@ -107,12 +112,33 @@ pub enum Adjustment {
 /// 而平滑调整能在几分钟内悄悄校正；大于它时慢慢来没意义（用户已经看得见钟不对了）。
 pub const STEP_THRESHOLD_MS: i64 = 1000;
 
+/// 偏移量的**合理性上限**（毫秒）：24 小时。
+///
+/// 为什么必须有这条：`aetherd` 以 root 运行，而 SNTP 走 UDP（可伪造）。
+/// 没有上限时，一个伪造回复就能让系统时钟跳到任意年代 ——
+/// 打断 TLS 证书有效期、日志顺序、会话超时、审计时间线。
+/// 真正差出一天以上的情况（新装机、主板电池没电）应当由**用户显式**处理，
+/// 不该由一次网络回复替用户决定。
+pub const MAX_OFFSET_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// 偏移量是否在合理范围内（**纯函数**，任何平台都能测）。
+///
+/// 用 `unsigned_abs()` 而不是 `abs()`：`i64::MIN.abs()` 在 debug 下会 panic，
+/// release 下回绕成负数 —— 一个来自网络的值不该有这种"看构建类型"的行为。
+pub fn offset_is_sane(offset_ms: i64) -> bool {
+    offset_ms.unsigned_abs() <= MAX_OFFSET_MS as u64
+}
+
 /// 根据偏移（毫秒）决定怎么调。
+///
+/// **只看"怎么调"，不管"该不该调"** —— 合理性上限在 [`apply_offset`] 里判，
+/// 因为那是"要不要动系统时钟"的决定，而不是分类问题。
 pub fn adjustment_for(offset_ms: i64) -> Adjustment {
+    let mag = offset_ms.unsigned_abs();
     // 阈值内不动：反复微调只会让时钟一直在动
-    if offset_ms.abs() < 100 {
+    if mag < 100 {
         Adjustment::None
-    } else if offset_ms.abs() < STEP_THRESHOLD_MS {
+    } else if mag < STEP_THRESHOLD_MS as u64 {
         Adjustment::Slew
     } else {
         Adjustment::Step
@@ -421,6 +447,10 @@ pub fn now_unix() -> (i64, u32) {
 /// 小幅用**平滑**（`adjtime`），大幅才**跳变**（`clock_settime`）——
 /// 跳变会让 `sleep`/超时算错、日志时间戳倒退，能避免就避免。
 pub fn apply_offset(offset_ms: i64) -> Result<Adjustment, String> {
+    // **先判合理性，再决定动不动时钟**：不合理的偏移直接拒绝，一个字节都不碰。
+    if !offset_is_sane(offset_ms) {
+        return Ok(Adjustment::Refused);
+    }
     let how = adjustment_for(offset_ms);
     if how == Adjustment::None {
         return Ok(how);
@@ -551,4 +581,51 @@ mod query_tests {
         assert_eq!(apply_offset(0).unwrap(), Adjustment::None);
         assert_eq!(apply_offset(50).unwrap(), Adjustment::None);
     }
+    /// **审计发现（附录 M）**：偏移量的合理性上限 —— 纯函数，边界逐个验。
+    #[test]
+    fn offset_sanity_boundary() {
+        assert!(offset_is_sane(0));
+        assert!(offset_is_sane(500));
+        assert!(offset_is_sane(MAX_OFFSET_MS), "正好 24 小时应当允许");
+        assert!(offset_is_sane(-MAX_OFFSET_MS));
+        assert!(!offset_is_sane(MAX_OFFSET_MS + 1), "超过 24 小时必须拒绝");
+        assert!(!offset_is_sane(-(MAX_OFFSET_MS + 1)));
+        // 极端值：**不许 panic**（`abs()` 在 i64::MIN 上会 panic —— 这正是改 unsigned_abs 的原因）
+        assert!(!offset_is_sane(i64::MIN));
+        assert!(!offset_is_sane(i64::MAX));
+        assert_eq!(adjustment_for(i64::MIN), Adjustment::Step, "分类本身不该 panic");
+    }
+
+    /// 正常量级仍然按原规则分类（别把上限加进来时改坏了平滑/跳变的判断）。
+    #[test]
+    fn normal_offsets_still_classify_as_before() {
+        assert_eq!(adjustment_for(0), Adjustment::None);
+        assert_eq!(adjustment_for(99), Adjustment::None);
+        assert_eq!(adjustment_for(-99), Adjustment::None);
+        assert_eq!(adjustment_for(100), Adjustment::Slew);
+        assert_eq!(adjustment_for(-999), Adjustment::Slew);
+        assert_eq!(adjustment_for(1000), Adjustment::Step);
+        assert_eq!(adjustment_for(3_600_000), Adjustment::Step);
+    }
+
+    /// 超大偏移 → **`Refused`，而且一个字节都不碰时钟**。
+    ///
+    /// 这条在**任何平台**都能跑：拒绝发生在调用平台接口**之前**，
+    /// 所以 Windows 上也能验证"拒绝"这条语义（真去调 `clock_settime` 的路径
+    /// 只能在 Linux 上验，见附录 B）。
+    #[test]
+    fn absurd_offsets_are_refused_before_any_clock_change() {
+        // 48 小时：明显不合理
+        assert_eq!(apply_offset(48 * 3_600_000).unwrap(), Adjustment::Refused);
+        // 50 年：一个伪造的 UDP 回复能做到的量级
+        assert_eq!(
+            apply_offset(50 * 365 * 24 * 3_600_000).unwrap(),
+            Adjustment::Refused
+        );
+        // 负方向同样拒绝
+        assert_eq!(apply_offset(-MAX_OFFSET_MS - 1).unwrap(), Adjustment::Refused);
+        // 上限之内、且在"不动"阈值内 → None（不会真去调时钟，所以任何平台都能测）
+        assert_eq!(apply_offset(0).unwrap(), Adjustment::None);
+    }
+
 }

@@ -692,15 +692,22 @@ fn handle_request(
                 crate::timesync::apply_offset(offset_ms).map(|how| (offset_ms, how))
             }) {
                 Ok((offset_ms, how)) => {
+                    // 偏移量总是记下来（**它是有用的信息**：用户该看到服务器报了多少）
                     LAST_OFFSET_MS.store(offset_ms, std::sync::atomic::Ordering::Relaxed);
-                    LAST_SYNC_UNIX.store(
-                        crate::timesync::now_unix().0,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
                     let what = match how {
-                        crate::timesync::Adjustment::None => "已在误差范围内，未调整",
-                        crate::timesync::Adjustment::Slew => "已平滑调整（不跳变）",
-                        crate::timesync::Adjustment::Step => "已直接校正（偏移较大）",
+        crate::timesync::Adjustment::Refused => {
+            // **说清是"拒绝"不是"出错"**：用户需要知道钟没动，以及为什么。
+            format!(
+                "偏移 {offset_ms} 毫秒超出合理性上限（{} 小时），已拒绝调整系统时钟 —— \
+                 如果确实相差这么多，请手动设置时间",
+                crate::timesync::MAX_OFFSET_MS / 3_600_000
+            )
+        }
+                        crate::timesync::Adjustment::None => {
+                            "已在误差范围内，未调整".to_string()
+                        }
+                        crate::timesync::Adjustment::Slew => "已平滑调整（不跳变）".to_string(),
+                        crate::timesync::Adjustment::Step => "已直接校正（偏移较大）".to_string(),
                     };
                     let args = serde_json::json!({ "offset_ms": offset_ms });
                     if let Err(e) =
@@ -708,9 +715,18 @@ fn handle_request(
                     {
                         eprintln!("[aetherd] 审计日志写入失败: {e}");
                     }
-                    eprintln!("[aetherd] 对时完成：偏移 {offset_ms} ms（{what}）");
+                    // **被拒绝 ≠ 同步过**：不更新"上次同步时间"，
+                    // 否则界面会说"刚刚同步过"，而时钟其实一个字节都没动。
+                    if how != crate::timesync::Adjustment::Refused {
+                        LAST_SYNC_UNIX.store(
+                            crate::timesync::now_unix().0,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    eprintln!("[aetherd] 对时：偏移 {offset_ms} ms（{what}）");
                     vec![Response::TimeSync {
-                        ok: true,
+                        // 拒绝要让界面按"没成功"呈现（理由在 message 里）
+                        ok: how != crate::timesync::Adjustment::Refused,
                         message: format!("偏移 {offset_ms} ms · {what}"),
                         offset_ms,
                     }]

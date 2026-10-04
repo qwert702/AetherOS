@@ -268,6 +268,11 @@ pub fn install(root: &Path, src: &Path) -> Result<(Installed, Preflight)> {
 /// **含文件类型位**（`S_IFREG` = 0o100000 等）。把它们一起传给 `chmod` 是错的用法
 /// —— Linux 内核恰好会掩掉，所以现在看不出问题；换平台就可能出错。
 /// （与本会话快照那批的 `restore_mode()` 同一处理。）
+///
+/// 非 Unix 上只有测试用它（真正的调用点在 `#[cfg(unix)]` 的 `make_executable` 里）——
+/// 而它的测试必须在**所有平台**上跑（Linux 内核恰好会掩掉类型位，
+/// 所以这个错误只有换平台才暴露，见安全审计附录 J）。
+#[cfg_attr(not(unix), allow(dead_code))]
 pub fn exec_mode(mode: u32) -> u32 {
     (mode & 0o7777) | 0o755
 }
