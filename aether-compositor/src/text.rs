@@ -306,6 +306,12 @@ impl TextRenderer {
 pub mod strings {
     pub const BRAND: &str = "Aether";
     pub const MENUS: &[&str] = &["文件", "编辑", "显示", "帮助"];
+    /// 与 [`MENUS`] **逐项对应**的英文名（§3.5）。
+    ///
+    /// 两张表的形状由测试钉住（`menu_tables_have_matching_shapes`）：
+    /// 少一项就会在按索引取英文时拿到 `None`/越界 —— 那是运行期 panic，
+    /// 而不是编译错误，所以必须用测试守住。
+    pub const MENUS_EN: &[&str] = &["File", "Edit", "View", "Help"];
     /// 每个菜单的下拉项，索引与 MENUS 对齐
     pub const MENU_ITEMS: &[&[&str]] = &[
         &["新建窗口", "关闭窗口", "退出"],
@@ -313,7 +319,46 @@ pub mod strings {
         &["两列", "三列", "独占堆叠", "自由布局"],
         &["关于 Aether"],
     ];
+    /// 与 [`MENU_ITEMS`] **逐项对应**的英文项（§3.5）。
+    pub const MENU_ITEMS_EN: &[&[&str]] = &[
+        &["New window", "Close window", "Quit"],
+        &["Undo", "Redo", "Copy", "Paste"],
+        &["Two columns", "Three columns", "Stacked", "Free layout"],
+        &["About Aether"],
+    ];
+
+    /// 第 `i` 个菜单的名字。**取不到英文就退回中文**（宁可显示中文，也不要空白或 panic）。
+    pub fn menu_label(i: usize, lang: crate::i18n::Lang) -> &'static str {
+        match lang {
+            crate::i18n::Lang::Zh => MENUS.get(i).copied().unwrap_or(""),
+            crate::i18n::Lang::En => MENUS_EN
+                .get(i)
+                .copied()
+                .or_else(|| MENUS.get(i).copied())
+                .unwrap_or(""),
+        }
+    }
+
+    /// 第 `i` 个菜单的第 `j` 项（同样"取不到英文退回中文"）。
+    pub fn menu_item(i: usize, j: usize, lang: crate::i18n::Lang) -> &'static str {
+        let zh = MENU_ITEMS.get(i).and_then(|items| items.get(j)).copied().unwrap_or("");
+        match lang {
+            crate::i18n::Lang::Zh => zh,
+            crate::i18n::Lang::En => MENU_ITEMS_EN
+                .get(i)
+                .and_then(|items| items.get(j))
+                .copied()
+                .unwrap_or(zh),
+        }
+    }
+
+    /// 某个菜单下有几项（两张表形状一致，取中文表即可）。
+    pub fn menu_item_count(i: usize) -> usize {
+        MENU_ITEMS.get(i).map(|items| items.len()).unwrap_or(0)
+    }
     pub const AI_BAR_HINT: &str = "询问 Aether，或说出你想做的事";
+    /// 同上，英文版（§3.5）。
+    pub const AI_BAR_HINT_EN: &str = "Ask Aether, or say what you want to do";
     pub const WIN_FILES: &str = "文件";
     pub const WIN_TERM: &str = "终端";
     pub const WIN_BROWSER: &str = "浏览器";
@@ -539,4 +584,69 @@ mod tests {
             "默认偏移就是 +8（无 TZ 时的产品默认）"
         );
     }
+    /// §3.5：**中英两张表的形状必须完全一致**。
+    ///
+    /// 这是本批最要紧的一条：访问器按索引取英文，少一项不会编译报错，
+    /// 而是**运行期**取到 `None`/越界 —— 那种错在界面上表现为"某个菜单点开是空的"，
+    /// 而且要等到用户点到那一个菜单才暴露。
+    #[test]
+    fn menu_tables_have_matching_shapes() {
+        assert_eq!(
+            strings::MENUS.len(),
+            strings::MENUS_EN.len(),
+            "菜单数量不一致：中文 {} 个、英文 {} 个",
+            strings::MENUS.len(),
+            strings::MENUS_EN.len()
+        );
+        assert_eq!(
+            strings::MENU_ITEMS.len(),
+            strings::MENU_ITEMS_EN.len(),
+            "下拉项的分组数不一致"
+        );
+        for i in 0..strings::MENU_ITEMS.len() {
+            assert_eq!(
+                strings::MENU_ITEMS[i].len(),
+                strings::MENU_ITEMS_EN[i].len(),
+                "第 {i} 个菜单的项数不一致：中文 {} 项、英文 {} 项",
+                strings::MENU_ITEMS[i].len(),
+                strings::MENU_ITEMS_EN[i].len()
+            );
+        }
+    }
+
+    /// 访问器：两种语言都取得到、越界给空串（不 panic）、英文不含中文。
+    #[test]
+    fn menu_accessors_are_safe_and_bilingual() {
+        use crate::i18n::Lang;
+        for i in 0..strings::MENUS.len() {
+            let zh = strings::menu_label(i, Lang::Zh);
+            let en = strings::menu_label(i, Lang::En);
+            assert!(!zh.is_empty() && !en.is_empty(), "第 {i} 个菜单缺名字");
+            assert_ne!(zh, en, "第 {i} 个菜单的两种语言不该一样");
+            assert!(
+                !en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "第 {i} 个菜单的英文里混进了中文：{en}"
+            );
+            // 每一项都要有英文
+            for j in 0..strings::menu_item_count(i) {
+                let izh = strings::menu_item(i, j, Lang::Zh);
+                let ien = strings::menu_item(i, j, Lang::En);
+                assert!(!izh.is_empty() && !ien.is_empty(), "第 {i} 个菜单第 {j} 项缺文案");
+                assert!(
+                    !ien.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                    "「{ien}」的英文里混进了中文"
+                );
+            }
+        }
+        // 越界：给空串而不是 panic（界面索引来自命中区，理论上不会越界，但不该靠"理论上"）
+        assert_eq!(strings::menu_label(99, Lang::Zh), "");
+        assert_eq!(strings::menu_label(99, Lang::En), "");
+        assert_eq!(strings::menu_item(99, 0, Lang::En), "");
+        assert_eq!(strings::menu_item(0, 99, Lang::En), "");
+        assert_eq!(strings::menu_item_count(99), 0);
+        // AI 提示条两种语言都有
+        assert!(!strings::AI_BAR_HINT.is_empty() && !strings::AI_BAR_HINT_EN.is_empty());
+        assert_ne!(strings::AI_BAR_HINT, strings::AI_BAR_HINT_EN);
+    }
+
 }

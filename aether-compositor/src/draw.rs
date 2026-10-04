@@ -2347,7 +2347,9 @@ impl Renderer {
 
         // 菜单标签（登记命中区；悬停/打开用交互态令牌）
         self.menubar_menus.clear();
-        for (i, menu) in strings::MENUS.iter().enumerate() {
+        // §3.5：菜单名按语言取（`menu_label` 取不到英文会退回中文，不会空白）
+        for i in 0..strings::MENUS.len() {
+            let menu = strings::menu_label(i, crate::i18n::lang());
             let mw = tr.measure(menu, font::BODY);
             let hit = Rect { x: mx as i32 - 8, y: 0, w: mw as i32 + 16, h: metric::MENUBAR_H };
             let hovered = hit.contains(ui.mouse.0, ui.mouse.1);
@@ -2594,7 +2596,11 @@ impl Renderer {
         let Some(mi) = ui.open_menu else { return };
         let Some(label) = self.menubar_menus.get(mi) else { return };
         let Some(tr) = tr else { return };
-        let items = strings::MENU_ITEMS[mi];
+        // §3.5：下拉项同样双语；**数量以中文表为准**（两张表形状有测试钉住）
+        let lang = crate::i18n::lang();
+        let items: Vec<&str> = (0..strings::menu_item_count(mi))
+            .map(|j| strings::menu_item(mi, j, lang))
+            .collect();
         let panel_w = items
             .iter()
             .map(|s| tr.measure(s, font::BODY))
@@ -4611,7 +4617,18 @@ impl Renderer {
     let max_w = bar.x as f32 + bar.w as f32 - 96.0 - text_x;
     let (shown, prefix) = visible_window(tr, input, ui.ai_cursor, max_w);
     if input.is_empty() {
-        draw_text(tr, buf, w, h, text_x, text_y, strings::AI_BAR_HINT, font::BODY, color::text_dim(), 0.85);
+        draw_text(
+            tr,
+            buf,
+            w,
+            h,
+            text_x,
+            text_y,
+            crate::i18n::pick(crate::i18n::lang(), strings::AI_BAR_HINT, strings::AI_BAR_HINT_EN),
+            font::BODY,
+            color::text_dim(),
+            0.85,
+        );
     } else {
         draw_text(tr, buf, w, h, text_x, text_y, shown, font::BODY, color::text(), 0.95);
     }

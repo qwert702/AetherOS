@@ -1,10 +1,10 @@
 {
   "version": "v0.1.0",
-  "rust_lines": "41,297",
+  "rust_lines": "41,424",
   "rust_files": "64",
-  "rust_lines_num": 41297,
+  "rust_lines_num": 41424,
   "crates": 7,
-  "tests": "650",
+  "tests": "652",
   "iso_bytes": 40327168,
   "iso_size": "38.5 MB",
   "iso_sha256": "7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb",
