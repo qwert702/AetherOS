@@ -3786,7 +3786,7 @@ fn draw_settings_content(
             tr.draw(
                 buf, w, h, (content.x + 24) as f32, ry as f32,
                 crate::i18n::tr(
-                    "点击一行循环切换：按等级 → 每次询问 → 允许 → 禁止。禁止优先于一切；L3 永不免确认。",
+                    crate::i18n::pick(lang, "点击一行循环切换：按等级 → 每次询问 → 允许 → 禁止。禁止优先于一切；L3 永不免确认。", "Click a row to cycle: by level → ask every time → allow → deny. Deny beats everything; L3 never skips confirmation."),
                     "Click a row to cycle: By level → Always ask → Allow → Deny. Deny wins over everything; L3 always confirms.",
                 ),
                 font::CAPTION, color::text_dim(), 0.85,
@@ -3840,7 +3840,7 @@ fn draw_settings_content(
                 buf, w, h, act,
                 crate::i18n::tr("重新读取", "Reload"),
                 Some(crate::i18n::tr(
-                    "从 aetherd 取一次最新的策略",
+                    crate::i18n::pick(lang, "从 aetherd 取一次最新的策略", "Fetch the latest policy from aetherd once"),
                     "Fetch the current policy from aetherd",
                 )),
                 widgets::States::at(act, mouse), Some(tr),
@@ -3870,7 +3870,7 @@ fn draw_settings_content(
             tr.draw(
                 buf, w, h, (content.x + 24) as f32, ry as f32,
                 crate::i18n::tr(
-                    "以上每条都在源码里有落点（有测试逐条核对）",
+                    crate::i18n::pick(lang, "以上每条都在源码里有落点（有测试逐条核对）", "Every entry above has a landing point in the source (checked one by one by tests)"),
                     "Every entry above is verified against the source by a test",
                 ),
                 font::CAPTION, color::text_dim(), 0.8,
@@ -4028,14 +4028,14 @@ fn draw_settings_content(
             // 已装应用的列表要从 `renderer.installed_apps` 取，而本函数是被
             // `draw_window`（19 参自由函数）调用的，穿一个列表进去要动它的签名与调用链。
             // 与其塞一个空列表进去装样子，不如**如实说明已装应用在 Dock 上**。
-            widgets::group_header(buf, w, h, content.x + 24, ry, "内建应用", Some(tr));
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "内建应用", "Built-in apps"), Some(tr));
             ry += 24;
             for (i, name, desc) in [
-                (0usize, "文件管理", "浏览文件与应用目录"),
-                (1, "终端", "真实 PTY，可运行市面软件"),
-                (2, "浏览器", "复用文件管理器的纸面渲染"),
-                (3, "音乐", "本地曲库"),
-                (4, "系统设置", "即本窗口"),
+                (0usize, crate::i18n::pick(lang, "文件管理", "Files"), crate::i18n::pick(lang, "浏览文件与应用目录", "Browse files and app folders")),
+                (1, crate::i18n::pick(lang, "终端", "Terminal"), crate::i18n::pick(lang, "真实 PTY，可运行市面软件", "A real PTY — runs off-the-shelf software")),
+                (2, crate::i18n::pick(lang, "浏览器", "Browser"), crate::i18n::pick(lang, "复用文件管理器的纸面渲染", "Reuses the file manager's paper-like rendering")),
+                (3, crate::i18n::pick(lang, "音乐", "Music"), crate::i18n::pick(lang, "本地曲库", "Local library")),
+                (4, crate::i18n::pick(lang, "系统设置", "Settings"), crate::i18n::pick(lang, "即本窗口", "This very window")),
             ] {
                 let r = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
                 let st = widgets::States::at(r, mouse);
@@ -4045,10 +4045,10 @@ fn draw_settings_content(
                 ry += 44;
             }
             ry += 8;
-            widgets::group_header(buf, w, h, content.x + 24, ry, "已装应用", Some(tr));
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "已装应用", "Installed apps"), Some(tr));
             ry += 22;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
-                    "从宿主安装的程序显示在 Dock 上（数据来自 /var/apps）。",
+                    crate::i18n::pick(lang, "从宿主安装的程序显示在 Dock 上（数据来自 /var/apps）。", "Programs installed from the host show up in the Dock (data from /var/apps)."),
                     font::CAPTION, color::text_dim(), 0.85);
             ry += 20;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
@@ -4324,14 +4324,16 @@ fn draw_settings_content(
             hits.push((ai_act, SettingsHit::RestartService("aetherd")));
         }
         "关于" => {
+            // §3.5：本页文案双语
+            let lang = crate::i18n::lang();
             tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, "AetherOS", font::TITLE, color::text(), 0.98);
             ry += 36;
             for (k, v) in [
-                ("版本", env!("CARGO_PKG_VERSION")),
-                ("许可证", "GPL-3.0-only"),
-                ("架构", std::env::consts::ARCH),
-                ("内核", "Linux（Buildroot 2024.02.1）"),
-                ("设置文件", crate::settings::SETTINGS_PATH),
+                (crate::i18n::pick(lang, "版本", "Version"), env!("CARGO_PKG_VERSION")),
+                (crate::i18n::pick(lang, "许可证", "License"), "GPL-3.0-only"),
+                (crate::i18n::pick(lang, "架构", "Architecture"), std::env::consts::ARCH),
+                (crate::i18n::pick(lang, "内核", "Kernel"), crate::i18n::pick(lang, "Linux（Buildroot 2024.02.1）", "Linux (Buildroot 2024.02.1)")),
+                (crate::i18n::pick(lang, "设置文件", "Settings file"), crate::settings::SETTINGS_PATH),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
                 tr.draw(buf, w, h, (content.x + 130) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
@@ -4344,12 +4346,12 @@ fn draw_settings_content(
             // 为它们单开一页会让左栏更长、更难找常用的那几页（本项目不做空壳页）。
             // 控制中心里也有同一组入口（那边是常用路径）。
             ry += 18;
-            tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, "电源", font::CAPTION, color::text(), 0.9);
+            tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, crate::i18n::pick(lang, "电源", "Power"), font::CAPTION, color::text(), 0.9);
             ry += 26;
             for (label, hint, hit) in [
-                ("关机", "停止所有服务并断电（需确认）", SettingsHit::Power(aether_ipc::PowerAction::PowerOff)),
-                ("重启", "停止所有服务并重新引导（需确认）", SettingsHit::Power(aether_ipc::PowerAction::Reboot)),
-                ("注销", "重启桌面（窗口会关闭，由 aether-init 拉起）", SettingsHit::Logout),
+                (crate::i18n::pick(lang, "关机", "Power off"), crate::i18n::pick(lang, "停止所有服务并断电（需确认）", "Stops all services and cuts power (needs confirmation)"), SettingsHit::Power(aether_ipc::PowerAction::PowerOff)),
+                (crate::i18n::pick(lang, "重启", "Reboot"), crate::i18n::pick(lang, "停止所有服务并重新引导（需确认）", "Stops all services and reboots (needs confirmation)"), SettingsHit::Power(aether_ipc::PowerAction::Reboot)),
+                (crate::i18n::pick(lang, "注销", "Log out"), crate::i18n::pick(lang, "重启桌面（窗口会关闭，由 aether-init 拉起）", "Restarts the desktop (windows close; aether-init starts it again)"), SettingsHit::Logout),
             ] {
                 let act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
                 widgets::row(buf, w, h, act, label, Some(hint), widgets::States::at(act, mouse), Some(tr));
