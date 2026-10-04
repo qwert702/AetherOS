@@ -341,6 +341,13 @@ pub enum SettingsHit {
     /// 「网络」页：开始编辑 DNS（§2.4）。**只改编辑态**，真正的写入在按下回车后
     /// 经 aetherd 执行 —— 界面不直接改系统配置。
     EditDns,
+    /// 「账户」页：把焦点移到第 `i` 个口令框（0=旧口令 1=新口令 2=确认）。
+    /// **只改编辑态** —— 与 `EditDns` 同一条原则。
+    FocusPassField(u8),
+    /// 「账户」页：提交改口令（§2.3）。真正写系统的是 aetherd。
+    SubmitPassword,
+    /// 「账户」页：重新拉一次账户列表。
+    RefreshUsers,
     /// 切换界面语言（§3.5）。值是 `Settings::locale` 的下标。
     Locale(u8),
     /// 点击「工具权限」页的第 `i` 行：把该工具的策略循环到下一个（§5.3）。
@@ -481,6 +488,9 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "应用", title_en: "Apps", group: "应用", group_en: "Applications", enabled: true },
     // §5.11：应用商店（列出可安装包，点一下就装）。
     PageDef { title: "应用商店", title_en: "App Store", group: "应用", group_en: "Applications", enabled: true },
+    // §2.3：账户。与「权限与隐私」同组 —— 都是"谁是这个系统上的人、能做什么"。
+    // 范围：**只读列出人类账户 + 改口令**。增删用户按项目决定留 M3（见缺口清单 §2.3）。
+    PageDef { title: "账户", title_en: "Accounts", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     PageDef { title: "权限与隐私", title_en: "Privacy & Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §5.3：逐工具的权限策略编辑器。与上一页同组：都属"谁能动我的东西"。
     PageDef { title: "工具权限", title_en: "Tool Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
@@ -502,6 +512,159 @@ pub const PAGES: &[PageDef] = &[
 ///
 /// **为什么单独一个类型**：输入框要用到光标、还要"边输边判"给即时反馈。
 /// 把光标逻辑与校验都塞进 `Settings` 会让那个结构变成杂物间；
+/// 口令输入框（§2.3）。
+///
+/// 与 [`DnsField`] 同构（`text`/`cursor`/`editing`，光标同样复用
+/// [`crate::textview::TextCursor`]），但有两处**故意不同**：
+///
+/// 1. **上屏时遮显**：`display()` 返回一串圆点。口令不该明文出现在屏幕上
+///    （截屏、肩窥、投屏都算）；
+/// 2. **`begin` 不接受"当前值"**：旧口令的当前值在 `/etc/shadow` 里是**哈希**，
+///    拿不到明文 —— 所以口令框永远从空白开始，这是事实决定的，不是偷懒。
+#[derive(Debug, Clone, Default)]
+pub struct PassField {
+    pub text: String,
+    pub cursor: crate::textview::TextCursor,
+    pub editing: bool,
+}
+
+impl PassField {
+    /// 输入上限（按**字符**计）。与策略上限同一个数 —— 不另定一个。
+    pub const MAX_CHARS: usize = aether_ipc::MAX_PASSWORD_CHARS;
+
+    /// 进入编辑态。口令框**从空白开始**（见结构体文档第 2 条）。
+    pub fn begin(&mut self) {
+        self.text.clear();
+        self.cursor = crate::textview::TextCursor::default();
+        self.editing = true;
+    }
+
+    /// 退出编辑态并**清空内容** —— 口令不该在内存/界面里多留。
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = crate::textview::TextCursor::default();
+        self.editing = false;
+    }
+
+    /// 插入一个字符；超过上限则忽略（与 `DnsField` 同一取舍）。
+    pub fn insert(&mut self, ch: char) -> bool {
+        if self.text.chars().count() >= Self::MAX_CHARS {
+            return false;
+        }
+        self.cursor.insert(&mut self.text, ch);
+        true
+    }
+
+    pub fn backspace(&mut self) -> bool {
+        self.cursor.backspace(&mut self.text)
+    }
+
+    /// **上屏用**的文本：一律遮显。
+    ///
+    /// 按**字符数**给圆点（不是字节数）—— 否则一个汉字会变成三个圆点，
+    /// 等于把口令长度泄了一半。
+    pub fn display(&self) -> String {
+        "•".repeat(self.text.chars().count())
+    }
+}
+
+/// 改口令表单（§2.3）：三个框 + 焦点 + 回执。
+///
+/// 为什么是三个框而不是一个：三件事各自会出错，而**用户要知道是哪一件**——
+/// 旧口令不对、新口令不合规、两次输入不一致，处理方式完全不同。
+#[derive(Debug, Clone, Default)]
+pub struct PassForm {
+    pub old: PassField,
+    pub new: PassField,
+    pub confirm: PassField,
+    /// 当前焦点（0=旧 1=新 2=确认）。只作为**下标**用，越界时取 0。
+    pub focus: u8,
+    /// 上一次提交的结果（成功说明 / 拒绝理由）。
+    pub feedback: Option<String>,
+    /// 是否在等 aetherd 回执（避免重复提交）。
+    pub pending: bool,
+}
+
+/// 表单不合规的**原因码**。
+///
+/// 与 `aetherd` 侧同一套做法：这一层只回答"哪里不对"，措辞由界面按语言渲染。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormProblem {
+    /// 旧口令没填 —— 它是**身份证明**，不填就没法证明"你是这个人"。
+    OldEmpty,
+    NewEmpty,
+    /// 两次输入不一致。
+    Mismatch,
+    /// 新口令与旧口令相同 —— 等于没改。
+    SameAsOld,
+    /// 策略问题（长度/换行/冒号）。**规则来自 `aether-ipc`，这里不重写一份**。
+    Policy(aether_ipc::PasswordProblem),
+}
+
+impl FormProblem {
+    pub fn code(self) -> &'static str {
+        match self {
+            FormProblem::OldEmpty => "old_empty",
+            FormProblem::NewEmpty => "new_empty",
+            FormProblem::Mismatch => "mismatch",
+            FormProblem::SameAsOld => "same_as_old",
+            FormProblem::Policy(p) => p.code(),
+        }
+    }
+}
+
+/// 表单的**本地**校验（纯函数）。
+///
+/// 只查"本地才知道"的四件事；长度/字符这类**策略**委托给
+/// [`aether_ipc::check_new_password`] —— 界面与服务端共用一份，不会分叉。
+///
+/// 注意 `new == old` 这个比较**不需要**常数时间：比的是用户自己刚敲的两段明文，
+/// 不是拿它去对存储的哈希（那个比较在 `sha512crypt` 里）。
+pub fn check_form(old: &str, new: &str, confirm: &str) -> Result<(), FormProblem> {
+    if old.is_empty() {
+        return Err(FormProblem::OldEmpty);
+    }
+    if new.is_empty() {
+        return Err(FormProblem::NewEmpty);
+    }
+    if new != confirm {
+        return Err(FormProblem::Mismatch);
+    }
+    if new == old {
+        return Err(FormProblem::SameAsOld);
+    }
+    aether_ipc::check_new_password(new).map_err(FormProblem::Policy)
+}
+
+impl PassForm {
+    /// 当前聚焦的字段。
+    pub fn focused(&mut self) -> &mut PassField {
+        match self.focus {
+            1 => &mut self.new,
+            2 => &mut self.confirm,
+            _ => &mut self.old,
+        }
+    }
+
+    /// 把焦点移到下一个框（Tab / 回车）。走到头**不循环** —— 循环会让人以为漏了第四项。
+    pub fn focus_next(&mut self) {
+        self.focus = (self.focus + 1).min(2);
+    }
+
+    /// 清空三个框（提交后调用：口令不该在界面里多留一秒）。
+    pub fn clear(&mut self) {
+        self.old.clear();
+        self.new.clear();
+        self.confirm.clear();
+        self.focus = 0;
+    }
+
+    /// 校验三个框的当前内容。
+    pub fn check(&self) -> Result<(), FormProblem> {
+        check_form(&self.old.text, &self.new.text, &self.confirm.text)
+    }
+}
+
 /// 分成一个小组件后，它的行为可以脱离界面单独测（本文件末尾就是这些用例）。
 ///
 /// 光标复用 [`crate::textview::TextCursor`] —— **不重写**：插入/退格/删除/多字节
@@ -651,6 +814,9 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         // §5.2：搜索框的编辑态在 `Renderer` 上（这个函数只拿得到 `Settings`），
         // 所以在**调用点**处理 —— 与「应用」页那些动作类命中同一做法。
         SettingsHit::AuditQuery => {}
+        // §2.3：口令表单的三个动作同理 —— 编辑态在 `Renderer` 上、提交要走 aetherd，
+        // 这个函数（只拿得到 `Settings`）一个都做不到。显式列出，不是漏了。
+        SettingsHit::FocusPassField(_) | SettingsHit::SubmitPassword | SettingsHit::RefreshUsers => {}
         SettingsHit::Clock24h => s.clock_24h = !s.clock_24h,
         SettingsHit::ClockSeconds => s.clock_seconds = !s.clock_seconds,
         SettingsHit::TzShift(d) => s.shift_tz(d),
@@ -1171,7 +1337,70 @@ mod restart_action_tests {
 
     /// §2.4 界面侧：DNS 输入字段的行为（脱离界面可测）。
     #[test]
-    fn dns_field_edits_like_a_text_box() {
+    fn password_form_checks_the_four_local_things_then_defers_policy() {
+    // 本地四件事，按"先说的先错"排序
+    assert_eq!(check_form("", "abcdefgh", "abcdefgh"), Err(FormProblem::OldEmpty));
+    assert_eq!(check_form("old", "", ""), Err(FormProblem::NewEmpty));
+    assert_eq!(
+        check_form("old", "abcdefgh", "abcdefgX"),
+        Err(FormProblem::Mismatch)
+    );
+    assert_eq!(
+        check_form("same-pass", "same-pass", "same-pass"),
+        Err(FormProblem::SameAsOld)
+    );
+    // 策略问题**委托**给 aether-ipc（不在这里重写一份）
+    assert_eq!(
+        check_form("old", "short", "short"),
+        Err(FormProblem::Policy(aether_ipc::PasswordProblem::TooShort))
+    );
+    assert_eq!(
+        check_form("old", "abcd:1234", "abcd:1234"),
+        Err(FormProblem::Policy(aether_ipc::PasswordProblem::ContainsColon))
+    );
+    // 全都对 → 通过
+    assert!(check_form("old-pass", "brand-new-pass", "brand-new-pass").is_ok());
+}
+
+#[test]
+fn password_field_masks_by_characters_not_bytes() {
+    let mut f = PassField::default();
+    f.begin();
+    assert!(f.editing);
+    for c in "口令abc".chars() {
+        assert!(f.insert(c));
+    }
+    // 5 个字符 → 5 个圆点（按字节算会变成 3+3=9 个，等于泄漏"有几个汉字"）
+    assert_eq!(f.display().chars().count(), 5);
+    assert!(!f.display().contains('口'), "上屏文本里不该出现原文");
+    // 清空之后什么都不留
+    f.clear();
+    assert!(f.text.is_empty() && !f.editing);
+    assert_eq!(f.display(), "");
+}
+
+#[test]
+fn password_form_focus_and_clear() {
+    let mut form = PassForm::default();
+    assert_eq!(form.focus, 0);
+    form.focus_next();
+    assert_eq!(form.focus, 1);
+    form.focus_next();
+    assert_eq!(form.focus, 2);
+    form.focus_next();
+    assert_eq!(form.focus, 2, "走到头不循环（循环会让人以为漏了第四项）");
+    // 往"当前聚焦"的框里打字，落在正确的那个上
+    form.focused().insert('x');
+    assert_eq!(form.confirm.text, "x");
+    form.old.text = "a".into();
+    form.new.text = "b".into();
+    form.clear();
+    assert!(form.old.text.is_empty() && form.new.text.is_empty() && form.confirm.text.is_empty());
+    assert_eq!(form.focus, 0);
+}
+
+#[test]
+fn dns_field_edits_like_a_text_box() {
         let mut f = DnsField::default();
         assert!(!f.editing);
         f.begin("1.1.1.1");

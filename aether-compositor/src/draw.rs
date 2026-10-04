@@ -1669,6 +1669,15 @@ pub struct Renderer {
     /// 「网络」页的 DNS 输入框状态（§2.4）。**不放进 `Settings`**：
     /// 那个结构会被序列化落盘，而这个只是编辑期的临时状态（含光标与未提交文本）。
     pub dns: crate::settings::DnsField,
+    /// §2.3：改口令表单（三个**遮显**输入框 + 焦点 + 回执）。
+    ///
+    /// 为什么放在 `Renderer` 而不是 `Settings`：`Settings` 会被**写到磁盘**
+    /// （`settings.json`）—— 口令绝不能进那里。
+    pub pass_form: crate::settings::PassForm,
+    /// §2.3：人类账户列表（只读，来自 aetherd 的 `ListUsers`）。
+    pub users: Vec<aether_ipc::UserInfo>,
+    /// 是否已经读过一次（区分"正在读取"与"确实没有账户"）。
+    pub users_loaded: bool,
     /// 锁屏状态（§2.3）。放在 Renderer 里是因为"锁"影响**每一帧的绘制**
     /// （整屏遮罩），而不只是某个页面。
     pub lock: crate::lock::LockScreen,
@@ -2076,6 +2085,9 @@ impl Renderer {
             settings: crate::settings::Settings::default(),
             settings_page: crate::settings::first_enabled_page(),
             dns: Default::default(),
+            pass_form: crate::settings::PassForm::default(),
+            users: Vec::new(),
+            users_loaded: false,
         lock: Default::default(),
         palette: Default::default(),
         policy: Default::default(),
@@ -2296,6 +2308,9 @@ impl Renderer {
                     tr,
                     settings: self.settings,
                     dns: &self.dns,
+                    pass: &self.pass_form,
+                    users: &self.users,
+                    users_loaded: self.users_loaded,
             audit_query: &self.audit_query,
                     policy: &self.policy,
                     store: &self.store,
@@ -3027,6 +3042,11 @@ pub struct PageCtx<'a> {
     pub tr: Option<&'a TextRenderer>,
     pub settings: crate::settings::Settings,
     pub dns: &'a crate::settings::DnsField,
+    /// §2.3 改口令表单（绘制只读；编辑态由事件循环维护）
+    pub pass: &'a crate::settings::PassForm,
+    /// §2.3 账户列表（只读）
+    pub users: &'a [aether_ipc::UserInfo],
+    pub users_loaded: bool,
     /// §5.2 时间线的搜索词（由事件循环维护，绘制只读）
     pub audit_query: &'a str,
     pub policy: &'a crate::policyview::PolicyView,
@@ -3064,6 +3084,7 @@ pub fn test_ctx_with_store<'a>(
 pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
     use std::sync::OnceLock;
     static DNS: OnceLock<crate::settings::DnsField> = OnceLock::new();
+    static PASS: OnceLock<crate::settings::PassForm> = OnceLock::new();
     static POLICY: OnceLock<crate::policyview::PolicyView> = OnceLock::new();
     static STORE: OnceLock<crate::store::StoreView> = OnceLock::new();
     static TIME: OnceLock<crate::timeview::TimeView> = OnceLock::new();
@@ -3075,6 +3096,9 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
         settings: crate::settings::Settings::default(),
         audit_query: "",
             dns: DNS.get_or_init(Default::default),
+    pass: PASS.get_or_init(Default::default),
+    users: &[],
+    users_loaded: false,
         policy: POLICY.get_or_init(Default::default),
         store: STORE.get_or_init(Default::default),
         time: TIME.get_or_init(Default::default),
@@ -3112,6 +3136,9 @@ fn draw_settings_content(
         tr,
         settings: s,
         dns: dns_field,
+        pass: pass_form,
+        users,
+        users_loaded,
         audit_query,
         policy,
         store,
@@ -4443,6 +4470,137 @@ fn draw_settings_content(
                 widgets::row(buf, w, h, act, label, Some(hint), widgets::States::at(act, mouse), Some(tr));
                 hits.push((act, hit));
                 ry += 48;
+            }
+        }
+        "账户" => {
+            // §2.3：**只读列表 + 改口令**。
+            // 增删用户按项目决定留 M3（缺口清单 §2.3 写了这条是决定，不是遗漏）。
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("账户", "Accounts"), Some(tr),
+            );
+            ry += 22;
+            let r_reload = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 36 };
+            widgets::row(
+                buf, w, h, r_reload,
+                crate::i18n::tr("重新读取", "Reload"),
+                None,
+                widgets::States::at(r_reload, mouse), Some(tr),
+            );
+            hits.push((r_reload, SettingsHit::RefreshUsers));
+            ry += 40;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "只列出人类账户（uid 1000–65533）；系统账户不在这里",
+                    "Only human accounts (uid 1000–65533); system accounts are hidden",
+                ),
+                font::CAPTION, color::text_dim(), 0.75,
+            );
+            ry += 26;
+
+            if !users_loaded {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("正在读取…", "Reading…"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            } else if users.is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr(
+                        "没有人类账户（这台机器上还没有 uid 1000 起的账户）",
+                        "No human accounts (no account starting at uid 1000 yet)",
+                    ),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 24;
+            } else {
+                for u in users {
+                    tr.draw_bold(
+                        buf, w, h, (content.x + 24) as f32, ry as f32,
+                        &u.name, font::CAPTION, color::text(), 0.9,
+                    );
+                    let detail = format!("uid {} · {}", u.uid, u.shell);
+                    tr.draw(
+                        buf, w, h, (content.x + 150) as f32, ry as f32,
+                        &detail, font::CAPTION, color::text_dim(), 0.85,
+                    );
+                    ry += 24;
+                }
+            }
+            ry += 12;
+
+            // ---- 改口令 ----
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("改口令", "Change password"), Some(tr),
+            );
+            ry += 22;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "旧口令先在本机校验（证明是你本人），新口令再交给 aetherd 写入",
+                    "Your current password is checked locally first, then aetherd writes the new one",
+                ),
+                font::CAPTION, color::text_dim(), 0.75,
+            );
+            ry += 26;
+
+            // 三个框：标签一行、输入框一行。**显示的是圆点**（`PassField::display`）。
+            let fields: [(usize, &str, &str, &crate::settings::PassField); 3] = [
+                (0, "旧口令", "Current", &pass_form.old),
+                (1, "新口令", "New", &pass_form.new),
+                (2, "确认新口令", "Confirm", &pass_form.confirm),
+            ];
+            for (idx, zh, en, field) in fields {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::pick(lang, zh, en),
+                    font::CAPTION, color::text(), 0.85,
+                );
+                ry += 20;
+                let r = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 38 };
+                // 编辑中在末尾加一个竖线当光标（与 DNS 字段同一做法）
+                let shown = if field.editing {
+                    format!("{}▏", field.display())
+                } else {
+                    field.display()
+                };
+                let hint = if field.editing {
+                    crate::i18n::tr("输入中（遮显）· Tab 切换 · 回车提交", "Typing (masked) · Tab to move · Enter to submit")
+                } else if field.text.is_empty() {
+                    crate::i18n::tr("点击后输入", "Click to type")
+                } else {
+                    crate::i18n::tr("点击继续编辑", "Click to keep editing")
+                };
+                widgets::row(
+                    buf, w, h, r, &shown, Some(hint),
+                    widgets::States::at(r, mouse), Some(tr),
+                );
+                hits.push((r, SettingsHit::FocusPassField(idx as u8)));
+                ry += 44;
+            }
+
+            let r_submit = Rect { x: content.x + 18, y: ry, w: 180, h: 38 };
+            let submit_label = if pass_form.pending {
+                crate::i18n::tr("提交中…", "Submitting…")
+            } else {
+                crate::i18n::tr("改口令", "Change password")
+            };
+            widgets::row(
+                buf, w, h, r_submit, submit_label, None,
+                widgets::States::at(r_submit, mouse), Some(tr),
+            );
+            hits.push((r_submit, SettingsHit::SubmitPassword));
+            ry += 44;
+            if let Some(fb) = &pass_form.feedback {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    fb, font::CAPTION, color::text_dim(), 0.9,
+                );
             }
         }
         "通知" => {

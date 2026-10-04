@@ -664,6 +664,15 @@ fn run_fbdev() -> anyhow::Result<()> {
                         if req.echo_required.is_some() {
                             echo.push(c);
                         }
+                    } else if renderer.pass_form.old.editing
+                        || renderer.pass_form.new.editing
+                        || renderer.pass_form.confirm.editing
+                    {
+                        // §2.3：口令框正在编辑 —— 字符进**当前聚焦的框**，不进 AI 指令条。
+                        // 已知限制：不做 IME 拼字（口令是 ASCII 场景），与审计搜索框同一条取舍。
+                        if renderer.pass_form.focused().insert(c) {
+                            renderer.pass_form.feedback = None;
+                        }
                     } else if renderer.audit_editing {
                         // §5.2：搜索框正在编辑 —— 字符进搜索词，**不进 AI 指令条**
                         //（以前的后果会是：想搜一条审计记录，结果把词发给了 AI）。
@@ -694,6 +703,15 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Backspace => {
+                    // §2.3：口令框优先吃掉退格（`continue` 回到事件循环，不再落到下面的分支）
+                    if renderer.pass_form.old.editing
+                        || renderer.pass_form.new.editing
+                        || renderer.pass_form.confirm.editing
+                    {
+                        renderer.pass_form.focused().backspace();
+                        renderer.pass_form.feedback = None;
+                        continue;
+                    }
                     match confirm.as_mut() {
                         Some((_, echo)) => {
                             echo.pop();
@@ -804,6 +822,20 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Enter => {
+                    // §2.3：口令框编辑中 —— 回车是"下一个框"，到最后一个框才提交。
+                    // （`UiEvent` 里本来没有 Tab 变体，用回车走完三个框最省事。）
+                    if renderer.pass_form.old.editing
+                        || renderer.pass_form.new.editing
+                        || renderer.pass_form.confirm.editing
+                    {
+                        if renderer.pass_form.focus < 2 {
+                            renderer.pass_form.focus_next();
+                            renderer.pass_form.focused().begin();
+                        } else {
+                            submit_password(&mut renderer, &mut toast, ai_tx.clone());
+                        }
+                        continue;
+                    }
                     // §4.1：**优先级交给纯函数**（`input::enter_intent`），这里只执行结果。
                     // 卡片 > 向导 > 指令条 的顺序由它的单元测试守着 ——
                     // 这类"顺序"逻辑写错时界面完全看不出来（附录 K / O 的教训）。
@@ -884,7 +916,25 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
-                AiEvent::RemovablesLoaded { devices } => {
+                AiEvent::UsersLoaded { list } => {
+                renderer.users = list;
+                renderer.users_loaded = true;
+            }
+            AiEvent::PasswordAck { ok, message } => {
+                renderer.pass_form.pending = false;
+                renderer.pass_form.feedback = Some(message.clone());
+                if ok {
+                    // 成功才清空三个框：失败要留着让用户改
+                    renderer.pass_form.clear();
+                }
+                push_toast(
+                    &mut toast,
+                    &mut renderer.notifs,
+                    message,
+                    if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
+                );
+            }
+            AiEvent::RemovablesLoaded { devices } => {
                     renderer.removables = devices;
                     renderer.removables_loaded = true;
                     renderer.removable_pending = None;
@@ -1663,6 +1713,22 @@ fn run_fbdev() -> anyhow::Result<()> {
                         let current = crate::net::read().dns.join(", ");
                         renderer.dns.begin(&current);
                     }
+                    // §2.3：点口令框 → 焦点移过去并进入编辑态。
+                    // 口令框**从空白开始**（旧口令的"当前值"在 shadow 里是哈希，拿不到明文）。
+                    if let settings::SettingsHit::FocusPassField(i) = hit {
+                        renderer.pass_form.focus = i.min(2);
+                        renderer.pass_form.focused().begin();
+                        renderer.pass_form.feedback = None;
+                    }
+                    // §2.3：重新读取账户列表
+                    if let settings::SettingsHit::RefreshUsers = hit {
+                        renderer.users_loaded = false;
+                        fetch_users(ai_tx.clone());
+                    }
+                    // §2.3：提交改口令（旧口令先在本机校验，见 submit_password）
+                    if let settings::SettingsHit::SubmitPassword = hit {
+                        submit_password(&mut renderer, &mut toast, ai_tx.clone());
+                    }
                     if let settings::SettingsHit::ExportAudit = hit {
                         match export_audit() {
                             Ok(path) => push_toast(
@@ -2183,6 +2249,163 @@ fn request_delete(desktop: &Desktop, tx: &mpsc::Sender<AiEvent>) -> Option<Strin
 
 /// AI 事件（后台线程 → 渲染主循环）。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// §2.3：口令表单不合规的**文案**（措辞按界面语言渲染，码来自 `settings`）。
+fn form_problem_text(lang: crate::i18n::Lang, p: crate::settings::FormProblem) -> String {
+    use crate::i18n::Lang;
+    use crate::settings::FormProblem as F;
+    match (p, lang) {
+        (F::OldEmpty, Lang::En) => "enter your current password".to_string(),
+        (F::OldEmpty, Lang::Zh) => "请先填旧口令".to_string(),
+        (F::NewEmpty, Lang::En) => "enter a new password".to_string(),
+        (F::NewEmpty, Lang::Zh) => "请填新口令".to_string(),
+        (F::Mismatch, Lang::En) => "the two new passwords do not match".to_string(),
+        (F::Mismatch, Lang::Zh) => "两次输入的新口令不一致".to_string(),
+        (F::SameAsOld, Lang::En) => "the new password is the same as the old one".to_string(),
+        (F::SameAsOld, Lang::Zh) => "新口令与旧口令相同（等于没改）".to_string(),
+        (F::Policy(p), Lang::En) => format!("password rejected: {}", p.code()),
+        (F::Policy(p), Lang::Zh) => format!("口令不合规：{}", p.code()),
+    }
+}
+
+// 非 Linux 上不会被调用：设置命中的处理块在 Linux 专属路径里（非 Linux 不连 aetherd）。
+// 如实标注而不是删掉功能 —— 这一页在目标平台上是要用的。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// §2.3：读一次账户列表。
+///
+/// 与 `fetch_removables` 同一架构：**开一个线程发一次请求**，把结果包成事件送回主循环。
+fn fetch_users(tx: mpsc::Sender<AiEvent>) {
+    // `admin_request` 是 Linux 专属（要走 Unix socket 连 aetherd）——
+    // 非 Linux 上如实回一句"不适用"，而不是假装成功。
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = tx.send(AiEvent::PasswordAck {
+            ok: false,
+            message: "账户列表需要 aetherd（本平台不连它）".to_string(),
+        });
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::ListUsers) {
+            Ok(Response::UserList { list }) => AiEvent::UsersLoaded { list },
+            Ok(Response::Error { code, message }) => AiEvent::PasswordAck {
+                ok: false,
+                message: format!("读取账户列表被拒绝（{code}）：{message}"),
+            },
+            Ok(_) => AiEvent::PasswordAck {
+                ok: false,
+                message: "读取账户列表得到意料之外的回复".to_string(),
+            },
+            Err(e) => AiEvent::PasswordAck {
+                ok: false,
+                message: format!("读取账户列表失败：{e}"),
+            },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+// 非 Linux 上不会被调用：设置命中的处理块在 Linux 专属路径里（非 Linux 不连 aetherd）。
+// 如实标注而不是删掉功能 —— 这一页在目标平台上是要用的。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// §2.3：提交改口令。
+///
+/// **旧口令在这一侧校验**（合成器有 `sha512crypt`，锁屏在用）：
+/// 先证明"你是这个人"，再让 aetherd 写新口令。
+fn submit_password(
+    renderer: &mut draw::Renderer,
+    toast: &mut Option<(String, Instant)>,
+    tx: mpsc::Sender<AiEvent>,
+) {
+    if renderer.pass_form.pending {
+        return;
+    }
+    // ① 本地表单校验（纯函数，规则与服务端共用同一份）
+    if let Err(problem) = renderer.pass_form.check() {
+        let msg = form_problem_text(crate::i18n::lang(), problem);
+        renderer.pass_form.feedback = Some(msg.clone());
+        push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
+        return;
+    }
+    // ② 目标账户：单用户模型下就是第一个人类账户
+    let Some(user) = renderer.users.first().map(|u| u.name.clone()) else {
+        let msg = pick_zh_en(
+            "还没读到账户列表，请先点「重新读取」",
+            "The account list is not loaded yet; click Reload first",
+        )
+        .to_string();
+        renderer.pass_form.feedback = Some(msg.clone());
+        push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
+        return;
+    };
+    // ③ 旧口令校验：读 shadow → 解析 → 判定（与锁屏同一套 `auth`）
+    let old = renderer.pass_form.old.text.clone();
+    let shadow = std::fs::read_to_string("/etc/shadow").unwrap_or_default();
+    let entry = crate::auth::parse_shadow(&shadow, &user);
+    let mut lockout = crate::auth::Lockout::default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match crate::auth::decide(&entry, &old, &mut lockout, now) {
+        crate::auth::Decision::Allow | crate::auth::Decision::AllowWithReason(_) => {}
+        crate::auth::Decision::Deny(why) => {
+            let msg = pick_zh_en_1("旧口令不对：{}", "current password rejected: {}", why);
+            renderer.pass_form.feedback = Some(msg.clone());
+            push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
+            return;
+        }
+        crate::auth::Decision::Wait(secs) => {
+            let msg = pick_zh_en_1("尝试过于频繁，请等 {} 秒", "too many attempts, wait {}s", secs);
+            renderer.pass_form.feedback = Some(msg.clone());
+            push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
+            return;
+        }
+    }
+    // ④ 交给 aetherd 写（新口令只在这条**已注册的 UI 通道**上传输）
+    renderer.pass_form.pending = true;
+    renderer.pass_form.feedback = Some(pick_zh_en("正在提交…", "Submitting…").to_string());
+    let new_password = renderer.pass_form.new.text.clone();
+    let en = crate::i18n::is_en();
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (user, new_password, en, tx);
+        renderer.pass_form.pending = false;
+        let msg = pick_zh_en("改口令需要 aetherd（本平台不连它）", "Changing a password needs aetherd (not connected on this platform)").to_string();
+        renderer.pass_form.feedback = Some(msg.clone());
+        push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(move || {
+        let req = Request::SetPassword {
+            user,
+            new_password,
+            en,
+        };
+        let ev = match admin_request(&req) {
+            Ok(Response::PasswordAck { ok, message }) => AiEvent::PasswordAck { ok, message },
+            Ok(Response::Error { code, message }) => AiEvent::PasswordAck {
+                ok: false,
+                message: format!("改口令被拒绝（{code}）：{message}"),
+            },
+            Ok(_) => AiEvent::PasswordAck {
+                ok: false,
+                message: "改口令得到意料之外的回复".to_string(),
+            },
+            Err(e) => AiEvent::PasswordAck {
+                ok: false,
+                message: format!("改口令失败：{e}"),
+            },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 非 Linux 上，**有几个变体不会被构造**：它们都来自"要连 aetherd"的路径
+/// （`admin_request` 是 Linux 专属）。这是事实，不是缺陷 —— 标注清楚，
+/// 免得后来的人以为可以把它们删掉。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum AiEvent {
     /// 回复文本 + 推理通道（Some("local")/Some("cloud")；None = 未知）。
     /// 顶栏 AI 三态（本地青/云端紫/离线灰）据此更新（ui-design-handover 4.1）。
@@ -2192,10 +2415,19 @@ enum AiEvent {
     /// 工具调用需要用户确认（L2+）
     Confirm(Box<ConfirmRequest>),
     /// 确认后执行的结果（或安装结果）
-    ToolDone { ok: bool, output: String, origin: ConfirmOrigin },
+    ToolDone {
+        ok: bool,
+        output: String,
+        /// 只在 Linux 的 fbdev 循环里被读（非 Linux 上是 dead code）——
+        /// 如实标注而不是删掉：这是**目标平台**上要用的字段。
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+        origin: ConfirmOrigin,
+    },
 
     /// DNS 写入的回执（§2.4）。**单独一个变体**，不复用 `ToolDone`：
     /// 那是"AI 工具调用完成"的语义，会让设置页的一次保存显示成 AI 回复。
+    /// 只在 `set_dns` 里被构造，而它依赖 Linux 专属的 `admin_request`。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     DnsSaved { ok: bool, message: String },
     /// 权限策略列表取回来了（§5.3）。
     PolicyLoaded(Vec<aether_ipc::PolicyEntryWire>),
@@ -2253,6 +2485,14 @@ enum AiEvent {
         outputs: Vec<aether_ipc::DisplayWire>,
     },
     /// 可移动设备扫描结果（§3.7）。
+    /// §2.3：账户列表读到了
+    ///
+    /// 非 Linux 上不会被构造（不连 aetherd）—— 如实标注，不删。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    UsersLoaded { list: Vec<aether_ipc::UserInfo> },
+    /// §2.3：改口令的结果（同上：非 Linux 不构造）
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    PasswordAck { ok: bool, message: String },
     RemovablesLoaded {
         devices: Vec<aether_ipc::RemovableWire>,
     },
@@ -4450,7 +4690,25 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                AiEvent::RemovablesLoaded { devices } => {
+                AiEvent::UsersLoaded { list } => {
+                renderer.users = list;
+                renderer.users_loaded = true;
+            }
+            AiEvent::PasswordAck { ok, message } => {
+                renderer.pass_form.pending = false;
+                renderer.pass_form.feedback = Some(message.clone());
+                if ok {
+                    // 成功才清空三个框：失败要留着让用户改
+                    renderer.pass_form.clear();
+                }
+                push_toast(
+                    &mut toast,
+                    &mut renderer.notifs,
+                    message,
+                    if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
+                );
+            }
+            AiEvent::RemovablesLoaded { devices } => {
                     renderer.removables = devices;
                     renderer.removables_loaded = true;
                     renderer.removable_pending = None;
