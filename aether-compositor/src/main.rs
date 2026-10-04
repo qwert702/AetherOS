@@ -621,11 +621,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Super(c, shift) => {
+                    // **注意**：这里曾经有一句无条件的锁屏调用（`renderer` 上的那个）——
+                    // 于是**任何 Super+键都会锁屏**（Super+1..4 切桌面时直接把人锁在外面，
+                    // 那两个快捷键等于不可用）。锁屏只属于下面的 `c == 'l'` 分支，
+                    // 并有源码探针测试钉住"只出现一次、且在那个分支之后"。
+                    //
                     // §2.3：Super+L 锁屏。**这是全局快捷键**，所以放在事件匹配里、
                     // 走的是与其它输入同一条路径 —— 不再是"某个页面里的按钮"。
-                    renderer.lock.lock();
-                    tty_log("锁屏（Super+L）");
-                
+                    //
                     // §5.4 虚拟桌面：`Super+1..4` 切空间，`Super+Shift+1..4` 把当前窗口搬过去。
                     // 两件事都要清掉拖拽与吸附预览：那些状态属于**上一个空间的窗口**
                     // （与关窗同一类问题：窗口数组变了而拖拽状态还指着旧下标，P2-3 那次越界就是这么来的）。
@@ -6991,6 +6994,35 @@ mod wayland_sync_tests {
             let at = src.find(probe).unwrap_or_else(|| panic!("循环里应当有{name}守卫"));
             assert!(at < term, "{name}守卫必须在终端之前（{at} vs {term}）");
         }
+    }
+
+    /// **回归探针（批次 AN-1）**：`renderer.lock.lock()` 只能出现一次，且在 Super+L 分支内。
+    ///
+    /// 修之前：`UiEvent::Super(c, shift)` 分支的**第一句**是无条件锁屏 ✗ ——
+    /// 于是**每个 Super 组合键都会锁屏**，`Super+1..4`（切虚拟桌面）与
+    /// `Super+Shift+1..4`（搬窗口）实际不可用。
+    ///
+    /// 事件循环的分支逻辑没有测试（只有纯模块有），所以这条用**源码探针**把它钉住：
+    /// 多出来一份 `lock()` 就说明又有人在更宽的条件下调用了锁屏。
+    #[test]
+    fn the_lock_key_is_the_only_place_that_locks_the_screen() {
+        let src = include_str!("main.rs");
+        // needle 用 concat! 拼出来：否则这条测试自己的源码就会命中，数出来永远多一份
+        let needle = concat!("renderer.lock.", "lock();");
+        let calls = src.matches(needle).count();
+        assert_eq!(
+            calls, 1,
+            "锁屏调用应当只有一处（Super+L 分支内），实得 {calls} 处 —— \
+             多出来的那份很可能又挂在了一个更宽的条件上"
+        );
+        let branch = src
+            .find("if c == 'l' && !shift {")
+            .expect("找不到 Super+L 分支");
+        let call = src.find(needle).expect("找不到锁屏调用");
+        assert!(
+            call > branch,
+            "锁屏调用必须在 `if c == 'l' && !shift` 之后（否则别的 Super 组合键也会锁屏）"
+        );
     }
 
 }
