@@ -60,6 +60,36 @@ impl Entry {
     }
 }
 
+/// 这一页一次读多少条。**与"导出"用同一个上限** ——
+/// 界面上看得到的历史，不该比导出的少（以前页面只读 8 条，导出读 200 条）。
+pub const PAGE_MAX: usize = 200;
+
+/// 一条记录是否命中查询。**空查询 = 全命中**（不做"空就什么都不显示"的怪事）。
+///
+/// 搜的字段：工具名 / 参数 / 结论 / 等级。**大小写不敏感** ——
+/// 用户不会记得 `read_file` 里有没有下划线、`L2` 是不是大写。
+pub fn matches(e: &Entry, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    e.tool.to_lowercase().contains(&q)
+        || e.args.to_lowercase().contains(&q)
+        || e.verdict.to_lowercase().contains(&q)
+        || e.level.to_lowercase().contains(&q)
+}
+
+/// 命中的**下标**（保留原顺序）。返回下标而不是引用：
+/// 调用方多半要同时用"原始条数"和"命中条数"来如实显示 `M / N`。
+pub fn matching(entries: &[Entry], query: &str) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches(e, query))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// 整页要显示的东西。
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct AuditInfo {
@@ -304,6 +334,38 @@ mod tests {
         let out2 = export_text(&empty, 0);
         assert!(out2.contains("没有记录"), "{out2}");
         assert!(out2.contains("文件存在：否"), "{out2}");
+    }
+
+    /// 搜索：空查询全命中、大小写不敏感、四个字段都能搜到、搜不到就是空。
+    #[test]
+    fn audit_search_covers_the_four_fields_and_is_case_insensitive() {
+        let e = Entry {
+            ts: 1,
+            level: "L2".into(),
+            tool: "read_file".into(),
+            args: "{/etc/hosts}".into(),
+            verdict: "denied_by_user".into(),
+        };
+        // 空查询（含纯空白）= 全命中
+        assert!(matches(&e, ""));
+        assert!(matches(&e, "   "));
+        // 四个字段都能搜到，且大小写不敏感
+        assert!(matches(&e, "read_file"));
+        assert!(matches(&e, "READ_FILE"), "大小写不敏感");
+        assert!(matches(&e, "l2"), "等级也能搜");
+        assert!(matches(&e, "etc/hosts"), "参数也能搜");
+        assert!(matches(&e, "denied"), "结论也能搜");
+        // 搜不到
+        assert!(!matches(&e, "write_file"));
+        // 过滤保留原顺序，且返回的是下标
+        let list = vec![
+            e.clone(),
+            Entry { tool: "clipboard_set".into(), ..e.clone() },
+            Entry { tool: "read_file".into(), ts: 9, ..e.clone() },
+        ];
+        assert_eq!(matching(&list, "read_file"), vec![0, 2], "保留原顺序");
+        assert_eq!(matching(&list, ""), vec![0, 1, 2], "空查询=全命中");
+        assert!(matching(&list, "nope").is_empty());
     }
 
 }

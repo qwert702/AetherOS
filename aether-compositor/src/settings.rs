@@ -336,6 +336,8 @@ impl Settings {
 /// 且**绘制不修改状态**（看一帧不改设置）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsHit {
+    /// 「权限与隐私」页：点搜索框，开始输入搜索词（§5.2）。**只改编辑态**。
+    AuditQuery,
     /// 「网络」页：开始编辑 DNS（§2.4）。**只改编辑态**，真正的写入在按下回车后
     /// 经 aetherd 执行 —— 界面不直接改系统配置。
     EditDns,
@@ -596,6 +598,9 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
                 *page = i;
             }
         }
+        // §5.2：搜索框的编辑态在 `Renderer` 上（这个函数只拿得到 `Settings`），
+        // 所以在**调用点**处理 —— 与「应用」页那些动作类命中同一做法。
+        SettingsHit::AuditQuery => {}
         SettingsHit::Clock24h => s.clock_24h = !s.clock_24h,
         SettingsHit::ClockSeconds => s.clock_seconds = !s.clock_seconds,
         SettingsHit::TzShift(d) => s.shift_tz(d),

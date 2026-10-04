@@ -1625,6 +1625,14 @@ pub struct Renderer {
     pub snapshots: crate::snapview::SnapView,
     /// 「系统更新」页的状态（§3.1）。
     pub update: crate::updateview::UpdateView,
+    /// §5.2 时间线的搜索词与编辑态。放在 Renderer 上：绘制要读它、
+    /// 事件循环要写它，两者都拿得到 Renderer。
+    pub audit_query: String,
+    /// 搜索框是否正在接收键盘输入（与 DNS 编辑态同一套做法）。
+    ///
+    /// 读它在 **Linux 的输入循环**里；非 Linux 上只有测试写它 —— 按平台 allow。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub audit_editing: bool,
     /// 首启向导选项按钮的命中区（§5.8 鼠标点选）：(矩形, 选项下标)。
     pub setup_hits: Vec<(Rect, usize)>,
     /// 命令面板可见行的命中区（§5.5 鼠标点选）：(矩形, 条目下标)。
@@ -2015,6 +2023,8 @@ impl Renderer {
         time: Default::default(),
         snapshots: Default::default(),
         update: Default::default(),
+        audit_query: String::new(),
+        audit_editing: false,
         setup_hits: Vec::new(),
         palette_hits: Vec::new(),
         displays: Vec::new(),
@@ -2225,6 +2235,7 @@ impl Renderer {
                     tr,
                     settings: self.settings,
                     dns: &self.dns,
+            audit_query: &self.audit_query,
                     policy: &self.policy,
                     store: &self.store,
                     time: &self.time,
@@ -2951,6 +2962,8 @@ pub struct PageCtx<'a> {
     pub tr: Option<&'a TextRenderer>,
     pub settings: crate::settings::Settings,
     pub dns: &'a crate::settings::DnsField,
+    /// §5.2 时间线的搜索词（由事件循环维护，绘制只读）
+    pub audit_query: &'a str,
     pub policy: &'a crate::policyview::PolicyView,
     pub store: &'a crate::store::StoreView,
     pub time: &'a crate::timeview::TimeView,
@@ -2995,7 +3008,8 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
         mouse: (0.0, 0.0),
         tr,
         settings: crate::settings::Settings::default(),
-        dns: DNS.get_or_init(Default::default),
+        audit_query: "",
+            dns: DNS.get_or_init(Default::default),
         policy: POLICY.get_or_init(Default::default),
         store: STORE.get_or_init(Default::default),
         time: TIME.get_or_init(Default::default),
@@ -3033,6 +3047,7 @@ fn draw_settings_content(
         tr,
         settings: s,
         dns: dns_field,
+        audit_query,
         policy,
         store,
         time,
@@ -3156,7 +3171,9 @@ fn draw_settings_content(
             // 不编造日历时间（Unix 秒转本地日期要一套历法换算，与这一页的目的无关）。
             // `now_utc_secs()` 是 i64（时钟可能被回拨成负数）；相对时间只需非负值。
             let now = crate::text::now_utc_secs().max(0) as u64;
-            let info = crate::audit::read(crate::audit::AUDIT_PATH, 8);
+            // §5.2：读满（与导出的上限一致）——以前只读 8 条，
+            // 于是"导出里查得到的历史，界面上看不到"。
+            let info = crate::audit::read(crate::audit::AUDIT_PATH, crate::audit::PAGE_MAX);
             // §5.2 导出按钮：把审计日志写成可贴到 issue 的纯文本。
             // 放在标题上方（列表下方会随条目数浮动，位置不稳定）。
             let export = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 36 };
@@ -3174,12 +3191,38 @@ fn draw_settings_content(
             ry += 46;
             widgets::group_header(buf, w, h, content.x + 24, ry, "审计日志", Some(tr));
             ry += 24;
+            // §5.2 搜索框：点一下进入编辑态（`audit_editing`），
+            // 之后按键由事件循环送进 `audit_query`（与 DNS 输入框同一套做法）。
+            let qrow = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 34 };
+            let qtext = if audit_query.is_empty() {
+                "搜索：工具名 / 参数 / 结论（点这里输入）".to_string()
+            } else {
+                format!("搜索：{}▏", audit_query)
+            };
+            widgets::row(
+                buf, w, h, qrow, &qtext, None,
+                widgets::States::at(qrow, mouse), Some(tr),
+            );
+            hits.push((qrow, crate::settings::SettingsHit::AuditQuery));
+            ry += 42;
             if !info.exists {
                 tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
                         "暂无审计记录（本会话还没发生工具调用）。", font::CAPTION, color::text_dim(), 0.9);
                 ry += 26;
             } else {
-                let mut line = format!("共 {} 条 · 被拒绝 {} · 失败 {}", info.total, info.denied, info.failed);
+                // 有搜索词时如实说"命中几条 / 读了几条"——只报总数会让人以为列表被截断
+                let idx = crate::audit::matching(&info.recent, audit_query);
+                let mut line = if audit_query.trim().is_empty() {
+                    format!("共 {} 条 · 被拒绝 {} · 失败 {}", info.total, info.denied, info.failed)
+                } else {
+                    format!(
+                        "命中 {} / 已读 {} 条 · 被拒绝 {} · 失败 {}",
+                        idx.len(),
+                        info.recent.len(),
+                        info.denied,
+                        info.failed
+                    )
+                };
                 if info.unparsed > 0 {
                     line.push_str(&format!(" · 无法解析 {}", info.unparsed));
                 }
@@ -3187,7 +3230,14 @@ fn draw_settings_content(
                 ry += 22;
                 tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32, &info.path, font::CAPTION, color::text_dim(), 0.7);
                 ry += 26;
-                for e in &info.recent {
+                if idx.is_empty() {
+                    tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
+                            "没有匹配的记录 —— 换个词，或清空搜索框。",
+                            font::CAPTION, color::text_dim(), 0.9);
+                    ry += 22;
+                }
+                for i in &idx {
+                    let e = &info.recent[*i];
                     let dot = if e.is_denied() {
                         color::close_hover() // 被拒绝：红（与标题栏关闭键同一支红，语义一致）
                     } else if e.is_failed() {

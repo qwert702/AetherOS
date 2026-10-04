@@ -647,6 +647,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                         if req.echo_required.is_some() {
                             echo.push(c);
                         }
+                    } else if renderer.audit_editing {
+                        // §5.2：搜索框正在编辑 —— 字符进搜索词，**不进 AI 指令条**
+                        //（以前的后果会是：想搜一条审计记录，结果把词发给了 AI）。
+                        //
+                        // 已知限制：这里不做 IME 拼字（搜索目标是工具名/结论，都是 ASCII），
+                        // 中文输入法在搜索框里不生效 —— 如实记在这里，不假装支持。
+                        renderer.audit_query.push(c);
                     } else if !installer.open {
                         // 向导打开时键盘让位给向导，字符不进指令条。
                         // IME 拼字中：数字 1-6 选候选、空格提交首个；其余走正常流程。
@@ -675,14 +682,27 @@ fn run_fbdev() -> anyhow::Result<()> {
                             echo.pop();
                         }
                         None => {
-                            // IME 正在拼字时，退格删拼音串而不是正文
-                            if !ime.backspace() {
+                            if renderer.audit_editing {
+                                // §5.2：搜索框编辑时，退格删搜索词（不是 AI 指令条）
+                                renderer.audit_query.pop();
+                            } else if !ime.backspace() {
+                                // IME 正在拼字时，退格删拼音串而不是正文
                                 ai_cursor.backspace(&mut ai_input);
                             }
                         }
                     }
                 }
                 input::UiEvent::Escape => {
+                    // §5.2：搜索框编辑时，Esc **先清搜索词**；已经是空的才退出编辑态
+                    //（与主流搜索框一致：一次 Esc 清词、再一次退出）
+                    if renderer.audit_editing {
+                        if renderer.audit_query.is_empty() {
+                            renderer.audit_editing = false;
+                        } else {
+                            renderer.audit_query.clear();
+                        }
+                        continue;
+                    }
                     // 控制中心（P4）：Esc 一律先关它（浮层的常规语义）
                     renderer.control_open = false;
                     // IME 拼字中：Esc 先取消拼字（与主流输入法一致），
@@ -1197,6 +1217,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     .unwrap_or(false);
                 if is_settings {
                     settings::apply_hit(&mut renderer.settings, &mut renderer.settings_page, hit);
+                    // §5.2：搜索框的编辑态在 Renderer 上（`apply_hit` 拿不到它），
+                    // 所以在调用点处理 —— 与下面「动作类命中」同一做法。
+                    if let settings::SettingsHit::AuditQuery = hit {
+                        renderer.audit_editing = true;
+                    }
                     // 动作类命中：打开内建应用（「应用」页的行）
                     if let settings::SettingsHit::OpenApp(i) = hit {
                         if let Some(msg) = open_app(&mut desktop, i) {
