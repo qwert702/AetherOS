@@ -4425,12 +4425,38 @@ fn main() -> anyhow::Result<()> {
                     })
                 })
                 .collect();
+            // 窗口类界面的命中区也一起吐出来 —— 它们同样是"可点的东西"，
+            // 同样不该越界或互相压住。
+            let mut widgets: Vec<serde_json::Value> = Vec::new();
+            let mut push = |group: &str, kind: String, r: &Rect| {
+                widgets.push(serde_json::json!({
+                    "group": group, "kind": kind, "x": r.x, "y": r.y, "w": r.w, "h": r.h
+                }));
+            };
+            for r in &renderer.dock_icons {
+                push("dock", "icon".to_string(), r);
+            }
+            for (r, h) in &renderer.control_hits {
+                push("control", format!("{h:?}"), r);
+            }
+            for (r, i) in &renderer.sidebar_hits {
+                push("files-sidebar", format!("item-{i}"), r);
+            }
+            for (r, s) in &renderer.crumb_hits {
+                push("files-crumb", s.clone(), r);
+            }
+            for (wi, close, min, max) in &renderer.window_lights {
+                push("window-lights", format!("win{wi}-close"), close);
+                push("window-lights", format!("win{wi}-min"), min);
+                push("window-lights", format!("win{wi}-max"), max);
+            }
             let snap = serde_json::json!({
                 "w": WIDTH,
                 "h": HEIGHT,
                 "work": {"x": work.x, "y": work.y, "w": work.w, "h": work.h},
                 "wins": wins,
                 "hits": hits,
+                "widgets": widgets,
             });
             // 加个前缀，方便脚本从"preview.bmp written"之类输出里认出来
             println!("LAYOUT {snap}");

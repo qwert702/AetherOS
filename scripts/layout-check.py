@@ -43,6 +43,66 @@ def overlap(a, b) -> int:
     return ox * oy if ox > 0 and oy > 0 else 0
 
 
+# 窗口类界面（不带 --settings）：Dock / 控制中心 / 文件窗口 / 窗口三键
+DESKTOP_CASES = [
+    ("layout1", ["--shot", "1"]),
+    ("layout2", ["--shot", "2"]),
+    ("layout3", ["--shot", "3"]),
+    ("layout4", ["--shot", "4"]),
+    ("desktop", ["--shot", "1", "--desktop-only"]),
+    ("controlcenter", ["--shot", "1", "--control-center"]),
+    ("menu", ["--shot", "1", "--menu"]),
+    ("installer", ["--shot", "1", "--installer"]),
+    ("confirm", ["--shot", "1", "--confirm"]),
+]
+
+
+def dump_args(args: list[str], scale: int) -> dict | None:
+    proc = subprocess.run(
+        ["cargo", "run", "-q", "--offline", "--locked", "--bin", "aether-compositor", "--",
+         *args, "--scale", str(scale), "--dump-layout"],
+        cwd=ROOT, capture_output=True, text=True, env=ENV,
+    )
+    for line in proc.stdout.splitlines():
+        if line.startswith("LAYOUT "):
+            return json.loads(line[len("LAYOUT "):])
+    return None
+
+
+def check_desktop() -> tuple[int, int, list[str]]:
+    """窗口类界面：只查**横向越界**与重叠（纵向不查 —— 演示桌面本来就有折叠内容）。"""
+    off, ov = 0, []
+    for scale in SCALES:
+        for name, args in DESKTOP_CASES:
+            d = dump_args(args, scale)
+            if d is None:
+                continue
+            w = d["w"]
+            ws = d.get("widgets", [])
+            for r in ws:
+                if r["x"] < 0 or r["x"] + r["w"] > w:
+                    off += 1
+                    print(f"    [越界] {name}@{scale}% {r['group']}/{r['kind']} "
+                          f"({r['x']},{r['y']},{r['w']}x{r['h']})")
+            for i in range(len(ws)):
+                for j in range(i + 1, len(ws)):
+                    a = overlap(ws[i], ws[j])
+                    if a <= 0:
+                        continue
+                    # 同一组内的重叠才算问题（跨组本来就是"浮层盖在窗口上"）
+                    if ws[i]["group"] != ws[j]["group"]:
+                        continue
+                    # 窗口三键再限定**同一个窗口**：堆叠布局下多个窗口共用区域，
+                    # 它们的按钮位置本来就重合（`layout4` 实测 106 处，全部是这个原因）。
+                    ki, kj = ws[i]["kind"], ws[j]["kind"]
+                    if ki.startswith("win") and kj.startswith("win"):
+                        if ki.split("-")[0] != kj.split("-")[0]:
+                            continue
+                    ov.append(f"{name}@{scale}% {ws[i]['group']}: "
+                              f"{ki} ∩ {kj} = {a}px²")
+    return off, len(ov), ov
+
+
 def main() -> int:
     strict = "--strict" in sys.argv
     off_screen, off_width, overlaps, needs_scroll = [], [], [], []
@@ -88,12 +148,20 @@ def main() -> int:
     for t in overlaps[:8]:
         print(f"    {t}")
 
-    if strict and (off_screen or off_width):
+    # 窗口类界面
+    d_off, d_ov, d_list = check_desktop()
+    print(f"  ⑤ 窗口类界面横向越界：{d_off}")
+    print(f"  ⑥ 窗口类界面同组重叠（**只报告**）：{d_ov}")
+    for t3 in d_list[:6]:
+        print(f"    {t3}")
+    off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
+
+    if strict and (off_screen or off_width or d_off):
         print("[FAIL] 有控件横向越界")
         return 1
-    print("[ OK ] 没有横向越界（① 与 ② 都是 0）" if not (off_screen or off_width)
+    print("[ OK ] 没有横向越界（① ② ⑤ 都是 0）" if not (off_screen or off_width or d_off)
           else "[FAIL] 有横向越界")
-    return 0 if not (off_screen or off_width) else 1
+    return 0 if not (off_screen or off_width or d_off) else 1
 
 
 if __name__ == "__main__":

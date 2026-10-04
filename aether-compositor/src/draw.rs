@@ -4628,8 +4628,10 @@ fn draw_settings_content(
             ry += 54;
 
             // 时区微调：用两个按钮而不是滑杆 —— 时区是离散值、且要能精确到半小时
-            let back = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: ry + 6, w: 40, h: theme::size::px(theme::size::CTRL_H_SM) };
-            let fwd = Rect { x: content.x + 72, y: ry + 6, w: 40, h: theme::size::px(theme::size::CTRL_H_SM) };
+            let back = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry + 6, w: theme::size::px(theme::size::CTRL_H_SM) + 10, h: theme::size::px(theme::size::CTRL_H_SM) };
+            // 第二个按钮的位置**从第一个派生**：写死步长的话，宽度一变就会压住
+            // （150% 下实测重叠 4 像素，几何断言发现，附录 CN）。
+            let fwd = Rect { x: back.x + back.w + theme::size::px(theme::size::GAP_TIGHT), y: back.y, w: back.w, h: back.h };
             widgets::button(buf, w, h, back, "-1", widgets::BtnKind::Secondary, widgets::States::at(back, mouse), Some(tr));
             widgets::button(buf, w, h, fwd, "+1", widgets::BtnKind::Secondary, widgets::States::at(fwd, mouse), Some(tr));
             tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, 42.0, font::CAPTION), crate::i18n::pick(lang, "时区（半小时制）", "Time zone (30-min steps)"), font::CAPTION, color::text_dim(), 0.9);
