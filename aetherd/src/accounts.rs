@@ -21,6 +21,10 @@
 
 use aether_ipc::UserInfo;
 
+// 口令策略**住在 `aether-ipc`**（与 `parse_dns_list` 同一个道理：界面与服务端共用一份）。
+// 这里 re-export 而不是自己再写一份 —— 调用点照旧，但"规则从哪来"一目了然。
+pub use aether_ipc::{check_new_password, is_valid_user_name, PasswordProblem};
+
 /// 人类账户的 uid 起点（与 `useradd`/`adduser` 的默认一致）。
 const FIRST_HUMAN_UID: u32 = 1000;
 /// `nobody`/`nogroup` 的约定 uid。
@@ -29,58 +33,6 @@ const FIRST_HUMAN_UID: u32 = 1000;
 /// （我第一版就是这么写的，被 `lists_only_human_users_and_skips_malformed_lines`
 /// 当场抓到，因为那个样例里就有 `nobody` 那一行）。
 const NOBODY_UID: u32 = 65534;
-
-/// 口令长度下限。定 8 位是**有意取一个业界常见下限**，不是随便挑的数：
-/// 再短的话"改口令"这个功能等于没意义；再长会在真机软键盘上难输入。
-pub const MIN_PASSWORD_CHARS: usize = 8;
-/// 上限：挡住"把一兆字节塞进 shadow"这类误用。
-pub const MAX_PASSWORD_CHARS: usize = 128;
-
-/// 新口令不合规的**原因码**。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PasswordProblem {
-    Empty,
-    TooShort,
-    TooLong,
-    /// 含换行 —— `chpasswd` 的输入是"每行一个 `用户:口令`"，换行会把一行拆成两行。
-    ContainsNewline,
-    /// 含冒号 —— `chpasswd` 用第一个冒号分隔用户名与口令，多一个冒号会被截断。
-    ContainsColon,
-}
-
-impl PasswordProblem {
-    pub fn code(self) -> &'static str {
-        match self {
-            PasswordProblem::Empty => "empty",
-            PasswordProblem::TooShort => "too_short",
-            PasswordProblem::TooLong => "too_long",
-            PasswordProblem::ContainsNewline => "contains_newline",
-            PasswordProblem::ContainsColon => "contains_colon",
-        }
-    }
-}
-
-/// 校验新口令（**纯函数**）。注意校验的是**字符数**不是字节数：
-/// 中文口令按字节算会莫名"太长"。
-pub fn check_new_password(new: &str) -> Result<(), PasswordProblem> {
-    if new.is_empty() {
-        return Err(PasswordProblem::Empty);
-    }
-    if new.contains('\n') || new.contains('\r') {
-        return Err(PasswordProblem::ContainsNewline);
-    }
-    if new.contains(':') {
-        return Err(PasswordProblem::ContainsColon);
-    }
-    let n = new.chars().count();
-    if n < MIN_PASSWORD_CHARS {
-        return Err(PasswordProblem::TooShort);
-    }
-    if n > MAX_PASSWORD_CHARS {
-        return Err(PasswordProblem::TooLong);
-    }
-    Ok(())
-}
 
 /// 从 `/etc/passwd` 文本里挑出**人类账户**（纯函数）。
 ///
@@ -107,20 +59,6 @@ fn parse_passwd_line(line: &str) -> Option<UserInfo> {
         uid,
         shell: f[6].to_string(),
     })
-}
-
-/// 用户名是否**可以安全地交给 `chpasswd`**。
-///
-/// 只允许小写字母/数字/下划线/连字符，且不以连字符开头。
-/// 这不是"防注入"（我们本来就不经过 shell），而是"别把任意文本当成用户名写进 shadow"。
-pub fn is_valid_user_name(name: &str) -> bool {
-    let mut it = name.chars();
-    match it.next() {
-        Some(c) if c.is_ascii_lowercase() || c == '_' => {}
-        _ => return false,
-    }
-    name.chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// 读真实的 `/etc/passwd` 并列出人类账户。
@@ -222,7 +160,7 @@ malformed-line-without-fields
             Err(PasswordProblem::ContainsColon)
         );
         // 太长
-        let long = "a".repeat(MAX_PASSWORD_CHARS + 1);
+        let long = "a".repeat(aether_ipc::MAX_PASSWORD_CHARS + 1);
         assert_eq!(check_new_password(&long), Err(PasswordProblem::TooLong));
         // **按字符数算**：8 个汉字应当通过（按字节会误判成 24 位）
         assert!(check_new_password("一二三四五六七八").is_ok());
