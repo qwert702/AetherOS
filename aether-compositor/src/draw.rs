@@ -4542,6 +4542,13 @@ fn draw_settings_content(
             // 而不是"设了 0 却显示成 5 分钟"这种含糊状态。
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "空闲息屏", "Idle blanking"), Some(tr));
             ry += theme::size::px(theme::size::LINE_GAP);
+            // 档位按钮**按可用宽度**排 —— 不写死 84 像素步长。
+            // 写死的话 4 档 × 84 = 336 会超出内容宽度（约 310），右边那档直接压出窗口
+            // （由 `scripts/layout-check.py` 的几何断言发现，见审计附录 CL）。
+            let n_opts = crate::settings::IDLE_BLANK_OPTIONS.len() as i32;
+            let opt_gap = theme::size::px(theme::size::GAP_TIGHT);
+            let opt_avail = row_w + 12; // 与同页其它行一致的内容宽度
+            let opt_w = (opt_avail - opt_gap * (n_opts - 1)) / n_opts;
             for (i, min) in crate::settings::IDLE_BLANK_OPTIONS.iter().enumerate() {
                 // 带参数 → 按语言分支（`format!` 的模板必须是字面量）
                 let label = if *min == 0 {
@@ -4551,7 +4558,13 @@ fn draw_settings_content(
                 } else {
                     format!("{min} 分钟")
                 };
-                let b = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD) + (i as i32) * 84, y: ry, w: 76, h: 34 };
+                let b = Rect {
+                    x: content.x + theme::size::px(theme::size::CONTROL_INSET)
+                        + (i as i32) * (opt_w + opt_gap),
+                    y: ry,
+                    w: opt_w,
+                    h: theme::size::px(theme::size::CTRL_H_SM),
+                };
                 let on = s.idle_blank_min == *min;
                 widgets::row(buf, w, h, b, &label, None, widgets::States::at(b, mouse), Some(tr));
                 if on {
@@ -4683,7 +4696,9 @@ fn draw_settings_content(
             // 默认 100（1:1），这里给三档；数值走 `SettingsHit::MouseSpeed`（真实写盘）。
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "鼠标速度", "Mouse speed"), Some(tr));
             ry += theme::size::px(theme::size::LINE_GAP);
-            let seg = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: ry, w: 300, h: theme::size::px(theme::size::CTRL_H_SM) };
+            // 与同页其它行**同一起点与宽度** —— 原来写死 `w: 300` 且起点在 +24，
+            // 而可用宽度只有约 295，右边那一段会压出窗口（几何断言发现，附录 CL）。
+            let seg = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H_SM) };
             let active = match s.mouse_speed_pct {
                 p if p < 80 => 0,
                 p if p > 120 => 2,

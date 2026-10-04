@@ -4403,6 +4403,38 @@ fn main() -> anyhow::Result<()> {
         renderer.prepare_background(WIDTH, HEIGHT, 1.2);
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         draw::write_bmp("preview.bmp", &buf, WIDTH, HEIGHT)?;
+        // `--dump-layout`（§2.4 的几何判据）：把这一帧登记过的矩形打成 JSON。
+        //
+        // 为什么需要它：像素比对能证明"没变"，但证明不了"内容在框里"。
+        // 缩放最容易出的问题是**溢出**，而那是纯几何问题 —— 用断言查比用人眼看可靠。
+        if args.iter().any(|a| a == "--dump-layout") {
+            let work = layout::work_area(WIDTH, HEIGHT);
+            let hits: Vec<serde_json::Value> = renderer
+                .settings_hits
+                .iter()
+                .map(|(r, h)| {
+                    serde_json::json!({"x": r.x, "y": r.y, "w": r.w, "h": r.h, "kind": format!("{h:?}")})
+                })
+                .collect();
+            let wins: Vec<serde_json::Value> = desktop
+                .wins
+                .iter()
+                .map(|w| {
+                    serde_json::json!({
+                        "title": w.title, "x": w.rect.x, "y": w.rect.y, "w": w.rect.w, "h": w.rect.h
+                    })
+                })
+                .collect();
+            let snap = serde_json::json!({
+                "w": WIDTH,
+                "h": HEIGHT,
+                "work": {"x": work.x, "y": work.y, "w": work.w, "h": work.h},
+                "wins": wins,
+                "hits": hits,
+            });
+            // 加个前缀，方便脚本从"preview.bmp written"之类输出里认出来
+            println!("LAYOUT {snap}");
+        }
         println!("preview.bmp written (layout: {})", lay.label());
         return Ok(());
     }
