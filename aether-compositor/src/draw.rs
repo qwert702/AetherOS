@@ -361,6 +361,34 @@ pub mod size {
     /// 次级左缩进（比 `CONTROL_INSET` 更靠左的输入框/条目）。
     pub const INSET_SM: i32 = 16;
 
+    // ---- 控件高度阶梯 ----
+    /// 按钮 / 输入框的标准高度。
+    pub const CTRL_H: i32 = 44;
+    /// 图标框与列表行的高度。
+    pub const CTRL_H_SM: i32 = 30;
+    /// 面板与次级图标的高度。
+    pub const CTRL_H_XS: i32 = 26;
+
+    // ---- 内边距 ----
+    /// 面板内容与边框之间的内边距。
+    pub const PAD_SM: i32 = 8;
+    /// 较大的内边距（卡片/浮层内容）。
+    pub const PAD_LG: i32 = 20;
+    /// 子项相对父项的缩进（例如审计条目相对页正文）。
+    pub const INDENT_SUB: i32 = 36;
+
+    // ---------------------------------------------------------------------
+    // **故意不缩**的（写在这里，免得后来的人以为是漏了）
+    //
+    // * `h: 1` / `h: 0`（发丝分隔线、占位）与 `x + 1` / `y + 1`（阴影偏移）：
+    //   1 像素的线在 125% 下还应该是 1 像素，否则会糊成 1.25 像素的边；
+    // * `x + 4` / `x + 6`：抽样看到**混用** —— 既有内边距，也有「高亮条」这类装饰
+    //   （`cover.x + 6, w: cover_s - 12, h: 1`）。要缩就得逐个看，留到有人能看屏幕时判断；
+    // * `h: 12` / `h: 6`：装饰性短条（均衡器）与状态点（`w: 6, h: 6` 配 `radius 3.0`）——
+    //   后者要缩就得连圆角半径一起缩，属于「成套缩放」，同样留待有屏幕时判断；
+    // * `y + 8`：混用（`y + 8.0` 是文本基线微调，`list.y + 8` 是内边距）。
+    // ---------------------------------------------------------------------
+
     static PCT: AtomicU16 = AtomicU16::new(100);
 
     /// 设置缩放百分比（与 [`super::ui::set_scale_pct`] **同一份输入**）。
@@ -444,6 +472,12 @@ mod tests {
             "GAP_STD",
             "GAP_WIDE",
             "GAP_HUGE",
+            "CTRL_H",
+            "CTRL_H_SM",
+            "CTRL_H_XS",
+            "PAD_SM",
+            "PAD_LG",
+            "INDENT_SUB",
         ] {
             // 带上右括号：否则 `ROW_H` 会被 `ROW_H_SM` 的调用点误算成"用过"
             let needle = format!("px(theme::size::{name})");
@@ -1578,7 +1612,7 @@ pub const DOCK_BUILTINS: usize = 5;
 fn draw_perf_hud(buf: &mut [u32], w: usize, h: usize, text: &str, tr: Option<&TextRenderer>) {
     let Some(tr) = tr else { return };
     let tw = tr.measure(text, font::CAPTION).ceil() as i32;
-    let panel = Rect { x: w as i32 - tw - 24, y: h as i32 - 34, w: tw + 16, h: 26 };
+    let panel = Rect { x: w as i32 - tw - 24, y: h as i32 - 34, w: tw + 16, h: theme::size::px(theme::size::CTRL_H_XS) };
     rounded_rect(buf, w, h, panel, radius::SM, color::surface_3(), 0.82);
     rounded_outline(buf, w, h, panel, radius::SM, color::hairline(), 0.3);
     draw_text(
@@ -1586,7 +1620,7 @@ fn draw_perf_hud(buf: &mut [u32], w: usize, h: usize, text: &str, tr: Option<&Te
         buf,
         w,
         h,
-        (panel.x + 8) as f32,
+        (panel.x + theme::size::px(theme::size::PAD_SM)) as f32,
         tr.vcenter(panel.y as f32, panel.h as f32, font::CAPTION),
         text,
         font::CAPTION,
@@ -1746,7 +1780,7 @@ pub fn draw_app_icon(
         }
         // 浏览器：球体 = 圆环 + 经纬
         2 => {
-            rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: 30 }, 15.0, sym, a);
+            rounded_outline(buf, w, h, Rect { x: ix + 8, y: iy + 8, w: 30, h: theme::size::px(theme::size::CTRL_H_SM) }, 15.0, sym, a);
             fill_rect(buf, w, h, Rect { x: ix + 21, y: iy + 12, w: 3, h: 22 }, sym, a);
             fill_rect(buf, w, h, Rect { x: ix + 12, y: iy + 21, w: 22, h: 3 }, sym, a);
         }
@@ -1760,7 +1794,7 @@ pub fn draw_app_icon(
         }
         // 设置：齿轮 = 外环 + 内环 + 四齿（已装应用也走这一支，与原来一致）
         _ => {
-            rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: 26 }, 13.0, sym, a);
+            rounded_outline(buf, w, h, Rect { x: ix + 10, y: iy + 10, w: 26, h: theme::size::px(theme::size::CTRL_H_XS) }, 13.0, sym, a);
             rounded_outline(buf, w, h, Rect { x: ix + 16, y: iy + 16, w: 14, h: 14 }, 7.0, sym, a);
             for (tx, ty) in [(21, 8), (21, 33), (8, 21), (33, 21)] {
                 fill_rect(buf, w, h, Rect { x: ix + tx, y: iy + ty, w: 5, h: 5 }, sym, a);
@@ -1980,7 +2014,7 @@ fn draw_lock_screen(
         buf,
         w,
         h,
-        Rect { x: bx as i32, y: by as i32, w: box_w as i32, h: 44 },
+        Rect { x: bx as i32, y: by as i32, w: box_w as i32, h: theme::size::px(theme::size::CTRL_H) },
         color::inset(),
         0.95,
     );
@@ -2815,7 +2849,7 @@ impl Renderer {
             h: 20,
         };
 
-        let mut y = panel.y + 12;
+        let mut y = panel.y + theme::size::px(theme::size::TIGHT);
         // ① AI 三态（只读）
         rounded_rect(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::INSET_SM), y: y + 6, w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
         tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
@@ -3027,7 +3061,7 @@ impl Renderer {
 
         let mut rects = Vec::new();
         for (i, item) in items.iter().enumerate() {
-            let ir = Rect { x: panel.x + 4, y: panel.y + 4 + i as i32 * 30, w: panel.w - 8, h: 30 };
+            let ir = Rect { x: panel.x + 4, y: panel.y + 4 + i as i32 * 30, w: panel.w - 8, h: theme::size::px(theme::size::CTRL_H_SM) };
             if ir.contains(ui.mouse.0, ui.mouse.1) {
                 rounded_rect(buf, w, h, Rect { x: ir.x + 4, y: ir.y + 3, w: ir.w - 8, h: ir.h - 6 }, radius::SM, color::surface_3(), 0.9);
             }
@@ -3327,7 +3361,7 @@ fn draw_settings_content(
     let Some(tr) = tr else { return };
 
     // ---- 左栏：分组标题 + 页行 ----
-    let mut y = r.y + 12;
+    let mut y = r.y + theme::size::px(theme::size::TIGHT);
     let mut group = "";
     // 语言取一次即可（绘制期不变）。
     // 注意：这里必须写全限定 `crate::i18n::tr` —— 本文件的 `tr` 是**文本渲染器**的
@@ -3365,7 +3399,7 @@ fn draw_settings_content(
         if y + row_h > r.y + r.h {
             break;
         }
-        let row = Rect { x: r.x + 8, y, w: SIDEBAR_W - 16, h: row_h };
+        let row = Rect { x: r.x + theme::size::px(theme::size::PAD_SM), y, w: SIDEBAR_W - 16, h: row_h };
         let st = widgets::States {
             hover: p.enabled && row.contains(mouse.0, mouse.1),
             selected: i == page,
@@ -3410,7 +3444,7 @@ fn draw_settings_content(
     ) {
         let st = widgets::States { hover: row.contains(mouse.0, mouse.1), ..Default::default() };
         widgets::row(buf, w, h, row, label, sub, st, Some(tr));
-        let sw = Rect { x: row.x + row.w - 58, y: row.y + 12, w: 46, h: 20 };
+        let sw = Rect { x: row.x + row.w - 58, y: row.y + theme::size::px(theme::size::TIGHT), w: 46, h: 20 };
         widgets::switch(buf, w, h, sw, on, widgets::States::at(sw, mouse));
         hits.push((sw, id));
     }
@@ -3562,7 +3596,7 @@ fn draw_settings_content(
                     let verdict_txt =
                         crate::audit::verdict_text(crate::i18n::lang(), &e.verdict);
                     let head = format!("{} · {} · {}", level_txt, e.tool, verdict_txt);
-                    tr.draw(buf, w, h, (content.x + 36) as f32, ry as f32, &head, font::CAPTION, color::text(), 0.9);
+                    tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::INDENT_SUB)) as f32, ry as f32, &head, font::CAPTION, color::text(), 0.9);
                     // §3.5：相对时间也有英文版（`audit.rs` 是数据层，不依赖 i18n）
                     let age = if crate::i18n::is_en() {
                         e.age_text_en(now)
@@ -3575,7 +3609,7 @@ fn draw_settings_content(
                     if !e.args.is_empty() {
                         let a: String = e.args.chars().take(52).collect();
                         let a = if e.args.chars().count() > 52 { format!("{a}…") } else { a };
-                        tr.draw(buf, w, h, (content.x + 36) as f32, ry as f32, &a, font::CAPTION, color::text_dim(), 0.6);
+                        tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::INDENT_SUB)) as f32, ry as f32, &a, font::CAPTION, color::text_dim(), 0.6);
                         ry += 18;
                     }
                     if ry > content.y + content.h - 40 {
@@ -4320,7 +4354,7 @@ fn draw_settings_content(
             let lang = crate::i18n::lang();
             // 主题开关：**默认明亮（纯白）**，切换立即生效 —— 改全局 MODE 并重建背景缓存，
             // 由事件循环执行（绘制期不改状态）。
-            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
+            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "深色模式", "Dark mode"), Some(crate::i18n::pick(lang, "默认关闭（明亮/纯白）；切换立即生效", "Off by default (bright / pure white); takes effect immediately")), s.dark_mode, SettingsHit::ToggleDark, hits);
             // §3.4 无障碍：高对比度。紧跟主题开关 —— 它是"看得清"这条线上的第二项。
             // 说明文字直接给出**可验证的依据**（WCAG AA），而不是"更清楚"这种主观话。
@@ -4373,7 +4407,7 @@ fn draw_settings_content(
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "壁纸", "Wallpaper"), Some(tr));
             ry += theme::size::px(theme::size::LINE_GAP);
             for i in 0..crate::settings::WALLPAPER_COUNT {
-                let sw = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD) + (i as i32) * 46, y: ry, w: 38, h: 30 };
+                let sw = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD) + (i as i32) * 46, y: ry, w: 38, h: theme::size::px(theme::size::CTRL_H_SM) };
                 let (top, bottom) = wallpaper_colors(i, s.dark_mode);
                 // 竖直两段近似渐变：色板只是"这个壁纸长什么样"的缩略，不必逐像素
                 let half = sw.h / 2;
@@ -4415,7 +4449,7 @@ fn draw_settings_content(
             ry += theme::size::px(theme::size::ROW_TALL);
             // 性能 HUD（§5.10）：**默认关**。说明里写清"显示的是真实数字"，
             // 因为本项目对假数据零容忍 —— 用户有权知道这块面板值不值得信。
-            let hud = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
+            let hud = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, hud, crate::i18n::pick(lang, "性能 HUD", "Performance HUD"),
                        Some(crate::i18n::pick(lang, "右下角显示真实帧时间与内存占用（排障用，默认关）", "Shows real frame time and memory in the bottom-right (for troubleshooting, off by default)")),
                        s.perf_hud, SettingsHit::TogglePerfHud, hits);
@@ -4452,16 +4486,16 @@ fn draw_settings_content(
             tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, (ry + 42) as f32, &tz, font::CAPTION, color::text_dim(), 0.9);
             ry += 78;
 
-            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
+            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "24 小时制", "24-hour clock"), Some(crate::i18n::pick(lang, "关闭后显示为「下午 9:10」", "Off shows 9:10 PM")), s.clock_24h, SettingsHit::Clock24h, hits);
             ry += 48;
-            let r2 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
+            let r2 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, r2, crate::i18n::pick(lang, "显示秒", "Show seconds"), Some(crate::i18n::pick(lang, "顶栏时钟精确到秒", "Top-bar clock shows seconds")), s.clock_seconds, SettingsHit::ClockSeconds, hits);
             ry += 54;
 
             // 时区微调：用两个按钮而不是滑杆 —— 时区是离散值、且要能精确到半小时
-            let back = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: ry + 6, w: 40, h: 30 };
-            let fwd = Rect { x: content.x + 72, y: ry + 6, w: 40, h: 30 };
+            let back = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: ry + 6, w: 40, h: theme::size::px(theme::size::CTRL_H_SM) };
+            let fwd = Rect { x: content.x + 72, y: ry + 6, w: 40, h: theme::size::px(theme::size::CTRL_H_SM) };
             widgets::button(buf, w, h, back, "-1", widgets::BtnKind::Secondary, widgets::States::at(back, mouse), Some(tr));
             widgets::button(buf, w, h, fwd, "+1", widgets::BtnKind::Secondary, widgets::States::at(fwd, mouse), Some(tr));
             tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, 42.0, font::CAPTION), crate::i18n::pick(lang, "时区（半小时制）", "Time zone (30-min steps)"), font::CAPTION, color::text_dim(), 0.9);
@@ -4529,14 +4563,14 @@ fn draw_settings_content(
         "输入" => {
             // §3.5：本页文案双语
             let lang = crate::i18n::lang();
-            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
+            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "默认启用中文输入法", "Chinese IME on by default"), Some(crate::i18n::pick(lang, "开机即生效，Ctrl+空格 可随时切换", "Active from boot; Ctrl+Space toggles it")), s.ime_default, SettingsHit::ImeDefault, hits);
             ry += theme::size::px(theme::size::GAP_HUGE);
             // 鼠标速度：合成器原先对相对位移**硬编码 ×2**，用户反馈在 VMware/真机上太快。
             // 默认 100（1:1），这里给三档；数值走 `SettingsHit::MouseSpeed`（真实写盘）。
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "鼠标速度", "Mouse speed"), Some(tr));
             ry += theme::size::px(theme::size::LINE_GAP);
-            let seg = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: ry, w: 300, h: 30 };
+            let seg = Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: ry, w: 300, h: theme::size::px(theme::size::CTRL_H_SM) };
             let active = match s.mouse_speed_pct {
                 p if p < 80 => 0,
                 p if p > 120 => 2,
@@ -4769,7 +4803,7 @@ fn draw_settings_content(
             // §3.5：本页文案双语
             let lang = crate::i18n::lang();
             // §3.2：通知历史。两个控件：是否记录 + 清空。
-            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
+            let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(
                 buf,
                 w,
@@ -4878,7 +4912,7 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
             break;
         }
         let (title, artist, dur) = strings::TRACKS[i % strings::TRACKS.len()];
-        let row = Rect { x: list.x + 8, y, w: list.w - 16, h: ROW_H - 4 };
+        let row = Rect { x: list.x + theme::size::px(theme::size::PAD_SM), y, w: list.w - 16, h: ROW_H - 4 };
         let hovered = row.contains(mouse.0, mouse.1);
         let playing = i == 0;
         if hovered || playing {
@@ -5178,9 +5212,9 @@ fn draw_files_content(
 
     if let Some(tr) = tr {
         // 顶部"← 上级目录"：没有它就只能进不能出，导航不成立
-        let mut base = r.y + 12;
+        let mut base = r.y + theme::size::px(theme::size::TIGHT);
         if !path_is_root(fv.cwd) {
-            let row = Rect { x: r.x + 8, y: base, w: sidebar.w - 16, h: 26 };
+            let row = Rect { x: r.x + theme::size::px(theme::size::PAD_SM), y: base, w: sidebar.w - 16, h: theme::size::px(theme::size::CTRL_H_XS) };
             let hovered = row.contains(mouse.0, mouse.1);
             if hovered {
                 rounded_rect(buf, w, h, row, radius::SM - 2.0, color::hairline(), state::hover());
@@ -5200,7 +5234,7 @@ fn draw_files_content(
             let y = base + i as i32 * 30;
             // 当前所在位置高亮：用户随时知道"我在哪一栏"（此前恒为 false，等于没有反馈）
             let selected = path == fv.cwd || fv.cwd.starts_with(&format!("{path}{}", std::path::MAIN_SEPARATOR));
-            let row = Rect { x: r.x + 8, y, w: sidebar.w - 16, h: 26 };
+            let row = Rect { x: r.x + theme::size::px(theme::size::PAD_SM), y, w: sidebar.w - 16, h: theme::size::px(theme::size::CTRL_H_XS) };
             sidebar_hits.push((row, i));
             if selected {
                 rounded_rect(buf, w, h, row, radius::SM - 2.0, color::accent(), 0.20);
@@ -5668,7 +5702,7 @@ fn draw_file_icon(buf: &mut [u32], w: usize, h: usize, x: i32, y: i32, size: i32
     let line = [178, 186, 202];
     for i in 0..3 {
         let ly = body_y + body_h / 2 + i * 5 - 4;
-        fill_rect(buf, w, h, Rect { x: x + 8, y: ly, w: size - 16 - i * 4, h: 1 }, line, 0.5);
+        fill_rect(buf, w, h, Rect { x: x + theme::size::px(theme::size::PAD_SM), y: ly, w: size - 16 - i * 4, h: 1 }, line, 0.5);
     }
 }
 
@@ -6146,7 +6180,7 @@ impl Renderer {
         self.installer_rows.clear();
         let row_y0 = win.y + 78;
         for (i, (dev, mb)) in inst.disks.iter().enumerate() {
-            let r = Rect { x: win.x + theme::size::px(theme::size::INSET_SM), y: row_y0 + i as i32 * 50, w: win.w - 32, h: 44 };
+            let r = Rect { x: win.x + theme::size::px(theme::size::INSET_SM), y: row_y0 + i as i32 * 50, w: win.w - 32, h: theme::size::px(theme::size::CTRL_H) };
             if inst.selected == i {
                 rounded_rect(buf, w, h, r, radius::MD, color::accent(), 0.16);
                 rounded_outline(buf, w, h, r, radius::MD, color::accent(), 0.45);
@@ -6156,7 +6190,7 @@ impl Renderer {
                 rounded_outline(buf, w, h, r, radius::MD, color::hairline(), 0.10);
                 rounded_outline(buf, w, h, Rect { x: r.x + 11, y: r.y + 15, w: 14, h: 14 }, 7.0, color::text_dim(), 0.7);
             }
-            tr.draw_bold(buf, w, h, (r.x + 36) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), dev, font::BODY, color::text(), 0.92);
+            tr.draw_bold(buf, w, h, (r.x + theme::size::px(theme::size::INDENT_SUB)) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), dev, font::BODY, color::text(), 0.92);
             let sz = if crate::i18n::is_en() {
                 format!("{mb} MB free")
             } else {
@@ -6193,7 +6227,7 @@ impl Renderer {
         }
 
         // 主按钮（四状态：默认 / 悬停 / 按下 / 禁用；禁用以状态色而非灰表达语义）
-        let button = Rect { x: win.x + win.w / 2 - 160, y: win.y + win_h - 62, w: 320, h: 44 };
+        let button = Rect { x: win.x + win.w / 2 - 160, y: win.y + win_h - 62, w: 320, h: theme::size::px(theme::size::CTRL_H) };
         // 四状态按钮：先取 (中文, English)，再按语言挑 —— 比写两遍 match 短，
         // 也不会出现"新增一个阶段却只加了一种语言"
         let label = {
@@ -6329,7 +6363,7 @@ impl Renderer {
             format!("L{} {}", c.level, if c.level >= 3 { "危险" } else { "敏感写" })
         };
         let bw = tr.measure_bold(&badge_text, font::LABEL) + 18.0;
-        let badge = Rect { x: win.x + 20, y: win.y + 20, w: bw as i32, h: 22 };
+        let badge = Rect { x: win.x + theme::size::px(theme::size::PAD_LG), y: win.y + 20, w: bw as i32, h: 22 };
         // 底色压到 0.12：再浓就会把文字对比度拖到 AA 以下（P2-20 同类）
         rounded_rect(buf, w, h, badge, radius::SM - 2.0, badge_rgb, 0.12);
         rounded_outline(buf, w, h, badge, radius::SM - 2.0, badge_rgb, 0.7);
@@ -6344,12 +6378,12 @@ impl Renderer {
 
         // 参数明文（逐项原样展示：确认的前提是看清对象）
         let mut y = win.y + 74;
-        draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION),
+        draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION),
             crate::i18n::pick(crate::i18n::lang(), "工具", "Tool"), font::CAPTION, color::text_faint(), 0.9);
         draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), c.tool, font::BODY, color::text_dim(), 0.95);
         y += 22;
         for (k, v) in &args {
-            draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), k, font::CAPTION, color::text_faint(), 0.9);
+            draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), k, font::CAPTION, color::text_faint(), 0.9);
             tr.draw_bold(buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), v, font::BODY, color::text(), 0.96);
             y += 22;
         }
@@ -6376,9 +6410,9 @@ impl Renderer {
         } else {
             format!("L3 危险操作：请原样输入 {target} 以确认")
         };
-            draw_text(tr, buf, w, h, (win.x + 20) as f32, y as f32, &tip, font::CAPTION, color::text_dim(), 0.9);
+            draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, y as f32, &tip, font::CAPTION, color::text_dim(), 0.9);
             y += 22;
-            let field = Rect { x: win.x + 20, y, w: win.w - 40, h: 38 };
+            let field = Rect { x: win.x + theme::size::px(theme::size::PAD_LG), y, w: win.w - 40, h: 38 };
             let ok = c.echo_ok();
             rounded_rect(buf, w, h, field, radius::SM, color::inset(), 0.9);
             rounded_outline(buf, w, h, field, radius::SM, if ok { color::success() } else { color::hairline() }, if ok { 0.75 } else { 0.18 });
