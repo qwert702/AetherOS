@@ -53,11 +53,16 @@ pub enum AudioState {
 
 impl AudioState {
     /// 给界面用的一句话（**如实**：不确定就说未检测，不猜）。
-    pub fn label(&self) -> &'static str {
-        match self {
-            AudioState::Ready => "就绪",
-            AudioState::NoDevice => "无音频设备",
-            AudioState::Unknown => "未检测到音频（可能缺少 aplay）",
+    /// 状态的人话名（§3.5）。收 `en: bool`：数据/状态层不读全局语言，
+    /// 与 `tool_label` / `age_text_en` 同一套做法。
+    pub fn label(&self, en: bool) -> &'static str {
+        match (self, en) {
+            (AudioState::Ready, false) => "就绪",
+            (AudioState::Ready, true) => "ready",
+            (AudioState::NoDevice, false) => "无音频设备",
+            (AudioState::NoDevice, true) => "no audio device",
+            (AudioState::Unknown, false) => "未检测到音频（可能缺少 aplay）",
+            (AudioState::Unknown, true) => "no audio detected (aplay may be missing)",
         }
     }
 
@@ -81,6 +86,18 @@ pub fn clamp_volume(pct: i32) -> u8 {
 /// 判据是 `card N:` 行 —— `aplay -l` 在有设备时逐卡打印 `card 0: ...`，
 /// 无设备时输出 `no soundcards found...` 并返回非零。
 /// 命令本身跑不起来（没有 aplay）时是 `Unknown`，不是 `NoDevice`。
+/// 「不能调音量」这条错误消息的两种写法（§3.5）。
+///
+/// 单独一个函数而不是塞进 `format!`：`format!` 的模板必须是字面量，
+/// 所以按语言各写一次是唯一写法。
+fn pick_label(state: &str) -> String {
+    if crate::i18n::is_en() {
+        format!("{state}: volume cannot be adjusted")
+    } else {
+        format!("{state}：音量不可调")
+    }
+}
+
 pub fn parse_aplay_has_card(stdout: &str, ran_ok: bool) -> AudioState {
     if stdout.contains("card ") && stdout.contains(':') {
         return AudioState::Ready;
@@ -300,7 +317,9 @@ impl Audio {
     pub fn set_volume(&mut self, pct: u8) -> Result<(), String> {
         let pct = clamp_volume(pct as i32);
         if !self.state.controls_enabled() {
-            return Err(format!("{}：音量不可调", self.state.label()));
+            return Err(pick_label(
+                self.state.label(crate::i18n::is_en()),
+            ));
         }
         let o = Command::new("amixer")
             .args(["set", "Master", &format!("{pct}%")])
@@ -386,14 +405,27 @@ mod tests {
         assert!(!AudioState::NoDevice.controls_enabled());
         assert!(!AudioState::Unknown.controls_enabled());
         // 三种状态的文案必须互不相同（否则用户分不清"没声卡"和"没检测到"）
-        let labels = [
-            AudioState::Ready.label(),
-            AudioState::NoDevice.label(),
-            AudioState::Unknown.label(),
-        ];
-        assert_ne!(labels[0], labels[1]);
-        assert_ne!(labels[1], labels[2]);
-        assert_ne!(labels[0], labels[2]);
+        // —— **两种语言都要满足**（§3.5：只保证中文互不相同是不够的）
+        for en in [false, true] {
+            let labels = [
+                AudioState::Ready.label(en),
+                AudioState::NoDevice.label(en),
+                AudioState::Unknown.label(en),
+            ];
+            assert_ne!(labels[0], labels[1], "en={en}");
+            assert_ne!(labels[1], labels[2], "en={en}");
+            // 0 与 2 也要不同：前两条推不出这一条（A≠B 且 B≠C 不蕴含 A≠C）
+            assert_ne!(labels[0], labels[2], "en={en}");
+            for l in labels {
+                assert!(!l.is_empty(), "文案不能为空（en={en}）");
+                if en {
+                    assert!(
+                        !l.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                        "英文文案里有汉字：{l}"
+                    );
+                }
+            }
+        }
     }
 
     /// amixer 输出解析：真实格式 + 越界夹取 + 静音判定。

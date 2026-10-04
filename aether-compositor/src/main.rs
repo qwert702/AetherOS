@@ -115,7 +115,11 @@ impl IpcStream {
                 Err(e) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotConnected,
-                        format!("连接 aetherd 失败（{AETHERD_SOCKET}: {e}）"),
+                        if crate::i18n::is_en() {
+                            format!("Cannot reach aetherd ({AETHERD_SOCKET}: {e})")
+                        } else {
+                            format!("连接 aetherd 失败（{AETHERD_SOCKET}: {e}）")
+                        },
                     ))
                 }
             }
@@ -281,7 +285,11 @@ fn read_line_capped<R: BufRead + ?Sized>(
     if n as usize >= max && !line.ends_with('\n') {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("IPC 响应超过 {max} 字节上限，已断开"),
+            pick_zh_en_1(
+                "IPC 响应超过 {} 字节上限，已断开",
+                "IPC response exceeded the {} byte cap, disconnecting",
+                max,
+            ),
         ));
     }
     Ok(line)
@@ -394,7 +402,7 @@ fn run_fbdev() -> anyhow::Result<()> {
     let mut last_frame_ms = 0.0f32;
     tty_log(&format!(
         "音频：{}（音量 {}%{}）",
-        audio.state().label(),
+        audio.state().label(crate::i18n::is_en()),
         audio.volume_pct(),
         if audio.muted() { "，已静音" } else { "" }
     ));
@@ -1058,7 +1066,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                     match origin {
                         ConfirmOrigin::Installer => {
                             installer.running = false;
-                            installer.message = Some((if last.is_empty() { "安装完成".into() } else { last.clone() }, !ok));
+                            installer.message = Some((if last.is_empty() {
+                                // 空结果 = 装完了；这句要跟着语言
+                                crate::i18n::pick(crate::i18n::lang(), "安装完成", "Install finished")
+                                    .to_string()
+                            } else {
+                                last.clone()
+                            }, !ok));
                         }
                         ConfirmOrigin::Ai => {
                             // 工具调用结果单独一类气泡：让"AI 干了什么"可见
@@ -1215,10 +1229,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                             // **删不掉必须说明原因**（只说"失败"等于让用户猜）：
                             // 最常见的是"当前桌面里还有窗口"——那会连带丢掉终端会话
                             let why = if spaces.count() <= 1 {
-                                "至少要保留一个桌面".to_string()
+                                pick_zh_en("至少要保留一个桌面", "At least one desktop must remain")
                             } else {
-                                "当前桌面里还有窗口：先用 Super+Shift+数字 把它们移走，或关掉它们"
-                                    .to_string()
+                                pick_zh_en(
+                                    "当前桌面里还有窗口：先用 Super+Shift+数字 把它们移走，或关掉它们",
+                                    "This desktop still has windows: move them with Super+Shift+number first, or close them",
+                                )
                             };
                             push_toast(&mut toast, &mut renderer.notifs, why, notifications::Kind::Info);
                         }
@@ -1955,7 +1971,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             ai_status,
             ai_reply: reply_now.as_ref().map(|(m, k, a)| (m.as_str(), *k, *a)),
             // 真实音频状态（批次 K-2）：探测过一次，这里只读缓存，不在每帧起子进程
-            audio_label: audio.state().label(),
+            audio_label: audio.state().label(crate::i18n::is_en()),
             audio_volume: audio.volume_pct(),
             audio_enabled: audio.state().controls_enabled(),
             mouse,
