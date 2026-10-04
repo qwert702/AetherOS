@@ -3367,7 +3367,9 @@ fn draw_settings_content(
                         color::accent()
                     };
                     rounded_rect(buf, w, h, Rect { x: content.x + 22, y: ry + 5, w: 6, h: 6 }, 3.0, dot, 0.95);
-                    let head = format!("{} · {} · {}", e.level, e.tool, e.verdict);
+                    // §3.5：日志里存 token（L2），显示时按界面语言取词（旧日志里的人话名原样透传）
+                    let level_txt = crate::audit::level_text(crate::i18n::lang(), &e.level);
+                    let head = format!("{} · {} · {}", level_txt, e.tool, e.verdict);
                     tr.draw(buf, w, h, (content.x + 36) as f32, ry as f32, &head, font::CAPTION, color::text(), 0.9);
                     // §3.5：相对时间也有英文版（`audit.rs` 是数据层，不依赖 i18n）
                     let age = if crate::i18n::is_en() {

@@ -213,7 +213,10 @@ pub fn export_text(info: &AuditInfo, now: u64, en: bool) -> String {
             "{}\t{}\t{}\t{}\t{}\t{}\n",
             e.ts,
             age,
-            e.level,
+            level_text(
+                if en { crate::i18n::Lang::En } else { crate::i18n::Lang::Zh },
+                &e.level
+            ),
             e.tool,
             e.verdict,
             if en { verdict_en } else { verdict_zh }
@@ -279,6 +282,49 @@ pub fn read(path: &str, limit: usize) -> AuditInfo {
     info.recent = all.into_iter().rev().take(limit).collect();
     info
 }
+
+
+/// 审计行里 `level` 那一列的**显示文本**（§3.5）。
+///
+/// 日志里存的是稳定 token（`L0`…`L3`）。**旧日志**里可能还是「L2 敏感写」
+/// 这种人话名 —— 对不认识的值**原样透传**，这样老日志不会显示成空白。
+pub fn level_text(lang: crate::i18n::Lang, raw: &str) -> String {
+    let en = lang == crate::i18n::Lang::En;
+    match raw.trim() {
+        "L0" => if en { "L0 read-only" } else { "L0 只读" }.to_string(),
+        "L1" => if en { "L1 reversible write" } else { "L1 可逆写" }.to_string(),
+        "L2" => if en { "L2 sensitive write" } else { "L2 敏感写" }.to_string(),
+        "L3" => if en { "L3 dangerous" } else { "L3 危险" }.to_string(),
+        other => other.to_string(),
+    }
+}
+
+
+    /// §3.5：日志存 token，显示时取词；**旧日志里的人话名原样透传**。
+    #[test]
+    fn level_text_maps_tokens_and_passes_through_legacy_names() {
+        use crate::i18n::Lang;
+        for (raw, zh, en) in [
+            ("L0", "L0 只读", "L0 read-only"),
+            ("L1", "L1 可逆写", "L1 reversible write"),
+            ("L2", "L2 敏感写", "L2 sensitive write"),
+            ("L3", "L3 危险", "L3 dangerous"),
+        ] {
+            assert_eq!(level_text(Lang::Zh, raw), zh, "{raw}");
+            assert_eq!(level_text(Lang::En, raw), en, "{raw}");
+            assert!(
+                !level_text(Lang::En, raw)
+                    .chars()
+                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "英文里不该有汉字：{raw}"
+            );
+        }
+        // 旧日志（2026-10-04 之前写的）里是人话名 —— 必须原样显示，不能变空
+        assert_eq!(level_text(Lang::En, "L2 敏感写"), "L2 敏感写");
+        assert_eq!(level_text(Lang::Zh, "L2 sensitive write"), "L2 sensitive write");
+        // 前后空白容错
+        assert_eq!(level_text(Lang::Zh, " L1 "), "L1 可逆写");
+    }
 
 #[cfg(test)]
 mod tests {

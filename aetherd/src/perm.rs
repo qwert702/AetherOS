@@ -22,16 +22,22 @@ pub enum Level {
 }
 
 impl fmt::Display for Level {
+    /// 审计日志里存的是**稳定 token**（`L0`…`L3`），不是人话名（§3.5）。
+    ///
+    /// 理由：这一列是**写进日志**的（`Gate::audit_call`），写进去那一刻就定死了；
+    /// 若写的是「L2 敏感写」，日志就永久绑定了中文（或者英文），
+    /// 而审计页要给人看。所以存 token，显示时用 `label(en)` 取词。
+    /// 兼容：旧日志里已是「L2 敏感写」，显示层对不认识的值原样透传。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Level::L0 => "L0 只读",
-            Level::L1 => "L1 可逆写",
-            Level::L2 => "L2 敏感写",
-            Level::L3 => "L3 危险",
-        };
-        f.write_str(s)
+        f.write_str(match self {
+            Level::L0 => "L0",
+            Level::L1 => "L1",
+            Level::L2 => "L2",
+            Level::L3 => "L3",
+        })
     }
 }
+
 
 /// 工具执行请求经过的权限闸门。
 pub struct Gate {
