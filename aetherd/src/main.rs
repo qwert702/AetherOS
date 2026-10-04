@@ -28,6 +28,8 @@ use anyhow::{Context, Result};
 use perm::Gate;
 use std::path::PathBuf;
 
+/// **故意保持中文**（§3.5）：这是发给模型的提示词，不是给用户看的界面文案。
+/// 里面明确要求"回答使用用户的语言"，所以翻它反而会破坏这条指令。
 const SYSTEM_PROMPT: &str = "你是 Aether，AetherOS 操作系统的 AI 中枢。你可以调用工具查询和操作这台电脑：\
 用 desktop 工具切换窗口布局、打开应用、关闭窗口；用 sys_probe/sys_info 了解系统状态。\
 回答使用用户的语言，简洁、可执行。用户说'整理桌面'时调用 desktop 的 layout_set two_col。";
@@ -124,11 +126,14 @@ pub(crate) struct AgentOutcome {
 /// `trusted_channel`：本次对话是否来自**已注册的 UI 通道**。需要可信通道的工具
 /// （剪贴板读写）在未注册连接上直接拒绝 —— 否则"让模型去调 clipboard_read"
 /// 就成了绕过 `Request::ToolCall` 闸门的旁路（2026-10-02 审计 H-2）。
+/// `en`：界面是否英文（§3.5）—— 回答里由**我们**写的句子要跟着语言；
+/// 模型自己的话不需要处理（提示词已要求它用用户的语言回答）。
 pub(crate) fn agent_run(
     cfg: &Config,
     gate: &Gate,
     user_text: &str,
     trusted_channel: bool,
+    en: bool,
 ) -> Result<AgentOutcome> {
     const MAX_ROUNDS: usize = 4;
     let local_ok = llm::local_available(&cfg.local.base_url);
@@ -181,7 +186,16 @@ pub(crate) fn agent_run(
 
         // 空 tool_calls 数组：模型本轮没调用工具，content 即回答（与"轮次耗尽"区分开）
         if calls.is_empty() {
-            let answer = if resp.content.trim().is_empty() { "（模型未返回有效回答）".into() } else { resp.content };
+            let answer = if resp.content.trim().is_empty() {
+                // 这是**我们**写进回答里的一句，所以要跟着界面语言
+                if en {
+                    "(the model returned no usable answer)".to_string()
+                } else {
+                    "（模型未返回有效回答）".to_string()
+                }
+            } else {
+                resp.content
+            };
             return Ok(AgentOutcome {
                 answer,
                 actions: std::mem::take(&mut ctx.desktop_actions),
@@ -217,9 +231,15 @@ pub(crate) fn agent_run(
                 eprintln!("[aetherd] 拒绝 {name}：本对话连接未注册为 UI 通道");
                 messages.push(llm::Message {
                     role: "tool".into(),
-                    content: format!(
-                        "[工具错误] 「{name}」读写用户环境数据，需要已注册的 UI 通道；本次对话未注册，已拒绝"
-                    ),
+                    content: if en {
+                        format!(
+                            "[tool error] 「{name}」 reads/writes user environment data and needs a registered UI channel; this conversation is not registered, so it was refused"
+                        )
+                    } else {
+                        format!(
+                            "[工具错误] 「{name}」读写用户环境数据，需要已注册的 UI 通道；本次对话未注册，已拒绝"
+                        )
+                    },
                     tool_calls: None,
                     tool_call_id: if id.is_empty() { None } else { Some(id) },
                     name: Some(name),
@@ -233,7 +253,11 @@ pub(crate) fn agent_run(
                 Ok(tools::ExecOutcome::NeedsConfirmation { tool, level, arguments, consequence, echo_required }) => {
                     eprintln!("[aetherd] 工具 {tool} 需 L{} 确认，暂停并请求 UI 确认", level as u8);
                     return Ok(AgentOutcome {
-                        answer: format!("「{tool}」需要你确认后才能执行。"),
+                        answer: if en {
+                            format!("「{tool}」needs your confirmation before it can run.")
+                        } else {
+                            format!("「{tool}」需要你确认后才能执行。")
+                        },
                         actions: std::mem::take(&mut ctx.desktop_actions),
                         pending: Some(PendingConfirm {
                             tool,
@@ -262,7 +286,11 @@ pub(crate) fn agent_run(
         }
     }
     Ok(AgentOutcome {
-        answer: "（已达本轮工具调用上限，请拆分任务）".into(),
+        answer: if en {
+            "(reached the tool-call limit for this turn; please split the task)".to_string()
+        } else {
+            "（已达本轮工具调用上限，请拆分任务）".to_string()
+        },
         actions: std::mem::take(&mut ctx.desktop_actions),
         pending: None,
         channel: last_channel.map(|c| c.label().to_string()),
@@ -295,7 +323,8 @@ fn main() -> Result<()> {
             let cfg = config_from_env();
             let gate = Gate::new(PathBuf::from("/var/log/aether/aether-audit.log"));
             // CLI 没有 UI 通道（`false`）⇒ 剪贴板/读文件这类工具一律拒绝，见 agent_run 的说明
-            let out = agent_run(&cfg, &gate, &text, false).context("agent 运行失败")?;
+            let out = // CLI 自检路径不是界面，固定中文
+        agent_run(&cfg, &gate, &text, false, false).context("agent 运行失败")?;
             if let Some(p) = out.pending {
                 // CLI 无 UI 通道：说明需确认及原因，退出码 3 供脚本区分
                 eprintln!(

@@ -1196,7 +1196,8 @@ fn handle_chat(
     // 未命中快速意图：交给 LLM agent（可能较慢，连接线程阻塞在此处即可）
     // `is_ui` 一路传下去：agent 可能调起"需要可信通道"的工具（剪贴板），
     // 未注册连接发起的对话不得通过 LLM 绕过这道闸门（2026-10-02 审计 H-2）。
-    match crate::agent_run(cfg, gate, text, is_ui) {
+    // en 也一路传下去：回答里由 aetherd 自己写的那几句要跟着界面语言
+    match crate::agent_run(cfg, gate, text, is_ui, en) {
         Ok(outcome) => {
             let mut out = Vec::new();
             for a in outcome.actions {
