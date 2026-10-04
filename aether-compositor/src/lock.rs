@@ -158,7 +158,7 @@ mod tests {
     const HASH: &str = "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/";
 
     fn hash_entry() -> ShadowEntry {
-        ShadowEntry::Hash(HASH.to_string())
+        ShadowEntry::Hash { hash: HASH.to_string(), expires_day: None }
     }
 
     #[test]

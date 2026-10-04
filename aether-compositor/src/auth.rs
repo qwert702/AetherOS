@@ -28,14 +28,23 @@ use crate::sha512crypt;
 /// `/etc/shadow` 里某账户的口令项。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShadowEntry {
-    /// 文件里没有这个账户（或读不到文件）。
+    /// 文件里没有这个账户（或读不到文件）—— **无法判断**，不是"没有口令"。
     Missing,
-    /// 有账户但**未设口令**（空 / `!` / `*` / `!$6$...` 这种"锁定但保留哈希"）。
+    /// 有账户、第 2 字段**就是空的** = 未设口令：登录语义上允许无口令进入。
+    ///
+    /// 这与 `Locked` 是**两件完全不同的事**，绝不能合并（见 `Locked` 的说明）。
     NoPassword,
-    /// 账户已过期（shadow 第 8 字段非空）。
-    Expired,
-    /// 有哈希，需要校验。
-    Hash(String),
+    /// 口令被**禁用**：`!`、`*`、`!$6$...`（`passwd -l` 会写成这种）。
+    ///
+    /// **必须拒绝**：这是管理员"关掉这个口令"的明确动作。
+    /// 曾经把它和 `NoPassword` 合并 → 结果是 `passwd -l` 之后锁屏**按回车就进**，
+    /// 一个"增加限制"的动作反而取消了限制（见安全审计附录 L）。
+    Locked,
+    /// 有哈希需要校验，并带上账户过期日（shadow 第 8 字段，`None` = 不过期）。
+    Hash {
+        hash: String,
+        expires_day: Option<i64>,
+    },
 }
 
 /// `/etc/shadow` 的路径。
@@ -123,28 +132,40 @@ pub fn parse_shadow(text: &str, user: &str) -> ShadowEntry {
         }
         let hash = f.next().unwrap_or("");
         // 第 8 个字段是"账户过期日"（自 1970-01-01 起的天数，空 = 不过期）
-        let expire_day = f.nth(5).unwrap_or("").trim().to_string();
-        let expired = expire_day
-            .parse::<i64>()
-            .ok()
-            .map(|d| d > 0)
-            .unwrap_or(false);
-        return classify_hash(hash, expired);
+        // 第 8 字段：账户过期日（自 1970-01-01 起的天数，空 = 不过期）。
+        // **只解析出来，不在这里判"是否已过期"** —— 那需要"今天"，
+        // 而本函数拿不到时钟（模块的设计约定：不碰时钟，时钟由调用方传入）。
+        let expires_day = f.nth(5).unwrap_or("").trim().parse::<i64>().ok();
+        return classify_hash(hash, expires_day);
     }
     ShadowEntry::Missing
 }
 
-/// 把 shadow 的第 2 字段分类。`expired` = 账户已过期。
-fn classify_hash(hash: &str, expired: bool) -> ShadowEntry {
+/// 把 shadow 的第 2 字段分类。
+///
+/// **三个分支对应三种完全不同的语义**（这张表就是本函数存在的意义）：
+///
+/// | 取值 | 含义 | 处置 |
+/// |---|---|---|
+/// | 空 | 未设口令 | [`ShadowEntry::NoPassword`]（允许，带理由） |
+/// | `!` / `*` / `!$6$…` | **口令被禁用 / 账户被锁定** | [`ShadowEntry::Locked`]（**拒绝**） |
+/// | `$6$…` 等 | 有哈希 | [`ShadowEntry::Hash`]（校验） |
+fn classify_hash(hash: &str, expires_day: Option<i64>) -> ShadowEntry {
     let h = hash.trim();
-    // 空、`!`、`*`、以及 `!`/`*` 开头的（`!$6$...` 是"锁定但保留了哈希"）
-    if h.is_empty() || h == "!" || h == "*" || h.starts_with('!') || h.starts_with('*') {
+    if h.is_empty() {
+        // 只有**真的空**才是"未设口令"。
+        // 注意与下面那条的区别：这里允许进入，`Locked` 一律拒绝。
         return ShadowEntry::NoPassword;
     }
-    if expired {
-        return ShadowEntry::Expired;
+    if h.starts_with('!') || h.starts_with('*') {
+        // `passwd -l` 会写成 `!$6$...`（保留哈希但禁用）；`*` 是"永不可能匹配的占位"。
+        // 两者都是**管理员明确关掉了这个口令**，不能当成"没有口令"。
+        return ShadowEntry::Locked;
     }
-    ShadowEntry::Hash(h.to_string())
+    ShadowEntry::Hash {
+        hash: h.to_string(),
+        expires_day,
+    }
 }
 
 /// 判定一次解锁尝试。
@@ -170,28 +191,48 @@ pub fn decide(
         ShadowEntry::NoPassword => Decision::AllowWithReason(
             "该账户未设口令（Live 演示镜像的默认状态）—— 这道锁不防物理接触".to_string(),
         ),
-        ShadowEntry::Expired => Decision::Deny("账户已过期（/etc/shadow 的过期字段）".to_string()),
-        ShadowEntry::Hash(h) => match sha512crypt::verify_password(password, h) {
+        // **口令被禁用 = 一律拒绝**。这里是"管理员关掉了这个口令"，
+        // 与"读不到 shadow"（无法判断）不是一回事：前者必须拒绝，后者才是放行并说明。
+        ShadowEntry::Locked => Decision::Deny(
+            "该账户的口令已被禁用（/etc/shadow 里的 ! 或 * —— 通常是 passwd -l 的结果）"
+                .to_string(),
+        ),
+        ShadowEntry::Hash { hash, expires_day } => {
+            // 过期日与"现在"比：**未来才过期的不算过期**。
+            // （原来把任何非零值都当已过期，会把 2030 年到期的账户现在就拒掉。）
+            // 注意 `entry` 是引用，所以解构出来的是 `&i64` —— 比之前先解引用。
+            if let Some(days) = *expires_day {
+                if days > 0 && days.saturating_mul(86_400) <= now as i64 {
+                    return Decision::Deny(format!(
+                        "账户已于第 {days} 天过期（/etc/shadow 的过期字段）"
+                    ));
+                }
+            }
+            match sha512crypt::verify_password(password, hash) {
             Ok(()) => {
                 lockout.on_success();
                 Decision::Allow
             }
-            Err(why) => {
-                // 口令错 → 记失败并施加退避；**其它错误（方案不支持/格式坏）也拒绝**，
-                // 但不计入失败次数 —— 那不是用户手误，罚他等待毫无意义，
-                // 而且会让"哈希方案不对"这种系统问题被误认为"他一直输错"。
-                if why == "口令不正确" {
-                    let delay = lockout.on_failure(now);
-                    if delay > 0 {
-                        Decision::Deny(format!("{why}（第 {} 次失败，请等待 {delay} 秒后再试）", lockout.fails()))
+                Err(why) => {
+                    // 口令错 → 记失败并施加退避；**其它错误（方案不支持/格式坏）也拒绝**，
+                    // 但不计入失败次数 —— 那不是用户手误，罚他等待毫无意义，
+                    // 而且会让"哈希方案不对"这种系统问题被误认为"他一直输错"。
+                    if why == "口令不正确" {
+                        let delay = lockout.on_failure(now);
+                        if delay > 0 {
+                            Decision::Deny(format!(
+                                "{why}（第 {} 次失败，请等待 {delay} 秒后再试）",
+                                lockout.fails()
+                            ))
+                        } else {
+                            Decision::Deny(why)
+                        }
                     } else {
                         Decision::Deny(why)
                     }
-                } else {
-                    Decision::Deny(why)
                 }
             }
-        },
+        }
     }
 }
 
@@ -213,16 +254,21 @@ mod tests {
     }
 
     #[test]
-    fn shadow_parsing_distinguishes_the_three_states() {
-        assert_eq!(parse_shadow(SHADOW_LOCKED, "root"), ShadowEntry::Hash(
-            "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string()
-        ));
+    fn shadow_parsing_distinguishes_the_four_states() {
+        assert_eq!(
+            parse_shadow(SHADOW_LOCKED, "root"),
+            ShadowEntry::Hash { hash: "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(), expires_day: None }
+        );
         assert_eq!(parse_shadow(SHADOW_NO_PW, "root"), ShadowEntry::NoPassword);
-        assert_eq!(parse_shadow(SHADOW_NO_PW, "daemon"), ShadowEntry::NoPassword);
-        // 有哈希但被 `!` 锁定 → 按"无口令"处理（锁定的账户不该能登录）
-        assert_eq!(parse_shadow(SHADOW_LOCKED_HASH, "root"), ShadowEntry::NoPassword);
-        // 账户过期
-        assert_eq!(parse_shadow(SHADOW_EXPIRED, "root"), ShadowEntry::Expired);
+        // `*` = 占位符，永不可能匹配 —— **是「口令被禁用」，不是「没有口令」**
+        assert_eq!(parse_shadow(SHADOW_NO_PW, "daemon"), ShadowEntry::Locked);
+        // `!$6$...` 是 `passwd -l` 的写法：保留哈希但禁用 → **必须拒绝**
+        assert_eq!(parse_shadow(SHADOW_LOCKED_HASH, "root"), ShadowEntry::Locked);
+        // 账户过期：解析出的是**过期日**，是否已过期由 `decide` 用「现在」判断
+        assert_eq!(
+            parse_shadow(SHADOW_EXPIRED, "root"),
+            ShadowEntry::Hash { hash: "$6$abcdefgh$bp46".to_string(), expires_day: Some(1) }
+        );
         // 不存在的账户
         assert_eq!(parse_shadow(SHADOW_LOCKED, "nobody"), ShadowEntry::Missing);
         // 空文本 / 注释行
@@ -280,9 +326,7 @@ mod tests {
             lk.on_failure(1000);
         }
         assert!(lk.retry_after(1000) > 0);
-        let entry = ShadowEntry::Hash(
-            "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(),
-        );
+        let entry = ShadowEntry::Hash { hash: "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(), expires_day: None };
         // 即便口令**是对的**，退避期内也只回 Wait
         let d = decide(&entry, "hello", &mut lk, 1000);
         match d {
@@ -320,15 +364,13 @@ mod tests {
     #[test]
     fn wrong_password_denies_and_counts_but_scheme_errors_do_not() {
         let mut lk = Lockout::default();
-        let ok = ShadowEntry::Hash(
-            "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(),
-        );
+        let ok = ShadowEntry::Hash { hash: "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(), expires_day: None };
         // 错口令 → 计入失败
         assert!(matches!(decide(&ok, "nope", &mut lk, 0), Decision::Deny(_)));
         assert_eq!(lk.fails(), 1);
         // 方案不支持 / 格式坏 → 拒绝但**不计失败**（那不是用户手误，
         // 计进去会让"哈希方案不对"被误认为"他一直输错"）
-        let md5 = ShadowEntry::Hash("$1$abc$def".to_string());
+        let md5 = ShadowEntry::Hash { hash: "$1$abc$def".to_string(), expires_day: None };
         let d = decide(&md5, "nope", &mut lk, 0);
         assert!(matches!(d, Decision::Deny(_)));
         assert_eq!(lk.fails(), 1, "系统性的错误不该计入用户失败次数");
@@ -337,19 +379,61 @@ mod tests {
         assert_eq!(lk.fails(), 0);
     }
 
+    /// 过期账户被拒 —— 用**正确口令**证明拒绝的原因是过期，而不是口令错。
     #[test]
     fn expired_account_is_denied() {
         let mut lk = Lockout::default();
-        let d = decide(&ShadowEntry::Expired, "hello", &mut lk, 0);
-        assert!(matches!(d, Decision::Deny(_)));
+        // 1970-01-02（第 1 天）：早就过期了
+        let past = ShadowEntry::Hash { hash: "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(), expires_day: Some(1) };
+        let d = decide(&past, "hello", &mut lk, 1_791_112_953);
+        assert!(matches!(d, Decision::Deny(_)), "过期账户即便口令正确也要拒：{d:?}");
         assert_eq!(lk.fails(), 0, "过期不是用户手误，不该计入失败");
+    }
+
+    /// **审计发现的严重问题（附录 L）**：`!` / `*` 是「**口令被禁用**」，必须**拒绝**。
+    ///
+    /// 修之前这两者被归入 `NoPassword` 并**放行** —— 于是管理员执行 `passwd -l user`
+    /// （或写入 `*`）之后，锁屏**按回车就能进**：一个"增加限制"的动作反而取消了限制。
+    /// 这条测试把两种写法都钉死。
+    #[test]
+    fn locked_password_is_denied_and_never_allowed() {
+        let mut lk = Lockout::default();
+        for shadow in [SHADOW_LOCKED_HASH, "root:*:19000:0:99999:7:::\n"] {
+            let entry = parse_shadow(shadow, "root");
+            assert_eq!(entry, ShadowEntry::Locked, "应当解析成 Locked");
+            // 空口令、随便什么口令，都不能进
+            for pw in ["", "hello", "!$6$abcdefgh$xx"] {
+                let d = decide(&entry, pw, &mut lk, 0);
+                assert!(
+                    matches!(d, Decision::Deny(_)),
+                    "口令被禁用的账户用 {pw:?} 竟然放行了：{d:?}"
+                );
+            }
+        }
+        assert_eq!(lk.fails(), 0, "「口令被禁用」不是用户输错，不该计入失败次数");
+    }
+
+    /// 过期日在**未来**时不算过期（原来把所有非零值都当已过期，会误拒正常账户）。
+    #[test]
+    fn future_expiry_date_is_not_expired() {
+        let mut lk = Lockout::default();
+        // 第 8 字段是"自 1970-01-01 起的天数"：47500 ≈ 2100 年
+        let future = ShadowEntry::Hash { hash: "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(), expires_day: Some(47_500) };
+        let d = decide(&future, "hello", &mut lk, 1_791_112_953);
+        assert_eq!(d, Decision::Allow, "未来才过期的账户不该现在被拒：{d:?}");
+        // 同一个哈希、过期日已到 → 拒绝
+        let past = ShadowEntry::Hash { hash: "$6$abcdefgh$bp46WUxDu2cphMRE0PvVJlqas2imuSq186YS793XKfmqn9XUEL17HECskUTZInaNigNndLLYc7A6yWBmFEFn3/".to_string(), expires_day: Some(20_000) };
+        assert!(
+            matches!(decide(&past, "hello", &mut lk, 1_791_112_953), Decision::Deny(_)),
+            "已到期就必须拒"
+        );
     }
 
     /// UUID 那句测试占位：失败计入只针对"口令不正确"，不针对其它错误。
     #[test]
     fn only_wrong_password_is_counted() {
         let mut lk = Lockout::default();
-        let bad_fmt = ShadowEntry::Hash("$6$".to_string());
+        let bad_fmt = ShadowEntry::Hash { hash: "$6$".to_string(), expires_day: None };
         for _ in 0..5 {
             let _ = decide(&bad_fmt, "x", &mut lk, 0);
         }
