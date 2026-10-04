@@ -360,6 +360,27 @@ fn audit_or_warn(gate: &Gate, tool: &str, level: Level, verdict: &str) {
     }
 }
 
+/// 口令策略失败的**文案**（§3.5）。
+///
+/// 与 `preview_error_text` 同一套：`accounts` 那一层只回答"哪里不合规"（码），
+/// 措辞在这里按界面语言渲染。
+fn password_problem_text(en: bool, p: crate::accounts::PasswordProblem) -> String {
+    use crate::accounts::PasswordProblem as P;
+    match (p, en) {
+        (P::Empty, false) => "口令不能为空",
+        (P::Empty, true) => "the password cannot be empty",
+        (P::TooShort, false) => "口令太短：至少 8 位",
+        (P::TooShort, true) => "the password is too short: at least 8 characters",
+        (P::TooLong, false) => "口令太长：最多 128 位",
+        (P::TooLong, true) => "the password is too long: at most 128 characters",
+        (P::ContainsNewline, false) => "口令里不能有换行",
+        (P::ContainsNewline, true) => "the password cannot contain a line break",
+        (P::ContainsColon, false) => "口令里不能有冒号",
+        (P::ContainsColon, true) => "the password cannot contain a colon",
+    }
+    .to_string()
+}
+
 fn handle_request(
     line: &str,
     cfg: &Config,
@@ -1161,6 +1182,62 @@ fn handle_request(
                 }
             }
         }
+        // §2.3：列出人类账户（只读）。门槛与其它 UI 通道请求一致。
+        Request::ListUsers => {
+            if !*is_ui {
+                return vec![Response::Error {
+                    code: 403,
+                    message: "listing accounts requires a registered UI channel".into(),
+                }];
+            }
+            match crate::accounts::list_users() {
+                Ok(list) => vec![Response::UserList { list }],
+                Err(e) => vec![Response::Error { code: 1, message: e }],
+            }
+        }
+        // §2.3：改口令。
+        //
+        // **旧口令的校验在合成器侧**（它有 `sha512crypt`，锁屏在用）：
+        // 也就是"先证明你是这个人，再让这里写新口令"。
+        // 这里只做两件事：本地策略校验、把新口令经 `chpasswd` 的 stdin 写下去。
+        Request::SetPassword { user, new_password, en } => {
+            if !*is_ui {
+                return vec![Response::Error {
+                    code: 403,
+                    message: "changing a password requires a registered UI channel".into(),
+                }];
+            }
+            // 策略先过（纯函数）：不合规就**不碰系统**，直接回执
+            if let Err(problem) = crate::accounts::check_new_password(&new_password) {
+                return vec![Response::PasswordAck {
+                    ok: false,
+                    message: password_problem_text(en, problem),
+                }];
+            }
+            // 审计只记**事实**（用户 + 动作）。这里根本没有口令字段；
+            // 而且 `tools::audit_args` 是白名单制、默认脱敏，是第二道保险。
+            let args = serde_json::json!({ "user": user, "action": "set_password" });
+            match crate::accounts::set_password(&user, &new_password) {
+                Ok(()) => {
+                    let _ = gate.audit_call("set_password", Level::L2, &args, verdict::ALLOWED);
+                    // 日志里也**只有用户名**，没有口令
+                    eprintln!("[aetherd] 口令已更新：{user}");
+                    vec![Response::PasswordAck {
+                        ok: true,
+                        message: if en {
+                            format!("password updated for {user}")
+                        } else {
+                            format!("已更新 {user} 的口令")
+                        },
+                    }]
+                }
+                Err(e) => {
+                    let _ = gate.audit_call("set_password", Level::L2, &args, verdict::FAILED);
+                    eprintln!("[aetherd] 口令更新失败：{user} —— {e}");
+                    vec![Response::PasswordAck { ok: false, message: e }]
+                }
+            }
+        }
         Request::ServiceControl { unit, action, en } => {
             // 服务控制是"改系统状态"，与剪贴板/配置重载同一门槛：**必须**由已注册的
             // UI 通道发起。此前这里是个桩（直接回 ok:false + "M3 就绪后生效"），
@@ -1361,6 +1438,51 @@ mod ipc_gating_tests {
             message.contains("system_power"),
             "拒绝时要告诉调用方正确的路径：{message}"
         );
+    }
+
+    /// §2.3：口令不合规时**不碰系统**（策略在纯函数里先过），直接回执；文案跟着语言。
+    ///
+    /// 这条不需要 root 也不需要目标系统 —— 它验证的是"坏输入根本走不到 `chpasswd`"。
+    #[test]
+    fn set_password_rejects_bad_password_before_touching_the_system() {
+        let mut is_ui = true;
+        let out = handle_line(
+            &aether_ipc::encode(&Request::SetPassword {
+                user: "alice".into(),
+                new_password: "short".into(), // 5 位 < 8
+                en: false,
+            }),
+            &mut is_ui,
+        );
+        match &out[0] {
+            Response::PasswordAck { ok, message } => {
+                assert!(!ok, "不合规口令不该成功");
+                assert!(message.contains("太短"), "中文界面应说明太短：{message}");
+            }
+            other => panic!("应是 PasswordAck，实得 {other:?}"),
+        }
+
+        // 同一个请求、`en: true` → 回执应当是英文（§3.5：语言是连接级状态）
+        let mut is_ui = true;
+        let out = handle_line(
+            &aether_ipc::encode(&Request::SetPassword {
+                user: "alice".into(),
+                new_password: "short".into(),
+                en: true,
+            }),
+            &mut is_ui,
+        );
+        match &out[0] {
+            Response::PasswordAck { ok, message } => {
+                assert!(!ok);
+                assert!(message.contains("too short"), "英文界面应说明 too short：{message}");
+                assert!(
+                    !message.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                    "英文回执里不该有汉字：{message}"
+                );
+            }
+            other => panic!("应是 PasswordAck，实得 {other:?}"),
+        }
     }
 
     /// 批次 I 回归：服务控制**必须**由已注册的 UI 通道发起。
@@ -1668,6 +1790,9 @@ mod ipc_gating_tests {
             "GetPolicy",
             "ListRemovable",
             "ListUpdates",
+            // §2.3：列出人类账户 —— 只读（读 /etc/passwd 里 uid 落在 [1000,65534) 的项），
+            // 不含口令哈希，也不改任何状态，所以不落审计。
+            "ListUsers",
         ];
 
         // 收集 `Request::X` 分支及其正文

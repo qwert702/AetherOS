@@ -6,6 +6,7 @@
 //!   供 Shell 指令条调用；离线快速意图先行，LLM 兜底
 //! - 所有工具执行经过权限闸门（docs/AI权限模型（AI-PERMISSIONS）-2026-09-05.md）+ 审计日志
 
+mod accounts;
 mod apps;
 mod intent;
 mod llm;

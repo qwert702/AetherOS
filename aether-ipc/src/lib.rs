@@ -143,6 +143,25 @@ pub enum Request {
     },
     /// 列出显示输出（§3.8 最小切片：如实报告，不驱动第二个输出）。
     GetDisplays,
+    /// 列出人类账户（§2.3，**只读**）。
+    ///
+    /// 范围说明：项目自己的决定是「先做单用户 + 口令；多用户留 M3」，
+    /// 所以这里只**看**，增删用户不在本批范围内。
+    ListUsers,
+    /// 改某个账户的口令（§2.3）。
+    ///
+    /// **旧口令的校验在合成器侧**（它已经有 `sha512crypt`，锁屏在用；aetherd 没有）。
+    /// 也就是：合成器先证明"你就是这个人"，再让 aetherd 写新口令。
+    /// 与其它 UI 通道请求一样，本请求也**要求已注册的 UI 通道**。
+    SetPassword {
+        user: String,
+        /// 新口令。**不进审计日志**（`audit_args` 白名单制，默认脱敏），
+        /// 也**不进 argv**（走 `chpasswd` 的 stdin —— argv 在 `ps` 里可见）。
+        new_password: String,
+        /// 界面是否英文（§3.5）：回执文案跟着语言。
+        #[serde(default)]
+        en: bool,
+    },
     /// 列出可移动存储设备（§3.7 最小切片）。
     ListRemovable,
     /// 只读挂载一个可移动设备（`dev` 必须是**扫描到的**设备名）。
@@ -189,6 +208,18 @@ pub struct DisplayWire {
 }
 
 /// 一个可移动设备（界面要显示的信息）。
+/// 一个**人类账户**的只读信息（§2.3）。
+///
+/// 只带"看得见的事实"：名字、uid、登录 shell。
+/// **不带**任何口令相关内容 —— 口令哈希永远不出 `/etc/shadow`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserInfo {
+    pub name: String,
+    pub uid: u32,
+    /// 登录 shell（`/bin/sh` / `/sbin/nologin` 之类）。
+    pub shell: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemovableWire {
     pub dev: String,
@@ -413,6 +444,10 @@ pub enum Response {
         outputs: Vec<crate::DisplayWire>,
     },
     /// 可移动设备列表（`Request::ListRemovable` 的应答）。
+    /// 人类账户列表（§2.3，只读）。
+    UserList {
+        list: Vec<UserInfo>,
+    },
     RemovableList {
         devices: Vec<crate::RemovableWire>,
     },
@@ -454,6 +489,11 @@ pub enum Response {
     /// 注意语义：`accepted = true` 只表示**受理**，不表示"已经关机了" ——
     /// 关机过程中进程会消失，不可能再回一条"完成"。调用方据此提示用户
     /// "正在关机"，而不是"已关机"。
+    /// 改口令的结果（§2.3）。`message` 里**不含口令**。
+    PasswordAck {
+        ok: bool,
+        message: String,
+    },
     PowerAck {
         action: PowerAction,
         accepted: bool,
