@@ -3409,3 +3409,57 @@ aether-init 的服务回执；审计两列的结构化存储 + 显示层取词�
 * `cargo test -p aether-compositor e2e`：相关 5 项通过（含本批 2 项）；
 * **单次** `cargo test --workspace`：见提交记录；Windows 与 **musl** 双目标 **0 错误 0 警告**；
 * `gates.py` 15/15（提交前先跑，**绿灯才提交**）。
+
+---
+
+## 附录 BY：§4.1 收口 —— 坐标点击跑通，且**用真实二进制调试**（2026-10-04 批次 BX-1）
+
+### BY.1 本批做了什么
+
+`--e2e` 的 JSON 脚本新增 **`click:x,y`**，并补上让脚本/测试**拿得到真实坐标**的查询：
+
+| 动作 | 说明 |
+|---|---|
+| `{"action":"click","args":{"x":…,"y":…}}` | 画一帧 → 按坐标找命中控件 → `control_center_click` → 产生的 `UiIntent` 交给 `apply_ui_intent` |
+| `{"action":"query","args":{"what":"status_cluster"}}` | 顶栏状态簇的**真实**矩形（x,y,w,h） |
+| `{"action":"query","args":{"what":"hits"}}` | 当前**全部**可点控件与坐标（含控件名） |
+| `{"action":"query","args":{"what":"dark"}}` / `"control_open"` | 点击效果的断言点 |
+
+关键仍然是**不另写一套**：注入调用的是主循环在用的 `control_center_click` 与 `apply_ui_intent`；
+命中表由 `Renderer::render_frame` 在**内存缓冲**上画帧时登记，所以整条链路不需要显示设备。
+
+### BY.2 两次"查询读到上一帧"——是**跑真实二进制**发现的
+
+我先按常识写了 `query: hits`，测试报"展开后应有可点控件，实得（空）"。两次都栽在同一个坑：
+
+* 命中区是**画帧时**登记的；
+* 而"点状态簇 → 控制中心展开"这个状态变化发生在**渲染之后**；
+* 于是紧接着的查询读到的是**上一帧**的表（空）。
+
+处理：把"画一帧刷新命中表"抽成 `inj_render_once`，`click` 与两个查询都先调它。
+**定位它的办法不是猜**：直接
+
+    printf '%s' '{"action":"query","args":{"what":"status_cluster"}}' \
+      | cargo run --bin aether-compositor -- --e2e
+
+真实二进制立刻回 `0,0,0,0`（而不是我以为的坐标）—— 于是原因一目了然。
+
+**这条值得单独记**：`--e2e` 之所以有价值，正是因为它**不需要显示设备就能跑真实二进制**；
+本批我用它当场定位了两个问题，而不是靠读代码推断。
+
+### BY.3 一条不写死坐标的测试
+
+`e2e_click_reaches_real_control_center` 分三段跑（布局确定，坐标可跨段复用）：
+
+1. 问 `status_cluster` → 算出中心 → 点它 → 断言 `control_open` 为真；
+2. 再问 `hits` → 从**真实命中表**里找出 `ToggleDark` → 算中心；
+3. 点它 → 断言 `dark` 状态**翻转**。
+
+也就是说：**"点得到"这件事有据可依** —— 坐标来自被测程序自己报出来的表，
+而不是我在测试里写死的数字。
+
+### BY.4 验证
+
+* `cargo test -p aether-compositor e2e_click`：通过；
+* **单次** `cargo test --workspace`：见提交记录；Windows 与 **musl** 双目标 **0 错误 0 警告**；
+* `gates.py` 15/15（**绿灯才提交**）。

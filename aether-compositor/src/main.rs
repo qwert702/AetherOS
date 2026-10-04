@@ -2484,6 +2484,44 @@ fn send_tool_call(
 /// 2. 非法输入（不是 JSON / 未知动作 / 参数不合法）**逐条如实报错并继续**，
 ///    不整批中止 —— 一次跑完看到全部问题，比修一个跑一次省时间；
 /// 3. 输出是**机器可读**的 JSONL（Python 侧断言用），不是给人看的散文。
+/// 画一帧，把**命中表**刷新到当前状态（§4.1）。
+///
+/// 点击与 `query: hits` 共用它：命中区是画帧时登记的，
+/// 而"展开控制中心"这个状态变化发生在渲染**之后** ——
+/// 不重画就会读到上一帧的空表。
+fn inj_render_once(
+    renderer: &mut draw::Renderer,
+    buf: &mut [u32],
+    tr: Option<&text::TextRenderer>,
+    desktop: &Desktop,
+    ai_input: &str,
+    ime: &ime::Ime,
+    mouse: (f32, f32),
+) {
+    let ui = draw::UiState {
+        snap: None,
+        toast: None,
+        ai_input,
+        ime,
+        ai_cursor: 0,
+        ai_focused: false,
+        ai_thinking: false,
+        ai_status: draw::AiStatus::Offline,
+        ai_reply: None,
+        mouse,
+        mouse_down: false,
+        audio_label: "",
+        audio_volume: 0,
+        audio_enabled: false,
+        open_menu: None,
+        show_installer: false,
+        installer: None,
+        confirm: None,
+    };
+    renderer.prepare_background(WIDTH, HEIGHT, 1.2);
+    renderer.render_frame(buf, WIDTH, HEIGHT, 1.2, desktop, &ui, tr);
+}
+
 fn run_e2e_script(
     script: &str,
     desktop: &mut Desktop,
@@ -2498,6 +2536,14 @@ fn run_e2e_script(
     let mut inj_cursor = textview::TextCursor::default();
     let mut inj_ime = ime::Ime::default();
     let (inj_tx, _inj_rx) = mpsc::channel::<AiEvent>();
+    // 点击要用：命中表是**画帧时**填的，所以这里要有一个真实的 Renderer。
+    // 无显示设备也能画（画进内存缓冲）—— 这正是 `--shot` 那条路径的做法。
+    let mut inj_renderer = draw::Renderer::new(WIDTH, HEIGHT);
+    let inj_tr = text::TextRenderer::load();
+    let mut inj_buf = vec![0u32; WIDTH * HEIGHT];
+    let mut inj_toast: Option<(String, Instant)> = None;
+    // `probe()` 是真实的构造入口（会去问一次 mixer；拿不到就如实标未检测）
+    let mut inj_audio = audio::Audio::probe();
     for (idx, raw) in script.lines().enumerate() {
         let lineno = idx + 1;
         let line = raw.trim();
@@ -2527,6 +2573,54 @@ fn run_e2e_script(
                     // §4.1：注入之后要**断得准**，所以把注入产生的结果也做成可查询状态
                     "ai_input" => emit("query", true, &inj_input, &mut out),
                     "space" => emit("query", true, &spaces.current().to_string(), &mut out),
+                    // §4.1：点击的效果要能断言
+                    "dark" => emit(
+                        "query",
+                        true,
+                        if inj_renderer.settings.dark_mode { "true" } else { "false" },
+                        &mut out,
+                    ),
+                    "control_open" => emit(
+                        "query",
+                        true,
+                        if inj_renderer.control_open { "true" } else { "false" },
+                        &mut out,
+                    ),
+                    // §4.1：把**真实**可点区域报出来。
+                    // 脚本是静态的、测试是动态的 —— 后者据此算出坐标再点，
+                    // 所以"点得到"这件事有据可依，而不是把坐标写死。
+                    "status_cluster" => {
+                        // 与 hits 同理：状态簇的位置也是**画帧时**定的，不先画就是 0,0,0,0
+                        inj_render_once(
+                            &mut inj_renderer,
+                            &mut inj_buf,
+                            inj_tr.as_ref(),
+                            desktop,
+                            &inj_input,
+                            &inj_ime,
+                            (0.0, 0.0),
+                        );
+                        let r = inj_renderer.status_cluster;
+                        emit("query", true, &format!("{},{},{},{}", r.x, r.y, r.w, r.h), &mut out)
+                    }
+                    "hits" => {
+                        // 先刷新到当前状态，否则读到的是"上一次点击之前"的命中表
+                        inj_render_once(
+                            &mut inj_renderer,
+                            &mut inj_buf,
+                            inj_tr.as_ref(),
+                            desktop,
+                            &inj_input,
+                            &inj_ime,
+                            (0.0, 0.0),
+                        );
+                        let list: Vec<String> = inj_renderer
+                            .control_hits
+                            .iter()
+                            .map(|(r, h)| format!("{},{},{},{},{:?}", r.x, r.y, r.w, r.h, h))
+                            .collect();
+                        emit("query", true, &list.join("|"), &mut out)
+                    }
                     // 窗口标题用连接符分隔：脚本据此判断"打开的是不是设置窗口"
                     "titles" => {
                         let names: Vec<&str> =
@@ -2576,6 +2670,40 @@ fn run_e2e_script(
                         &format!("未知导航键「{key}」（up/down/left/right/home/end/pageup/pagedown/delete）"),
                         &mut out,
                     ),
+                }
+            }
+            // §4.1 坐标点击：`{"action":"click","args":{"x":120,"y":8}}`
+            // 命中表由 `render_frame` 填写 → 找命中的控件 → `control_center_click`
+            // （主循环用的同一个函数）→ 产生的 `UiIntent` 交给 `apply_ui_intent`（同一个）。
+            "click" => {
+                let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(-1.0) as f32;
+                let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(-1.0) as f32;
+                inj_render_once(
+                    &mut inj_renderer,
+                    &mut inj_buf,
+                    inj_tr.as_ref(),
+                    desktop,
+                    &inj_input,
+                    &inj_ime,
+                    (x, y),
+                );
+                let mut intent = None;
+                let handled = control_center_click(
+                    &mut inj_renderer,
+                    desktop,
+                    &mut inj_ime,
+                    x,
+                    y,
+                    true,
+                    &mut intent,
+                );
+                if let Some(intent) = intent {
+                    apply_ui_intent(intent, &inj_tx, &mut inj_toast, &mut inj_renderer, &mut inj_audio);
+                }
+                if handled {
+                    emit("click", true, &format!("{x},{y}"), &mut out);
+                } else {
+                    emit("click", false, &format!("({x},{y}) 处没有可点的控件"), &mut out);
                 }
             }
             // §4.1 字符注入：`{"action":"key","args":{"ch":"a"}}` —— 打进 AI 指令条
@@ -6266,6 +6394,57 @@ fn snap_now(desktop: &mut Desktop, lay: Layout) {
 
 #[cfg(test)]
 mod control_center_tests {
+    /// §4.1：跑一段脚本，把最后一行 JSONL 的 `result` 取出来。
+    fn e2e_result(script: &str) -> String {
+        let mut desktop = demo_desktop();
+        let mut undo = UndoStack::new();
+        let mut spaces: spaces::Spaces<draw::Win> = spaces::Spaces::new();
+        let out = run_e2e_script(script, &mut desktop, &mut undo, &mut spaces);
+        let line = out.last().cloned().unwrap_or_default();
+        let v: serde_json::Value = serde_json::from_str(&line).expect("应是 JSONL");
+        v.get("result").and_then(|r| r.as_str()).unwrap_or("").to_string()
+    }
+
+    /// §4.1：坐标点击要能点到**真实控件** —— 不是把坐标写死在测试里。
+    ///
+    /// 分三段跑（每段一次独立运行，布局是确定的，所以坐标可跨段使用）：
+    /// ① 问状态簇的真实位置；② 点它展开控制中心，再问**展开后**的命中表；
+    /// ③ 点命中表里的「深色模式」，断言状态真的翻转。
+    #[test]
+    fn e2e_click_reaches_real_control_center() {
+        // ① 状态簇位置（x,y,w,h）
+        let sc = e2e_result(r#"{"action":"query","args":{"what":"status_cluster"}}"#);
+        let nums: Vec<i32> = sc.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        assert_eq!(nums.len(), 4, "状态簇应报出 x,y,w,h，实得 {sc:?}");
+        let (scx, scy) = (nums[0] + nums[2] / 2, nums[1] + nums[3] / 2);
+
+        // ② 点状态簇 → 控制中心展开；此时命中表才有内容
+        let script = format!(
+            "{{\"action\":\"click\",\"args\":{{\"x\":{scx},\"y\":{scy}}}}}\n{{\"action\":\"query\",\"args\":{{\"what\":\"hits\"}}}}"
+        );
+        let hits = e2e_result(&script);
+        assert!(hits.contains("ToggleDark"), "展开后应有「深色模式」可点，实得：{hits}");
+
+        // 从命中表里取 ToggleDark 的中心
+        let dark = hits
+            .split('|')
+            .find(|h| h.contains("ToggleDark"))
+            .expect("应有 ToggleDark");
+        let d: Vec<&str> = dark.split(',').collect();
+        let (dx, dy) = (
+            d[0].parse::<i32>().unwrap() + d[2].parse::<i32>().unwrap() / 2,
+            d[1].parse::<i32>().unwrap() + d[3].parse::<i32>().unwrap() / 2,
+        );
+
+        // ③ 展开 → 点「深色模式」→ 断言状态翻转
+        let script = format!(
+            "{{\"action\":\"click\",\"args\":{{\"x\":{scx},\"y\":{scy}}}}}\n{{\"action\":\"click\",\"args\":{{\"x\":{dx},\"y\":{dy}}}}}\n{{\"action\":\"query\",\"args\":{{\"what\":\"dark\"}}}}"
+        );
+        let before = e2e_result(r#"{"action":"query","args":{"what":"dark"}}"#);
+        let after = e2e_result(&script);
+        assert_ne!(before, after, "点了「深色模式」之后状态应当翻转（{before} → {after}）");
+    }
+
     /// §4.1：`--e2e` 现在能**注入键盘**，并且注入结果可以被查询断言。
     ///
     /// 跑的是真实脚本字符串 → JSONL，中间走 `dispatch_nav`
