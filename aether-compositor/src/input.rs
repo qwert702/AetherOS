@@ -134,6 +134,52 @@ const KEY_PAGEDOWN: u16 = 109;
 const KEY_DELETE: u16 = 111;
 
 /// 启动输入采集线程：持续打开 /dev/input/event* 并把事件送上通道。
+/// `Super+键` 的意图。**纯数据**，由 [`super_intent`] 产出、由主循环执行。
+///
+/// 把它独立出来的理由见批次 AQ-1：这个分支历史上出过三次问题
+///（守卫顺序、无条件调用、写死常量），而那三次的共同点都是"判断写在执行里"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuperIntent {
+    /// `Super+L`：锁屏（**最高优先级** —— 见 `super_intent` 的顺序说明）
+    Lock,
+    /// `Super+数字`：切到第 N 个桌面（0 基）
+    SwitchSpace(usize),
+    /// `Super+Shift+数字`：把当前窗口搬到第 N 个桌面（0 基）
+    MoveToSpace(usize),
+    /// 其余 Super 组合键：**明确忽略**（输入层已保证它们不会漏成普通字符）
+    Ignore,
+}
+
+/// 判断一个 `Super+键` 想做什么。
+///
+/// `space_count` 是**当前**桌面数（默认 4、可增删到 8）—— 由调用方传入，
+/// 而不是在函数里读常量：这正是附录 P 那个 bug 的修法
+///（当时的键位判断写死了默认值 4，于是 `Super+5..8` 静默无效）。
+///
+/// 顺序（**这是本函数存在的意义**）：
+/// 1. `Super+L` 且不带 Shift → 锁屏。**必须在数字判断之前**，
+///    否则将来的某个改动可能让别的组合键抢走它；
+/// 2. `Super+数字` 且 1..=`space_count` → 切换/搬运；
+/// 3. 其余一律 `Ignore` —— **不是"忘了处理"，而是明确的兜底**：
+///    附录 O 那个 bug 就是"在这个位置之前塞了一句无条件调用"造成的。
+pub fn super_intent(c: char, shift: bool, space_count: usize) -> SuperIntent {
+    if c == 'l' && !shift {
+        return SuperIntent::Lock;
+    }
+    if let Some(d) = c.to_digit(10) {
+        // `to_digit(10)` 给 0..9；0 不是"第 0 个桌面"，忽略
+        if d >= 1 && (d as usize) <= space_count {
+            let idx = d as usize - 1;
+            return if shift {
+                SuperIntent::MoveToSpace(idx)
+            } else {
+                SuperIntent::SwitchSpace(idx)
+            };
+        }
+    }
+    SuperIntent::Ignore
+}
+
 #[cfg(target_os = "linux")]
 pub fn spawn(tx: Sender<UiEvent>) {
     std::thread::spawn(move || {
@@ -625,6 +671,46 @@ mod tests {
         translate(&ev(EV_KEY, KEY_RIGHTMETA, 1), &mut m2);
         assert!(m2.meta, "右 Meta 也应算 Meta");
         assert_eq!(translate(&ev(EV_KEY, KEY_L, 1), &mut m2), vec![UiEvent::Super('l', false)]);
+    }
+
+    /// **回归：三个历史 bug 的状态组合都被钉住**（批次 AQ-1）。
+    ///
+    /// 这三条对应的正是附录 K / O / P —— 它们当年都藏在这个分支里。
+    #[test]
+    fn super_intent_covers_the_three_historical_bugs() {
+        // ① 附录 O：**其它 Super 组合键不许锁屏**（当年分支开头无条件锁屏）
+        for c in ['q', 'w', 'e', 'z', '0', '9', ' '] {
+            assert_ne!(
+                super_intent(c, false, 4),
+                SuperIntent::Lock,
+                "Super+{c} 不该锁屏"
+            );
+        }
+        // ② 附录 P：**数量是参数，不是常量** —— 5 个桌面时 Super+5 应当可用
+        assert_eq!(super_intent('5', false, 4), SuperIntent::Ignore, "4 个桌面时 Super+5 无效");
+        assert_eq!(
+            super_intent('5', false, 5),
+            SuperIntent::SwitchSpace(4),
+            "5 个桌面时 Super+5 必须能用（写死常量就错了）"
+        );
+        assert_eq!(super_intent('8', false, 8), SuperIntent::SwitchSpace(7));
+        assert_eq!(super_intent('9', false, 8), SuperIntent::Ignore, "上限之外忽略");
+        // ③ 附录 K：**锁屏的判断在最前** —— 数字判断不能抢走它
+        assert_eq!(super_intent('l', false, 4), SuperIntent::Lock);
+        assert_eq!(super_intent('l', true, 4), SuperIntent::Ignore, "Super+Shift+L 不是锁屏");
+        // 0 不是"第 0 个桌面"
+        assert_eq!(super_intent('0', false, 8), SuperIntent::Ignore);
+    }
+
+    /// 数字键的两种模式：`Super+N` 切、`Super+Shift+N` 搬。
+    #[test]
+    fn super_digits_switch_or_move() {
+        assert_eq!(super_intent('1', false, 4), SuperIntent::SwitchSpace(0));
+        assert_eq!(super_intent('4', false, 4), SuperIntent::SwitchSpace(3));
+        assert_eq!(super_intent('1', true, 4), SuperIntent::MoveToSpace(0));
+        assert_eq!(super_intent('4', true, 4), SuperIntent::MoveToSpace(3));
+        // 只有 1 个桌面时，Super+2 无效（而不是越界）
+        assert_eq!(super_intent('2', false, 1), SuperIntent::Ignore);
     }
 
 }

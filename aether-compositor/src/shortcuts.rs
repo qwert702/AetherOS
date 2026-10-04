@@ -49,9 +49,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
         keys: "Super+L",
         desc: "锁定屏幕（解锁需重新验证口令）",
         desc_en: "Lock the screen (unlocking requires the password)",
-        // 探针跟着实现走：`Super` 分支后来合并成了 `Super(c, shift)`（§5.4 要区分
-        // `Super+1` 与 `Super+Shift+1`），原来那条探针当场失效 —— 这正是探针的用处。
-        probe: "if c == 'l' && !shift {",
+        // 探针跟着实现走（这条探针已经失效过两次，每次都说明它确实盯着实现）：
+        // ① `Super` 分支合并成 `Super(c, shift)` 时失效一次；
+        // ② §4.1 把"判断"抽成 `input::super_intent` 之后又失效一次 ——
+        //    这次锚在**执行分支**上：锁屏这件事只该由 `SuperIntent::Lock` 那一支执行。
+        probe: "input::SuperIntent::Lock =>",
         in_input: false,
     },
     Shortcut {

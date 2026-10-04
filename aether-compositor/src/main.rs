@@ -621,53 +621,49 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Super(c, shift) => {
-                    // **注意**：这里曾经有一句无条件的锁屏调用（`renderer` 上的那个）——
-                    // 于是**任何 Super+键都会锁屏**（Super+1..4 切桌面时直接把人锁在外面，
-                    // 那两个快捷键等于不可用）。锁屏只属于下面的 `c == 'l'` 分支，
-                    // 并有源码探针测试钉住"只出现一次、且在那个分支之后"。
+                    // §4.1：**判断交给纯函数**（`input::super_intent`），这里只执行结果。
                     //
-                    // §2.3：Super+L 锁屏。**这是全局快捷键**，所以放在事件匹配里、
-                    // 走的是与其它输入同一条路径 —— 不再是"某个页面里的按钮"。
-                    //
-                    // §5.4 虚拟桌面：`Super+1..4` 切空间，`Super+Shift+1..4` 把当前窗口搬过去。
-                    // 两件事都要清掉拖拽与吸附预览：那些状态属于**上一个空间的窗口**
-                    // （与关窗同一类问题：窗口数组变了而拖拽状态还指着旧下标，P2-3 那次越界就是这么来的）。
-                    if c == 'l' && !shift {
-                        renderer.lock.lock();
-                        tty_log("屏幕已锁定（Super+L）");
-                        continue;
-                    }
-                    if let Some(d) = c.to_digit(10) {
-                        // **用动态数量**（`spaces.count()`），不是默认常量 `COUNT` ——
-                        // 空间数在 §5.4 之后是可变的（默认 4、上限 8），
-                        // 写死常量会让 `Super+5..8` 静默无效，而界面还在提示"可切过去"。
-                        if d >= 1 && (d as usize) <= spaces.count() {
-                            let i = (d - 1) as usize;
-                            if shift {
-                                if spaces.move_active(i, &mut desktop.wins, &mut desktop.active) {
-                                    drag = None;
-                                    snap_zone = layout::Snap::None;
-                                    push_toast(
-                                        &mut toast,
-                                        &mut renderer.notifs,
-                                        format!("已移到桌面 {}", i + 1),
-                                        notifications::Kind::Info,
-                                    );
-                                } else {
-                                    push_toast(
-                                        &mut toast,
-                                        &mut renderer.notifs,
-                                        "没有可移动的窗口".to_string(),
-                                        notifications::Kind::Info,
-                                    );
-                                }
-                            } else if spaces.switch(i, &mut desktop.wins, &mut desktop.active) {
+                    // 为什么这样分：这个分支历史上出过三次问题（审计附录 K / O / P），
+                    // 三次的共同点都是"判断写在执行里" —— 无条件调用、写死常量、顺序放错。
+                    // 抽成纯函数之后：那些状态组合都被单元测试钉住；
+                    // 执行侧也**不再有机会塞进一句无条件调用**（没有条件可塞了）。
+                    match input::super_intent(c, shift, spaces.count()) {
+                        // 锁屏：最高优先级（顺序由 `super_intent` 的测试守着）
+                        input::SuperIntent::Lock => {
+                            renderer.lock.lock();
+                            tty_log("屏幕已锁定（Super+L）");
+                        }
+                        // 把当前窗口搬到第 N 个桌面
+                        input::SuperIntent::MoveToSpace(i) => {
+                            // 窗口数组变了：拖拽与吸附预览必须一起清掉
+                            //（那些状态属于上一个空间的窗口 —— 与关窗同一类问题）
+                            if spaces.move_active(i, &mut desktop.wins, &mut desktop.active) {
+                                drag = None;
+                                snap_zone = layout::Snap::None;
+                                push_toast(
+                                    &mut toast,
+                                    &mut renderer.notifs,
+                                    format!("已移到桌面 {}", i + 1),
+                                    notifications::Kind::Info,
+                                );
+                            } else {
+                                push_toast(
+                                    &mut toast,
+                                    &mut renderer.notifs,
+                                    "没有可移动的窗口".to_string(),
+                                    notifications::Kind::Info,
+                                );
+                            }
+                        }
+                        // 切到第 N 个桌面
+                        input::SuperIntent::SwitchSpace(i) => {
+                            if spaces.switch(i, &mut desktop.wins, &mut desktop.active) {
                                 drag = None;
                                 snap_zone = layout::Snap::None;
                                 // 自检：切完之后"当前空间那一格必须是空的"（不变量）。
                                 // 只在调试构建里查，代价为零；真出问题时能立刻指出是哪一步破坏的。
                                 debug_assert!(spaces.invariant_holds(), "虚拟桌面不变量被破坏");
-                                // 提示带上"这是第几个桌面/共几个 + 这个桌面上有几个窗口"——
+                                // 提示带上"第几个/共几个 + 这个桌面上有几个窗口"——
                                 // 只说"切过去了"信息太少，用户会想知道自己到了哪儿、那儿有什么
                                 push_toast(
                                     &mut toast,
@@ -681,18 +677,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                                     notifications::Kind::Info,
                                 );
                             }
-                            continue;
                         }
+                        // 其余 Super 组合键：**明确忽略** —— 兜底的作用就在这里，
+                        // 但输入层已保证它们不会漏成普通字符（不会退回成 `Char`）
+                        input::SuperIntent::Ignore => {}
                     }
-                    // 其余 Super 组合键：**明确忽略**（输入层已保证它们不会漏成普通字符）
                 }
-                // 原来这里有一条 `Super(c) => { let _ = c; }` 的兜底分支
-                // （作用是"显式吃掉未映射的 Super 组合键，否则 match 不穷尽"）。
-                // 2026-10-03 §5.4 把 Super 的分支合并成一个之后，它变成**不可达**，
-                // 于是删掉 —— 兜底的作用由上面那个分支直接承担：
-                // 未映射的组合键走到分支末尾自然结束，**不会退回成普通字符**
-                // （输入层已经保证 Super 组合键不产生 `Char`）。
-                // 顺带：这条不可达是 **musl 静态检查**报出来的，Windows 构建看不到这段。
                 input::UiEvent::Char(c) => {
                     // Ctrl+Space 在 evdev 侧通常落成 NUL —— 用它当中英切换键。
                     // 换成显式的 UiEvent 变体更好，但那要改 input.rs 的采集层；
@@ -7020,13 +7010,16 @@ mod wayland_sync_tests {
             "锁屏调用应当只有一处（Super+L 分支内），实得 {calls} 处 —— \
              多出来的那份很可能又挂在了一个更宽的条件上"
         );
+        // 锁屏调用必须在**执行 `SuperIntent::Lock` 的那个分支**里 ——
+        // 判断本身已经在 `input::super_intent`（有单元测试），
+        // 这里守的是"执行侧只有这一处会锁屏"。
         let branch = src
-            .find("if c == 'l' && !shift {")
-            .expect("找不到 Super+L 分支");
+            .find("input::SuperIntent::Lock =>")
+            .expect("找不到 SuperIntent::Lock 的执行分支");
         let call = src.find(needle).expect("找不到锁屏调用");
         assert!(
             call > branch,
-            "锁屏调用必须在 `if c == 'l' && !shift` 之后（否则别的 Super 组合键也会锁屏）"
+            "锁屏调用必须在 `SuperIntent::Lock` 分支内（否则别的 Super 组合键也会锁屏）"
         );
     }
 
