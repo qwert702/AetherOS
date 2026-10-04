@@ -570,6 +570,112 @@ fn handle_request(
                 ),
             }]
         }
+        Request::GetSnapshots => {
+            // 快照清单会暴露"这台机器上装了什么/配了什么"（文件名本身就说明问题）——
+            // 与读权限策略同一门槛：必须是已注册的 UI 通道。
+            if !*is_ui {
+                audit_or_warn(gate, "get_snapshots", Level::L0, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "读取快照清单必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let root = std::path::PathBuf::from(crate::snapshots::ROOT);
+            let items: Vec<aether_ipc::SnapshotWire> = crate::snapshots::list(&root)
+                .into_iter()
+                .map(|m| aether_ipc::SnapshotWire {
+                    id: m.id,
+                    created_unix: m.created_unix,
+                    file_count: m.entries.iter().filter(|e| e.existed).count(),
+                    total: m.entries.len(),
+                })
+                .collect();
+            eprintln!("[aetherd] 快照清单已读取（{} 个）", items.len());
+            vec![Response::SnapshotList { items }]
+        }
+        Request::CreateSnapshot => {
+            if !*is_ui {
+                audit_or_warn(gate, "create_snapshot", Level::L1, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "创建快照必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let root = std::path::PathBuf::from(crate::snapshots::ROOT);
+            let now = crate::timesync::now_unix().0;
+            match crate::snapshots::create(&root, now) {
+                Ok(m) => {
+                    let n = m.entries.iter().filter(|e| e.existed).count();
+                    let args = serde_json::json!({ "id": m.id, "files": n });
+                    if let Err(e) =
+                        gate.audit_call("create_snapshot", Level::L1, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 配置快照已创建：{}（{n} 个文件）", m.id);
+                    vec![Response::SnapshotAck {
+                        ok: true,
+                        message: format!("已创建配置快照 {}（{n} 个文件）", m.id),
+                        notes: Vec::new(),
+                    }]
+                }
+                Err(e) => {
+                    let args = serde_json::json!({ "error": e.to_string() });
+                    if let Err(e2) =
+                        gate.audit_call("create_snapshot", Level::L1, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 创建配置快照失败：{e}");
+                    vec![Response::SnapshotAck {
+                        ok: false,
+                        message: format!("创建快照失败：{e}"),
+                        notes: Vec::new(),
+                    }]
+                }
+            }
+        }
+        Request::RestoreSnapshot { id } => {
+            if !*is_ui {
+                audit_or_warn(gate, "restore_snapshot", Level::L2, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "回滚必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            // **回滚改的是系统配置**：按 L2 记审计（不改闸门流程，因为它不是 AI 工具调用，
+            // 但审计里必须留下"谁在什么时候回滚到哪个点"）。
+            let root = std::path::PathBuf::from(crate::snapshots::ROOT);
+            let args = serde_json::json!({ "id": &id });
+            match crate::snapshots::restore(&root, &id) {
+                Ok(notes) => {
+                    if let Err(e) =
+                        gate.audit_call("restore_snapshot", Level::L2, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 已回滚到快照 {id}（{} 个文件）", notes.len());
+                    vec![Response::SnapshotAck {
+                        ok: true,
+                        message: format!("已回滚到配置快照 {id}"),
+                        notes,
+                    }]
+                }
+                Err(e) => {
+                    if let Err(e2) =
+                        gate.audit_call("restore_snapshot", Level::L2, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 回滚失败：{id} —— {e}");
+                    vec![Response::SnapshotAck {
+                        ok: false,
+                        message: format!("回滚失败：{e}"),
+                        notes: Vec::new(),
+                    }]
+                }
+            }
+        }
         Request::SyncTime => {
             if !*is_ui {
                 audit_or_warn(gate, "sync_time", Level::L1, verdict::REJECTED_NO_UI);

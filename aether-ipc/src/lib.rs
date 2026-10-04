@@ -112,6 +112,14 @@ pub enum Request {
     },
     /// 查询时间同步状态（上次偏移、当前系统时区）。
     GetTimeStatus,
+    /// 列举配置快照（§5.6）。
+    GetSnapshots,
+    /// 立刻创建一个配置快照。
+    CreateSnapshot,
+    /// 回滚到某个快照。
+    RestoreSnapshot {
+        id: String,
+    },
     /// 设置某个工具的策略。**工具名必须存在于注册表**（服务端会校验）——
     /// 允许写入不存在的工具名会留下"死配置"：用户以为禁了某个东西，其实没有。
     SetToolPolicy {
@@ -135,6 +143,20 @@ pub enum ToolPolicyWire {
     Allow,
     /// 禁止（优先于一切）
     Deny,
+}
+
+/// 一条快照（只带界面要显示的信息）。
+///
+/// **名字里带"配置"**：它是配置文件快照，不是盘镜像 —— 界面上也要这么写，
+/// 否则用户会以为"回滚能救回我删掉的照片"。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotWire {
+    pub id: String,
+    pub created_unix: i64,
+    /// 覆盖了几个"快照时存在的"文件
+    pub file_count: usize,
+    /// 一共列出多少个受管文件（含当时不存在的）
+    pub total: usize,
 }
 
 /// 编辑器要的一行：工具名 + 等级 + 当前策略。
@@ -277,6 +299,17 @@ pub enum Response {
         last_offset_ms: i64,
         /// 上次对时的 Unix 秒；从未对过为 0
         last_sync_unix: i64,
+    },
+    /// 快照列表（`Request::GetSnapshots` 的应答）。
+    SnapshotList {
+        items: Vec<SnapshotWire>,
+    },
+    /// 快照创建/回滚的回执。
+    SnapshotAck {
+        ok: bool,
+        message: String,
+        /// 回滚时每个文件一行说明（创建时为空）
+        notes: Vec<String>,
     },
     /// 策略写入回执（`Request::SetToolPolicy` 的应答）。
     PolicyAck {

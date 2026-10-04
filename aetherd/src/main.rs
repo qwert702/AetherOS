@@ -14,6 +14,7 @@ mod modelcfg;
 mod netset;
 mod policy;
 mod timesync;
+mod snapshots;
 mod perm;
 mod router;
 mod server;
