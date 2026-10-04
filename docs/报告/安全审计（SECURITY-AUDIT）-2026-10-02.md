@@ -3148,3 +3148,51 @@ UI 直接把那一列原样画出来，所以这个不一致一直没有暴露�
 * **单次** `cargo test --workspace`：**731 通过 / 0 失败**（+1：`level_text` 的映射与透传测试）；
 * Windows 与 **musl** 双目标 **0 错误 0 警告**；`gates.py` 15/15；
 * **未实机验证**：真机看审计页的等级列（新日志显示 localised 名，旧日志仍是原文）。
+
+---
+
+## 附录 BS：拒绝理由改码 —— 存储型文案的最后一块（2026-10-04 批次 BR-1）
+
+### BS.1 做了什么
+
+`Verdict::Denied(String)` 里那句话说到底也是**写进审计日志**的（`Gate::audit`），
+写进去就定死了语言。改成**码**：
+
+| 场景 | 存进日志的 | 界面显示（中文 / 英文） |
+|---|---|---|
+| 策略禁止（用户把工具设成"禁止"） | `denied:policy_deny` | 已拒绝：该工具被设为「禁止」/ denied: the tool is set to deny |
+| 用户拒绝过（TTL 内不再问） | `denied:user_denied:300` | 已被用户拒绝，300 秒内不再询问 / denied by the user; not asking again for 300s |
+
+两个细节：
+
+* **工具名不再进理由** —— 它在审计的另一列里（`install_disk` 那种重复是多余的）；
+* **旧日志原样透传** —— 旧行里是「该工具已被用户明确禁止（install_disk）」，
+  显示层不认识就原样显示，不会变空白（有测试）。
+
+### BS.2 顺带修掉一个既有小缺口
+
+审计页以前把 `allowed` / `needs_confirmation` / `failed` 这些 token **原样画在界面上** ——
+中文界面里也是英文。现在走 `verdict_text`：显示为「已放行 / 待确认 / 失败」。
+
+这属于"顺手把不一致修掉"，不是本批的目标，但**不修就等于留着一处英文**。
+
+### BS.3 两处测试断言改成断言**码**
+
+`policy_actually_changes_the_verdict` 与 `user_denial_makes_denied_reachable`
+原来断言"理由里含'禁止'/'已被用户拒绝'" —— 又是**断言措辞**。
+改成断言稳定码（`policy_deny` / `user_denied:` 前缀），措辞再改也不会误报。
+（这是附录 BN.3 那条教训的第二次应用。）
+
+### BS.4 仍未做
+
+* `Effect::Ask` 的**原因**（"该工具被设为「每次询问」"）—— 它是**发给界面显示**的
+  （确认卡片），不是存盘，所以属"显示型"；要把它翻对，得把 `en` 传进
+  `policy::effective`（下一批）；
+* 工具执行路径的 clipboard 文案（`tools::execute` 还没有 `en`）；
+* `llm` / `modelcfg` 的错误文本；`aether-ops` 诊断正文；`aether-install` 命令行文案。
+
+### BS.5 验证
+
+* **单次** `cargo test --workspace`：**732 通过 / 0 失败**（+1 新测试，并加强了 2 条）；
+* Windows 与 **musl** 双目标 **0 错误 0 警告**；`gates.py` 15/15；
+* **未实机验证**：真机看审计页的结论列（新日志显示本地化文案，旧日志原样）。

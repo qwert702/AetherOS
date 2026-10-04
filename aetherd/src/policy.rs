@@ -119,6 +119,31 @@ impl ToolPolicy {
     }
 }
 
+/// 拒绝的**原因码**（§3.5）。
+///
+/// 这里只放码、不放人话：码会被写进审计日志（写入那一刻就定死语言），
+/// 人话由显示层按界面语言渲染。工具名在审计的另一列里，不在这里重复。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenyReason {
+    /// 用户把该工具设成了"禁止"（策略优先于一切）
+    PolicyDenied,
+}
+
+impl DenyReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            DenyReason::PolicyDenied => "policy_deny",
+        }
+    }
+}
+
+impl std::fmt::Display for DenyReason {
+    /// `Display` 给**存储/日志**用，所以输出**码**而不是人话。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
 /// 策略判定结果（"该怎么办"）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
@@ -126,8 +151,8 @@ pub enum Effect {
     Allow,
     /// 需要用户确认（带上要显示给用户的原因）。
     Ask(&'static str),
-    /// 直接拒绝（带上原因）。
-    Deny(&'static str),
+    /// 直接拒绝（带上**原因码**）。
+    Deny(DenyReason),
 }
 
 impl Effect {
@@ -173,7 +198,7 @@ impl Policy {
     ///    否则降级为询问并说明原因。
     pub fn effective(&self, tool: &str, level: Level, max_auto: Level) -> Effect {
         match self.get(tool) {
-            ToolPolicy::Deny => Effect::Deny("该工具已被用户明确禁止"),
+            ToolPolicy::Deny => Effect::Deny(DenyReason::PolicyDenied),
             ToolPolicy::Ask => Effect::Ask("该工具被设为「每次询问」"),
             // 按等级：低于阈值放行，否则询问。**这正是闸门本来的行为**，
             // 所以"没设过"与"设过"不会在默认状态下产生差异。

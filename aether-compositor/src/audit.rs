@@ -218,7 +218,10 @@ pub fn export_text(info: &AuditInfo, now: u64, en: bool) -> String {
                 &e.level
             ),
             e.tool,
-            e.verdict,
+            verdict_text(
+                if en { crate::i18n::Lang::En } else { crate::i18n::Lang::Zh },
+                &e.verdict
+            ),
             if en { verdict_en } else { verdict_zh }
         ));
     }
@@ -324,6 +327,87 @@ pub fn level_text(lang: crate::i18n::Lang, raw: &str) -> String {
         assert_eq!(level_text(Lang::Zh, "L2 sensitive write"), "L2 sensitive write");
         // 前后空白容错
         assert_eq!(level_text(Lang::Zh, " L1 "), "L1 可逆写");
+    }
+
+
+/// 审计行里 `verdict` 那一列的**显示文本**（§3.5）。
+///
+/// 日志里存的是稳定 token / 码：`allowed`、`needs_confirmation`、`failed`、
+/// `denied:policy_deny`、`denied:user_denied:300`。
+/// **不认识的形态原样透传** —— 旧日志（整句中文）照样能看，不会变空白。
+pub fn verdict_text(lang: crate::i18n::Lang, raw: &str) -> String {
+    let en = lang == crate::i18n::Lang::En;
+    let s = raw.trim();
+    match s {
+        "allowed" => return if en { "allowed" } else { "已放行" }.to_string(),
+        "needs_confirmation" => {
+            return if en { "needs confirmation" } else { "待确认" }.to_string()
+        }
+        "failed" => return if en { "failed" } else { "失败" }.to_string(),
+        _ => {}
+    }
+    if let Some(rest) = s.strip_prefix("denied:") {
+        if rest == "policy_deny" {
+            return if en {
+                "denied: the tool is set to deny"
+            } else {
+                "已拒绝：该工具被设为「禁止」"
+            }
+            .to_string();
+        }
+        if let Some(secs) = rest.strip_prefix("user_denied:") {
+            return if en {
+                format!("denied by the user; not asking again for {secs}s")
+            } else {
+                format!("已被用户拒绝，{secs} 秒内不再询问")
+            };
+        }
+    }
+    s.to_string()
+}
+
+
+    /// §3.5：verdict 存 token/码，显示时取词；**旧日志（整句中文）原样透传**。
+    #[test]
+    fn verdict_text_maps_codes_and_passes_through_legacy() {
+        use crate::i18n::Lang;
+        assert_eq!(verdict_text(Lang::Zh, "allowed"), "已放行");
+        assert_eq!(verdict_text(Lang::En, "allowed"), "allowed");
+        assert_eq!(verdict_text(Lang::Zh, "needs_confirmation"), "待确认");
+        assert_eq!(verdict_text(Lang::Zh, "failed"), "失败");
+        assert_eq!(
+            verdict_text(Lang::Zh, "denied:policy_deny"),
+            "已拒绝：该工具被设为「禁止」"
+        );
+        assert_eq!(
+            verdict_text(Lang::Zh, "denied:user_denied:300"),
+            "已被用户拒绝，300 秒内不再询问"
+        );
+        assert_eq!(
+            verdict_text(Lang::En, "denied:user_denied:300"),
+            "denied by the user; not asking again for 300s"
+        );
+        // 英文里不许出现汉字
+        for raw in [
+            "allowed",
+            "needs_confirmation",
+            "failed",
+            "denied:policy_deny",
+            "denied:user_denied:300",
+        ] {
+            assert!(
+                !verdict_text(Lang::En, raw)
+                    .chars()
+                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "英文里不该有汉字：{raw}"
+            );
+        }
+        // 旧日志里的整句中文、以及认不出来的码：原样透传
+        assert_eq!(
+            verdict_text(Lang::En, "该工具已被用户明确禁止（install_disk）"),
+            "该工具已被用户明确禁止（install_disk）"
+        );
+        assert_eq!(verdict_text(Lang::Zh, "denied:something_new"), "denied:something_new");
     }
 
 #[cfg(test)]

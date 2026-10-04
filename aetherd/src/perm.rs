@@ -213,10 +213,8 @@ impl Gate {
     /// 操作会立刻重新弹卡片，用户永远摆脱不掉同一个请求。
     pub fn judge(&self, tool: &str, level: Level, args: &serde_json::Value, approved: bool) -> Verdict {
         if !approved && self.is_denied(tool, args) {
-            return Verdict::Denied(format!(
-                "该操作已被用户拒绝（{tool}），{} 秒内不再重复询问",
-                DENY_TTL.as_secs()
-            ));
+            // §3.5：存**码 + 秒数**（工具名在审计的另一列里，不在这里重复）
+            return Verdict::Denied(format!("user_denied:{}", DENY_TTL.as_secs()));
         }
         // 逐工具策略（§5.3）。顺序：**先看策略**，再落到等级闸门 ——
         // 因为策略里可能有"禁止"（优先于一切）或"允许"（用户显式放宽）。
@@ -225,7 +223,8 @@ impl Gate {
             p.effective(tool, level, self.auto_approve_below)
         };
         match effect {
-            crate::policy::Effect::Deny(why) => Verdict::Denied(format!("{why}（{tool}）")),
+            // §3.5：`why` 的 Display 就是码（`policy_deny`）—— 工具名另一列已有
+            crate::policy::Effect::Deny(why) => Verdict::Denied(why.to_string()),
             crate::policy::Effect::Allow => Verdict::Allowed,
             crate::policy::Effect::Ask(_) => {
                 if approved {
@@ -472,7 +471,11 @@ mod tests {
         g.mark_denied("install_disk", &a);
         // 拒绝后：同工具同参数 → Denied（带原因）
         match g.judge("install_disk", Level::L3, &a, false) {
-            Verdict::Denied(reason) => assert!(reason.contains("已被用户拒绝"), "实得 {reason}"),
+            // §3.5：断言**码**而不是措辞（措辞改了不该让测试红）
+            Verdict::Denied(reason) => assert!(
+                reason.starts_with("user_denied:"),
+                "应带 user_denied 码与秒数，实得 {reason}"
+            ),
             other => panic!("应被拒绝，实得 {other:?}"),
         }
         // 换参数不受影响（只拒绝被拒过的那一个操作）
@@ -641,7 +644,8 @@ mod tests {
             p.set("read_file", crate::policy::ToolPolicy::Deny);
         }
         match g.judge("read_file", Level::L0, &args, false) {
-            Verdict::Denied(why) => assert!(why.contains("禁止"), "理由应说明是策略禁止：{why}"),
+            // §3.5：断言**码**（`policy_deny`），措辞由显示层决定
+            Verdict::Denied(why) => assert_eq!(why, "policy_deny", "理由应是策略禁止的码"),
             other => panic!("禁止策略应给出 Denied，实得 {other:?}"),
         }
         // **已确认也拒绝**：禁止优先于一切
