@@ -1219,6 +1219,14 @@ impl AiStatus {
             AiStatus::Offline => "AI 离线",
         }
     }
+    /// English label（§3.5 i18n）。
+    pub fn label_en(self) -> &'static str {
+        match self {
+            AiStatus::Local => "Local",
+            AiStatus::Cloud => "Cloud",
+            AiStatus::Offline => "Offline",
+        }
+    }
 
     /// 状态色：青 / 紫 / 灰
     pub fn color(self) -> [u8; 3] {
@@ -2451,15 +2459,16 @@ impl Renderer {
         let mut y = panel.y + 12;
         // ① AI 三态（只读）
         rounded_rect(buf, w, h, Rect { x: panel.x + 16, y: y + 6, w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
-        tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), "AI 中枢", font::CAPTION, color::text(), 0.9);
-        tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), ui.ai_status.label(), font::CAPTION, color::text_dim(), 0.9);
+        tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
+        tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::pick(crate::i18n::lang(), ui.ai_status.label(), ui.ai_status.label_en()),
+            font::CAPTION, color::text_dim(), 0.9);
         y += 26;
         widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
         y += 8;
 
         // ② 深色模式（默认关 = 白色；用户最常切的一项放最前）
         let r0 = row(y);
-        widgets::row(buf, w, h, r0, "深色模式", None, widgets::States::at(r0, ui.mouse), Some(tr));
+        widgets::row(buf, w, h, r0, crate::i18n::tr("深色模式", "Dark mode"), None, widgets::States::at(r0, ui.mouse), Some(tr));
         let s0 = knob(r0);
         widgets::switch(buf, w, h, s0, self.settings.dark_mode, widgets::States::at(s0, ui.mouse));
         self.control_hits.push((s0, ControlHit::ToggleDark));
@@ -2467,7 +2476,7 @@ impl Renderer {
 
         // ③ 中文输入法
         let r1 = row(y);
-        widgets::row(buf, w, h, r1, "中文输入法", None, widgets::States::at(r1, ui.mouse), Some(tr));
+        widgets::row(buf, w, h, r1, crate::i18n::tr("中文输入法", "Chinese IME"), None, widgets::States::at(r1, ui.mouse), Some(tr));
         let s1 = knob(r1);
         widgets::switch(buf, w, h, s1, self.ime_on, widgets::States::at(s1, ui.mouse));
         self.control_hits.push((s1, ControlHit::ToggleIme));
@@ -2475,7 +2484,7 @@ impl Renderer {
 
         // ③ 24 小时制
         let r2 = row(y);
-        widgets::row(buf, w, h, r2, "24 小时制", None, widgets::States::at(r2, ui.mouse), Some(tr));
+        widgets::row(buf, w, h, r2, crate::i18n::tr("24 小时制", "24-hour clock"), None, widgets::States::at(r2, ui.mouse), Some(tr));
         let s2 = knob(r2);
         widgets::switch(buf, w, h, s2, self.settings.clock_24h, widgets::States::at(s2, ui.mouse));
         self.control_hits.push((s2, ControlHit::ToggleClock24h));
@@ -2484,24 +2493,39 @@ impl Renderer {
         // ④ 快捷跳转
         widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
         y += 8;
-        widgets::group_header(buf, w, h, panel.x + 16, y, "快捷跳转", Some(tr));
+        widgets::group_header(buf, w, h, panel.x + 16, y, crate::i18n::tr("快捷跳转", "Quick actions"), Some(tr));
         y += 20;
         // 「通知」带**真实未读数**（不是装饰性的小红点）：没有未读时不显示数字，
         // 因为"0 条未读"和"没有通知中心"在界面上应该长得不一样。
         let unread = self.notifs.unread();
-        let notif_label = if unread > 0 {
-            format!("通知（{unread} 条未读）")
-        } else {
-            "通知".to_string()
-        };
-        for (label, hit) in [
-            ("打开设置", ControlHit::OpenSettings),
-            ("打开终端", ControlHit::OpenTerminal),
-            (notif_label.as_str(), ControlHit::Notifications),
+        // 三元组：中文 / English / 命中。**两种语言写在一起**，因此不可能漏翻；
+        // 并且有覆盖性测试盯着这张表（`every_control_center_entry_is_bilingual`）。
+        for (zh, en, hit) in [
+            ("打开设置", "Open Settings", ControlHit::OpenSettings),
+            ("打开终端", "Open Terminal", ControlHit::OpenTerminal),
         ] {
             let r = row(y);
+            let label = crate::i18n::pick(crate::i18n::lang(), zh, en);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, hit));
+            y += control_layout::ROW_H_ACTION;
+        }
+        // 「通知」单独走一支：它的文案**带未读数**（动态），
+        // 而 `i18n::pick` 要求 `&'static str`（那是"两种语言写在调用点"这个设计的代价）。
+        // 动态文案用语言分支写，同样两种语言并排 —— 只是换了个形式。
+        {
+            let label = if unread > 0 {
+                if crate::i18n::lang() == crate::i18n::Lang::En {
+                    format!("Notifications ({unread})")
+                } else {
+                    format!("通知（{unread} 条未读）")
+                }
+            } else {
+                crate::i18n::tr("通知", "Notifications").to_string()
+            };
+            let r = row(y);
+            widgets::row(buf, w, h, r, &label, None, widgets::States::at(r, ui.mouse), Some(tr));
+            self.control_hits.push((r, ControlHit::Notifications));
             y += control_layout::ROW_H_ACTION;
         }
 
@@ -2511,12 +2535,12 @@ impl Renderer {
         // 且不登记命中区 —— "画一个拖不动的滑块"比"没有滑块"更糟。
         widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
         y += 8;
-        widgets::group_header(buf, w, h, panel.x + 16, y, "声音", Some(tr));
+        widgets::group_header(buf, w, h, panel.x + 16, y, crate::i18n::tr("声音", "Sound"), Some(tr));
         y += 20;
         {
             let r = row(y);
             if ui.audio_enabled {
-                widgets::row(buf, w, h, r, "音量", Some(&format!("{}%", ui.audio_volume)),
+                widgets::row(buf, w, h, r, crate::i18n::tr("音量", "Volume"), Some(&format!("{}%", ui.audio_volume)),
                              widgets::States::at(r, ui.mouse), Some(tr));
                 // 轨道：底槽 + 已填充部分。点击整条轨道即可设定（不需要拖拽，
                 // 也就不需要给事件循环加"拖拽状态"——少一处状态就少一类 bug）
@@ -2529,7 +2553,7 @@ impl Renderer {
                 }
                 self.control_hits.push((track, ControlHit::VolumeTrack));
             } else {
-                widgets::row(buf, w, h, r, "音量", Some(ui.audio_label),
+                widgets::row(buf, w, h, r, crate::i18n::tr("音量", "Volume"), Some(ui.audio_label),
                              widgets::States::at(r, ui.mouse), Some(tr));
                 // **不登记命中区**：不可用时点不动，也就不该有可点击区域
             }
@@ -2542,14 +2566,16 @@ impl Renderer {
         // 放在开关旁边会让人手滑点错（Windows/macOS 也把它收在菜单末尾）。
         widgets::divider(buf, w, h, Rect { x: panel.x + 12, y, w: panel.w - 24, h: 1 });
         y += 8;
-        widgets::group_header(buf, w, h, panel.x + 16, y, "电源", Some(tr));
+        widgets::group_header(buf, w, h, panel.x + 16, y, crate::i18n::tr("电源", "Power"), Some(tr));
         y += 20;
-        for (label, hit) in [
-            ("关机", ControlHit::PowerOff),
-            ("重启", ControlHit::Reboot),
-            ("注销", ControlHit::Logout),
-        ] {
+        let power: [(&str, &str, ControlHit); 3] = [
+            ("关机", "Power off", ControlHit::PowerOff),
+            ("重启", "Restart", ControlHit::Reboot),
+            ("注销", "Log out", ControlHit::Logout),
+        ];
+        for (zh, en, hit) in power {
             let r = row(y);
+            let label = crate::i18n::pick(crate::i18n::lang(), zh, en);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, hit));
             y += control_layout::ROW_H_ACTION;
@@ -2558,7 +2584,7 @@ impl Renderer {
             buf, w, h,
             (panel.x + 16) as f32,
             (panel.y + panel.h - 22) as f32,
-            "Esc 或点击别处关闭",
+            crate::i18n::tr("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
             font::LABEL, color::text_dim(), 0.7,
         );
     }
@@ -6123,6 +6149,58 @@ mod blit_tests {
             font_at(max, font::BODY) <= 40.0,
             "最大档 {max}% 下正文超过了设置行高 40"
         );
+    }
+
+    /// §3.5：AI 三态的英文标签必须齐全，且与中文不同。
+    #[test]
+    fn ai_status_has_english_labels_for_every_state() {
+        for st in [
+            crate::draw::AiStatus::Local,
+            crate::draw::AiStatus::Cloud,
+            crate::draw::AiStatus::Offline,
+        ] {
+            assert!(!st.label().is_empty(), "中文标签不能为空");
+            assert!(!st.label_en().is_empty(), "英文标签不能为空");
+            assert_ne!(st.label(), st.label_en(), "两种语言不该一模一样");
+        }
+    }
+
+    /// §3.5：**控制中心的双语必须真的写在源码里**（探针式核对）。
+    ///
+    /// 为什么用源码扫描而不是画一遍看：绘制结果没法断言"这行字是英文"，
+    /// 而这里要守的性质很具体 —— 每一处文案都**同时**写了中文和英文。
+    /// 有人把某处改回硬编码中文时，这条测试立刻红
+    /// （与快捷键总览那套"探针"同一思路）。
+    #[test]
+    fn control_center_strings_are_bilingual_in_the_source() {
+        let src = include_str!("draw.rs");
+        let pairs = [
+            ("AI 中枢", "AI core"),
+            ("深色模式", "Dark mode"),
+            ("中文输入法", "Chinese IME"),
+            ("24 小时制", "24-hour clock"),
+            ("快捷跳转", "Quick actions"),
+            ("打开设置", "Open Settings"),
+            ("打开终端", "Open Terminal"),
+            ("通知", "Notifications"),
+            ("声音", "Sound"),
+            ("音量", "Volume"),
+            ("电源", "Power"),
+            ("关机", "Power off"),
+            ("重启", "Restart"),
+            ("注销", "Log out"),
+            ("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
+        ];
+        for (zh, en) in pairs {
+            let probe = format!("(\"{zh}\", \"{en}\"");
+            assert!(
+                src.contains(&probe),
+                "控制中心的「{zh}」没有配对英文「{en}」——它被改回硬编码中文了？"
+            );
+        }
+        // 带未读数的动态文案走语言分支，单独核对两条分支都在
+        assert!(src.contains("Notifications ({unread})"), "动态文案缺英文分支");
+        assert!(src.contains("通知（{unread} 条未读）"), "动态文案缺中文分支");
     }
 
 }
