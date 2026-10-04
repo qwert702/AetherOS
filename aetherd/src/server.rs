@@ -1555,4 +1555,107 @@ mod ipc_gating_tests {
         assert!(!aether_ipc::peer_uid_allowed_with(None, 0), "未知身份必须拒绝");
     }
 
+    /// **整体审计第 3 遍的持久化**（附录 V）：访问控制表变成机器检查的不变量。
+    ///
+    /// 背景：附录 T 的"26/26 处理器合规"是一次性人工核对（脚本 + 人眼）。
+    /// 这条测试把它固定下来 —— 以后**新加一个会改系统状态的处理器却忘了加 UI 门**，
+    /// 会在这里当场变红，而不是等到下一次审计。
+    ///
+    /// **与 `request_variants_are_gated` 是互补的，不是重复**：
+    /// 那条是**行为**测试（真的调 `handle_line` 断言 403），比这里更硬 ——
+    /// 但它的用例是**手写清单**（`cases`），新增变体若没加进清单就不会红；
+    /// 这条**自动枚举源码**里每个 `Request::X`，所以"新增变体却忘了归类/加门"
+    /// 一定会在它这里暴露；此外它还检查**是否落审计**（那条不查）。
+    ///
+    /// 规则：
+    /// 1. 每个 `Request::X` 分支必须在下面两张表之一里**显式出现**
+    ///    （`READ_ONLY` 或被视为"改状态"）—— 不允许有"没归类"的分支，
+    ///    因为新分支默认会被当成"改状态"来检查；
+    /// 2. "改状态"的分支必须有 UI 通道判断（`is_ui`）
+    ///    或"明确拒绝 + 落审计"（`audit_or_warn`）；
+    /// 3. 只读分支也要求 UI 门（与本项目"读系统状态也要注册过的通道"约定一致），
+    ///    但不要求审计。
+    ///
+    /// 豁免名单为什么这么短：`Ping`（连通性探针）与 `SysInfo`（自己机器的
+    /// 概览，既不改状态也不含敏感信息）是客户端**未注册**时也能用的入口；
+    /// `RegisterUi` 是"变成 UI"这一步本身。
+    #[test]
+    fn every_request_handler_is_gated_and_classified() {
+        let src = include_str!("server.rs");
+        // 只扫生产区域：本文件末尾就是测试模块，从这里截断
+        let prod = match src.find("#[cfg(test)]") {
+            Some(i) => &src[..i],
+            None => src,
+        };
+
+        /// 未注册通道也能用的入口（**显式**列出，不靠名字前缀猜）
+        const NO_GATE_NEEDED: &[&str] = &["Ping", "SysInfo", "RegisterUi"];
+        /// 只读入口：要求 UI 门，但不要求审计
+        const READ_ONLY: &[&str] = &[
+            "Chat",
+            "ClipboardGet",
+            "GetDisplays",
+            "GetSnapshots",
+            "GetTimeStatus",
+            "GetPolicy",
+            "ListRemovable",
+            "ListUpdates",
+        ];
+
+        // 收集 `Request::X` 分支及其正文
+        let mut arms: Vec<(String, String)> = Vec::new();
+        let lines: Vec<&str> = prod.lines().collect();
+        let mut current: Option<(String, usize)> = None;
+        for (i, l) in lines.iter().enumerate() {
+            let trimmed = l.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("Request::") {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                if !name.is_empty() {
+                    if let Some((n, start)) = current.take() {
+                        arms.push((n, lines[start..i].join("\n")));
+                    }
+                    current = Some((name, i));
+                }
+            }
+        }
+        if let Some((n, start)) = current.take() {
+            arms.push((n, lines[start..].join("\n")));
+        }
+        assert!(arms.len() >= 20, "只找到 {} 个处理器，解析可能失效", arms.len());
+
+        let mut problems: Vec<String> = Vec::new();
+        for (name, body) in &arms {
+            let gated = body.contains("is_ui") || body.contains("audit_or_warn");
+            let audited = body.contains("audit_call(") || body.contains("audit_or_warn(");
+            let no_gate_ok = NO_GATE_NEEDED.contains(&name.as_str());
+            let read_only = READ_ONLY.contains(&name.as_str());
+            if !gated && !no_gate_ok {
+                problems.push(format!(
+                    "Request::{name} 会改系统状态却没有 UI 通道门（is_ui / audit_or_warn）"
+                ));
+            }
+            if !read_only && !audited && !no_gate_ok {
+                problems.push(format!(
+                    "Request::{name} 改状态却没落审计（audit_call / audit_or_warn）—— \
+                     若确属低影响且高频，请把它加进 READ_ONLY 并写明理由"
+                ));
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "访问控制表出现缺口：\n{}",
+            problems.join("\n")
+        );
+        // 反证：豁免名单必须真的存在，否则这条测试可能是"空转"
+        for n in NO_GATE_NEEDED {
+            assert!(
+                arms.iter().any(|(a, _)| a == n),
+                "豁免名单里的 {n} 已不存在 —— 名单该更新，否则它掩盖的是真缺口"
+            );
+        }
+    }
+
 }

@@ -1753,3 +1753,89 @@ DNS 服务器 `MAX_DNS = 3`。
   没有构造恶意输入去实际触发（例如真的发一条超长报文看它怎么断）；
   第 3 遍计划对前两遍的关键结论做**可运行的取证**；
 * **fuzzing / 并发压测**：未做。
+
+---
+
+## 附录 V：**整体审计第 3 遍** —— 复现式取证（2026-10-04）
+
+> 第 1 遍（附录 T）审四类安全基线，第 2 遍（附录 U）审边界与数据流 ——
+> 两遍都是**静态阅读 + 调用点核对**。这一遍的任务是：
+> **把每一条结论对应到"能跑出来"的东西**，跑不出来的**如实标注**。
+
+### V.1 取证方式
+
+不写新的"演示脚本"，而是**先找已有的测试**：如果一条安全结论已经被测试覆盖，
+那它就是**可复现**的（任何人 `cargo test` 都能重跑），比截图或临时脚本强得多。
+命令只有一个：
+
+```
+cargo test -p aetherd --offline --locked
+```
+
+结果：**215 项全过**（0 失败）。
+
+### V.2 结论 → 测试对照表（逐条取证）
+
+| 结论（出自） | 覆盖它的测试（`cargo test -p aetherd` 内） |
+|---|---|
+| 读取层有硬上限，超长无换行报文会被拒（U.1①） | `server::ipc_gating_tests::read_line_capped_boundaries` |
+| 剪贴板超限**整段拒绝**、不覆盖旧内容（U.1①） | `clipboard::tests::oversized_is_rejected_wholesale`、`server::ipc_gating_tests::clipboard_oversized_is_rejected_without_clobbering` |
+| 快照 id 含路径分隔/`..` 被拒（U.1③） | `snapshots::tests::snapshot_ids_that_escape_are_rejected` |
+| 应用包条目无法逃出包目录（U.1③） | `apps::tests::entry_cannot_escape_the_package`、`lib_names_with_path_separators_are_rejected` |
+| 时区名不能逃逸（U.1③） | `timesync::tests::timezone_names_that_escape_are_rejected` |
+| 安装目标盘拒绝路径注入（U.1③） | `tools::tests::install_disk_rejects_path_injection` |
+| `read_file` 拒绝白名单之外的路径、拒绝凭据文件（含 UI 密钥）（T.2④） | `tools::tests::read_file_rejects_paths_outside_whitelist_on_host`、`credential_paths_including_ui_key_are_rejected` |
+| 文件写入超限整段拒绝（T.2④） | `tools::tests::file_write_rejects_oversized_wholesale` |
+| 直接下发的电源请求即使来自 UI 通道也被拒（T.2②的 `SystemPower`） | `server::ipc_gating_tests::direct_power_request_is_rejected_even_from_ui_channel` |
+| 确认令牌与参数/工具绑定，改了就失效（T.2②） | `perm::tests::token_rejects_changed_args_or_tool`、`unknown_token_rejected` |
+| 审计日志超限会轮转（T.2④） | `perm::tests::audit_rotates_when_oversized` |
+| DNS 列表只接受 1~3 个 IPv4、其余给理由（U.1①） | `netset::tests::dns_list_rejects_everything_else_with_a_reason` |
+| 时间同步拒绝不可信的响应（AG/AF 的修复） | `timesync::tests::rejects_the_responses_that_must_never_be_trusted`、`query_rejects_a_garbage_response` |
+| 未注册通道下的请求必须被 403（T.2②，**行为**取证） | `server::ipc_gating_tests::request_variants_are_gated`（真的调 `handle_line` 断言 403） |
+
+**这张表就是第 3 遍的产出**：第 1、2 遍的每条结论，要么在这里找到对应的可运行测试，
+要么在 V.4 里明确写"没做到"。
+
+### V.3 第 3 遍新增的**永久**不变量（比取证更进一步）
+
+取证是"我现在跑给你看"；**不变量是"以后它也得成立"**。本遍新增：
+
+```
+server::ipc_gating_tests::every_request_handler_is_gated_and_classified
+```
+
+它**自动枚举** `server.rs` 里每个 `Request::X` 分支，要求：
+
+1. 每个分支都要**显式归类**（"改状态"或"只读名单"）—— 新分支默认按"改状态"检查；
+2. 改状态的分支必须有 UI 通道门（`is_ui`）或"明确拒绝 + 审计"（`audit_or_warn`）；
+3. 改状态的分支还要**落审计**（`audit_call` / `audit_or_warn`）；
+4. 豁免名单（`Ping`/`SysInfo`/`RegisterUi`）**必须真实存在** ——
+   防止名单过期后"测试看着在跑，其实在空转"。
+
+**与已有测试的关系（互补，不是重复）**：仓库里原本就有
+`request_variants_are_gated`，它是**行为**测试（真的调用并断言 403），更硬；
+但它的用例是**手写清单** `cases` —— 新增变体没加进清单就不会红。
+新测试**自动枚举源码**，补的正是这个缺口；并且它额外检查"是否落审计"。
+两条测试各守一半，不是一件事做两遍。
+
+### V.4 **跑不出来**的（如实标注，不冒充已证）
+
+| 项 | 状态 |
+|---|---|
+| 依赖库 CVE | **未验证**：本环境 `--offline`，`cargo audit` 需要网络与漏洞库 |
+| 恶意输入的**模糊测试** | **未做** |
+| 并发压测 / 竞态复现 | **未做**（第 2 遍只做了锁的中毒处理核对） |
+| 真机行为（evdev / fbdev / 挂载 / 电源） | **未实机验证**（本机无对应设备，历批均如此标注） |
+| 性能门禁 | 本轮曾因**宿主负载**飘红；已用附录 T.6 的 **A/B 同条件对照**证明不是回归（改动后 25.17 ms 优于改动前 28.21 ms，均通过） |
+
+### V.5 三遍整体审计的总结
+
+| 遍次 | 侧重 | 结果 |
+|---|---|---|
+| 第 1 遍（附录 T） | 访问控制 / 注入 / 敏感信息 / 不安全默认 | 四线干净；**26/26 处理器合规**；1 处低危（AI 会话内容未脱敏进控制台日志，**有意为之、未改动**） |
+| 第 2 遍（附录 U） | 边界与数据流 | **未发现新问题**（读取有上限、换算用饱和、路径白名单**且真被调用**、锁中毒是有意处理） |
+| 第 3 遍（附录 V） | 复现式取证 | 每条结论对应到**可运行测试**；新增 1 条**永久不变量**；明确列出**未验证**项 |
+
+三遍下来**没有发现新的安全漏洞**（第 1 遍那一处低危是"策略不一致"而非可利用漏洞），
+但产出了两样比"结论"更重要的东西：**一条会红的门禁**（V.3）与
+**两次方法论更正**（U.2 的"扫描器结论必须人工复核"、V.3 的"取证要变成不变量"）。
