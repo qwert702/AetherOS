@@ -377,6 +377,9 @@ pub mod size {
     /// 子项相对父项的缩进（例如审计条目相对页正文）。
     pub const INDENT_SUB: i32 = 36;
 
+    /// AI 指令条的高度（悬浮胶囊）。
+    pub const AI_BAR_H: i32 = 52;
+
     // ---------------------------------------------------------------------
     // **故意不缩**的（写在这里，免得后来的人以为是漏了）
     //
@@ -478,6 +481,7 @@ mod tests {
             "PAD_SM",
             "PAD_LG",
             "INDENT_SUB",
+            "AI_BAR_H",
         ] {
             // 带上右括号：否则 `ROW_H` 会被 `ROW_H_SM` 的调用点误算成"用过"
             let needle = format!("px(theme::size::{name})");
@@ -5714,7 +5718,7 @@ impl Renderer {
     let input = ui.ai_input;
     let mouse = ui.mouse;
     let bar_w = 560i32;
-    let bar = Rect { x: w as i32 / 2 - bar_w / 2, y: h as i32 - metric::BOTTOM_DOCK - 52 - 16, w: bar_w, h: 52 };
+    let bar = Rect { x: w as i32 / 2 - bar_w / 2, y: h as i32 - metric::BOTTOM_DOCK - theme::size::px(theme::size::AI_BAR_H) - theme::size::px(theme::size::INSET_SM), w: bar_w, h: theme::size::px(theme::size::AI_BAR_H) };
     let hovered = bar.contains(mouse.0, mouse.1);
     shadow(buf, w, h, bar, radius::LG, elevation::elev_2());
     // 2026-09-29 P2：从"26px 大胶囊"改成**命令栏形态**（radius::LG = 8px，
@@ -5901,7 +5905,7 @@ fn draw_reply(buf: &mut [u32], w: usize, h: usize, text: &str, kind: BubbleKind,
     let pad = if kind == BubbleKind::Tool { 30.0 } else { 18.0 };
     let tw = tr.measure(text, font::BODY).min(max_w);
     let bar_w = (tw + 2.0 * pad) as i32;
-    let y = h as i32 - metric::BOTTOM_DOCK - 52 - 16 - 56;
+    let y = h as i32 - metric::BOTTOM_DOCK - theme::size::px(theme::size::AI_BAR_H) - theme::size::px(theme::size::INSET_SM) - 56;
     // 用户指令靠右、AI 与工具结果靠左：来源方向即身份
     let x = match kind {
         BubbleKind::User => w as i32 / 2 + 60 - bar_w,
@@ -6488,7 +6492,7 @@ fn draw_toast(buf: &mut [u32], w: usize, h: usize, msg: &str, age: f32, tr: Opti
     let tw = tr.measure(msg, font::BODY) + 40.0;
     let r = Rect {
         x: w as i32 / 2 - tw as i32 / 2,
-        y: h as i32 - metric::BOTTOM_DOCK - 52 - 16 - 60,
+        y: h as i32 - metric::BOTTOM_DOCK - theme::size::px(theme::size::AI_BAR_H) - theme::size::px(theme::size::INSET_SM) - 60,
         w: tw as i32,
         h: theme::size::px(theme::size::ROW_H),
     };
@@ -6599,7 +6603,7 @@ mod span_tests {
     #[test]
     fn row_span_handles_radius_larger_than_half_height() {
         // 胶囊形（radius == h/2）：中间行仍应覆盖整个宽度
-        let rr = Rect { x: 0, y: 0, w: 200, h: 52 };
+        let rr = Rect { x: 0, y: 0, w: 200, h: theme::size::px(theme::size::AI_BAR_H) };
         assert_eq!(row_inner_span(rr, 26.0, 26.0), (0, 200));
         // 顶端行必须内缩
         let (a, b) = row_inner_span(rr, 26.0, 0.5);
@@ -6614,7 +6618,7 @@ mod span_tests {
     fn inner_span_only_covers_fully_opaque_pixels() {
         let shapes = [
             (Rect { x: 10, y: 20, w: 100, h: theme::size::px(theme::size::ROW_H) }, 12.0f32),
-            (Rect { x: 0, y: 0, w: 200, h: 52 }, 26.0),
+            (Rect { x: 0, y: 0, w: 200, h: theme::size::px(theme::size::AI_BAR_H) }, 26.0),
             (Rect { x: 5, y: 5, w: 46, h: 46 }, 12.0),
             (Rect { x: 3, y: 7, w: 150, h: 42 }, 8.0),
         ];
@@ -6676,7 +6680,7 @@ mod render_equiv_tests {
     fn shapes() -> Vec<(Rect, f32)> {
         vec![
             (Rect { x: 20, y: 15, w: 100, h: 60 }, 12.0),
-            (Rect { x: 0, y: 0, w: 200, h: 52 }, 26.0), // 胶囊
+            (Rect { x: 0, y: 0, w: 200, h: theme::size::px(theme::size::AI_BAR_H) }, 26.0), // 胶囊
             (Rect { x: 5, y: 5, w: 46, h: 46 }, 12.0),  // Dock 图标
             (Rect { x: 3, y: 7, w: 150, h: 42 }, 8.0),  // 按钮
             (Rect { x: 40, y: 30, w: 20, h: 20 }, 3.0), // 小圆点

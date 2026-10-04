@@ -4239,6 +4239,16 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     #[cfg(not(target_os = "linux"))]
     if let Some(pos) = args.iter().position(|a| a == "--shot") {
+        // `--scale 100|125|150`（§2.4）：走查直接渲染指定缩放档。
+        // **不写设置文件** —— 走查不该改用户配置；合法档位由 `ui::set_scale_pct` 吸附。
+        if let Some(pct) = args
+            .iter()
+            .position(|a| a == "--scale")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse::<u16>().ok())
+        {
+            draw::theme::ui::set_scale_pct(pct);
+        }
         let lay = args
             .get(pos + 1)
             .and_then(|s| s.parse::<usize>().ok())
