@@ -602,7 +602,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    "没有可移动的窗口".to_string(),
+                                    pick_zh_en("没有可移动的窗口", "No window to move"),
                                     notifications::Kind::Info,
                                 );
                             }
@@ -641,7 +641,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 这里特判的代价小得多，且行为可预期。
                     if c == '\0' {
                         ime.toggle();
-                        push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.to_string(), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { pick_zh_en("中文输入：开", "Chinese IME: on") } else { pick_zh_en("中文输入：关", "Chinese IME: off") }.to_string(), notifications::Kind::Info);
                     } else if let Some((req, echo)) = confirm.as_mut() {
                         // 确认弹窗独占键盘：L3 的回显输入写进弹窗而不是指令条
                         if req.echo_required.is_some() {
@@ -814,7 +814,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                "回显不匹配：请原样输入目标名".to_string(),
+                                pick_zh_en("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"),
                                 notifications::Kind::Err,
                             );
                         }
@@ -1104,7 +1104,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         }
                     }
                     Some(draw::ConfirmButton::Allow) => {
-                        push_toast(&mut toast, &mut renderer.notifs, "回显不匹配：请原样输入目标名".to_string(), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"), notifications::Kind::Info);
                     }
                     Some(draw::ConfirmButton::Deny) => {
                         if let Some((req, _)) = confirm.take() {
@@ -1282,11 +1282,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §5.6：创建快照
                     if let settings::SettingsHit::CreateSnapshot = hit {
                         if renderer.snapshots.is_pending() {
-                            push_toast(&mut toast, &mut renderer.notifs, "上一步还没完成，请稍候".to_string(), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
                         } else {
                             renderer.snapshots.mark_pending();
                             create_snapshot(ai_tx.clone());
-                            push_toast(&mut toast, &mut renderer.notifs, "正在创建配置快照…".to_string(), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("正在创建配置快照…", "Creating a config snapshot…"), notifications::Kind::Info);
                         }
                     }
                     // §3.7「可移动设备」页：进入时扫一次
@@ -1310,7 +1310,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                "上一次操作还没结束，请稍候".to_string(),
+                                pick_zh_en("上一次操作还没结束，请稍候", "The previous action is still running, please wait"),
                                 notifications::Kind::Info,
                             );
                         } else if let Some(d) = renderer.removables.get(i).cloned() {
@@ -1365,7 +1365,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                "上一次暂存还没结束，请稍候".to_string(),
+                                pick_zh_en("上一次暂存还没结束，请稍候", "The previous staging is still running, please wait"),
                                 notifications::Kind::Info,
                             );
                         } else if let Some(name) = renderer.update.packages().get(i).cloned() {
@@ -1405,7 +1405,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §5.6：取消待确认的回滚（两步确认必须能退出来）
                     if let settings::SettingsHit::CancelRestore = hit {
                         renderer.snapshots.cancel_confirm();
-                        push_toast(&mut toast, &mut renderer.notifs, "已取消回滚".to_string(), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("已取消回滚", "Rollback cancelled"), notifications::Kind::Info);
                     }
                     // §3.3「时钟与时区」页：进入该页时取一次状态（否则显示不出系统时区与上次偏移）。
                     if let settings::SettingsHit::Page(i) = hit {
@@ -1421,11 +1421,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §3.3：立即对时
                     if let settings::SettingsHit::SyncTimeNow = hit {
                         if renderer.time.pending {
-                            push_toast(&mut toast, &mut renderer.notifs, "上一步还没完成，请稍候".to_string(), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
                         } else {
                             renderer.time.mark_pending();
                             sync_time_now(ai_tx.clone());
-                            push_toast(&mut toast, &mut renderer.notifs, "正在对时…".to_string(), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("正在对时…", "Syncing time…"), notifications::Kind::Info);
                         }
                     }
                     // §3.3：切换待写入的时区名（纯本地状态，不发 IPC）
@@ -1435,7 +1435,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §3.3：把时区写进系统
                     if let settings::SettingsHit::SetTimezoneNow = hit {
                         if renderer.time.pending {
-                            push_toast(&mut toast, &mut renderer.notifs, "上一步还没完成，请稍候".to_string(), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
                         } else {
                             let name = renderer.time.picked_name().to_string();
                             renderer.time.mark_pending();
@@ -1496,7 +1496,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            "已重新扫描商店目录".to_string(),
+                            pick_zh_en("已重新扫描商店目录", "Rescanned the store folder"),
                             notifications::Kind::Info,
                         );
                     }
@@ -1532,7 +1532,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             None => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                "这一项已经不在已装列表里（可能刚被卸载）".to_string(),
+                                pick_zh_en("这一项已经不在已装列表里（可能刚被卸载）", "This item is no longer installed (maybe just removed)"),
                                 notifications::Kind::Info,
                             ),
                         }
@@ -1571,7 +1571,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             _ => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                "这一项已安装（或不可安装）".to_string(),
+                                pick_zh_en("这一项已安装（或不可安装）", "This item is already installed (or cannot be installed)"),
                                 notifications::Kind::Info,
                             ),
                         }
@@ -1594,7 +1594,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             None => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                "正在保存上一项，请稍候".to_string(),
+                                pick_zh_en("正在保存上一项，请稍候", "Saving the previous item, please wait"),
                                 notifications::Kind::Info,
                             ),
                         }
@@ -1605,7 +1605,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            "正在读取权限策略…".to_string(),
+                            pick_zh_en("正在读取权限策略…", "Reading the permission policy…"),
                             notifications::Kind::Info,
                         );
                     }
@@ -1675,7 +1675,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         let hc = renderer.settings.high_contrast;
                         apply_theme(&mut renderer, dark, hc);
                         renderer.bg_dirty = true;
-                        push_toast(&mut toast, &mut renderer.notifs, "外观已恢复默认".to_string(), notifications::Kind::Ok);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("外观已恢复默认", "Appearance restored to defaults"), notifications::Kind::Ok);
                     }
                     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                         // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
@@ -2935,7 +2935,11 @@ fn open_notifications(
     notifs.mark_all_read();
     let data = draw::PreviewData {
         // 标题里带总数：用户一眼知道"历史攒了多少"
-        path: format!("通知（共 {} 条）", notifs.len()),
+        path: if crate::i18n::is_en() {
+                format!("Notifications ({} total)", notifs.len())
+            } else {
+                format!("通知（共 {} 条）", notifs.len())
+            },
         lines,
         // 空历史显示一句说明，而不是一片空白（让人以为界面坏了）。
         // **两种空要分开说**：从没记过 vs 用户自己关了记录 —— 后者如果只说"还没有通知"，
@@ -3031,6 +3035,15 @@ fn export_audit() -> Result<String, String> {
 ///
 /// `kind` 由调用点给：历史里失败必须与成功**可区分**（标记 + 颜色），
 /// 而"这条是不是失败"只有产生点知道，不该在这里猜文本。
+/// 取一条**按当前语言**的提示（§3.5）。
+///
+/// 为什么要这个助手：同一条提示（例如「上一步还没完成，请稍候」）在四处各写了一份，
+/// 改语言时必然漏掉其中一处。有了它，调用点写成 `pick_zh_en(zh, en)` ——
+/// **"这条话必须有两种语言"在代码里是可见的**，而不是靠记忆。
+fn pick_zh_en(zh: &'static str, en: &'static str) -> String {
+    crate::i18n::pick(crate::i18n::lang(), zh, en).to_string()
+}
+
 fn push_toast(
     toast: &mut Option<(String, Instant)>,
     notifs: &mut notifications::Notifications,
@@ -4093,7 +4106,7 @@ fn preview_main() -> anyhow::Result<()> {
             // Ctrl+Space 切中英输入（与真机路径的 NUL 特判对应）
             if ctrl && *k == minifb::Key::Space {
                 ime.toggle();
-                push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { "中文输入：开" } else { "中文输入：关" }.to_string(), notifications::Kind::Err);
+                push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { pick_zh_en("中文输入：开", "Chinese IME: on") } else { pick_zh_en("中文输入：关", "Chinese IME: off") }.to_string(), notifications::Kind::Err);
                 continue;
             }
             // Ctrl 组合键：Ctrl+W 关窗、Ctrl+Shift+C/V 复制粘贴
@@ -4352,7 +4365,7 @@ fn preview_main() -> anyhow::Result<()> {
                     }
                 }
                 Some(draw::ConfirmButton::Allow) => {
-                    push_toast(&mut toast, &mut renderer.notifs, "回显不匹配：请原样输入目标名".to_string(), notifications::Kind::Info);
+                    push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"), notifications::Kind::Info);
                 }
                 Some(draw::ConfirmButton::Deny) => {
                     if let Some((req, _)) = confirm.take() {
