@@ -15,6 +15,12 @@ use serde_json::Value;
 #[derive(Default)]
 pub struct ToolCtx {
     pub desktop_actions: Vec<DesktopAction>,
+    /// 界面是否英文（§3.5）。
+    ///
+    /// 放在 ctx 里而不是给 `execute` 加参数：工具的执行体签名是统一的
+    /// `fn(&Value, &mut ToolCtx)`（注册表里那一列 `run`），
+    /// 加参数就得改**所有**工具；而 ctx 本来就传给每一个工具。
+    pub en: bool,
 }
 
 /// 工具定义。
@@ -604,13 +610,12 @@ fn tool_clipboard_read(_args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     Ok(text)
 }
 
-fn tool_clipboard_write(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
+fn tool_clipboard_write(args: &Value, ctx: &mut ToolCtx) -> Result<String> {
     let Some(text) = args.get("text").and_then(|v| v.as_str()) else {
         bail!("缺少参数 text");
     };
-    let bytes = crate::// 缺口（§3.5）：工具执行路径还没有界面语言，暂时固定中文。
-        // 下一批把 en 从 handle_request 一路传进 tools::execute。
-        clipboard::set(text, false).map_err(|e| anyhow::anyhow!(e))?;
+    // §3.5：语言在 ctx 里（由 handle_request 连接级 ui_en 带来）
+    let bytes = crate::clipboard::set(text, ctx.en).map_err(|e| anyhow::anyhow!(e))?;
     Ok(format!("已写入剪贴板（{bytes} 字节）"))
 }
 

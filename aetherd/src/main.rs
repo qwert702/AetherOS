@@ -138,6 +138,8 @@ pub(crate) fn agent_run(
     const MAX_ROUNDS: usize = 4;
     let local_ok = llm::local_available(&cfg.local.base_url);
     let mut ctx = tools::ToolCtx::default();
+    // §3.5：agent_run 有 en（来自 Chat{en}），工具文案跟着它
+    ctx.en = en;
     // 记录每轮实际路由的通道：最终回答的 channel 随 ChatChunk 回传客户端
     let mut last_channel: Option<router::Channel> = None;
     // 上下文里是否已含敏感工具结果（如 read_file 读到的文件内容）。

@@ -144,13 +144,47 @@ impl std::fmt::Display for DenyReason {
     }
 }
 
+/// 需要确认的**原因码**（§3.5）。
+///
+/// 与 `DenyReason` 同法：只放码。经过核对，这个原因**目前没有任何用户可见路径** ——
+/// 确认卡片显示的是工具自己的 `consequence`（"会发生什么"），
+/// 而这里的 `why` 只有策略测试在用。所以它不需要语言参数，只需要稳定、可断言。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskReason {
+    /// 用户把该工具设成"每次询问"
+    PolicyAsk,
+    /// 按等级判定需要确认
+    LevelNeedsConfirm,
+    /// L3 按设计永远需要确认（即便设为"允许"）
+    L3Always,
+    /// 该工具等级高于自动放行上限（即便设为"允许"）
+    AboveAutoLimit,
+}
+
+impl AskReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            AskReason::PolicyAsk => "policy_ask",
+            AskReason::LevelNeedsConfirm => "level_needs_confirm",
+            AskReason::L3Always => "l3_always",
+            AskReason::AboveAutoLimit => "above_auto_limit",
+        }
+    }
+}
+
+impl std::fmt::Display for AskReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
 /// 策略判定结果（"该怎么办"）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     /// 自动放行。
     Allow,
-    /// 需要用户确认（带上要显示给用户的原因）。
-    Ask(&'static str),
+    /// 需要用户确认（带上**原因码**）。
+    Ask(AskReason),
     /// 直接拒绝（带上**原因码**）。
     Deny(DenyReason),
 }
@@ -199,24 +233,24 @@ impl Policy {
     pub fn effective(&self, tool: &str, level: Level, max_auto: Level) -> Effect {
         match self.get(tool) {
             ToolPolicy::Deny => Effect::Deny(DenyReason::PolicyDenied),
-            ToolPolicy::Ask => Effect::Ask("该工具被设为「每次询问」"),
+            ToolPolicy::Ask => Effect::Ask(AskReason::PolicyAsk),
             // 按等级：低于阈值放行，否则询问。**这正是闸门本来的行为**，
             // 所以"没设过"与"设过"不会在默认状态下产生差异。
             ToolPolicy::Default => {
                 if (level as u8) < (max_auto as u8) {
                     Effect::Allow
                 } else {
-                    Effect::Ask("按等级：该等级需要确认")
+                    Effect::Ask(AskReason::LevelNeedsConfirm)
                 }
             }
             ToolPolicy::Allow => {
                 // 绝对规则（与阈值无关）：**L3 永远不能免确认**。
                 if level == Level::L3 {
-                    Effect::Ask("L3 是危险级：按设计永远需要确认，即便设为「允许」")
+                    Effect::Ask(AskReason::L3Always)
                 } else if (level as u8) <= (max_auto as u8) {
                     Effect::Allow
                 } else {
-                    Effect::Ask("该工具的等级高于自动放行上限：即便设为「允许」也必须确认")
+                    Effect::Ask(AskReason::AboveAutoLimit)
                 }
             }
         }
@@ -385,11 +419,12 @@ mod tests {
             matches!(e, Effect::Ask(_)),
             "L3 被「允许」自动放行了 —— 这是审计明确否掉的行为：{e:?}"
         );
-        // 说明原因里要把这件事讲清楚（用户会问"我明明设了允许"）
+        // §3.5：原因现在是**码**。断言"是 L3 或超上限那两个码之一" ——
+        // 断言码而不是措辞（措辞改了不该让测试红，附录 BN.3）。
         if let Effect::Ask(why) = e {
             assert!(
-                why.contains("L3") || why.contains("上限"),
-                "原因要说明是等级限制：{why}"
+                matches!(why, AskReason::L3Always | AskReason::AboveAutoLimit),
+                "原因应说明是等级限制，实得 {why:?}"
             );
         }
     }

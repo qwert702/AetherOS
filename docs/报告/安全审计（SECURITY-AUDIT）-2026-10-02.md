@@ -3196,3 +3196,59 @@ UI 直接把那一列原样画出来，所以这个不一致一直没有暴露�
 * **单次** `cargo test --workspace`：**732 通过 / 0 失败**（+1 新测试，并加强了 2 条）；
 * Windows 与 **musl** 双目标 **0 错误 0 警告**；`gates.py` 15/15；
 * **未实机验证**：真机看审计页的结论列（新日志显示本地化文案，旧日志原样）。
+
+---
+
+## 附录 BT：确认原因改码 + 工具路径拿到语言（2026-10-04 批次 BS-1）
+
+### BT.1 先查证再动手（本批最值的一条）
+
+上一批我写"`Effect::Ask` 的原因要翻，得把 `en` 传进 `policy::effective`"。动手前查了一下
+**谁在用这个原因**：
+
+* `perm::judge` 里 `Effect::Ask(_)` 分支 —— **忽略**原因；
+
+也就是说：**它没有任何用户可见路径**。确认卡片显示的是工具自己的 `consequence`
+（"会发生什么"），不是策略层的这句话。所以正确做法不是加语言参数，
+而是和 `DenyReason` 一样改成**码**（`AskReason`），把它挪出"可能被存/被发"的位置。
+
+**教训**：动手前先问"这条字符串到底会不会被谁看到"。查证花了两次 grep，
+省下的是给 `effective` 加参数、改十几个调用点、还要给测试补值的整套工作量。
+
+### BT.2 工具路径的语言：放进 `ToolCtx`，而不是给 `execute` 加参数
+
+`tools::execute` 需要语言（剪贴板超长文案会作为工具结果显示）。
+第一版我给 `execute` 加了 `en` 参数 —— 结果要改 `server.rs`、`main.rs` 与 5 处测试调用。
+
+更好的做法：**工具执行体的签名是统一的** `fn(&Value, &mut ToolCtx)`（注册表里那一列 `run`），
+给 `execute` 加参数就得改**所有**工具；而 `ctx` 本来就传给每一个工具。
+所以 `en` 放进 `ToolCtx`：
+
+    pub struct ToolCtx { pub desktop_actions: Vec<Action>, pub en: bool }
+
+然后只改两处构造点（`server.rs` 的 ToolCall 路径用 `*ui_en`；`main.rs` 的 agent 路径用 `en`）。
+
+**这次差点漏掉的是**：`ToolCtx` 是用 `ToolCtx::default()` 构造的 ——
+加了字段之后编译器**不会**提醒"你还没设它"，只会安安静静地用 `false`。
+所以加完字段必须**主动去找构造点并赋值**（我专门 grep 了一遍 `ToolCtx` / `ctx = ` 才确认）。
+
+### BT.3 顺手修掉一处我自己写的丑陋代码
+
+上一批我插注释时把 `let bytes = crate::clipboard::set(text, false)` 插成了：
+
+    let bytes = crate:// 缺口（§3.5）：…
+        clipboard::set(text, false).map_err(…)?;
+
+它**能编译**（Rust 允许路径跨空白/换行），但注释卡在 `crate::` 与 `clipboard` 之间，
+任何人看一眼都会以为坏了。本批把它改成正常的整句 + 注释在上一行。
+
+### BT.4 仍未做
+
+`llm` / `modelcfg` 的错误文本；`aether-ops` 诊断报告正文；`aether-install` 命令行文案。
+（合成器侧与 aetherd 的主路径至此都已双语。）
+
+### BT.5 验证
+
+* **单次** `cargo test --workspace`：**732 通过 / 0 失败**；
+* Windows 与 **musl** 双目标 **0 错误 0 警告**；`gates.py` 15/15；
+* **未实机验证**：真机英文界面下复制一段超长文本（超过上限）看提示语言。

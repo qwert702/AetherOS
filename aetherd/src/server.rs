@@ -462,6 +462,8 @@ fn handle_request(
                 None => false,
             };
             let mut ctx = tools::ToolCtx::default();
+            // §3.5：工具返回给用户的文案跟着**连接**的语言（如剪贴板超长）
+            ctx.en = *ui_en;
             let out = match tools::execute(gate, &mut ctx, &tool, &arguments, approved) {
                 Ok(tools::ExecOutcome::Done(output)) => vec![Response::ToolResult { tool, ok: true, output }],
                 Ok(tools::ExecOutcome::NeedsConfirmation { tool, level, arguments, consequence, echo_required }) => {
