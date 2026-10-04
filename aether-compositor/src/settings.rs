@@ -367,6 +367,14 @@ pub enum SettingsHit {
     RefreshUpdates,
     /// 重新拉取显示输出（§3.8 只读报告）。
     RefreshDisplays,
+    /// 重新扫描可移动设备（§3.7）。
+    RefreshRemovables,
+    /// 点击第 `i` 个可移动设备：**已挂载就卸载，没挂载就只读挂载**。
+    ///
+    /// 只用一个命中变体（而不是"挂载/卸载"两个）是有意的：
+    /// 该挂还是该卸由**点下去那一刻的真实状态**决定，而不是由绘制时那一帧的状态决定 ——
+    /// 否则中间状态一变，按钮就会做错事。去哪个分支由事件循环实时判断。
+    ToggleRemovable(usize),
     /// 卸载第 `i` 个已安装应用（§5.11）。服务端会**移入回收站**（不是直接删）。
     RemoveApp(usize),
     /// 立刻对一次时（§3.3）。
@@ -480,6 +488,8 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "系统更新", title_en: "System Update", group: "系统", group_en: "System", enabled: true },
     // §3.8：显示输出（**只读报告** —— 不驱动第二个输出，如实说明边界）。
     PageDef { title: "显示输出", title_en: "Display Outputs", group: "系统", group_en: "System", enabled: true },
+    // §3.7：可移动存储（检测 + **只读**挂载；蓝牙与打印不在范围内）。
+    PageDef { title: "可移动设备", title_en: "Removable Devices", group: "系统", group_en: "System", enabled: true },
     // §3.2：通知页（是否记录 + 清空历史）。放在最后一页：它是"回头看"的地方，
     // 不是日常要改的设置。
     PageDef { title: "通知", title_en: "Notifications", group: "系统", group_en: "System", enabled: true },
@@ -633,7 +643,10 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         | SettingsHit::StageUpdate(_)
         | SettingsHit::RefreshUpdates
         // §3.8 显示输出：只读报告，「刷新」由事件循环处理。
-        | SettingsHit::RefreshDisplays => {}
+        | SettingsHit::RefreshDisplays
+        // §3.7 可移动设备：扫描与挂载/卸载都要发 IPC。
+        | SettingsHit::RefreshRemovables
+        | SettingsHit::ToggleRemovable(_) => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

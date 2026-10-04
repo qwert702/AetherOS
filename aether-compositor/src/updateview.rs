@@ -40,20 +40,8 @@ impl UpdateView {
         &self.packages
     }
 
-    pub fn current_version(&self) -> &str {
-        &self.current_version
-    }
-
-    pub fn staged_version(&self) -> Option<&str> {
-        self.staged_version.as_deref()
-    }
-
     pub fn is_loaded(&self) -> bool {
         self.loaded
-    }
-
-    pub fn pending(&self) -> Option<&str> {
-        self.pending.as_deref()
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -93,16 +81,6 @@ impl UpdateView {
             self.error = Some(message.clone());
         }
         self.message = Some(message);
-    }
-
-    pub fn on_failure(&mut self, why: String) {
-        self.pending = None;
-        self.error = Some(why);
-    }
-
-    /// 是否正在暂存某个包。
-    pub fn is_pending(&self) -> bool {
-        self.pending.is_some()
     }
 
     /// 某个包现在能不能点（正在暂存时一律不能，避免并发互清）。
@@ -158,8 +136,9 @@ mod tests {
     fn starts_unloaded_and_distinguishes_empty_from_failed() {
         let v = UpdateView::default();
         assert!(!v.is_loaded() && v.packages().is_empty() && v.error().is_none());
+        // 失败走的是"回执"这条路（异步函数把连接失败也映射成 ok=false 的回执）
         let mut v2 = UpdateView::default();
-        v2.on_failure("连接 aetherd 失败".into());
+        v2.on_result(false, "连接 aetherd 失败".into(), None);
         assert!(!v2.is_loaded(), "失败不该变成已加载");
         assert_eq!(v2.error(), Some("连接 aetherd 失败"));
     }
@@ -173,11 +152,10 @@ mod tests {
         assert!(v.can_click());
         v.mark_pending("pkg-1");
         assert!(!v.can_click(), "暂存期间不能再点");
-        assert!(v.is_pending());
         assert!(v.row_hint(0, Lang::Zh).contains("正在校验"));
         // 回执到了才恢复
         v.on_result(true, "已暂存".into(), Some("1.0.1".into()));
-        assert!(v.can_click() && !v.is_pending());
+        assert!(v.can_click(), "回执到了就恢复可点");
     }
 
     /// 失败时**必须留下后端给的原因**（而不是只标一个"失败"）。
@@ -187,14 +165,19 @@ mod tests {
         v.on_list(vec!["pkg".into()], "1.0.0".into(), None);
         v.mark_pending("pkg");
         v.on_result(false, "拒绝降级/同版本：包内版本 1.0.0，当前 1.0.0（要回滚请用快照回滚）".into(), None);
-        assert!(!v.is_pending());
+        assert!(v.can_click(), "失败后要恢复可点");
         assert!(
             v.error().unwrap().contains("拒绝降级"),
             "后端原因要原样留着：{:?}",
             v.error()
         );
         assert!(v.message().is_some(), "结果消息也要显示");
-        assert_eq!(v.staged_version(), None, "失败不能把待应用版本写成成功");
+        // 失败不能把"待应用版本"写成成功 —— 从**用户可见的状态行**上断言
+        assert!(
+            v.status_line(Lang::Zh).contains("没有待应用的更新"),
+            "失败后状态行不该显示待应用：{}",
+            v.status_line(Lang::Zh)
+        );
     }
 
     /// 成功后立刻显示"待应用版本"（不必等下一次拉取）。
@@ -204,7 +187,6 @@ mod tests {
         v.on_list(vec!["pkg".into()], "1.0.0".into(), None);
         v.mark_pending("pkg");
         v.on_result(true, "已暂存更新 1.0.1（2 个文件）· 重启后生效".into(), Some("1.0.1".into()));
-        assert_eq!(v.staged_version(), Some("1.0.1"));
         assert!(v.status_line(Lang::Zh).contains("1.0.1"));
         assert!(v.status_line(Lang::Zh).contains("重启后生效"));
     }

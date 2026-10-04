@@ -848,6 +848,25 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
+                AiEvent::RemovablesLoaded { devices } => {
+                    renderer.removables = devices;
+                    renderer.removables_loaded = true;
+                    renderer.removable_pending = None;
+                }
+                AiEvent::RemovableAck { ok, message } => {
+                    renderer.removable_pending = None;
+                    renderer.removable_message = Some(message.clone());
+                    let kind = if ok {
+                        notifications::Kind::Ok
+                    } else {
+                        notifications::Kind::Err
+                    };
+                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                    // 挂载状态变了 → **重新扫一次**（列表如实反映磁盘，而不是本地猜）
+                    if ok {
+                        fetch_removables(ai_tx.clone());
+                    }
+                }
                 AiEvent::DisplaysLoaded { driven_index, outputs } => {
                     renderer.displays = outputs;
                     renderer.driven_index = driven_index;
@@ -1244,6 +1263,47 @@ fn run_fbdev() -> anyhow::Result<()> {
                             renderer.snapshots.mark_pending();
                             create_snapshot(ai_tx.clone());
                             push_toast(&mut toast, &mut renderer.notifs, "正在创建配置快照…".to_string(), notifications::Kind::Info);
+                        }
+                    }
+                    // §3.7「可移动设备」页：进入时扫一次
+                    if let settings::SettingsHit::Page(i) = hit {
+                        let is_rem = settings::PAGES
+                            .get(i)
+                            .map(|p| p.title == "可移动设备")
+                            .unwrap_or(false);
+                        if is_rem && !renderer.removables_loaded {
+                            fetch_removables(ai_tx.clone());
+                        }
+                    }
+                    // §3.7：重新扫描
+                    if let settings::SettingsHit::RefreshRemovables = hit {
+                        fetch_removables(ai_tx.clone());
+                    }
+                    // §3.7：点一下设备 —— **挂载还是卸载由这一刻的真实状态决定**，
+                    // 而不是由绘制那一帧的状态决定（否则中间状态一变就做错事）。
+                    if let settings::SettingsHit::ToggleRemovable(i) = hit {
+                        if renderer.removable_pending.is_some() {
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                "上一次操作还没结束，请稍候".to_string(),
+                                notifications::Kind::Info,
+                            );
+                        } else if let Some(d) = renderer.removables.get(i).cloned() {
+                            let mount = d.mounted_at.is_none();
+                            renderer.removable_pending = Some(d.dev.clone());
+                            renderer.removable_message = None;
+                            toggle_removable(ai_tx.clone(), d.dev.clone(), mount);
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                if mount {
+                                    format!("正在只读挂载 {}…", d.dev)
+                                } else {
+                                    format!("正在卸载 {}…", d.dev)
+                                },
+                                notifications::Kind::Info,
+                            );
                         }
                     }
                     // §3.8「显示输出」页：进入时读一次（只读报告）
@@ -2109,6 +2169,15 @@ enum AiEvent {
     DisplaysLoaded {
         driven_index: u32,
         outputs: Vec<aether_ipc::DisplayWire>,
+    },
+    /// 可移动设备扫描结果（§3.7）。
+    RemovablesLoaded {
+        devices: Vec<aether_ipc::RemovableWire>,
+    },
+    /// 挂载/卸载的回执（§3.7）。
+    RemovableAck {
+        ok: bool,
+        message: String,
     },
 }
 
@@ -3975,6 +4044,22 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
+                AiEvent::RemovablesLoaded { devices } => {
+                    renderer.removables = devices;
+                    renderer.removables_loaded = true;
+                    renderer.removable_pending = None;
+                }
+                AiEvent::RemovableAck { ok, message } => {
+                    renderer.removable_pending = None;
+                    renderer.removable_message = Some(message.clone());
+                    let kind = if ok {
+                        notifications::Kind::Ok
+                    } else {
+                        notifications::Kind::Err
+                    };
+                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                    // 这一处（另一个循环）没有 IPC 发送端：只落地状态，不触发重新扫描
+                }
                 AiEvent::DisplaysLoaded { driven_index, outputs } => {
                     renderer.displays = outputs;
                     renderer.driven_index = driven_index;
@@ -5247,6 +5332,57 @@ fn handle_dns_key(
         }
         _ => false,
     }
+}
+
+/// 扫描可移动设备（§3.7）。
+#[cfg(target_os = "linux")]
+fn fetch_removables(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::ListRemovable) {
+            Ok(Response::RemovableList { devices }) => AiEvent::RemovablesLoaded { devices },
+            Ok(Response::Error { code, message }) => AiEvent::RemovableAck {
+                ok: false,
+                message: format!("扫描可移动设备被拒绝（{code}）：{message}"),
+            },
+            Ok(_) => AiEvent::RemovableAck {
+                ok: false,
+                message: "扫描可移动设备：收到意外响应".into(),
+            },
+            Err(e) => AiEvent::RemovableAck {
+                ok: false,
+                message: format!("连接 aetherd 失败：{e}"),
+            },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 挂载或卸载一个可移动设备（§3.7）。**只传设备名**，能挂不能挂由 aetherd 判。
+#[cfg(target_os = "linux")]
+fn toggle_removable(tx: mpsc::Sender<AiEvent>, dev: String, mount: bool) {
+    std::thread::spawn(move || {
+        let req = if mount {
+            Request::MountRemovable { dev }
+        } else {
+            Request::UnmountRemovable { dev }
+        };
+        let ev = match admin_request(&req) {
+            Ok(Response::RemovableAck { ok, message }) => AiEvent::RemovableAck { ok, message },
+            Ok(Response::Error { code, message }) => AiEvent::RemovableAck {
+                ok: false,
+                message: format!("被拒绝（{code}）：{message}"),
+            },
+            Ok(_) => AiEvent::RemovableAck {
+                ok: false,
+                message: "挂载/卸载：收到意外响应".into(),
+            },
+            Err(e) => AiEvent::RemovableAck {
+                ok: false,
+                message: format!("连接 aetherd 失败：{e}"),
+            },
+        };
+        let _ = tx.send(ev);
+    });
 }
 
 /// 取一次显示输出（§3.8）。**只读**：本系统不驱动第二个输出，这里只是如实报告。

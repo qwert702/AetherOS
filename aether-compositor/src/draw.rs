@@ -1631,6 +1631,14 @@ pub struct Renderer {
     pub driven_index: u32,
     /// 是否已经拉过一次（决定"正在读取"还是"没有输出"）
     pub displays_loaded: bool,
+    /// 可移动设备（§3.7）：列表 + 正在操作的设备 + 上一次的结果。
+    ///
+    /// 这里有交互状态（进行中 / 结果），但只有三个字段 —— 单开一个视图模块
+    /// 反而更绕（对比 §5.6/§3.1 那两个有多步确认与两步状态机的页）。
+    pub removables: Vec<aether_ipc::RemovableWire>,
+    pub removables_loaded: bool,
+    pub removable_pending: Option<String>,
+    pub removable_message: Option<String>,
     /// 当前虚拟桌面数量（§5.4）。绘制要用它显示"N 个桌面"——
     /// 桌面状态住在事件循环的 `spaces` 里（那里才拿得到窗口），所以这里只镜像一个数字。
     pub space_count: usize,
@@ -1959,6 +1967,10 @@ impl Renderer {
         displays: Vec::new(),
         driven_index: 0,
         displays_loaded: false,
+        removables: Vec::new(),
+        removables_loaded: false,
+        removable_pending: None,
+        removable_message: None,
         space_count: crate::spaces::Spaces::<Win>::COUNT,
             settings_hits: Vec::new(),
             control_open: false,
@@ -2168,6 +2180,10 @@ impl Renderer {
                     displays: &self.displays,
                     driven_index: self.driven_index,
                     displays_loaded: self.displays_loaded,
+                    removables: &self.removables,
+                    removables_loaded: self.removables_loaded,
+                    removable_pending: self.removable_pending.as_deref(),
+                    removable_message: self.removable_message.as_deref(),
                 },
                 t, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
@@ -2855,6 +2871,13 @@ pub struct PageCtx<'a> {
     pub driven_index: u32,
     /// 是否已经读过一次（区分「正在读取」与「确实没有输出」）
     pub displays_loaded: bool,
+    /// 可移动设备（§3.7，只读列表 + 一行状态）
+    pub removables: &'a [aether_ipc::RemovableWire],
+    pub removables_loaded: bool,
+    /// 正在对哪个设备做操作（期间挡点击）
+    pub removable_pending: Option<&'a str>,
+    /// 上一次操作的结果（保留到下一次操作）
+    pub removable_message: Option<&'a str>,
 }
 
 /// 测试用：与 `test_ctx` 相同，但可以注入一个**非空**的商店视图
@@ -2892,6 +2915,10 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
         displays: &[],
         driven_index: 0,
         displays_loaded: false,
+        removables: &[],
+        removables_loaded: false,
+        removable_pending: None,
+        removable_message: None,
     }
 }
 
@@ -2925,6 +2952,10 @@ fn draw_settings_content(
         displays,
         driven_index,
         displays_loaded,
+        removables,
+        removables_loaded,
+        removable_pending,
+        removable_message,
     } = ctx;
     use crate::settings::{SettingsHit, PAGES};
     use crate::widgets;
@@ -3208,6 +3239,100 @@ fn draw_settings_content(
                 widgets::States::at(act, mouse), Some(tr),
             );
             hits.push((act, SettingsHit::RefreshStore));
+        }
+        "可移动设备" => {
+            // §3.7 最小切片：**只读**挂载。界面上要把这条说清楚 ——
+            // 用户点下去得到的是"能看里面的文件"，而不是"能往里写"。
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("检测到的设备", "Detected devices"), Some(tr),
+            );
+            ry += 22;
+            let r_refresh = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 36 };
+            widgets::row(
+                buf, w, h, r_refresh,
+                crate::i18n::tr("重新扫描", "Rescan"),
+                None,
+                widgets::States::at(r_refresh, mouse), Some(tr),
+            );
+            hits.push((r_refresh, SettingsHit::RefreshRemovables));
+            ry += 40;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "挂载是只读的（ro,nodev,nosuid,noexec）：能看里面的文件，不能往盘里写",
+                    "Mounted read-only (ro,nodev,nosuid,noexec): browse files, no writes",
+                ),
+                font::CAPTION, color::text_dim(), 0.75,
+            );
+            ry += 26;
+
+            if !removables_loaded {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("正在扫描…", "Scanning…"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            } else if removables.is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr(
+                        "没有检测到可移动存储（插上 U 盘后点「重新扫描」）",
+                        "No removable storage detected (plug in a drive and rescan)",
+                    ),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            }
+            if let Some(msg) = removable_message {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    msg,
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            }
+
+            let devices: Vec<(String, String)> = removables
+                .iter()
+                .map(|d| {
+                    let size = crate::text::human_bytes(d.bytes);
+                    let pending = removable_pending == Some(d.dev.as_str());
+                    let hint = if pending {
+                        crate::i18n::pick(lang, "正在处理…", "working…").to_string()
+                    } else {
+                        match &d.mounted_at {
+                            Some(mp) => format!(
+                                "{size} · {mp} · {}",
+                                crate::i18n::pick(lang, "点一下卸载", "click to unmount")
+                            ),
+                            None => format!(
+                                "{size} · {}",
+                                crate::i18n::pick(
+                                    lang,
+                                    "点一下只读挂载",
+                                    "click to mount read-only",
+                                )
+                            ),
+                        }
+                    };
+                    (d.dev.clone(), hint)
+                })
+                .collect();
+            for (i, (dev, hint)) in devices.iter().enumerate() {
+                if ry > content.y + content.h - 60 {
+                    break;
+                }
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                widgets::row(buf, w, h, row, dev, Some(hint), widgets::States::at(row, mouse), Some(tr));
+                // 有操作在飞时不登记命中区：不给"点了没反应"的机会
+                if removable_pending.is_none() {
+                    hits.push((row, SettingsHit::ToggleRemovable(i)));
+                }
+                ry += 46;
+            }
         }
         "显示输出" => {
             // §3.8：**只读报告**。这里要说清两件不同的事：

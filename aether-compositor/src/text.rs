@@ -303,6 +303,29 @@ impl TextRenderer {
 }
 
 /// 品牌与界面文案（统一收口，后续做 i18n 时从这里抽走）
+/// 人类可读的容量（**十进制单位**：KB/MB/GB/TB）。
+///
+/// **为什么用十进制而不是 1024**：U 盘的容量是按**厂标十进制**印的
+/// （8 GB 的盘标 8 GB）。如果这里按 1024 显示成 `7.5 GiB`，
+/// 用户会以为"买回来就少了 7%"—— 那是显示方式造成的误会，不是盘的问题。
+///
+/// 小于 1000 字节时按字节显示（`512 B`），因为 `0.5 KB` 反而不直观。
+pub fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0usize;
+    while v >= 1000.0 && i + 1 < UNITS.len() {
+        v /= 1000.0;
+        i += 1;
+    }
+    if i == 0 {
+        // 字节不带小数（"512.0 B" 很奇怪）
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
+}
+
 pub mod strings {
     pub const BRAND: &str = "Aether";
     pub const MENUS: &[&str] = &["文件", "编辑", "显示", "帮助"];
@@ -647,6 +670,26 @@ mod tests {
         // AI 提示条两种语言都有
         assert!(!strings::AI_BAR_HINT.is_empty() && !strings::AI_BAR_HINT_EN.is_empty());
         assert_ne!(strings::AI_BAR_HINT, strings::AI_BAR_HINT_EN);
+    }
+
+    /// `human_bytes` 的边界与单位选择。
+    #[test]
+    fn human_bytes_uses_decimal_units_like_the_label_on_the_drive() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1), "1 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(999), "999 B", "不到 1000 就按字节显示");
+        assert_eq!(human_bytes(1000), "1.0 KB");
+        assert_eq!(human_bytes(1500), "1.5 KB");
+        assert_eq!(human_bytes(1_000_000), "1.0 MB");
+        assert_eq!(human_bytes(1_500_000), "1.5 MB");
+        // **重点**：8 GB 的盘要显示 8.0 GB（十进制），而不是 7.5 GiB
+        assert_eq!(human_bytes(8_000_000_000), "8.0 GB");
+        assert_eq!(human_bytes(16_000_000_000), "16.0 GB");
+        assert_eq!(human_bytes(1_000_000_000_000), "1.0 TB");
+        // 超出 TB 就不再进位（避免出现没有单位可用的尴尬），但数字仍然合理
+        assert!(human_bytes(u64::MAX).ends_with("TB"), "上限单位是 TB");
+        assert!(human_bytes(u64::MAX).starts_with("18446744"), "极大值不该溢出成负数");
     }
 
 }
