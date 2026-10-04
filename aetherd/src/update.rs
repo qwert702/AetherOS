@@ -36,6 +36,12 @@ pub const INCOMING: &str = "incoming";
 pub const STAGED: &str = "staged";
 /// 暂存完成标记（由 `stage` 写、由 `aether-init` 读）。
 pub const READY: &str = "ready.json";
+/// **待应用表**：每行 `<sha256>\t<bytes>\t<target>`。
+///
+/// 它是 init 侧的就绪协议：**这个文件存在 = 暂存完整**（`stage` 最后才写它）。
+/// 于是 init 不需要 JSON 解析器，也不必把两个 crate 的更新逻辑耦合成共享 crate。
+/// tab 作分隔符是安全的 —— 路径校验拒绝一切控制字符（含 tab）。
+pub const APPLY_LIST: &str = "apply.list";
 
 /// **允许被更新覆盖的路径前缀**。
 ///
@@ -231,6 +237,19 @@ pub fn stage(
         std::fs::copy(bundle.join(rel), &dst)
             .map_err(|e| format!("拷贝 {} 失败：{e}", f.path))?;
     }
+    // 版本文件**总是**跟着更新走：它是"当前版本"的单一来源
+    //（`current_version()` 读的就是它），不带上它就会出现"更新了但版本号没变"。
+    let version_target = "/etc/aether/version";
+    if !m.files.iter().any(|f| f.path == version_target) {
+        let rel = version_target.trim_start_matches('/');
+        let dst = staged_dir.join(rel);
+        if let Some(p) = dst.parent() {
+            std::fs::create_dir_all(p).map_err(|e| format!("建目录失败 {}：{e}", p.display()))?;
+        }
+        std::fs::write(&dst, format!("{}\n", m.version))
+            .map_err(|e| format!("写版本文件失败：{e}"))?;
+    }
+
     let st = Staged {
         version: m.version.clone(),
         note: m.note.clone(),
@@ -239,6 +258,24 @@ pub fn stage(
     };
     let json = serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?;
     std::fs::write(root.join(READY), json).map_err(|e| format!("写 {} 失败：{e}", READY))?;
+
+    // **就绪协议：apply.list 最后写** —— 它出现就表示上面全部成功。
+    // 写在 `READY` 之后是刻意的：先给人看的账，再给 init 的信号。
+    let mut list = String::new();
+    for f in &m.files {
+        list.push_str(&format!("{}\t{}\t{}\n", f.sha256, f.bytes, f.path));
+    }
+    // 版本文件也要应用（若清单里没有它，就用我们刚写的那个）
+    if !m.files.iter().any(|f| f.path == version_target) {
+        let body = format!("{}\n", m.version);
+        list.push_str(&format!(
+            "{}\t{}\t{}\n",
+            crate::apps::sha256_bytes(body.as_bytes()),
+            body.len(),
+            version_target
+        ));
+    }
+    std::fs::write(root.join(APPLY_LIST), list).map_err(|e| format!("写 {} 失败：{e}", APPLY_LIST))?;
     Ok(st)
 }
 
@@ -591,6 +628,46 @@ mod tests {
         std::fs::write(inc.join("a-file"), b"x").unwrap(); // 不是目录 → 不列
         let names = list_incoming(&root);
         assert_eq!(names, vec!["good-1".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **跨 crate 契约**：`stage()` 写的 `apply.list` 必须是 `aether-init` 能读的格式。
+    ///
+    /// 两个 crate 各自持有 `UPDATE_ROOT`/`STAGED`/`APPLY_LIST` 常量（不引入跨 crate 依赖），
+    /// 所以这里**把 init 侧的解析规则复述一遍并核对**：三字段、tab 分隔、
+    /// 目标是白名单内的绝对路径、最后一行是版本文件。
+    /// 谁改了格式而没改另一边，这条测试会红。
+    #[test]
+    fn the_apply_list_is_the_contract_with_aether_init() {
+        let root = tmp("contract");
+        let b = make_bundle(&root, "1.0.1", b"payload");
+        let upd = root.join("upd");
+        stage(&b, &upd, "1.0.0", 1_700_000_000).unwrap();
+        let list = std::fs::read_to_string(upd.join(APPLY_LIST)).unwrap();
+        let mut targets = Vec::new();
+        for line in list.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            assert_eq!(f.len(), 3, "每行必须是 sha256<TAB>bytes<TAB>target：{line:?}");
+            assert!(is_hex64(f[0]), "第一字段必须是 64 位十六进制：{line:?}");
+            assert!(f[1].parse::<u64>().is_ok(), "第二字段必须是字节数：{line:?}");
+            assert!(path_is_allowed(f[2]), "第三字段必须过白名单：{line:?}");
+            // 暂存文件必须真的存在（init 会去读它）
+            let staged = upd.join(STAGED).join(f[2].trim_start_matches('/'));
+            assert!(staged.is_file(), "暂存文件不在：{}", staged.display());
+            assert_eq!(
+                std::fs::metadata(&staged).unwrap().len(),
+                f[1].parse::<u64>().unwrap(),
+                "记录的大小必须与实际一致（init 会核对它）：{line:?}"
+            );
+            targets.push(f[2].to_string());
+        }
+        assert!(targets.contains(&"/var/apps/demo/demo".to_string()));
+        assert!(
+            targets.contains(&"/etc/aether/version".to_string()),
+            "版本文件必须**自动带上**（否则会出现「更新了但版本号没变」）：{targets:?}"
+        );
+        // ready.json 也要在（给人看的状态）
+        assert!(upd.join(READY).is_file());
         let _ = std::fs::remove_dir_all(&root);
     }
 

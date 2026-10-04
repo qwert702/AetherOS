@@ -60,11 +60,18 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-/// 生产入口是流式的 [`sha256_file`]；这个按字节版本是它的**测试基准**
-/// （拿公开测试向量对账），因此只在测试下编译。
+/// 计算一段字节的 SHA-256（小写十六进制）。**公开入口**。
+///
+/// 生产上按字节算摘要的地方（例如更新包自带写入的版本文件）用它；
+/// [`sha256_hex`] 是同实现的测试基准名字，留着不动。
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    hex_lower(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+}
+
+/// 测试基准（拿公开测试向量对账），与 [`sha256_bytes`] 同一实现。
 #[cfg(test)]
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex_lower(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+    sha256_bytes(bytes)
 }
 
 /// 计算文件的 SHA-256（分块读，大包不吃内存）。

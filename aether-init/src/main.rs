@@ -10,6 +10,7 @@ mod ipc;
 mod logtee;
 mod manager;
 mod persist;
+mod update;
 mod power;
 mod unit;
 
@@ -17,6 +18,38 @@ use manager::Manager;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// 应用暂存的更新（若有）。
+///
+/// 只在 Linux 启动路径里被调用（Windows 上没有 PID 1 这套），
+/// 所以非 Linux 上给它按平台的 allow —— 它的**逻辑**是全平台可测的（见 update.rs 的测试）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+///
+/// **失败不让开机失败**：一台"更新包有问题"的机器应当照常起来跑旧版本，
+/// 而不是变砖。所以失败只大声报出来 + **保留标记**（下次启动自动重试）。
+fn apply_pending_update() {
+    let root = std::path::PathBuf::from(update::UPDATE_ROOT);
+    if !update::has_pending(&root) {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    eprintln!("[aether-init] 发现暂存的更新，开始应用（应用期间不启动服务）");
+    match update::apply_staged(&root, now) {
+        Ok(events) => {
+            for e in &events {
+                eprintln!("[aether-init] {e}");
+            }
+            eprintln!("[aether-init] 更新应用完成（{} 个文件）", events.len());
+        }
+        Err(e) => {
+            eprintln!("[aether-init] 更新应用失败（**标记保留，下次启动会重试**）：{e}");
+            eprintln!("[aether-init] 本次仍然用旧版本继续启动 —— 更新失败不该让机器开不了机");
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -141,7 +174,13 @@ fn run_pid1() -> anyhow::Result<()> {
     // 持久化分区在服务之前挂载：logtee 写 /var/log/aether 时已是真磁盘
     #[cfg(target_os = "linux")]
     {
-        persist::mount_persist();
+        let _persist_dev = persist::mount_persist();
+    // §3.1 更新机制：**在启动服务之前**应用暂存的更新。
+    //
+    // 顺序不能变：必须在 `mount_persist()` **之后**（暂存目录在 /var 上，
+    // 没挂载就看不到它），并且在 `run_loop()` **之前** ——
+    // 否则会出现"旧进程拿着新二进制"，而更新恰恰要替换那些二进制。
+    apply_pending_update();
     }
     run_loop("/etc/aether/services", true)
 }
