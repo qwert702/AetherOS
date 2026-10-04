@@ -304,7 +304,7 @@ fn read_line_capped<R: BufRead + ?Sized>(reader: &mut R, max: u64) -> std::io::R
     if n as u64 >= max && !line.ends_with('\n') {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("请求行超过 {max} 字节上限"),
+            format!("request line exceeds the {max} byte cap"),
         ));
     }
     Ok(line)
@@ -367,7 +367,7 @@ fn handle_request(
     is_ui: &mut bool,
 ) -> Vec<Response> {
     let Ok(req) = aether_ipc::decode::<Request>(line) else {
-        return vec![Response::Error { code: 1, message: "无法解析的请求".into() }];
+        return vec![Response::Error { code: 1, message: "unparsable request".into() }];
     };
     match req {
         Request::Ping => vec![Response::Pong],
@@ -378,7 +378,7 @@ fn handle_request(
                 vec![Response::UiRegistered]
             } else {
                 eprintln!("[aetherd] UI 通道注册失败：密钥不匹配");
-                vec![Response::Error { code: 403, message: "UI 通道注册失败：密钥不匹配".into() }]
+                vec![Response::Error { code: 403, message: "UI channel registration failed: key mismatch".into() }]
             }
         }
         Request::ConfirmCancel { token } => {
@@ -392,7 +392,7 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝撤销令牌：本连接未注册为 UI 通道");
                 return vec![Response::Error {
                     code: 403,
-                    message: "确认撤销必须由已注册的 UI 通道发起".into(),
+                    message: "revoking a confirmation requires a registered UI channel".into(),
                 }];
             }
             // 让"用户拒绝了"成为服务端的事实：撤销令牌 + 记入拒绝冷却 + 落审计。
@@ -411,7 +411,7 @@ fn handle_request(
                 }
                 None => vec![Response::Error {
                     code: 404,
-                    message: "确认令牌不存在或已失效（可能已过期、已使用或已撤销）".into(),
+                    message: "confirmation token is unknown or no longer valid (expired, already used, or revoked)".into(),
                 }],
             }
         }
@@ -431,7 +431,7 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝 {tool}：该工具读写用户环境数据，必须由已注册的 UI 通道发起");
                 return vec![Response::Error {
                     code: 403,
-                    message: format!("「{tool}」读写用户环境数据，必须由已注册的 UI 通道发起"),
+                    message: format!("「{tool}」 reads/writes user environment data and requires a registered UI channel"),
                 }];
             }
             // 是否"已授权"只能由服务端签发的令牌证明；且**只有已注册的 UI 通道**
@@ -442,7 +442,7 @@ fn handle_request(
                         eprintln!("[aetherd] 拒绝兑现确认令牌：本连接未注册为 UI 通道（工具 {tool}）");
                         return vec![Response::Error {
                             code: 403,
-                            message: "确认令牌兑现失败：本连接未注册为 UI 通道".into(),
+                            message: "cannot redeem the confirmation token: this connection is not a registered UI channel".into(),
                         }];
                     }
                     match approvals.redeem(token, &tool, &arguments) {
@@ -450,7 +450,7 @@ fn handle_request(
                         Err(reason) => {
                             return vec![Response::Error {
                                 code: 403,
-                                message: format!("确认令牌校验失败：{reason}"),
+                                message: format!("confirmation token check failed: {reason}"),
                             }]
                         }
                     }
@@ -467,7 +467,7 @@ fn handle_request(
                         eprintln!("[aetherd] 拒绝下发确认令牌：本连接未注册为 UI 通道（工具 {tool}）");
                         return vec![Response::Error {
                             code: 403,
-                            message: format!("L2+ 操作（{tool}）必须由已注册的 UI 通道发起"),
+                            message: format!("L2+ operation (「{tool}」) requires a registered UI channel"),
                         }];
                     }
                     let token = approvals.issue(&tool, &arguments);
@@ -483,7 +483,7 @@ fn handle_request(
                         token,
                     }]
                 }
-                Err(e) => vec![Response::ToolResult { tool, ok: false, output: format!("[工具错误] {e}") }],
+                Err(e) => vec![Response::ToolResult { tool, ok: false, output: format!("[tool error] {e}") }],
             };
             let mut out = out;
             if out.iter().any(|r| matches!(r, Response::ToolResult { ok: true, .. })) {
@@ -507,7 +507,7 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝剪贴板写入：本连接未注册为 UI 通道");
                 return vec![Response::Error {
                     code: 403,
-                    message: "剪贴板访问必须由已注册的 UI 通道发起".into(),
+                    message: "clipboard access requires a registered UI channel".into(),
                 }];
             }
             audit_or_warn(gate, "clipboard_set", Level::L1, verdict::ALLOWED);
@@ -522,7 +522,7 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝剪贴板读取：本连接未注册为 UI 通道");
                 return vec![Response::Error {
                     code: 403,
-                    message: "剪贴板访问必须由已注册的 UI 通道发起".into(),
+                    message: "clipboard access requires a registered UI channel".into(),
                 }];
             }
             audit_or_warn(gate, "clipboard_get", Level::L1, verdict::ALLOWED);
@@ -535,7 +535,7 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝配置重载：本连接未注册为 UI 通道");
                 return vec![Response::Error {
                     code: 403,
-                    message: "配置重载必须由已注册的 UI 通道发起".into(),
+                    message: "config reload requires a registered UI channel".into(),
                 }];
             }
             audit_or_warn(gate, "reload_config", Level::L2, verdict::ALLOWED);
@@ -578,7 +578,7 @@ fn handle_request(
                 audit_or_warn(gate, "get_displays", Level::L0, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "读取显示输出必须由已注册的 UI 通道发起".into(),
+                    message: "reading display outputs requires a registered UI channel".into(),
                 }];
             }
             let outputs: Vec<aether_ipc::DisplayWire> =
@@ -603,7 +603,7 @@ fn handle_request(
                 audit_or_warn(gate, "list_removable", Level::L0, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "读取可移动设备列表必须由已注册的 UI 通道发起".into(),
+                    message: "listing removable devices requires a registered UI channel".into(),
                 }];
             }
             let scanned = crate::removable::scan(std::path::Path::new("/sys/block"));
@@ -624,7 +624,7 @@ fn handle_request(
                 audit_or_warn(gate, "mount_removable", Level::L2, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "挂载可移动设备必须由已注册的 UI 通道发起".into(),
+                    message: "mounting a removable device requires a registered UI channel".into(),
                 }];
             }
             // **核心安全规则**：只允许挂载"本次扫描到的"设备（`mount()` 内部会再查一遍）
@@ -659,7 +659,7 @@ fn handle_request(
                 audit_or_warn(gate, "unmount_removable", Level::L2, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "卸载可移动设备必须由已注册的 UI 通道发起".into(),
+                    message: "unmounting a removable device requires a registered UI channel".into(),
                 }];
             }
             let scanned = crate::removable::scan(std::path::Path::new("/sys/block"));
@@ -693,7 +693,7 @@ fn handle_request(
                 audit_or_warn(gate, "list_updates", Level::L0, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "读取更新列表必须由已注册的 UI 通道发起".into(),
+                    message: "reading the update list requires a registered UI channel".into(),
                 }];
             }
             let root = std::path::PathBuf::from(crate::update::UPDATE_ROOT);
@@ -709,7 +709,7 @@ fn handle_request(
                 audit_or_warn(gate, "stage_update", Level::L2, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "暂存更新必须由已注册的 UI 通道发起".into(),
+                    message: "staging an update requires a registered UI channel".into(),
                 }];
             }
             let root = std::path::PathBuf::from(crate::update::UPDATE_ROOT);
@@ -759,7 +759,7 @@ fn handle_request(
                 audit_or_warn(gate, "get_snapshots", Level::L0, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "读取快照清单必须由已注册的 UI 通道发起".into(),
+                    message: "reading the snapshot list requires a registered UI channel".into(),
                 }];
             }
             let root = std::path::PathBuf::from(crate::snapshots::ROOT);
@@ -780,7 +780,7 @@ fn handle_request(
                 audit_or_warn(gate, "create_snapshot", Level::L1, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "创建快照必须由已注册的 UI 通道发起".into(),
+                    message: "creating a snapshot requires a registered UI channel".into(),
                 }];
             }
             let root = std::path::PathBuf::from(crate::snapshots::ROOT);
@@ -822,7 +822,7 @@ fn handle_request(
                 audit_or_warn(gate, "restore_snapshot", Level::L2, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "回滚必须由已注册的 UI 通道发起".into(),
+                    message: "rolling back requires a registered UI channel".into(),
                 }];
             }
             // **回滚改的是系统配置**：按 L2 记审计（不改闸门流程，因为它不是 AI 工具调用，
@@ -863,7 +863,7 @@ fn handle_request(
                 audit_or_warn(gate, "sync_time", Level::L1, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "对时必须由已注册的 UI 通道发起".into(),
+                    message: "time sync requires a registered UI channel".into(),
                 }];
             }
             match crate::timesync::query().and_then(|t| {
@@ -934,7 +934,7 @@ fn handle_request(
                 audit_or_warn(gate, "set_timezone", Level::L1, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "写系统时区必须由已注册的 UI 通道发起".into(),
+                    message: "writing the system time zone requires a registered UI channel".into(),
                 }];
             }
             let args = serde_json::json!({ "name": &name });
@@ -972,7 +972,7 @@ fn handle_request(
                 audit_or_warn(gate, "get_time_status", Level::L0, verdict::REJECTED_NO_UI);
                 return vec![Response::Error {
                     code: 403,
-                    message: "读取时间状态必须由已注册的 UI 通道发起".into(),
+                    message: "reading time status requires a registered UI channel".into(),
                 }];
             }
             let timezone = std::fs::read_to_string(crate::timesync::TIMEZONE_FILE)
@@ -992,7 +992,7 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝读取权限策略：本连接未注册为 UI 通道");
                 return vec![Response::Error {
                     code: 403,
-                    message: "读取权限策略必须由已注册的 UI 通道发起".into(),
+                    message: "reading the permission policy requires a registered UI channel".into(),
                 }];
             }
             let entries = crate::tools::policy_entries(&gate.policy_snapshot());
@@ -1005,7 +1005,7 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝写权限策略：本连接未注册为 UI 通道");
                 return vec![Response::Error {
                     code: 403,
-                    message: "写权限策略必须由已注册的 UI 通道发起".into(),
+                    message: "writing the permission policy requires a registered UI channel".into(),
                 }];
             }
             // **未知工具一律拒绝**：允许写不存在的名字会留下死配置 ——
@@ -1021,7 +1021,7 @@ fn handle_request(
                 return vec![Response::PolicyAck {
                     tool,
                     ok: false,
-                    message: "未知工具：策略不会写入（否则会留下看不见的死配置）".into(),
+                    message: "unknown tool: the policy is not written (it would leave an invisible dead entry)".into(),
                 }];
             }
             let local = crate::tools::policy_of(policy);
@@ -1078,7 +1078,7 @@ fn handle_request(
                 );
                 return vec![Response::Error {
                     code: 403,
-                    message: "写系统设置必须由已注册的 UI 通道发起".into(),
+                    message: "writing system settings requires a registered UI channel".into(),
                 }];
             }
             // 审计参数走 audit_call（Gate 内部统一脱敏）。DNS 地址不是秘密，
@@ -1126,7 +1126,7 @@ fn handle_request(
                     message: if en {
                         "Service control must come from a registered UI channel".into()
                     } else {
-                        "服务控制必须由已注册的 UI 通道发起".into()
+                        "service control requires a registered UI channel".into()
                     },
                 }];
             }
@@ -1214,7 +1214,7 @@ fn handle_chat(
                     out.push(Response::Error {
                         code: 403,
                         message: format!(
-                            "「{}」需要用户确认，但本连接未注册为 UI 通道，无法下发确认令牌",
+                            "「{}」 needs user confirmation, but this connection is not a registered UI channel; no confirmation token can be issued",
                             p.tool
                         ),
                     });
@@ -1245,13 +1245,21 @@ fn handle_chat(
             // 这是 0.6 的 UI 侧落点 —— 用户看不到配置状态，只能靠这条提示。
             let unconfigured = cfg.cloud.is_none() && !crate::llm::local_available(&cfg.local.base_url);
             let hint = if unconfigured {
+                if en {
+                "(no model available: run `aetherd config --help` in a terminal to set up local Ollama or a cloud API key)"
+            } else {
                 "（未检测到可用模型：在终端运行 `aetherd config --help` 配置本地 Ollama 或云端 API Key）"
+            }
             } else {
                 ""
             };
             vec![Response::Error {
                 code: 503,
-                message: format!("AI 通道不可用: {e}{hint}"),
+                message: if en {
+                    format!("AI channel unavailable: {e}{hint}")
+                } else {
+                    format!("AI 通道不可用: {e}{hint}")
+                },
             }]
         }
     }
@@ -1384,7 +1392,10 @@ mod ipc_gating_tests {
         // MAX 字节但**没有换行**（被截断）→ 必须报错
         let truncated = "a".repeat(MAX as usize);
         let e = read(&truncated).expect_err("无换行的满额行必须报错");
-        assert!(e.to_string().contains("上限"), "错误信息应说明上限：{e}");
+        // §3.5：这条错误属协议/日志层，改成了中性英文。
+        // 断言改成"说明上限**且带上限数字**"—— 数字才是行为事实，措辞不是。
+        let msg = e.to_string();
+        assert!(msg.contains("cap") && msg.contains("16"), "错误信息应说明上限与数字：{msg}");
 
         // MAX+1 字节带换行 → 换行落在上限之后 → 必须报错
         let over = "a".repeat(MAX as usize) + "\n";
