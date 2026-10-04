@@ -515,7 +515,7 @@ fn handle_request(
                 }];
             }
             audit_or_warn(gate, "clipboard_set", Level::L1, verdict::ALLOWED);
-            match crate::clipboard::set(&text) {
+            match crate::clipboard::set(&text, *ui_en) {
                 Ok(bytes) => vec![Response::ClipboardWritten { bytes }],
                 Err(e) => vec![Response::Error { code: 413, message: e }],
             }
@@ -1129,7 +1129,7 @@ fn handle_request(
             // 审计参数走 audit_call（Gate 内部统一脱敏）。DNS 地址不是秘密，
             // 但仍走同一条路径，避免"新增一处直接落盘"的口子。
             let args = serde_json::json!({ "key": key.as_str(), "value": value });
-            match crate::netset::apply(key, &value) {
+            match crate::netset::apply(key, &value, *ui_en) {
                 Ok(message) => {
                     if let Err(e) =
                         gate.audit_call("set_setting", Level::L2, &args, verdict::ALLOWED)
@@ -1473,7 +1473,7 @@ mod ipc_gating_tests {
     fn clipboard_oversized_is_rejected_without_clobbering() {
         let _g = lock();
         let mut is_ui = true;
-        crate::clipboard::set("keep").unwrap();
+        crate::clipboard::set("keep", false).unwrap();
         let big = "x".repeat(crate::clipboard::MAX_BYTES + 1);
         let out = handle_line(
             &aether_ipc::encode(&Request::ClipboardSet { text: big }),

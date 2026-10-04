@@ -44,12 +44,17 @@ static CLIPBOARD: Mutex<Option<Entry>> = Mutex::new(None);
 
 /// 写入剪贴板，返回写入的字节数。超长整体拒绝（不做截断 ——
 /// 截断会让用户在不知情的情况下复制出残缺数据，那是比拒绝更糟的失败）。
-pub fn set(text: &str) -> Result<usize, String> {
+/// `en`：这条错误会作为 AI 的工具结果显示（§3.5），所以跟着连接的界面语言。
+pub fn set(text: &str, en: bool) -> Result<usize, String> {
     let bytes = text.len();
     if bytes > MAX_BYTES {
-        return Err(format!(
-            "剪贴板内容 {bytes} 字节，超过上限 {MAX_BYTES}（拒绝整段，不做截断）"
-        ));
+        return Err(if en {
+            format!(
+                "clipboard content is {bytes} bytes, over the {MAX_BYTES} limit (refusing the whole thing rather than truncating)"
+            )
+        } else {
+            format!("剪贴板内容 {bytes} 字节，超过上限 {MAX_BYTES}（拒绝整段，不做截断）")
+        });
     }
     *CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner()) =
         Some(Entry { text: text.to_string(), set_at: Instant::now() });
@@ -89,15 +94,15 @@ mod tests {
     #[test]
     fn set_then_get_roundtrip() {
         let _g = lock();
-        assert!(set("hello 剪贴板").is_ok());
+        assert!(set("hello 剪贴板", false).is_ok());
         assert_eq!(get(), "hello 剪贴板");
     }
 
     #[test]
     fn set_overwrites_previous() {
         let _g = lock();
-        set("first").unwrap();
-        set("second").unwrap();
+        set("first", false).unwrap();
+        set("second", false).unwrap();
         assert_eq!(get(), "second");
     }
 
@@ -105,10 +110,10 @@ mod tests {
     fn oversized_is_rejected_wholesale() {
         let _g = lock();
         let big = "x".repeat(MAX_BYTES + 1);
-        assert!(set(&big).is_err(), "超长必须整体拒绝");
+        assert!(set(&big, false).is_err(), "超长必须整体拒绝");
         // 拒绝后原内容不受影响
-        set("keep").unwrap();
-        assert!(set(&big).is_err());
+        set("keep", false).unwrap();
+        assert!(set(&big, false).is_err());
         assert_eq!(get(), "keep");
     }
 
@@ -116,7 +121,7 @@ mod tests {
     fn exact_cap_is_allowed() {
         let _g = lock();
         let exact = "y".repeat(MAX_BYTES);
-        assert!(set(&exact).is_ok());
+        assert!(set(&exact, false).is_ok());
     }
 
     #[test]
@@ -124,14 +129,14 @@ mod tests {
         let _g = lock();
         // 两个中文 = 6 字节；按字符计数会放行超限内容
         let s = "中".repeat(MAX_BYTES / 3 + 1);
-        assert!(set(&s).is_err());
+        assert!(set(&s, false).is_err());
     }
 
     /// 内容有存活上限：过期后读为空，且**确实被清掉**（不是每次重新判断）。
     #[test]
     fn content_expires_after_ttl() {
         let _g = lock();
-        set("secret").unwrap();
+        set("secret", false).unwrap();
         assert_eq!(get_with_ttl(Duration::ZERO), "", "TTL 为零时任何内容都算过期");
         assert_eq!(get(), "", "过期读取应顺手清空，之后不再复活");
     }

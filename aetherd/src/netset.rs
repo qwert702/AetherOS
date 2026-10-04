@@ -74,58 +74,89 @@ pub fn apply_to(
     value: &str,
     path: &std::path::Path,
     backup: &std::path::Path,
+    en: bool,
 ) -> Result<String, String> {
     match key {
         SettingKey::Dns => {
             // 1) 校验（纯函数，失败即返回，绝不碰文件）
-            // `parse_dns_list` 现在返回 `DnsError`（协议层不决定文案）。
-            // aetherd 拿不到界面语言，所以回一句**中文兜底**：正常路径下界面自己
-            // 已经本地校验过（`settings.rs` 用同一份逻辑），这一句只在
-            // "绕过界面直接发 IPC"时才会被看到。
+            // `parse_dns_list` 返回 `DnsError`（协议层不决定文案）。
+            // 语言由**连接**带进来（`RegisterUi{en}` → server 的 `ui_en`）：
+            // 2026-10-04（§3.5）之后 aetherd 不再是"拿不到界面语言"了。
             let servers = parse_dns_list(value)
-                .map_err(|e| format!("DNS 设置被拒（{}）：{e}", e.as_str()))?;
+                .map_err(|e| {
+                    if en {
+                        format!("DNS setting refused ({}): {e}", e.as_str())
+                    } else {
+                        format!("DNS 设置被拒（{}）：{e}", e.as_str())
+                    }
+                })?;
 
             // 2) 拒绝覆盖符号链接：跟着写会改到别的目标
             if let Ok(md) = std::fs::symlink_metadata(path) {
                 if md.file_type().is_symlink() {
-                    return Err(format!(
-                        "{} 是符号链接（可能由其它解析器管理），拒绝覆盖",
-                        path.display()
-                    ));
+                    return Err(if en {
+                        format!(
+                            "{} is a symlink (possibly managed by another resolver); refusing to overwrite",
+                            path.display()
+                        )
+                    } else {
+                        format!(
+                            "{} 是符号链接（可能由其它解析器管理），拒绝覆盖",
+                            path.display()
+                        )
+                    });
                 }
                 if !md.is_file() {
-                    return Err(format!("{} 不是普通文件，拒绝覆盖", path.display()));
+                    return Err(if en {
+                        format!("{} is not a regular file; refusing to overwrite", path.display())
+                    } else {
+                        format!("{} 不是普通文件，拒绝覆盖", path.display())
+                    });
                 }
                 // 3) 备份**只做一次**：保留原系统文件，而不是我们上次写的内容
                 if !backup.exists() {
                     std::fs::copy(path, backup)
-                        .map_err(|e| format!("备份 {} 失败：{e}", path.display()))?;
+                        .map_err(|e| {
+                            if en {
+                                format!("backup of {} failed: {e}", path.display())
+                            } else {
+                                format!("备份 {} 失败：{e}", path.display())
+                            }
+                        })?;
                 }
             }
 
             // 4) 原子写入
             let content = render_resolv(&servers);
-            write_atomic(path, &content).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
-            Ok(format!(
-                "DNS 已设为 {}（写入 {}）",
-                servers
-                    .iter()
-                    .map(|i| i.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                path.display()
-            ))
+            write_atomic(path, &content).map_err(|e| {
+                if en {
+                    format!("writing {} failed: {e}", path.display())
+                } else {
+                    format!("写入 {} 失败：{e}", path.display())
+                }
+            })?;
+            let rendered = servers
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(if en {
+                format!("DNS set to {} (written to {})", rendered, path.display())
+            } else {
+                format!("DNS 已设为 {}（写入 {}）", rendered, path.display())
+            })
         }
     }
 }
 
 /// 生产入口：写真实的系统路径。
-pub fn apply(key: SettingKey, value: &str) -> Result<String, String> {
+pub fn apply(key: SettingKey, value: &str, en: bool) -> Result<String, String> {
     apply_to(
         key,
         value,
         std::path::Path::new(RESOLV_CONF),
         std::path::Path::new(RESOLV_BACKUP),
+        en,
     )
 }
 
@@ -216,7 +247,7 @@ mod tests {
         let backup = d.join("resolv.conf.aether-bak");
         std::fs::write(&target, "nameserver 10.0.2.3\n").unwrap();
 
-        let msg = apply_to(SettingKey::Dns, "1.1.1.1", &target, &backup).unwrap();
+        let msg = apply_to(SettingKey::Dns, "1.1.1.1", &target, &backup, false).unwrap();
         assert!(msg.contains("1.1.1.1"), "回执应说明设成了什么：{msg}");
         let now = std::fs::read_to_string(&target).unwrap();
         assert!(now.contains("nameserver 1.1.1.1"));
@@ -224,7 +255,7 @@ mod tests {
         assert!(std::fs::read_to_string(&backup).unwrap().contains("10.0.2.3"));
 
         // 第二次写入：备份**不得**被我们上次写的内容覆盖
-        apply_to(SettingKey::Dns, "8.8.8.8", &target, &backup).unwrap();
+        apply_to(SettingKey::Dns, "8.8.8.8", &target, &backup, false).unwrap();
         let bk = std::fs::read_to_string(&backup).unwrap();
         assert!(bk.contains("10.0.2.3"), "备份被覆盖了：{bk}");
         assert!(!bk.contains("1.1.1.1"), "备份应是原文件，不是上次写入结果：{bk}");
@@ -250,7 +281,7 @@ mod tests {
         std::fs::write(&target, original).unwrap();
 
         for bad in ["", "999.1.1.1", "::1", "1.1.1.1; reboot"] {
-            let r = apply_to(SettingKey::Dns, bad, &target, &backup);
+            let r = apply_to(SettingKey::Dns, bad, &target, &backup, false);
             assert!(r.is_err(), "{bad:?} 应被拒绝");
         }
         assert_eq!(
@@ -273,7 +304,7 @@ mod tests {
         std::fs::write(&real, "nameserver 10.0.2.3\n").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let r = apply_to(SettingKey::Dns, "1.1.1.1", &link, &backup);
+        let r = apply_to(SettingKey::Dns, "1.1.1.1", &link, &backup, false);
         assert!(r.is_err(), "符号链接应被拒绝");
         assert!(r.unwrap_err().contains("符号链接"), "理由应说明是符号链接");
         // 链接指向的真实文件**不得**被改动
@@ -288,7 +319,7 @@ mod tests {
         let target = d.join("resolv.conf");
         std::fs::create_dir_all(&target).unwrap();
         let backup = d.join("resolv.conf.aether-bak");
-        let r = apply_to(SettingKey::Dns, "1.1.1.1", &target, &backup);
+        let r = apply_to(SettingKey::Dns, "1.1.1.1", &target, &backup, false);
         assert!(r.is_err(), "目录应被拒绝");
         let _ = std::fs::remove_dir_all(&d);
     }

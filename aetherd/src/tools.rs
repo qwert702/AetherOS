@@ -608,7 +608,9 @@ fn tool_clipboard_write(args: &Value, _ctx: &mut ToolCtx) -> Result<String> {
     let Some(text) = args.get("text").and_then(|v| v.as_str()) else {
         bail!("缺少参数 text");
     };
-    let bytes = crate::clipboard::set(text).map_err(|e| anyhow::anyhow!(e))?;
+    let bytes = crate::// 缺口（§3.5）：工具执行路径还没有界面语言，暂时固定中文。
+        // 下一批把 en 从 handle_request 一路传进 tools::execute。
+        clipboard::set(text, false).map_err(|e| anyhow::anyhow!(e))?;
     Ok(format!("已写入剪贴板（{bytes} 字节）"))
 }
 
