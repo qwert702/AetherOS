@@ -752,12 +752,31 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 原来是手抄的 `!shift && c == 'w'`，两处会各自漂移。
                     let intent = ctrl_intent(c, shift);
                     let closed = matches!(intent, CtrlIntent::CloseWindow);
-                    if let Some(msg) = apply_ctrl(&mut desktop, c, shift) {
-                        if closed {
+                    match apply_ctrl(&mut desktop, c, shift) {
+                        CtrlOutcome::Closed { at, message, win } => {
+                            // 关窗改动了窗口数组：拖拽与吸附预览必须清掉
                             drag = None;
                             snap_zone = layout::Snap::None;
+                            // §5.1：窗口进"最近关闭"托盘（**不释放**），并记一步可撤销。
+                            // 托盘满时最旧的那个被丢 —— 它那一步撤销会如实报"无法撤销"。
+                            let title = win.title.clone();
+                            let _ = undo.keep_closed(*win);
+                            undo.push(UndoStep::ClosedWindow { at, title });
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                message,
+                                notifications::Kind::Info,
+                            );
                         }
-                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
+                        CtrlOutcome::Message(msg) => {
+                            if closed {
+                                drag = None;
+                                snap_zone = layout::Snap::None;
+                            }
+                            push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
+                        }
+                        CtrlOutcome::Nothing => {}
                     }
                 }
                 input::UiEvent::Nav(n) => {
@@ -1697,7 +1716,17 @@ fn run_fbdev() -> anyhow::Result<()> {
                 let msg = if min.contains(mouse.0, mouse.1) {
                     minimize_window(&mut desktop, idx)
                 } else if close.contains(mouse.0, mouse.1) {
-                    close_window(&mut desktop, idx)
+                    // §5.1：红灯关窗也要**可撤销**（fbdev 路径与预览路径同一套）——
+                    // 三条关窗路径若各写一份，就会出现「用哪种方式关的决定能不能撤销」。
+                    match close_window(&mut desktop, idx) {
+                        Some((at, message, win)) => {
+                            let title = win.title.clone();
+                            let _ = undo.keep_closed(win);
+                            undo.push(UndoStep::ClosedWindow { at, title });
+                            Some(message)
+                        }
+                        None => None,
+                    }
                 } else if zoom.contains(mouse.0, mouse.1) {
                     toggle_zoom(&mut desktop, idx, layout::work_area(w, h))
                 } else {
@@ -2565,19 +2594,57 @@ enum UndoStep {
     Layout { prev: Layout, floating: Vec<bool> },
     /// 打开了窗口：记下标（撤销 = 关掉它）
     OpenedWindow(usize),
-    /// 关掉了窗口：**无法撤销**（内容已释放）。记一个标记而不是"什么都不记" ——
-    /// 后者会让 Ctrl+Z 跳过这一步去撤销更早的动作，用户会以为撤错了。
-    CloseNotUndoable,
+    /// 关掉了窗口。**可以撤销** —— 窗口（连同它的活会话）被移进了"最近关闭"托盘，
+    /// 撤销就是把它放回原位。记下标是为了放回**原来的位置**，而不是一律扔到末尾。
+    ClosedWindow { at: usize, title: String },
+}
+
+/// 「最近关闭」托盘的容量。
+///
+/// 为什么是 3：托盘里的窗口**还活着**（PTY 进程继续跑、继续占内存）。
+/// 它能撤销，代价就是这些资源不释放 —— 所以必须小。
+/// 满了丢**最旧**的（那时它那一步撤销会因为标题对不上而如实报"无法撤销"）。
+const CLOSED_CAP: usize = 3;
+
+/// 往有界托盘里放一个窗口，返回被挤出去的那个（没有就是 `None`）。
+///
+/// 抽成纯函数是为了**能测**：容量为 0、恰好满、超出一个，
+/// 这三种情形用 `u32` 就能验，不必构造真窗口。
+fn tray_push<T>(tray: &mut Vec<T>, item: T, cap: usize) -> Option<T> {
+    if cap == 0 {
+        return Some(item); // 容量为 0 = 不保留
+    }
+    let evicted = if tray.len() >= cap {
+        Some(tray.remove(0))
+    } else {
+        None
+    };
+    tray.push(item);
+    evicted
 }
 
 /// 撤销栈（有界，新的在后）。
 struct UndoStack {
     steps: std::collections::VecDeque<UndoStep>,
+    /// 「最近关闭」托盘（§5.1）：关窗时窗口被移到这里**而不是释放**，
+    /// 所以撤销能把**同一个窗口连同活会话**放回来。
+    ///
+    /// 放在 `UndoStack` 而不是 `Desktop`：两条关窗路径（用户的 `Ctrl+W` 与
+    /// AI 的 `close_active` 工具）都拿得到 `UndoStack`，而它们**都必须**把窗口
+    /// 交到这里 —— 否则会出现"能撤销却没有窗口可放回"的不一致。
+    closed: Vec<draw::Win>,
 }
 
 impl UndoStack {
     fn new() -> Self {
-        Self { steps: std::collections::VecDeque::new() }
+        Self {
+            steps: std::collections::VecDeque::new(),
+            closed: Vec::new(),
+        }
+    }
+    /// 收下一个刚关掉的窗口（超出容量时丢最旧的，返回被丢的那个）。
+    fn keep_closed(&mut self, win: draw::Win) -> Option<draw::Win> {
+        tray_push(&mut self.closed, win, CLOSED_CAP)
     }
     fn push(&mut self, step: UndoStep) {
         if self.steps.len() >= UNDO_CAP {
@@ -2618,9 +2685,25 @@ fn undo_last(desktop: &mut Desktop, stack: &mut UndoStack) -> Option<String> {
                 Some("已撤销：那个窗口已经不在了".into())
             }
         }
-        UndoStep::CloseNotUndoable => {
-            // 明确说"撤不了"，并且**不再往更早的步骤走** —— 那会让用户以为撤错了
-            Some("这一步无法撤销：窗口已关闭（终端会话/内容已释放）".into())
+        UndoStep::ClosedWindow { at, title } => {
+            // 只有"最近关闭"里**最新的那一个**才放得回去：`Win` 没有唯一 id，
+            // 只能用标题判断。对不上说明这一步已被更晚的关闭顶掉（托盘满了）——
+            // 那就如实说撤不了，**不把别的窗口放回去**。
+            let matches = stack
+                .closed
+                .last()
+                .map(|w| w.title == title)
+                .unwrap_or(false);
+            if !matches {
+                return Some("这一步无法撤销：该窗口已被更晚的关闭顶掉".into());
+            }
+            let w = stack.closed.pop().expect("刚判断过非空");
+            let at = at.min(desktop.wins.len());
+            desktop.wins.insert(at, w);
+            // 插在中间会让原来的活动窗口下标失效 —— 与关窗同一处理
+            desktop.active = at;
+            snap_now(desktop, desktop.layout);
+            Some(format!("已撤销：重新打开「{title}」（会话仍在）"))
         }
     }
 }
@@ -2668,12 +2751,20 @@ fn apply_action(
         }
         "close_active" => {
             // 关窗**不可撤销**（窗口含活的终端会话，存不下来）——记标记，如实告知
-            undo.push(UndoStep::CloseNotUndoable);
+            // §5.1：关窗**可撤销** —— 窗口进"最近关闭"托盘（连活会话）。
             if desktop.wins.len() > 1 {
                 // 统一走 close_window：它有索引边界检查与 active 夹取，
                 // 且不会像裸 pop 那样在"拖拽中"留下失效的 drag 索引（0.8 审计）
                 let idx = desktop.active;
-                close_window(desktop, idx)
+                match close_window(desktop, idx) {
+                    Some((at, message, win)) => {
+                        let title = win.title.clone();
+                        let _ = undo.keep_closed(win);
+                        undo.push(UndoStep::ClosedWindow { at, title });
+                        Some(message)
+                    }
+                    None => None,
+                }
             } else {
                 Some("至少保留一个窗口".into())
             }
@@ -3503,7 +3594,9 @@ fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<Str
             if desktop.wins.len() > 1 {
                 // 同 close_active：统一走 close_window，避免裸 pop 留下失效 drag（0.8 审计）
                 let idx = desktop.active;
-                (close_window(desktop, idx), None)
+                // 脚本化路径没有撤销栈：这里**确实**释放窗口（不是"忘了"）——
+                // 它跑的是 e2e 动作，没有 Ctrl+Z 可用。
+                (close_window(desktop, idx).map(|(_, m, _)| m), None)
             } else {
                 (Some("至少保留一个窗口".into()), None)
             }
@@ -3991,11 +4084,30 @@ fn preview_main() -> anyhow::Result<()> {
                 if let Some(ch) = key_to_char(k) {
                     let shift = window.is_key_down(minifb::Key::LeftShift)
                         || window.is_key_down(minifb::Key::RightShift);
-                    if let Some(msg) = apply_ctrl(&mut desktop, ch.to_ascii_lowercase(), shift) {
-                        drag = None;
-                        snap_zone = layout::Snap::None;
-                        push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Ok);
-                        continue;
+                    match apply_ctrl(&mut desktop, ch.to_ascii_lowercase(), shift) {
+                        CtrlOutcome::Closed { at, message, win } => {
+                            // 与 fbdev 循环**同一套**处理：预览路径也不能例外，
+                            // 否则"红灯能撤销、Ctrl+W 不能"这种漂移迟早出现。
+                            drag = None;
+                            snap_zone = layout::Snap::None;
+                            let title = win.title.clone();
+                            let _ = undo.keep_closed(*win);
+                            undo.push(UndoStep::ClosedWindow { at, title });
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                message,
+                                notifications::Kind::Ok,
+                            );
+                            continue;
+                        }
+                        CtrlOutcome::Message(msg) => {
+                            drag = None;
+                            snap_zone = layout::Snap::None;
+                            push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Ok);
+                            continue;
+                        }
+                        CtrlOutcome::Nothing => {}
                     }
                 }
             }
@@ -4279,7 +4391,17 @@ fn preview_main() -> anyhow::Result<()> {
                 let msg = if min.contains(mx, my) {
                     minimize_window(&mut desktop, idx)
                 } else if close.contains(mx, my) {
-                    close_window(&mut desktop, idx)
+                    // §5.1：红灯关窗也要**可撤销** —— 与 Ctrl+W 走同一条记录方式，
+                    // 否则「用哪个方式关的」会决定能不能撤销。
+                    match close_window(&mut desktop, idx) {
+                        Some((at, message, win)) => {
+                            let title = win.title.clone();
+                            let _ = undo.keep_closed(win);
+                            undo.push(UndoStep::ClosedWindow { at, title });
+                            Some(message)
+                        }
+                        None => None,
+                    }
                 } else if zoom.contains(mx, my) {
                     toggle_zoom(&mut desktop, idx, layout::work_area(WIDTH, HEIGHT))
                 } else {
@@ -4841,11 +4963,14 @@ fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
 ///
 /// **必须同时修正 `active`**：窗口数组被移除后旧索引会越界。调用方还负责清 `drag`——
 /// 拖拽中关掉被拖的窗口正是 P2-3 那类 panic 的来源。
-fn close_window(desktop: &mut Desktop, idx: usize) -> Option<String> {
+fn close_window(desktop: &mut Desktop, idx: usize) -> Option<(usize, String, draw::Win)> {
     if idx >= desktop.wins.len() {
         return None;
     }
-    let title = desktop.wins.remove(idx).title;
+    // §5.1：**交出整个窗口**（而不是只要标题）—— 调用方把它放进"最近关闭"托盘，
+    // 这样"撤销关闭"能把**同一个窗口连同活会话**放回来。
+    let win = desktop.wins.remove(idx);
+    let title = win.title.clone();
     if desktop.wins.is_empty() {
         desktop.active = 0;
     } else {
@@ -4855,7 +4980,7 @@ fn close_window(desktop: &mut Desktop, idx: usize) -> Option<String> {
         }
         desktop.active = desktop.active.min(desktop.wins.len() - 1);
     }
-    Some(format!("已关闭「{title}」"))
+    Some((idx, format!("已关闭「{title}」"), win))
 }
 
 /// 最大化 / 恢复。用 `restore` 记住原矩形，再点一次回到原位。
@@ -5910,21 +6035,49 @@ fn save_setup_done(renderer: &mut draw::Renderer, toast: &mut Option<(String, In
     }
 }
 
-fn apply_ctrl(desktop: &mut Desktop, c: char, shift: bool) -> Option<String> {
+/// `apply_ctrl` 的结果。
+///
+/// 为什么不是一个 `Option<String>`：关窗要额外交出**被关掉的窗口**
+///（撤销时要放回来），所以"关窗"必须与"只说了一句话"区分开。
+enum CtrlOutcome {
+    /// 什么也没做
+    Nothing,
+    /// 做了一件事，只是一句提示
+    Message(String),
+    /// **关掉了一个窗口** —— 调用方要把 `win` 收进"最近关闭"托盘
+    Closed {
+        at: usize,
+        message: String,
+        win: Box<draw::Win>,
+    },
+}
+
+fn apply_ctrl(desktop: &mut Desktop, c: char, shift: bool) -> CtrlOutcome {
     match ctrl_intent(c, shift) {
         // 按 `ctrl_intent` 匹配：**"哪个键做什么"只在这里定义一次**
-        CtrlIntent::Copy => clipboard_copy(desktop),
-        CtrlIntent::Paste => clipboard_paste(desktop).map(|t| {
+        CtrlIntent::Copy => clipboard_copy(desktop)
+            .map(CtrlOutcome::Message)
+            .unwrap_or(CtrlOutcome::Nothing),
+        CtrlIntent::Paste => clipboard_paste(desktop)
+            .map(|t| {
             // 粘贴到单行输入框：换行折成空格，避免出现看不见的换行
             let one_line: String = t.replace(['\r', '\n'], " ");
             let n = one_line.chars().count();
             desktop.clipboard = one_line;
-            format!("已粘贴 {n} 个字符")
-        }),
+                CtrlOutcome::Message(format!("已粘贴 {n} 个字符"))
+            })
+            .unwrap_or(CtrlOutcome::Nothing),
         // **唯一**调用 `close_window` 的地方（有源码探针守着）——
         // 调用方据此清拖拽状态，见 `CtrlIntent::CloseWindow` 的说明
-        CtrlIntent::CloseWindow => close_window(desktop, desktop.active),
-        CtrlIntent::Unhandled => None,
+        CtrlIntent::CloseWindow => match close_window(desktop, desktop.active) {
+            Some((at, message, win)) => CtrlOutcome::Closed {
+                at,
+                message,
+                win: Box::new(win),
+            },
+            None => CtrlOutcome::Nothing,
+        },
+        CtrlIntent::Unhandled => CtrlOutcome::Nothing,
     }
 }
 
@@ -6631,7 +6784,10 @@ mod window_mgmt_tests {
         // 这条是 shift 区分的意义所在：Ctrl+Shift+C 不能变成"关窗"
         let mut d = term_desk();
         let before = d.wins.len();
-        assert!(apply_ctrl(&mut d, 'c', true).is_some(), "Ctrl+Shift+C 应复制");
+        assert!(
+            matches!(apply_ctrl(&mut d, 'c', true), CtrlOutcome::Message(_)),
+            "Ctrl+Shift+C 应复制"
+        );
         assert_eq!(d.wins.len(), before, "Ctrl+Shift+C 不得关窗");
     }
 
@@ -6639,10 +6795,17 @@ mod window_mgmt_tests {
     fn ctrl_w_closes_active_window() {
         let mut d = desk(2);
         d.active = 1;
-        assert!(apply_ctrl(&mut d, 'w', false).is_some());
+        // 关窗现在带出**窗口本身**（撤销时要放回来），所以是 `Closed` 而不是 `Message`
+        assert!(matches!(
+            apply_ctrl(&mut d, 'w', false),
+            CtrlOutcome::Closed { .. }
+        ));
         assert_eq!(d.wins.len(), 1);
         assert_eq!(d.active, 0);
-        assert!(apply_ctrl(&mut d, 'q', false).is_none(), "未绑定的组合键不应有副作用");
+        assert!(
+            matches!(apply_ctrl(&mut d, 'q', false), CtrlOutcome::Nothing),
+            "未绑定的组合键不应有副作用"
+        );
     }
 }
 
@@ -6906,26 +7069,38 @@ mod wayland_sync_tests {
 
     /// §5.1：**关窗不可撤销**，而且不能"跳过它去撤销更早的动作"。
     ///
-    /// 这条是本设计最重要的性质：窗口里有活的终端会话，存不下来。
-    /// 如果关窗不记标记，Ctrl+Z 会去撤销更早的布局改动 —— 用户会以为撤错了东西。
+    /// §5.1（批次 AW-1 之后）：关窗**可以撤销** —— 窗口（连同活会话）被移进
+    /// "最近关闭"托盘，撤销把它放回原位。
+    ///
+    /// 这条测试真正要守的**性质没变**：`Ctrl+Z` 必须**先处理"关窗"这一步**，
+    /// 不能跳过去撤销更早的布局改动 —— 跳步会让用户以为撤错了东西。
+    /// （改动前它守的是"明确说撤不了"；现在改守"放回来了，同样不跳步"。）
     #[test]
-    fn closing_is_not_undoable_and_does_not_fall_through() {
+    fn closing_is_undoable_and_does_not_fall_through() {
         let mut d = demo_desktop();
         let mut u = UndoStack::new();
         // 先做一步可撤销的（改布局），再关窗
         let args = serde_json::json!({ "layout": "float" });
         let _ = apply_action(&mut d, "layout_set", &args, &mut u);
         let layout_after_change = d.layout.label();
+        let wins_before = d.wins.len();
         let _ = apply_action(&mut d, "close_active", &serde_json::json!({}), &mut u);
         assert_eq!(u.len(), 2);
+        assert_eq!(d.wins.len(), wins_before - 1, "关窗确实关掉了一个窗口");
+        assert_eq!(u.closed.len(), 1, "被关掉的窗口应当进了托盘");
 
-        // 第一次撤销：应命中"关窗"这一步，明确说撤不了，**布局保持不变**
+        // 第一次撤销：把窗口放回来，**布局保持不变**
         let msg = undo_last(&mut d, &mut u).expect("应消费掉这一步");
-        assert!(msg.contains("无法撤销"), "应明确告知撤不了：{msg}");
+        assert!(msg.contains("重新打开"), "应告知窗口被放回来了：{msg}");
+        assert_eq!(d.wins.len(), wins_before, "窗口应当回来了");
+        assert!(
+            u.closed.is_empty(),
+            "托盘里那个窗口应当被取走（不能留在托盘里越积越多）"
+        );
         assert_eq!(
             d.layout.label(),
             layout_after_change,
-            "关窗不可撤销时**不得**顺手撤销更早的布局改动"
+            "撤销关窗**不得**顺手撤销更早的布局改动"
         );
         // 第二次撤销才是布局
         let msg2 = undo_last(&mut d, &mut u).expect("布局那步仍应可撤销");
@@ -7226,6 +7401,29 @@ mod wayland_sync_tests {
             body.contains("CtrlIntent::CloseWindow =>"),
             "那一处必须在 CtrlIntent::CloseWindow 分支里"
         );
+    }
+
+    /// §5.1 托盘策略：容量为 0 / 恰好满 / 超出一个 —— 三种边界。
+    ///
+    /// 抽成泛型纯函数就是为了这条测试能跑（不必构造真窗口）。
+    /// 它守的是"托盘永远不超过容量"与"丢的一定是最旧的"。
+    #[test]
+    fn closed_tray_keeps_at_most_cap_and_evicts_the_oldest() {
+        // 容量 2：塞三个，第三个进来时"1"被挤出去（最旧的）
+        let mut tray: Vec<u32> = Vec::new();
+        assert_eq!(tray_push(&mut tray, 1, 2), None);
+        assert_eq!(tray_push(&mut tray, 2, 2), None);
+        assert_eq!(tray_push(&mut tray, 3, 2), Some(1), "满了要丢最旧的");
+        assert_eq!(tray, vec![2, 3], "顺序保持（新的在后）");
+        // 容量 0 = 不保留：放进去的当场还回来
+        let mut none: Vec<u32> = Vec::new();
+        assert_eq!(tray_push(&mut none, 9, 0), Some(9));
+        assert!(none.is_empty(), "容量为 0 时托盘必须还是空的");
+        // 容量 1
+        let mut one: Vec<u32> = Vec::new();
+        assert_eq!(tray_push(&mut one, 7, 1), None);
+        assert_eq!(tray_push(&mut one, 8, 1), Some(7));
+        assert_eq!(one, vec![8]);
     }
 
 }
