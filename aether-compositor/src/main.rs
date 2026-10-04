@@ -595,7 +595,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    format!("已移到桌面 {}", i + 1),
+                                    pick_zh_en_1("已移到桌面 {}", "Moved to desktop {}", i + 1),
                                     notifications::Kind::Info,
                                 );
                             } else {
@@ -620,12 +620,21 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    format!(
-                                        "桌面 {}/{} · {} 个窗口",
-                                        spaces.current() + 1,
-                                        spaces.count(),
-                                        spaces.len_of(spaces.current(), desktop.wins.len()),
-                                    ),
+                                    if crate::i18n::is_en() {
+                                        format!(
+                                            "Desktop {}/{} · {} windows",
+                                            spaces.current() + 1,
+                                            spaces.count(),
+                                            spaces.len_of(spaces.current(), desktop.wins.len()),
+                                        )
+                                    } else {
+                                        format!(
+                                            "桌面 {}/{} · {} 个窗口",
+                                            spaces.current() + 1,
+                                            spaces.count(),
+                                            spaces.len_of(spaces.current(), desktop.wins.len()),
+                                        )
+                                    },
                                     notifications::Kind::Info,
                                 );
                             }
@@ -717,7 +726,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         // 且"用户拒绝过"不会留下任何痕迹。
                         tty_log(&format!("权限确认被拒绝: {}", req.tool));
                         cancel_confirm(&req.token);
-                        push_toast(&mut toast, &mut renderer.notifs, format!("已拒绝「{}」", req.tool), notifications::Kind::Err);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Err);
                     } else if installer.open && !installer.running {
                         installer.open = false;
                     }
@@ -920,7 +929,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!("{brief}（共 {} 项）", notes.len()),
+                                if crate::i18n::is_en() {
+                    // 两个占位符：助手只换第一个，这里必须按语言各写一次
+                    format!("{brief} ({} items)", notes.len())
+                } else {
+                    format!("{brief}（共 {} 项）", notes.len())
+                },
                                 notifications::Kind::Info,
                             );
                         }
@@ -1020,7 +1034,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args, &mut undo) {
-                        push_toast(&mut toast, &mut renderer.notifs, format!("Aether 执行 · {msg}"), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("Aether 执行 · {}", "Aether ran · {}", msg), notifications::Kind::Info);
                     }
                 }
                 AiEvent::Confirm(req) => {
@@ -1079,7 +1093,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 电源的结果已经在上面用 toast 说清楚了；再加一句"已执行 · …"
                     // 会让人误以为"已经关机完成"（而实际只是受理）
                     if ok && origin != ConfirmOrigin::Power {
-                        push_toast(&mut toast, &mut renderer.notifs, format!("已执行 · {}", last.chars().take(24).collect::<String>()), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已执行 · {}", "Executed · {}", last.chars().take(24).collect::<String>()), notifications::Kind::Info);
                     }
                 }
             }
@@ -1110,7 +1124,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         if let Some((req, _)) = confirm.take() {
                             tty_log(&format!("权限确认被拒绝: {}", req.tool));
                             cancel_confirm(&req.token);
-                            push_toast(&mut toast, &mut renderer.notifs, format!("已拒绝「{}」", req.tool), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Info);
                         }
                     }
                     None => {}
@@ -1161,18 +1175,26 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!(
-                                    "已新增桌面（共 {} 个）· Super+{} 可切过去",
-                                    spaces.count(),
-                                    idx + 1
-                                ),
+                                if crate::i18n::is_en() {
+                                    format!(
+                                        "Added a desktop ({} total) · Super+{} switches to it",
+                                        spaces.count(),
+                                        idx + 1
+                                    )
+                                } else {
+                                    format!(
+                                        "已新增桌面（共 {} 个）· Super+{} 可切过去",
+                                        spaces.count(),
+                                        idx + 1
+                                    )
+                                },
                                 notifications::Kind::Info,
                             );
                         }
                         None => push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            format!("桌面数量已达上限（{}）", spaces::Spaces::<draw::Win>::MAX),
+                            pick_zh_en_1("桌面数量已达上限（{}）", "Desktop limit reached ({})", spaces::Spaces::<draw::Win>::MAX),
                             notifications::Kind::Info,
                         ),
                     },
@@ -1186,7 +1208,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!("已移除桌面（还剩 {} 个）", spaces.count()),
+                                pick_zh_en_1("已移除桌面（还剩 {} 个）", "Removed a desktop ({} left)", spaces.count()),
                                 notifications::Kind::Info,
                             );
                         } else {
@@ -1251,7 +1273,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 走 aetherd（ServiceControl）转 init，合成器不直接碰系统。
                     if let settings::SettingsHit::RestartService(unit) = hit {
                         control_service(ai_tx.clone(), unit, aether_ipc::ServiceAction::Restart);
-                        push_toast(&mut toast, &mut renderer.notifs, format!("正在重启服务 {unit}…"), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("正在重启服务 {}…", "Restarting service {}…", unit), notifications::Kind::Info);
                     }
                     // 电源入口（批次 J-2）：与 AI 触发的工具调用走**同一条**路径
                     // （system_power 工具 → 确认卡片 → aetherd → PID 1），不新造通道。
@@ -1260,7 +1282,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         settings::SettingsHit::Power(action) => {
                             let a = action.as_str();
                             spawn_power_tool(action, &ai_tx);
-                            push_toast(&mut toast, &mut renderer.notifs, format!("请在确认卡片里输入 {a} 以确认"), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("请在确认卡片里输入 {} 以确认", "Type {} in the confirmation card to confirm", a), notifications::Kind::Info);
                         }
                         settings::SettingsHit::Logout => {
                             apply_ui_intent(UiIntent::Logout, &ai_tx, &mut toast, &mut renderer, &mut audio);
@@ -1322,9 +1344,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 &mut toast,
                                 &mut renderer.notifs,
                                 if mount {
-                                    format!("正在只读挂载 {}…", d.dev)
+                                    pick_zh_en_1(
+                                        "正在只读挂载 {}…",
+                                        "Mounting read-only {}…",
+                                        &d.dev,
+                                    )
                                 } else {
-                                    format!("正在卸载 {}…", d.dev)
+                                    pick_zh_en_1("正在卸载 {}…", "Unmounting {}…", &d.dev)
                                 },
                                 notifications::Kind::Info,
                             );
@@ -1374,7 +1400,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!("正在校验并暂存 {name}…"),
+                                pick_zh_en_1("正在校验并暂存 {}…", "Verifying and staging {}…", name),
                                 notifications::Kind::Info,
                             );
                         }
@@ -1391,7 +1417,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                     push_toast(
                                         &mut toast,
                                         &mut renderer.notifs,
-                                        format!("正在回滚到 {confirmed}…"),
+                                        pick_zh_en_1("正在回滚到 {}…", "Rolling back to {}…", confirmed),
                                         notifications::Kind::Info,
                                     );
                                 }
@@ -1440,7 +1466,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             let name = renderer.time.picked_name().to_string();
                             renderer.time.mark_pending();
                             write_timezone(ai_tx.clone(), name.clone());
-                            push_toast(&mut toast, &mut renderer.notifs, format!("正在写入系统时区：{name}"), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("正在写入系统时区：{}", "Writing system time zone: {}", name), notifications::Kind::Info);
                         }
                     }
                     // §5.12：提示音主题切换 —— **切换即试听**（否则"可换"是看不见的：
@@ -1510,7 +1536,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    format!("正在请求卸载：{id}"),
+                                    pick_zh_en_1("正在请求卸载：{}", "Requesting uninstall: {}", id),
                                     notifications::Kind::Info,
                                 );
                                 std::thread::spawn(move || {
@@ -1548,7 +1574,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    format!("正在请求安装：{}", renderer.store.items()[i].name),
+                                    // 注意：助手按值收参数，所以这里要 `clone()` —— 直接把 `items()[i].name`
+                        // 传进去会**移动**它（只能在 Linux 上编译时才暴露，musl 检查抓到过）
+                        pick_zh_en_1(
+                            "正在请求安装：{}",
+                            "Requesting install: {}",
+                            renderer.store.items()[i].name.clone(),
+                        ),
                                     notifications::Kind::Info,
                                 );
                                 // `send_tool_call` 会阻塞等回执（最长 300 秒），必须在独立线程里
@@ -1587,7 +1619,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    format!("正在保存 {tool}…"),
+                                    pick_zh_en_1("正在保存 {}…", "Saving {}…", tool),
                                     notifications::Kind::Info,
                                 );
                             }
@@ -1620,13 +1652,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                             Ok(path) => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!("审计日志已导出：{path}"),
+                                pick_zh_en_1("审计日志已导出：{}", "Audit log exported: {}", path),
                                 notifications::Kind::Ok,
                             ),
                             Err(e) => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!("导出失败：{e}"),
+                                pick_zh_en_1("导出失败：{}", "Export failed: {}", e),
                                 notifications::Kind::Err,
                             ),
                         }
@@ -1679,7 +1711,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                         // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
-                        push_toast(&mut toast, &mut renderer.notifs, format!("设置未能写入磁盘：{e}"), notifications::Kind::Err);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("设置未能写入磁盘：{}", "Settings could not be written to disk: {}", e), notifications::Kind::Err);
                     }
                 }
             } else if focused_terminal(&desktop) && mouse_down {
@@ -3044,6 +3076,19 @@ fn pick_zh_en(zh: &'static str, en: &'static str) -> String {
     crate::i18n::pick(crate::i18n::lang(), zh, en).to_string()
 }
 
+/// 同 [`pick_zh_en`]，但**带一个占位符**（模板里写 `{}`）。
+///
+/// **注意：参数是按值收的** —— 传 `String` 字段会把字段移动走。
+/// 若后面还要用它（或它来自 `&[T]` 切片），调用点要 `clone()`。
+/// （这个坑只在 Linux 目标上编译才会暴露：`format!` 是按引用取参，而本助手不是 —— musl 检查抓到过。）
+///
+/// 存在的理由：`format!` 的模板必须是**字面量**，所以不能把模板当变量传 ——
+/// 只能按语言各写一次。这个助手让两种语言的模板**并排在调用点**上，
+/// 改一处不会漏另一处（代价是多一次 String 分配，可忽略）。
+fn pick_zh_en_1(zh: &'static str, en: &'static str, arg: impl std::fmt::Display) -> String {
+    crate::i18n::pick(crate::i18n::lang(), zh, en).replacen("{}", &arg.to_string(), 1)
+}
+
 fn push_toast(
     toast: &mut Option<(String, Instant)>,
     notifs: &mut notifications::Notifications,
@@ -4241,7 +4286,12 @@ fn preview_main() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!("{brief}（共 {} 项）", notes.len()),
+                                if crate::i18n::is_en() {
+                    // 两个占位符：助手只换第一个，这里必须按语言各写一次
+                    format!("{brief} ({} items)", notes.len())
+                } else {
+                    format!("{brief}（共 {} 项）", notes.len())
+                },
                                 notifications::Kind::Info,
                             );
                         }
@@ -4333,7 +4383,7 @@ fn preview_main() -> anyhow::Result<()> {
                 }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args, &mut undo) {
-                        push_toast(&mut toast, &mut renderer.notifs, format!("Aether 执行 · {msg}"), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("Aether 执行 · {}", "Aether ran · {}", msg), notifications::Kind::Info);
                     }
                 }
                 AiEvent::Confirm(req) => {
@@ -4371,7 +4421,7 @@ fn preview_main() -> anyhow::Result<()> {
                     if let Some((req, _)) = confirm.take() {
                         // 拒绝要回传服务端（撤销令牌 + 留痕），不能只关本地弹窗
                         cancel_confirm(&req.token);
-                        push_toast(&mut toast, &mut renderer.notifs, format!("已拒绝「{}」", req.tool), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Info);
                     }
                 }
                 None => {}
