@@ -1,8 +1,35 @@
-"""CO-1 收尾：扫描器排除两类误报 + 重新验证。
+"""静态扫描「尺寸缩放而步长/宽度写死」的同类 bug（§2.4）。
 
-两类误报（本批实测）：
-1. 步长前面**紧跟着另一个 `ry +=`** —— 说明高度已经被那一步消化掉了，这里的 N 是**额外间隙**；
-2. 配对的矩形离得太远（>10 行）—— 多半是别处的矩形（例如中间已经画了文本）。
+## 为什么
+
+本会话修掉的一类 bug 有共同形状：**尺寸走了 `theme::size::px(...)`（跟着缩放），
+而排布的步长是裸数字**。它们在 100% 下恰好不重叠，125%/150% 下才压住。
+
+几何断言能撞到它们，但那是**碰运气**（要正好覆盖到那一页那一档）。
+这个脚本**从源码里找**，判据是精确的，不是猜。
+
+## 判据
+
+**① 纵向**：`ry += N`（裸数字），且它前面最近的、`y` 就是 `ry` 的矩形高度走了 `size::px(H)`
+→ `N < 1.5×H` 就一定在 150% 下重叠（`N < 1.25×H` 则 125% 就会）。
+
+**② 横向**：矩形里同时有 `w: size::px(W)` 与 `x: … + … * STEP`（写死的步长）
+→ `STEP < 1.5×W` 时相邻两个会重叠。
+
+**② 目前查出 0 处 —— 而且这不是"没问题"，是"这一类的两处真 bug 不长这样"**：
+息屏档位与鼠标速度段控件的问题是**整行超出容器**（相邻按钮之间并不重叠），
+那只有 `layout-check.py` 的**横向越界**断言能抓。② 留着是给"相邻重叠"这个子类当守卫。
+
+## 误报规则（都是实测踩出来的）
+
+1. 步长前面紧跟着另一个 `ry +=` → 高度已被那一步消化，这里的 N 是**额外间隙**；
+2. 配对距离超过 10 行 → 多半是别处的矩形（中间已经画了文本）；
+3. **跨页 arm** → `"某页" => {` 之后 `ry` 是**重新起算**的；
+4. 宽度是**字面量**（不缩放）→ 步长写死也不会重叠。
+
+用法:
+  python scripts/scale-audit.py            # 报告
+  python scripts/scale-audit.py --strict   # 有会重叠的就退出码 1（门禁用）
 """
 import pathlib
 import re
@@ -18,52 +45,77 @@ table = {m.group(1): int(m.group(2))
          for m in re.finditer(r'pub const ([A-Z_0-9]+): i32 = (\d+);', prod)}
 
 
-def prev_meaningful(i: int) -> str:
-    """往上找最近的非空、非单独括号的一行。"""
-    for k in range(i - 1, max(-1, i - 6), -1):
-        s = lines[k].strip()
-        if s and s not in ('}', '{', ');', '} else {', ');'):
-            return s
-    return ''
+def main() -> int:
+    strict = '--strict' in sys.argv
+    print(f"尺寸表：{len(table)} 个常量")
 
+    # ---- ① 纵向：ry += N（原有）----
+    def prev_meaningful(i: int) -> str:
+        for k in range(i - 1, max(-1, i - 6), -1):
+            s = lines[k].strip()
+            if s and s not in ('}', '{', ');', '} else {', ');'):
+                return s
+        return ''
 
-rows = []
-for i, line in enumerate(lines):
-    m = re.search(r'Rect \{[^}]*y: ry[ ,][^}]*h: theme::size::px\(theme::size::([A-Z_0-9]+)\)', line)
-    if not m:
-        continue
-    name = m.group(1)
-    val = table.get(name)
-    if not val:
-        continue
-    for j in range(i + 1, min(len(lines), i + 10)):   # 只在 10 行内配对
-        s = re.match(r'\s*ry \+= (\d+);', lines[j])
-        if not s:
+    vertical = []
+    for i, line in enumerate(lines):
+        m = re.search(r'Rect \{[^}]*y: ry[ ,][^}]*h: theme::size::px\(theme::size::([A-Z_0-9]+)\)', line)
+        if not m:
             continue
-        step = int(s.group(1))
-        # 跨页 arm 不配对：`"某页" => {` 之后 `ry` 是重新起算的
-        # （本批实测的最后一处误报就是这种：把上一页的矩形与下一页的第一步配上了）
-        if any(re.match(r'\s*"[^"]+"\s*=>\s*\{', lines[k]) for k in range(i, j)):
+        val = table.get(m.group(1))
+        if not val:
+            continue
+        for j in range(i + 1, min(len(lines), i + 10)):
+            s = re.match(r'\s*ry \+= (\d+);', lines[j])
+            if not s:
+                continue
+            if any(re.match(r'\s*"[^"]+"\s*=>\s*\{', lines[k]) for k in range(i, j)):
+                break
+            if prev_meaningful(j).startswith('ry +='):
+                break
+            vertical.append((j + 1, int(s.group(1)), m.group(1), val))
             break
-        if prev_meaningful(j).startswith('ry +='):   # 前一步已经消化了高度 → 这是额外间隙
-            break
-        rows.append((j + 1, step, name, val))
-        break
 
-bad = []
-for (ln, step, name, val) in rows:
-    x125, x150 = val * 125 // 100, val * 150 // 100
-    if step < x150 or step < x125:
-        bad.append((ln, step, name, val, x150))
+    # ---- ② 横向：x 里 * STEP 且宽度走了 size::px ----
+    horizontal = []
+    for i, line in enumerate(lines):
+        if 'Rect {' not in line:
+            continue
+        mw = re.search(r'w: theme::size::px\(theme::size::([A-Z_0-9]+)\)', line)
+        ms = re.search(r'x: [^,}]*\*\s*(\d+)', line)
+        if mw and ms:
+            val = table.get(mw.group(1))
+            if val:
+                horizontal.append((i + 1, int(ms.group(1)), mw.group(1), val))
 
-print(f"严格配对（矩形 y 就是 ry，且 10 行内、前一步不是 ry +=）：{len(rows)} 处")
-for (ln, step, name, val) in rows:
-    print(f"  行 {ln:5}: ry += {step:3}  高度 {name}={val}  → 150% 需 ≥ {val * 150 // 100}")
-print()
-print(f"会重叠：{len(bad)} 处")
-for b in bad:
-    print(f"  {b}")
-if '--strict' in sys.argv and bad:
-    print("[FAIL] 有「步长小于缩放后高度」的地方")
-    sys.exit(1)
-print("[ OK ] 没有「步长小于缩放后高度」的地方" if not bad else "[报告] 见上")
+    print()
+    print(f"① 纵向「ry += N vs 缩放高度」：{len(vertical)} 处")
+    v_bad = []
+    for (ln, step, name, val) in vertical:
+        x150 = val * 150 // 100
+        if step < x150:
+            v_bad.append((ln, step, name, val, x150))
+            print(f"   行 {ln}: ry += {step}  高度 {name}={val}  150% 需 ≥ {x150}  ← 会重叠")
+    print(f"   其中会重叠：{len(v_bad)}")
+
+    print(f"② 横向「x 的 STEP vs 缩放宽度」：{len(horizontal)} 处")
+    h_bad = []
+    for (ln, step, name, val) in horizontal:
+        x150 = val * 150 // 100
+        flag = ''
+        if step < x150:
+            h_bad.append((ln, step, name, val, x150))
+            flag = '  ← 150% 会重叠'
+        print(f"   行 {ln}: STEP {step}  宽度 {name}={val}  150% 需 ≥ {x150}{flag}")
+    print(f"   其中会重叠：{len(h_bad)}")
+
+    if strict and (v_bad or h_bad):
+        print("[FAIL] 有「步长小于缩放后尺寸」的地方")
+        return 1
+    print("[ OK ] 纵向与横向都没有「步长小于缩放后尺寸」" if not (v_bad or h_bad)
+          else "[报告] 见上")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
