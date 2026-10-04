@@ -2370,7 +2370,11 @@ fn register_ui(stream: &mut IpcStream, reader: &mut BufReader<IpcStream>) -> any
             "未找到 UI 通道密钥（设置 AETHER_UI_KEY，或确认 aetherd 已生成 /run/aether/ui.key）"
         )
     })?;
-    stream.write_all(aether_ipc::encode(&Request::RegisterUi { key }).as_bytes())?;
+    stream.write_all(aether_ipc::encode(&Request::RegisterUi {
+        key,
+        en: crate::i18n::is_en(),
+    })
+    .as_bytes())?;
     let line = read_line_capped(reader, MAX_IPC_LINE)?;
     match aether_ipc::decode::<Response>(&line)? {
         Response::UiRegistered => Ok(()),

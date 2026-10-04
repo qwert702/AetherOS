@@ -328,12 +328,14 @@ fn handle_conn<R: Read, W: Write>(
     let mut line: String;
     // 本连接是否已注册为 UI 通道：只有已注册通道能兑现确认令牌（P1-8）
     let mut is_ui = false;
+    // 本连接界面的语言（§3.5）：随 `RegisterUi` 一起来，回执文案据此取词
+    let mut ui_en = false;
     loop {
         line = read_line_capped(&mut reader, MAX_LINE_BYTES)?;
         if line.is_empty() {
             return Ok(()); // 对端关闭
         }
-        for resp in handle_request(&line, cfg, gate, approvals, ui_key, &mut is_ui) {
+        for resp in handle_request(&line, cfg, gate, approvals, ui_key, &mut is_ui, &mut ui_en) {
             writer.write_all(encode(&resp).as_bytes())?;
             writer.flush()?;
         }
@@ -365,15 +367,17 @@ fn handle_request(
     approvals: &Approvals,
     ui_key: &str,
     is_ui: &mut bool,
+    ui_en: &mut bool,
 ) -> Vec<Response> {
     let Ok(req) = aether_ipc::decode::<Request>(line) else {
         return vec![Response::Error { code: 1, message: "unparsable request".into() }];
     };
     match req {
         Request::Ping => vec![Response::Pong],
-        Request::RegisterUi { key } => {
+        Request::RegisterUi { key, en } => {
             if key == ui_key {
                 *is_ui = true;
+                *ui_en = en;
                 eprintln!("[aetherd] UI 通道已注册");
                 vec![Response::UiRegistered]
             } else {
@@ -640,7 +644,11 @@ fn handle_request(
                     eprintln!("[aetherd] 已只读挂载 {dev} → {mp}");
                     vec![Response::RemovableAck {
                         ok: true,
-                        message: format!("已只读挂载 {dev} → {mp}"),
+                        message: if *ui_en {
+                    format!("mounted {dev} read-only at {mp}")
+                } else {
+                    format!("已只读挂载 {dev} → {mp}")
+                },
                     }]
                 }
                 Err(e) => {
@@ -797,7 +805,11 @@ fn handle_request(
                     eprintln!("[aetherd] 配置快照已创建：{}（{n} 个文件）", m.id);
                     vec![Response::SnapshotAck {
                         ok: true,
-                        message: format!("已创建配置快照 {}（{n} 个文件）", m.id),
+                        message: if *ui_en {
+                    format!("created config snapshot {} ({n} files)", m.id)
+                } else {
+                    format!("已创建配置快照 {}（{n} 个文件）", m.id)
+                },
                         notes: Vec::new(),
                     }]
                 }
@@ -811,7 +823,11 @@ fn handle_request(
                     eprintln!("[aetherd] 创建配置快照失败：{e}");
                     vec![Response::SnapshotAck {
                         ok: false,
-                        message: format!("创建快照失败：{e}"),
+                        message: if *ui_en {
+                    format!("snapshot failed: {e}")
+                } else {
+                    format!("创建快照失败：{e}")
+                },
                         notes: Vec::new(),
                     }]
                 }
@@ -839,7 +855,11 @@ fn handle_request(
                     eprintln!("[aetherd] 已回滚到快照 {id}（{} 个文件）", notes.len());
                     vec![Response::SnapshotAck {
                         ok: true,
-                        message: format!("已回滚到配置快照 {id}"),
+                        message: if *ui_en {
+                    format!("rolled back to config snapshot {id}")
+                } else {
+                    format!("已回滚到配置快照 {id}")
+                },
                         notes,
                     }]
                 }
@@ -852,7 +872,11 @@ fn handle_request(
                     eprintln!("[aetherd] 回滚失败：{id} —— {e}");
                     vec![Response::SnapshotAck {
                         ok: false,
-                        message: format!("回滚失败：{e}"),
+                        message: if *ui_en {
+                    format!("rollback failed: {e}")
+                } else {
+                    format!("回滚失败：{e}")
+                },
                         notes: Vec::new(),
                     }]
                 }
@@ -909,7 +933,11 @@ fn handle_request(
                     vec![Response::TimeSync {
                         // 拒绝要让界面按"没成功"呈现（理由在 message 里）
                         ok: how != crate::timesync::Adjustment::Refused,
-                        message: format!("偏移 {offset_ms} ms · {what}"),
+                        message: if *ui_en {
+                    format!("offset {offset_ms} ms · {what}")
+                } else {
+                    format!("偏移 {offset_ms} ms · {what}")
+                },
                         offset_ms,
                     }]
                 }
@@ -949,7 +977,11 @@ fn handle_request(
                     vec![Response::SettingAck {
                         key: "timezone".into(),
                         ok: true,
-                        message: format!("系统时区已设为 {name}"),
+                        message: if *ui_en {
+                    format!("system time zone set to {name}")
+                } else {
+                    format!("系统时区已设为 {name}")
+                },
                     }]
                 }
                 Err(e) => {
@@ -962,7 +994,11 @@ fn handle_request(
                     vec![Response::SettingAck {
                         key: "timezone".into(),
                         ok: false,
-                        message: format!("失败：{e}"),
+                        message: if *ui_en {
+                    format!("failed: {e}")
+                } else {
+                    format!("失败：{e}")
+                },
                     }]
                 }
             }
@@ -1040,7 +1076,11 @@ fn handle_request(
                         path.display()
                     );
                     // 先拼消息再移动 `tool`（结构体字段的求值顺序会让 `tool` 先被移走）
-                    let message = format!("{} 已设为「{}」", tool, local.label());
+                    let message = if *ui_en {
+                    format!("{} set to 「{}」", tool, local.label())
+                } else {
+                    format!("{} 已设为「{}」", tool, local.label())
+                };
                     vec![Response::PolicyAck {
                         tool,
                         ok: true,
@@ -1059,7 +1099,11 @@ fn handle_request(
                     vec![Response::PolicyAck {
                         tool,
                         ok: false,
-                        message: format!("写入失败（设置未生效）：{e}"),
+                        message: if *ui_en {
+                    format!("write failed (setting not applied): {e}")
+                } else {
+                    format!("写入失败（设置未生效）：{e}")
+                },
                     }]
                 }
             }
@@ -1288,7 +1332,7 @@ mod ipc_gating_tests {
         let cfg = test_config();
         let gate = Gate::new(std::env::temp_dir().join("aether_clipboard_audit_test.log"));
         let approvals = Approvals::new();
-        handle_request(line, &cfg, &gate, &approvals, "test-key", is_ui)
+        handle_request(line, &cfg, &gate, &approvals, "test-key", is_ui, &mut false)
     }
 
     /// 批次 J 回归：**直接下发的电源请求必须被拒**（哪怕连接已注册为 UI 通道）。

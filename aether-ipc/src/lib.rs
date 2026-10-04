@@ -55,6 +55,10 @@ pub enum Request {
     RegisterUi {
         /// UI 密钥。
         key: String,
+        /// 界面的语言（§3.5）。语言是**连接**的属性（一个合成器 = 一种语言），
+        /// 所以在这里带一次，之后的回执文案都用它 —— 不必给每个请求都加字段。
+        #[serde(default)]
+        en: bool,
     },
     /// 用户在确认卡片上点了"拒绝"：撤销令牌并留痕。
     ///
@@ -814,9 +818,9 @@ mod tests {
     #[test]
     fn ui_registration_and_cancel_roundtrip() {
         // 令牌绑定确认方（P1-8）与拒绝通路（P1-9）的协议面
-        let r = Request::RegisterUi { key: "deadbeef".into() };
+        let r = Request::RegisterUi { key: "deadbeef".into(), en: false };
         match decode::<Request>(&encode(&r)).unwrap() {
-            Request::RegisterUi { key } => assert_eq!(key, "deadbeef"),
+            Request::RegisterUi { key, .. } => assert_eq!(key, "deadbeef"),
             other => panic!("应为 RegisterUi，实得 {other:?}"),
         }
         let c = Request::ConfirmCancel { token: "abc".into() };
