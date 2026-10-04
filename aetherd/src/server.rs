@@ -1061,7 +1061,8 @@ fn handle_request(
                 }];
             }
             let local = crate::tools::policy_of(policy);
-            let args = serde_json::json!({ "tool": &tool, "policy": local.label() });
+            // 审计里也记这个名字，而审计页会把 args 显示出来 → 跟着连接语言
+            let args = serde_json::json!({ "tool": &tool, "policy": local.label(*ui_en) });
             let path = std::path::Path::new(crate::policy::POLICY_PATH);
             match gate.set_tool_policy(&tool, local, path) {
                 Ok(()) => {
@@ -1072,14 +1073,14 @@ fn handle_request(
                     }
                     eprintln!(
                         "[aetherd] 权限策略已更新：{tool} → {}（已写入 {}）",
-                        local.label(),
+                        local.label(*ui_en),
                         path.display()
                     );
                     // 先拼消息再移动 `tool`（结构体字段的求值顺序会让 `tool` 先被移走）
                     let message = if *ui_en {
-                    format!("{} set to 「{}」", tool, local.label())
+                    format!("{} set to 「{}」", tool, local.label(*ui_en))
                 } else {
-                    format!("{} 已设为「{}」", tool, local.label())
+                    format!("{} 已设为「{}」", tool, local.label(*ui_en))
                 };
                     vec![Response::PolicyAck {
                         tool,

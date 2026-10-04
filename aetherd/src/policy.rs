@@ -103,12 +103,18 @@ impl ToolPolicy {
     }
 
     /// 界面上的中文说明（设置页直接显示它）。
-    pub fn label(self) -> &'static str {
-        match self {
-            ToolPolicy::Default => "按等级",
-            ToolPolicy::Ask => "每次询问",
-            ToolPolicy::Allow => "允许",
-            ToolPolicy::Deny => "禁止",
+    /// 策略的人话名（§3.5）。收 `en`：这一层不读全局语言，
+    /// 由调用方（连接级 `ui_en`）决定 —— 与 `perm::Level`、合成器 `tool_label` 同一套。
+    pub fn label(self, en: bool) -> &'static str {
+        match (self, en) {
+            (ToolPolicy::Default, false) => "按等级",
+            (ToolPolicy::Default, true) => "by level",
+            (ToolPolicy::Ask, false) => "每次询问",
+            (ToolPolicy::Ask, true) => "ask every time",
+            (ToolPolicy::Allow, false) => "允许",
+            (ToolPolicy::Allow, true) => "allow",
+            (ToolPolicy::Deny, false) => "禁止",
+            (ToolPolicy::Deny, true) => "deny",
         }
     }
 }
@@ -471,15 +477,31 @@ mod tests {
 
     #[test]
     fn policy_labels_are_user_facing() {
-        assert_eq!(ToolPolicy::Ask.label(), "每次询问");
-        assert_eq!(ToolPolicy::Allow.label(), "允许");
-        assert_eq!(ToolPolicy::Deny.label(), "禁止");
+        assert_eq!(ToolPolicy::Ask.label(false), "每次询问");
+        assert_eq!(ToolPolicy::Allow.label(false), "允许");
+        assert_eq!(ToolPolicy::Deny.label(false), "禁止");
         // 字面量与解析必须成对（写错一个就会"设了不生效"）
         for p in [ToolPolicy::Ask, ToolPolicy::Allow, ToolPolicy::Deny] {
             assert_eq!(ToolPolicy::parse(p.as_str()), Some(p));
         }
         assert_eq!(ToolPolicy::parse("ALLOW"), None, "大小写敏感，避免歧义");
-        assert_eq!(ToolPolicy::Default.label(), "按等级");
+        assert_eq!(ToolPolicy::Default.label(false), "按等级");
+
+        // §3.5：两种语言都要有；英文里不许出现汉字；四种名称互不相同
+        for (pol, zh, en) in [
+            (ToolPolicy::Default, "按等级", "by level"),
+            (ToolPolicy::Ask, "每次询问", "ask every time"),
+            (ToolPolicy::Allow, "允许", "allow"),
+            (ToolPolicy::Deny, "禁止", "deny"),
+        ] {
+            assert_eq!(pol.label(false), zh);
+            assert_eq!(pol.label(true), en);
+            assert!(
+                !pol.label(true).chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "英文名里有汉字：{}",
+                pol.label(true)
+            );
+        }
     }
     /// 持久化：**写出去、读回来**必须一致（否则"设了不生效"很难查）。
     #[test]
