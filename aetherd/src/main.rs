@@ -15,6 +15,7 @@ mod netset;
 mod policy;
 mod timesync;
 mod snapshots;
+mod update;
 mod perm;
 mod router;
 mod server;

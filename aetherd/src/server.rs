@@ -570,6 +570,71 @@ fn handle_request(
                 ),
             }]
         }
+        Request::ListUpdates => {
+            // 更新包的清单会暴露"这台机器在跑什么版本、要装什么" —— 与快照同一门槛。
+            if !*is_ui {
+                audit_or_warn(gate, "list_updates", Level::L0, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "读取更新列表必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let root = std::path::PathBuf::from(crate::update::UPDATE_ROOT);
+            let staged_version = crate::update::staged(&root).map(|s| s.version);
+            vec![Response::UpdateList {
+                packages: crate::update::list_incoming(&root),
+                current_version: crate::update::current_version(),
+                staged_version,
+            }]
+        }
+        Request::StageUpdate { name } => {
+            if !*is_ui {
+                audit_or_warn(gate, "stage_update", Level::L2, verdict::REJECTED_NO_UI);
+                return vec![Response::Error {
+                    code: 403,
+                    message: "暂存更新必须由已注册的 UI 通道发起".into(),
+                }];
+            }
+            let root = std::path::PathBuf::from(crate::update::UPDATE_ROOT);
+            // `name` 来自界面 → **只允许投递目录下的直接子目录**（见 update.rs 的说明）
+            let args = serde_json::json!({ "name": &name });
+            let res = crate::update::incoming_bundle(&root, &name).and_then(|bundle| {
+                crate::update::stage(
+                    &bundle,
+                    &root,
+                    &crate::update::current_version(),
+                    crate::timesync::now_unix().0,
+                )
+            });
+            match res {
+                Ok(st) => {
+                    if let Err(e) =
+                        gate.audit_call("stage_update", Level::L2, &args, verdict::ALLOWED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e}");
+                    }
+                    eprintln!("[aetherd] 更新已暂存：版本 {}（重启后应用）", st.version);
+                    vec![Response::UpdateStaged {
+                        ok: true,
+                        message: format!(
+                            "已暂存更新 {}（{} 个文件）· **重启后生效**",
+                            st.version,
+                            st.files.len()
+                        ),
+                        version: Some(st.version),
+                    }]
+                }
+                Err(e) => {
+                    if let Err(e2) =
+                        gate.audit_call("stage_update", Level::L2, &args, verdict::FAILED)
+                    {
+                        eprintln!("[aetherd] 审计日志写入失败: {e2}");
+                    }
+                    eprintln!("[aetherd] 暂存更新失败：{name} —— {e}");
+                    vec![Response::UpdateStaged { ok: false, message: e, version: None }]
+                }
+            }
+        }
         Request::GetSnapshots => {
             // 快照清单会暴露"这台机器上装了什么/配了什么"（文件名本身就说明问题）——
             // 与读权限策略同一门槛：必须是已注册的 UI 通道。

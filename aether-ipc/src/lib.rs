@@ -120,6 +120,12 @@ pub enum Request {
     RestoreSnapshot {
         id: String,
     },
+    /// 列出投递目录里待处理的更新包（§3.1）。
+    ListUpdates,
+    /// 校验并暂存一个更新包（`name` 是投递目录里的直接子目录名，不是路径）。
+    StageUpdate {
+        name: String,
+    },
     /// 设置某个工具的策略。**工具名必须存在于注册表**（服务端会校验）——
     /// 允许写入不存在的工具名会留下"死配置"：用户以为禁了某个东西，其实没有。
     SetToolPolicy {
@@ -299,6 +305,20 @@ pub enum Response {
         last_offset_ms: i64,
         /// 上次对时的 Unix 秒；从未对过为 0
         last_sync_unix: i64,
+    },
+    /// 投递目录里的更新包名（`Request::ListUpdates` 的应答）。
+    UpdateList {
+        packages: Vec<String>,
+        /// 当前版本（供界面判断"这个包能不能装"）
+        current_version: String,
+        /// 是否有已暂存、等待重启应用的包
+        staged_version: Option<String>,
+    },
+    /// 暂存更新的回执。
+    UpdateStaged {
+        ok: bool,
+        message: String,
+        version: Option<String>,
     },
     /// 快照列表（`Request::GetSnapshots` 的应答）。
     SnapshotList {
