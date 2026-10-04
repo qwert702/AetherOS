@@ -55,16 +55,18 @@ pub const SHORTCUTS: &[Shortcut] = &[
         in_input: false,
     },
     Shortcut {
-        keys: "Super+1…4",
-        desc: "切换虚拟桌面（各桌面的窗口互不可见，切走不关掉）",
-        desc_en: "Switch virtual desktop (windows stay alive on the other desktop)",
+        keys: "Super+1…8",
+        // 数量是**动态**的（默认 4、上限 8）—— 写死 "1…4" 会与 AA-1 之后的实际能力不符，
+        // 而快捷键总览的用处正是"如实列出真的能按的键"
+        desc: "切换虚拟桌面（默认 4 个、可增删到 8；切走的窗口不会关掉）",
+        desc_en: "Switch virtual desktop (4 by default, up to 8; windows stay alive)",
         probe: "spaces.switch(i, &mut desktop.wins",
         in_input: false,
     },
     Shortcut {
-        keys: "Super+Shift+1…4",
-        desc: "把当前窗口搬到指定桌面",
-        desc_en: "Move the active window to a desktop",
+        keys: "Super+Shift+1…8",
+        desc: "把当前窗口搬到第 N 个桌面（默认 4 个、可增删到 8）",
+        desc_en: "Move the active window to desktop N (4 by default, up to 8)",
         probe: "spaces.move_active(i, &mut desktop.wins",
         in_input: false,
     },

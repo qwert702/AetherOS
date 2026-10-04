@@ -638,7 +638,10 @@ fn run_fbdev() -> anyhow::Result<()> {
                         continue;
                     }
                     if let Some(d) = c.to_digit(10) {
-                        if d >= 1 && (d as usize) <= spaces::Spaces::<draw::Win>::COUNT {
+                        // **用动态数量**（`spaces.count()`），不是默认常量 `COUNT` ——
+                        // 空间数在 §5.4 之后是可变的（默认 4、上限 8），
+                        // 写死常量会让 `Super+5..8` 静默无效，而界面还在提示"可切过去"。
+                        if d >= 1 && (d as usize) <= spaces.count() {
                             let i = (d - 1) as usize;
                             if shift {
                                 if spaces.move_active(i, &mut desktop.wins, &mut desktop.active) {
@@ -7022,6 +7025,29 @@ mod wayland_sync_tests {
         assert!(
             call > branch,
             "锁屏调用必须在 `if c == 'l' && !shift` 之后（否则别的 Super 组合键也会锁屏）"
+        );
+    }
+
+    /// **回归探针（批次 AO-1）**：`main.rs` 里不许再用那个**默认常量**（名为 `COUNT` 的那个）
+    /// 当作"当前桌面数" —— 它的值是默认值 4，而空间数在 §5.4 之后是可变的。
+    ///
+    /// §5.4 之后空间数是动态的（默认 4、上限 8），判断与文案都必须跟着 `spaces.count()` 走。
+    /// 修之前事件循环写死了 `COUNT`，于是 `Super+5..8` 静默无效 ——
+    /// 而界面提示恰好写着「Super+5 可切过去」。这类错误是"数字没跟着事实走"，
+    /// 类型系统看不出来，所以用源码探针钉住。
+    #[test]
+    fn the_desktop_key_binding_uses_the_dynamic_count() {
+        let src = include_str!("main.rs");
+        let needle = concat!("Spaces::<draw::Win>", "::COUNT");
+        assert_eq!(
+            src.matches(needle).count(),
+            0,
+            "main.rs 不该再用默认常量 COUNT 当「当前桌面数」——用 spaces.count()"
+        );
+        // 反过来：切换到第 N 个桌面必须走 `spaces.count()` 这个判断
+        assert!(
+            src.contains("(d as usize) <= spaces.count()"),
+            "Super+数字 的判断要基于当前桌面数"
         );
     }
 
