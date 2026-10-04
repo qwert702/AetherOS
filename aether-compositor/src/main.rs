@@ -17,6 +17,10 @@ mod audio;
 mod fbdev;
 // 输入事件层：事件类型与键位翻译跨平台（可在开发机上单测），仅采集后端限 Linux
 mod input;
+
+/// 无界面 e2e 的注入脚本格式（§4.1）。见 `e2e.rs` 的模块文档。
+#[cfg(test)]
+mod e2e;
 // 中文输入法（2.3）：拼音 → 候选 → 上屏，词表自建
 mod ime;
 #[cfg(target_os = "linux")]
