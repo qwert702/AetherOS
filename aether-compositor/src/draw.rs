@@ -344,6 +344,23 @@ pub mod size {
     /// 小间距（图标与文字之间之类）。
     pub const TIGHT: i32 = 12;
 
+    // ---- 间距阶梯 ----
+    //
+    // 布局里反复出现的间距都取自这几级。**命名按"用在哪"，不按"多大"** ——
+    // 这样以后加页面时能对着位置挑，而不是"上次那个 44 是用在哪来着"。
+    /// 小节内的紧凑间距。
+    pub const GAP_TIGHT: i32 = 8;
+    /// 控件之间的标准间距。
+    pub const GAP_STD: i32 = 20;
+    /// 大块内容之间的间距。
+    pub const GAP_WIDE: i32 = 44;
+    /// 页面分段之间的间距。
+    pub const GAP_HUGE: i32 = 58;
+    /// 一行"控件 + 说明"占的高度。
+    pub const ROW_TALL: i32 = 46;
+    /// 次级左缩进（比 `CONTROL_INSET` 更靠左的输入框/条目）。
+    pub const INSET_SM: i32 = 16;
+
     static PCT: AtomicU16 = AtomicU16::new(100);
 
     /// 设置缩放百分比（与 [`super::ui::set_scale_pct`] **同一份输入**）。
@@ -399,6 +416,42 @@ mod tests {
         // 负数（阴影偏移之类）按远离零的方向取整，保持左右对称
         assert_eq!(scale(-1, 50), -1);
         assert_eq!(scale(-24, 125), -30);
+    }
+
+    /// 不变量：尺寸表里的每个常量都**至少有一个调用点**。
+    ///
+    /// 为什么值得一条测试：这张表的意义就是"被页面代码引用"。
+    /// 加了常量却没人用，它就在慢慢变成装饰 —— 与项目其它"死表/死字段"问题同族
+    /// （`ui_scale_pct` 曾经就是"存了不用"的典型）。
+    ///
+    /// 用 `include_str!` 读自己的源码：与 `aetherd` 那条
+    /// `every_request_handler_is_gated_and_classified` 同一手法 —— 把结论变成不变量。
+    #[test]
+    fn every_size_constant_is_actually_used() {
+        let src = include_str!("draw.rs");
+        for name in [
+            "CONTENT_PAD",
+            "CONTROL_INSET",
+            "INSET_SM",
+            "ROW_H",
+            "ROW_H_SM",
+            "ROW_TALL",
+            "GROUP_GAP",
+            "LINE_GAP",
+            "HINT_GAP",
+            "TIGHT",
+            "GAP_TIGHT",
+            "GAP_STD",
+            "GAP_WIDE",
+            "GAP_HUGE",
+        ] {
+            // 带上右括号：否则 `ROW_H` 会被 `ROW_H_SM` 的调用点误算成"用过"
+            let needle = format!("px(theme::size::{name})");
+            assert!(
+                src.matches(&needle).count() > 0,
+                "尺寸表里的 {name} 没有任何调用点 —— 要么用上，要么从表里删掉"
+            );
+        }
     }
 
     /// 全局状态：默认 100%；设过之后 `px` 跟着变。
@@ -2764,7 +2817,7 @@ impl Renderer {
 
         let mut y = panel.y + 12;
         // ① AI 三态（只读）
-        rounded_rect(buf, w, h, Rect { x: panel.x + 16, y: y + 6, w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
+        rounded_rect(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::INSET_SM), y: y + 6, w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
         tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
         tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::pick(crate::i18n::lang(), ui.ai_status.label(), ui.ai_status.label_en()),
             font::CAPTION, color::text_dim(), 0.9);
@@ -2799,7 +2852,7 @@ impl Renderer {
         // ④ 快捷跳转
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
-        widgets::group_header(buf, w, h, panel.x + 16, y, crate::i18n::tr("快捷跳转", "Quick actions"), Some(tr));
+        widgets::group_header(buf, w, h, panel.x + theme::size::px(theme::size::INSET_SM), y, crate::i18n::tr("快捷跳转", "Quick actions"), Some(tr));
         y += 20;
         // 「通知」带**真实未读数**（不是装饰性的小红点）：没有未读时不显示数字，
         // 因为"0 条未读"和"没有通知中心"在界面上应该长得不一样。
@@ -2845,7 +2898,7 @@ impl Renderer {
         // 且不登记命中区 —— "画一个拖不动的滑块"比"没有滑块"更糟。
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
-        widgets::group_header(buf, w, h, panel.x + 16, y, crate::i18n::tr("声音", "Sound"), Some(tr));
+        widgets::group_header(buf, w, h, panel.x + theme::size::px(theme::size::INSET_SM), y, crate::i18n::tr("声音", "Sound"), Some(tr));
         y += 20;
         {
             let r = row(y);
@@ -2878,7 +2931,7 @@ impl Renderer {
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
         widgets::group_header(
-            buf, w, h, panel.x + 16, y,
+            buf, w, h, panel.x + theme::size::px(theme::size::INSET_SM), y,
             &format!(
                 "{}（{}）",
                 crate::i18n::tr("虚拟桌面", "Virtual desktops"),
@@ -2904,7 +2957,7 @@ impl Renderer {
         // 放在开关旁边会让人手滑点错（Windows/macOS 也把它收在菜单末尾）。
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
-        widgets::group_header(buf, w, h, panel.x + 16, y, crate::i18n::tr("电源", "Power"), Some(tr));
+        widgets::group_header(buf, w, h, panel.x + theme::size::px(theme::size::INSET_SM), y, crate::i18n::tr("电源", "Power"), Some(tr));
         y += 20;
         let power: [(&str, &str, ControlHit); 3] = [
             ("关机", "Power off", ControlHit::PowerOff),
@@ -2920,7 +2973,7 @@ impl Renderer {
         }
         tr.draw(
             buf, w, h,
-            (panel.x + 16) as f32,
+            (panel.x + theme::size::px(theme::size::INSET_SM)) as f32,
             (panel.y + panel.h - 22) as f32,
             crate::i18n::tr("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
             font::LABEL, color::text_dim(), 0.7,
@@ -2978,7 +3031,7 @@ impl Renderer {
             if ir.contains(ui.mouse.0, ui.mouse.1) {
                 rounded_rect(buf, w, h, Rect { x: ir.x + 4, y: ir.y + 3, w: ir.w - 8, h: ir.h - 6 }, radius::SM, color::surface_3(), 0.9);
             }
-            draw_text(tr, buf, w, h, (ir.x + 16) as f32, tr.vcenter(ir.y as f32, ir.h as f32, font::BODY), item, font::BODY, color::text(), 0.92);
+            draw_text(tr, buf, w, h, (ir.x + theme::size::px(theme::size::INSET_SM)) as f32, tr.vcenter(ir.y as f32, ir.h as f32, font::BODY), item, font::BODY, color::text(), 0.92);
             rects.push(ir);
         }
         self.dropdown = Some((rects, items.to_vec()));
@@ -3304,7 +3357,7 @@ fn draw_settings_content(
             if !group.is_empty() {
                 y += 10;
             }
-            widgets::group_header(buf, w, h, r.x + 16, y, p.group_in(lang), Some(tr));
+            widgets::group_header(buf, w, h, r.x + theme::size::px(theme::size::INSET_SM), y, p.group_in(lang), Some(tr));
             y += 20;
             group = p.group;
         }
@@ -3396,7 +3449,7 @@ fn draw_settings_content(
                 Some(tr),
             );
             hits.push((export, SettingsHit::ExportAudit));
-            ry += 46;
+            ry += theme::size::px(theme::size::ROW_TALL);
             widgets::group_header(
                 buf,
                 w,
@@ -3518,7 +3571,7 @@ fn draw_settings_content(
                     };
                     let aw = tr.measure(&age, font::CAPTION);
                     tr.draw(buf, w, h, (content.x + row_w + 10) as f32 - aw, ry as f32, &age, font::CAPTION, color::text_dim(), 0.8);
-                    ry += 20;
+                    ry += theme::size::px(theme::size::GAP_STD);
                     if !e.args.is_empty() {
                         let a: String = e.args.chars().take(52).collect();
                         let a = if e.args.chars().count() > 52 { format!("{a}…") } else { a };
@@ -3530,7 +3583,7 @@ fn draw_settings_content(
                     }
                 }
             }
-            ry += 8;
+            ry += theme::size::px(theme::size::GAP_TIGHT);
             tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                     crate::i18n::pick(
                         lang,
@@ -3597,7 +3650,7 @@ fn draw_settings_content(
                 if clickable {
                     hits.push((row, SettingsHit::InstallApp(i)));
                 }
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
                 if ry > content.y + content.h - 60 {
                     break;
                 }
@@ -3605,7 +3658,7 @@ fn draw_settings_content(
             let _ = st::CATALOG_DIR;
 
             // ---- 已安装：可以卸载 ----
-            ry += 8;
+            ry += theme::size::px(theme::size::GAP_TIGHT);
             widgets::group_header(
                 buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry,
                 crate::i18n::tr("已安装", "Installed"), Some(tr),
@@ -3634,7 +3687,7 @@ fn draw_settings_content(
                     widgets::States::at(row, mouse), Some(tr),
                 );
                 hits.push((row, SettingsHit::RemoveApp(i)));
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
                 if ry > content.y + content.h - 60 {
                     break;
                 }
@@ -3741,7 +3794,7 @@ fn draw_settings_content(
                 if removable_pending.is_none() {
                     hits.push((row, SettingsHit::ToggleRemovable(i)));
                 }
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
             }
         }
         "显示输出" => {
@@ -3762,7 +3815,7 @@ fn draw_settings_content(
                 widgets::States::at(r_refresh, mouse), Some(tr),
             );
             hits.push((r_refresh, SettingsHit::RefreshDisplays));
-            ry += 44;
+            ry += theme::size::px(theme::size::GAP_WIDE);
 
             if !displays_loaded {
                 // 区分「还没读」与「读了确实没有」—— 这两件事在界面上不该长得一样
@@ -3810,10 +3863,10 @@ fn draw_settings_content(
                 }
                 let row = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
                 widgets::row(buf, w, h, row, title, Some(hint), widgets::States::at(row, mouse), Some(tr));
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
             }
 
-            ry += 8;
+            ry += theme::size::px(theme::size::GAP_TIGHT);
             tr.draw(
                 buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                 crate::i18n::tr(
@@ -3856,7 +3909,7 @@ fn draw_settings_content(
                 widgets::States::at(r_refresh, mouse), Some(tr),
             );
             hits.push((r_refresh, SettingsHit::RefreshUpdates));
-            ry += 44;
+            ry += theme::size::px(theme::size::GAP_WIDE);
 
             if let Some(err) = update.error() {
                 tr.draw(
@@ -3890,7 +3943,7 @@ fn draw_settings_content(
                 if update.can_click() {
                     hits.push((row, SettingsHit::StageUpdate(i)));
                 }
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
                 if ry > content.y + content.h - 40 {
                     break;
                 }
@@ -3962,7 +4015,7 @@ fn draw_settings_content(
                     Some(tr),
                 );
                 hits.push((row, SettingsHit::RestoreSnapshot(i)));
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
                 if ry > content.y + content.h - 60 {
                     break;
                 }
@@ -4032,7 +4085,7 @@ fn draw_settings_content(
                     widgets::States::at(row, mouse), Some(tr),
                 );
                 hits.push((row, SettingsHit::CycleToolPolicy(i)));
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
                 // 列表超出可视区就停下（滚动不是这批的事，但画到框外更糟）
                 if ry > content.y + content.h - 60 {
                     break;
@@ -4070,7 +4123,7 @@ fn draw_settings_content(
                     buf, w, h, row, sc.keys, Some(sc.desc_in(lang)),
                     widgets::States::at(row, mouse), Some(tr),
                 );
-                ry += 46;
+                ry += theme::size::px(theme::size::ROW_TALL);
             }
             ry += 6;
             tr.draw(
@@ -4221,7 +4274,7 @@ fn draw_settings_content(
                 ),
                     font::CAPTION, color::text_dim(), 0.75);
             if !n.note.is_empty() {
-                ry += 20;
+                ry += theme::size::px(theme::size::GAP_STD);
                 tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, &n.note, font::CAPTION, color::text_dim(), 0.75);
             }
         }
@@ -4248,15 +4301,15 @@ fn draw_settings_content(
                 widgets::row(buf, w, h, r, name, Some(desc), st, Some(tr));
                 // 点击 → 打开（事件循环执行；见 main.rs 的设置命中分支）
                 hits.push((r, SettingsHit::OpenApp(i)));
-                ry += 44;
+                ry += theme::size::px(theme::size::GAP_WIDE);
             }
-            ry += 8;
+            ry += theme::size::px(theme::size::GAP_TIGHT);
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "已装应用", "Installed apps"), Some(tr));
             ry += theme::size::px(theme::size::GROUP_GAP);
             tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                     crate::i18n::pick(lang, "从宿主安装的程序显示在 Dock 上（数据来自 /var/apps）。", "Programs installed from the host show up in the Dock (data from /var/apps)."),
                     font::CAPTION, color::text_dim(), 0.85);
-            ry += 20;
+            ry += theme::size::px(theme::size::GAP_STD);
             tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                     crate::i18n::pick(lang, "在设置里列出/卸载它们需要 IPC 能力（aetherd 代理），下一步接入。", "Listing/uninstalling them from Settings needs IPC capability (aetherd proxy); coming next."),
                     font::CAPTION, color::text_dim(), 0.75);
@@ -4312,7 +4365,7 @@ fn draw_settings_content(
             toggle_row(buf, w, h, mouse, tr, r_hc, crate::i18n::pick(lang, "高对比度", "High contrast"),
                        Some(crate::i18n::pick(lang, "把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交", "Raises text/background contrast above WCAG AA (4.5:1); orthogonal to the theme")),
                        s.high_contrast, SettingsHit::ToggleContrast, hits);
-            ry += 58;
+            ry += theme::size::px(theme::size::GAP_HUGE);
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "当前配色", "Current colors"), Some(tr));
             ry += theme::size::px(theme::size::GROUP_GAP);
             // 壁纸色板（批次 L-1）：**真的能换** —— 点一下立即生效并落盘。
@@ -4336,7 +4389,7 @@ fn draw_settings_content(
                 }
                 hits.push((sw, SettingsHit::Wallpaper(i)));
             }
-            ry += 44;
+            ry += theme::size::px(theme::size::GAP_WIDE);
             // 息屏档位（§3.6）：固定档位按钮，当前档高亮。
             // 0 = 永不 —— 演示与排障时需要它，所以它必须是一个**能选中的档**，
             // 而不是"设了 0 却显示成 5 分钟"这种含糊状态。
@@ -4359,14 +4412,14 @@ fn draw_settings_content(
                 }
                 hits.push((b, SettingsHit::IdleBlank(*min)));
             }
-            ry += 46;
+            ry += theme::size::px(theme::size::ROW_TALL);
             // 性能 HUD（§5.10）：**默认关**。说明里写清"显示的是真实数字"，
             // 因为本项目对假数据零容忍 —— 用户有权知道这块面板值不值得信。
             let hud = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
             toggle_row(buf, w, h, mouse, tr, hud, crate::i18n::pick(lang, "性能 HUD", "Performance HUD"),
                        Some(crate::i18n::pick(lang, "右下角显示真实帧时间与内存占用（排障用，默认关）", "Shows real frame time and memory in the bottom-right (for troubleshooting, off by default)")),
                        s.perf_hud, SettingsHit::TogglePerfHud, hits);
-            ry += 58;
+            ry += theme::size::px(theme::size::GAP_HUGE);
             // 恢复默认（批次 L-1）：用户改坏了能回去。**真的重置**，不是只改显示。
             let reset = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
             widgets::row(buf, w, h, reset, crate::i18n::pick(lang, "恢复默认外观", "Restore default appearance"),
@@ -4418,7 +4471,7 @@ fn draw_settings_content(
             // ---- §3.3 对时与系统时区 ----
             // 这里要分清两件事，否则用户会以为"我已经改好了"：
             //   上面那行是**系统当前**时区，下面那行是**待写入**的候选名。
-            ry += 8;
+            ry += theme::size::px(theme::size::GAP_TIGHT);
             widgets::group_header(
                 buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry,
                 crate::i18n::tr("时间同步", "Time sync"), Some(tr),
@@ -4438,7 +4491,7 @@ fn draw_settings_content(
                 widgets::States::at(r_sync, mouse), Some(tr),
             );
             hits.push((r_sync, SettingsHit::SyncTimeNow));
-            ry += 46;
+            ry += theme::size::px(theme::size::ROW_TALL);
 
             let sys_line = if time.system_tz.is_empty() {
                 crate::i18n::tr("系统时区：未知（读不到 /etc/timezone）", "System time zone: unknown").to_string()
@@ -4459,7 +4512,7 @@ fn draw_settings_content(
                 widgets::States::at(r_pick, mouse), Some(tr),
             );
             hits.push((r_pick, SettingsHit::CycleTimezoneName));
-            ry += 46;
+            ry += theme::size::px(theme::size::ROW_TALL);
             let r_write = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
             widgets::row(
                 buf, w, h, r_write,
@@ -4478,7 +4531,7 @@ fn draw_settings_content(
             let lang = crate::i18n::lang();
             let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 44 };
             toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "默认启用中文输入法", "Chinese IME on by default"), Some(crate::i18n::pick(lang, "开机即生效，Ctrl+空格 可随时切换", "Active from boot; Ctrl+Space toggles it")), s.ime_default, SettingsHit::ImeDefault, hits);
-            ry += 58;
+            ry += theme::size::px(theme::size::GAP_HUGE);
             // 鼠标速度：合成器原先对相对位移**硬编码 ×2**，用户反馈在 VMware/真机上太快。
             // 默认 100（1:1），这里给三档；数值走 `SettingsHit::MouseSpeed`（真实写盘）。
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "鼠标速度", "Mouse speed"), Some(tr));
@@ -4506,7 +4559,7 @@ fn draw_settings_content(
                 &format!("{}%", s.mouse_speed_pct),
                 font::CAPTION, color::text_dim(), 0.85,
             );
-            ry += 46;
+            ry += theme::size::px(theme::size::ROW_TALL);
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "键盘快捷键", "Keyboard shortcuts"), Some(tr));
             ry += theme::size::px(theme::size::GROUP_GAP);
             for (k, v) in [
@@ -4670,7 +4723,7 @@ fn draw_settings_content(
                     crate::i18n::pick(lang, zh, en),
                     font::CAPTION, color::text(), 0.85,
                 );
-                ry += 20;
+                ry += theme::size::px(theme::size::GAP_STD);
                 let r = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: 38 };
                 // 编辑中在末尾加一个竖线当光标（与 DNS 字段同一做法）
                 let shown = if field.editing {
@@ -4690,7 +4743,7 @@ fn draw_settings_content(
                     widgets::States::at(r, mouse), Some(tr),
                 );
                 hits.push((r, SettingsHit::FocusPassField(idx as u8)));
-                ry += 44;
+                ry += theme::size::px(theme::size::GAP_WIDE);
             }
 
             let r_submit = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: 180, h: 38 };
@@ -4704,7 +4757,7 @@ fn draw_settings_content(
                 widgets::States::at(r_submit, mouse), Some(tr),
             );
             hits.push((r_submit, SettingsHit::SubmitPassword));
-            ry += 44;
+            ry += theme::size::px(theme::size::GAP_WIDE);
             if let Some(fb) = &pass_form.feedback {
                 tr.draw(
                     buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
@@ -4730,7 +4783,7 @@ fn draw_settings_content(
                 SettingsHit::ToggleRecordNotifications,
                 hits,
             );
-            ry += 58;
+            ry += theme::size::px(theme::size::GAP_HUGE);
             // 清空：**动作类**，由事件循环执行（绘制期不改状态）
             let clear = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
             widgets::row(
@@ -4757,7 +4810,7 @@ fn draw_settings_content(
                 0.75,
             );
             // §5.12 声音：开关 + 主题（这个开关此前**只有字段没有界面**）
-            ry += 8;
+            ry += theme::size::px(theme::size::GAP_TIGHT);
             widgets::group_header(
                 buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry,
                 crate::i18n::tr("提示音", "Sounds"), Some(tr),
@@ -4773,7 +4826,7 @@ fn draw_settings_content(
                 )),
                 s.notify_sound, SettingsHit::ToggleNotifySound, hits,
             );
-            ry += 46;
+            ry += theme::size::px(theme::size::ROW_TALL);
             let theme = crate::audio::SoundTheme::of(s.sound_theme);
             let r_theme = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
             widgets::row(
@@ -5468,15 +5521,15 @@ fn draw_preview_content(buf: &mut [u32], w: usize, h: usize, r: Rect, data: Opti
     let Some(tr) = tr else { return };
 
     let Some(d) = data else {
-        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, crate::i18n::pick(lang, "（无内容）", "(empty)"), font::BODY, color::text_faint(), 0.9);
+        draw_text(tr, buf, w, h, (r.x + theme::size::px(theme::size::INSET_SM)) as f32, (r.y + 14) as f32, crate::i18n::pick(lang, "（无内容）", "(empty)"), font::BODY, color::text_faint(), 0.9);
         return;
     };
 
     if let Some(err) = &d.error {
-        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 14) as f32, crate::i18n::pick(lang, "无法预览", "Cannot preview"), font::BODY, color::danger_text(), 0.95);
+        draw_text(tr, buf, w, h, (r.x + theme::size::px(theme::size::INSET_SM)) as f32, (r.y + 14) as f32, crate::i18n::pick(lang, "无法预览", "Cannot preview"), font::BODY, color::danger_text(), 0.95);
         // §3.5：错误原因来自数据层的枚举，文案在这里按语言渲染
         let msg = crate::draw::preview_error_text(crate::i18n::lang(), err);
-        draw_text(tr, buf, w, h, (r.x + 16) as f32, (r.y + 40) as f32, &msg, font::CAPTION, color::text_dim(), 0.9);
+        draw_text(tr, buf, w, h, (r.x + theme::size::px(theme::size::INSET_SM)) as f32, (r.y + 40) as f32, &msg, font::CAPTION, color::text_dim(), 0.9);
         return;
     }
 
@@ -5940,7 +5993,7 @@ impl Renderer {
         );
         rounded_outline(buf, w, h, tray, 20.0, color::hairline(), 0.14);
         // 托盘顶部内高光（玻璃厚度）
-        fill_rect(buf, w, h, Rect { x: tray.x + 16, y: tray.y + 1, w: tray.w - 32, h: 1 }, color::HIGHLIGHT, 0.10);
+        fill_rect(buf, w, h, Rect { x: tray.x + theme::size::px(theme::size::INSET_SM), y: tray.y + 1, w: tray.w - 32, h: 1 }, color::HIGHLIGHT, 0.10);
 
         self.dock_icons.clear();
         for (i, name) in apps.iter().enumerate() {
@@ -6096,7 +6149,7 @@ impl Renderer {
         self.installer_rows.clear();
         let row_y0 = win.y + 78;
         for (i, (dev, mb)) in inst.disks.iter().enumerate() {
-            let r = Rect { x: win.x + 16, y: row_y0 + i as i32 * 50, w: win.w - 32, h: 44 };
+            let r = Rect { x: win.x + theme::size::px(theme::size::INSET_SM), y: row_y0 + i as i32 * 50, w: win.w - 32, h: 44 };
             if inst.selected == i {
                 rounded_rect(buf, w, h, r, radius::MD, color::accent(), 0.16);
                 rounded_outline(buf, w, h, r, radius::MD, color::accent(), 0.45);
