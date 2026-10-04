@@ -135,6 +135,8 @@ impl TextRenderer {
     /// "国"（CJK 字面基本占满 em 方框）代表，混排以中文为主时这是正确的基准。
     /// 换字体后用 `--fonttest` 复跑 dump_metrics 即可确认。
     pub fn vcenter(&self, top: f32, height: f32, px: f32) -> f32 {
+        // §3.4：垂直居中依赖字号算基线，同样要用实际字号
+        let px = crate::draw::theme::ui::font(px);
         let px = px.round();
         let ascent = self
             .regular
@@ -185,6 +187,9 @@ impl TextRenderer {
         alpha: f32,
         bold: bool,
     ) -> f32 {
+        // §3.4 字号：**所有文字都从这里过** —— 缩放做在这一处，
+        // 几百个 `tr.draw(..., font::BODY, ...)` 调用点一行都不用改。
+        let px = crate::draw::theme::ui::font(px);
         // 光栅化字号取整：非整数 px（过渡字号 12.5/13.5）的 AA 字形明显发虚。
         // 渲染与测量在各自入口做同一取整，布局不因取整漂移。
         let px = px.round();
@@ -265,7 +270,9 @@ impl TextRenderer {
     /// 不能靠字符串自然推进——否则 "i" 与 "M" 混排就会错位。
     pub fn mono_cell(&self) -> (f32, f32) {
         let w = self.measure("M", crate::draw::theme::font::MONO).max(5.0);
-        let h = (crate::draw::theme::font::MONO * 1.4).ceil();
+        // 终端格高按**实际**字号算（缩放后格子要跟着变高，否则行会挤在一起）
+        let mono = crate::draw::theme::ui::font(crate::draw::theme::font::MONO);
+        let h = (mono * 1.4).ceil();
         (w, h)
     }
 
@@ -279,6 +286,8 @@ impl TextRenderer {
     }
 
     fn measure_with(&self, text: &str, px: f32, bold: bool) -> f32 {
+        // §3.4：测量也要用同一个实际字号（否则「量出来 20px、画出来 25px」会对不齐）
+        let px = crate::draw::theme::ui::font(px);
         // 与 render() 同步取整，保证测量宽度 == 实际绘制宽度
         let px = px.round();
         let mut w = 0.0;

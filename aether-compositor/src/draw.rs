@@ -289,7 +289,51 @@ pub mod theme {
     }
 
     /// 字阶 §3.2：5 档（+ 图标字形档）。11px 是可读下限，不得更小。
-    pub mod font {
+    /// 界面缩放（FEATURE-GAPS §3.4「字号」）。
+///
+/// `Settings::ui_scale_pct` 这个字段一直存在、也能落盘，但**从来没有生效** ——
+/// 与 `locale`、`notify_sound` 同一类"存了不用"。本模块把它接上。
+///
+/// ## 为什么缩放做在文本渲染器里，而不是调用点
+///
+/// `font::BODY` 这类常量被**几百处**调用点引用。要缩放就在调用点逐个乘系数，
+/// 既不可能改全，也不可能长期维持（新写一处忘了乘，那处就不跟着变）。
+/// 所以在 `TextRenderer` 的内部入口统一乘 —— 调用点写的是"我要正文大小"，
+/// "正文实际多大"由这里决定。
+///
+/// ## 已知边界（如实写明）
+///
+/// 本批**只缩放字号，不缩放布局尺寸**（行高、标题栏、边距都还是固定值）。
+/// 原因：那些是散落的字面量与 `const`，改起来是另一个量级的重构。
+/// 后果：150% 时文字会明显更挤（有护栏测试保证**不重叠**：关键字号仍小于它所在的
+/// 固定行高）。真要做到"整体缩放"，得先有一份集中的尺寸表 —— 那是独立批次。
+pub mod ui {
+    use std::sync::atomic::{AtomicU16, Ordering};
+
+    static SCALE_PCT: AtomicU16 = AtomicU16::new(100);
+
+    /// 设置缩放（**吸附到最近的合法档位**：设置文件可被手改，不能信任它的值）。
+    pub fn set_scale_pct(pct: u16) {
+        SCALE_PCT.store(crate::settings::snap_scale(pct), Ordering::Relaxed);
+    }
+
+    pub fn scale_pct() -> u16 {
+        SCALE_PCT.load(Ordering::Relaxed)
+    }
+
+    /// **纯函数**：按给定百分比缩放一个字号（测试用它，不碰全局状态）。
+    pub fn font_at(pct: u16, px: f32) -> f32 {
+        let pct = crate::settings::snap_scale(pct);
+        (px * pct as f32 / 100.0).max(1.0)
+    }
+
+    /// 按当前缩放取实际字号（所有文字都走这里）。
+    pub fn font(px: f32) -> f32 {
+        font_at(scale_pct(), px)
+    }
+}
+
+pub mod font {
         /// 按钮文字、标签（下限）
         pub const LABEL: f32 = 11.0;
         /// 辅助说明、状态栏、键帽
@@ -3265,6 +3309,23 @@ fn draw_settings_content(
             let r_hc = Rect { x: r1.x, y: r1.y + 56, w: r1.w, h: r1.h };
             // §3.5 语言：**用该语言自己写语言名**（英文界面里出现"英语"两个字是半成品的样子）。
             // 开关语义 = "是否英文"，`Locale` 的值由当前状态算出。
+            // §3.4 字号：界面里"存了不用"的又一个 —— 本批接上（缩放做在文本渲染器里）
+            let r_scale = Rect { x: r1.x, y: r1.y + 154, w: r1.w, h: r1.h };
+            let scale_hint = crate::i18n::tr(
+                "只缩放文字；行高与边距仍是固定值（150% 会偏挤，见缺口清单 §3.4）",
+                "Scales text only; row heights stay fixed (150% is tight)",
+            );
+            widgets::row(
+                buf, w, h, r_scale,
+                &format!(
+                    "{}：{}%",
+                    crate::i18n::tr("界面字号", "Text size"),
+                    s.ui_scale_pct
+                ),
+                Some(scale_hint),
+                widgets::States::at(r_scale, mouse), Some(tr),
+            );
+            hits.push((r_scale, SettingsHit::CycleUiScale));
             let r_lang = Rect { x: r1.x, y: r1.y + 112, w: r1.w, h: r1.h };
             let lang = crate::i18n::lang();
             let lang_title = crate::i18n::tr("界面语言", "Language");
@@ -5922,6 +5983,56 @@ mod blit_tests {
             );
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// §3.4：字号缩放必须是**纯函数**可测的（不碰全局状态 → 并行测试不会互相干扰）。
+    #[test]
+    fn font_scaling_is_pure_and_snaps_to_steps() {
+        use crate::draw::theme::ui::font_at;
+        assert_eq!(font_at(100, 14.0), 14.0);
+        assert_eq!(font_at(125, 14.0), 17.5);
+        assert_eq!(font_at(150, 14.0), 21.0);
+        // 越界/奇怪的值要吸附到最近档位（设置文件可以被手改）
+        assert_eq!(font_at(0, 20.0), 20.0, "0 应当吸附到 100%");
+        // 注意：**112 才是更接近 100 的那个**（113 更接近 125）——
+        // 这条语义在 `settings.rs` 的 `snap_scale` 测试里已经写死了，这里与它保持一致。
+        assert_eq!(font_at(112, 20.0), 20.0, "112 更接近 100");
+        assert_eq!(font_at(113, 20.0), 25.0, "113 更接近 125");
+        assert_eq!(font_at(120, 20.0), 25.0, "120 更接近 125");
+        assert_eq!(font_at(999, 10.0), 15.0, "999 吸附到最大档 150%");
+        // 永远为正（0 字号会让渲染器除零/画不出东西）
+        assert!(font_at(100, 0.0) >= 1.0);
+    }
+
+    /// **护栏**：最大档位下，关键字号必须仍然**小于它所在的固定行高** ——
+    /// 不缩布局就放大字号，最容易出的问题就是文字互相压住。
+    ///
+    /// 这条测试的价值在于：以后有人调大 `font::TITLE`/`BODY` 或调小 `metric::` 高度，
+    /// 它会立刻红 —— 而不是等到用户在 150% 下看到错位的界面。
+    #[test]
+    fn the_largest_step_still_fits_the_fixed_row_heights() {
+        use crate::draw::theme::ui::font_at;
+        use crate::draw::theme::{font, metric};
+        let max = crate::settings::UI_SCALE_STEPS.iter().copied().max().unwrap_or(150);
+        // 标题栏要装得下 TITLE
+        assert!(
+            font_at(max, font::TITLE) <= metric::TITLE_H as f32,
+            "最大档 {max}% 下标题字号 {} 超过了标题栏高 {}",
+            font_at(max, font::TITLE),
+            metric::TITLE_H
+        );
+        // 顶栏要装得下 BODY
+        assert!(
+            font_at(max, font::BODY) <= metric::MENUBAR_H as f32,
+            "最大档 {max}% 下正文字号 {} 超过了顶栏高 {}",
+            font_at(max, font::BODY),
+            metric::MENUBAR_H
+        );
+        // 设置页的行高（40）要装得下正文 + 说明两行里的较大者
+        assert!(
+            font_at(max, font::BODY) <= 40.0,
+            "最大档 {max}% 下正文超过了设置行高 40"
+        );
     }
 
 }

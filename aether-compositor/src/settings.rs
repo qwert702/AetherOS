@@ -353,6 +353,8 @@ pub enum SettingsHit {
     ToggleNotifySound,
     /// 切换提示音主题（§5.12）。点击后**试听一次**，否则「可换」是看不见的。
     CycleSoundTheme,
+    /// 切换界面字号（§3.4）。循环 `UI_SCALE_STEPS`。
+    CycleUiScale,
     /// 卸载第 `i` 个已安装应用（§5.11）。服务端会**移入回收站**（不是直接删）。
     RemoveApp(usize),
     /// 立刻对一次时（§3.3）。
@@ -574,6 +576,11 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         SettingsHit::ToggleContrast => s.high_contrast = !s.high_contrast,
         SettingsHit::Locale(i) => s.locale = i.min(LOCALE_COUNT.saturating_sub(1)),
         SettingsHit::ToggleNotifySound => s.notify_sound = !s.notify_sound,
+        SettingsHit::CycleUiScale => {
+            // 循环档位：找到当前档、取下一个（到末尾回绕到第一档）
+            let cur = UI_SCALE_STEPS.iter().position(|v| *v == s.ui_scale_pct).unwrap_or(0);
+            s.ui_scale_pct = UI_SCALE_STEPS[(cur + 1) % UI_SCALE_STEPS.len()];
+        }
         SettingsHit::CycleSoundTheme => {
             // 循环到下一个主题（到末尾回绕到 0）
             let next = s.sound_theme.saturating_add(1);
@@ -1280,6 +1287,38 @@ mod restart_action_tests {
         assert!(!st2.notify_sound);
         apply_hit(&mut st2, &mut page, SettingsHit::ToggleNotifySound);
         assert!(st2.notify_sound);
+    }
+
+    /// §3.4：字号档位要能循环、能存下来、越界要吸附。
+    ///
+    /// 这个字段（`ui_scale_pct`）此前**从来没生效过** —— 与 `locale`/`notify_sound`
+    /// 同一类"存了不用"。所以这条测试同时盯着"档位逻辑对"与"它真的被接线了"
+    /// （接线在 main.rs：命中后调用 `theme::ui::set_scale_pct`）。
+    #[test]
+    fn ui_scale_cycles_through_the_documented_steps() {
+        let mut st = Settings::default();
+        let mut page = 0usize;
+        assert_eq!(st.ui_scale_pct, 100, "默认 100%");
+        let mut seen = vec![st.ui_scale_pct];
+        for _ in 0..UI_SCALE_STEPS.len() {
+            apply_hit(&mut st, &mut page, SettingsHit::CycleUiScale);
+            seen.push(st.ui_scale_pct);
+        }
+        // 转一圈回到起点，且每一档都轮到过
+        assert_eq!(seen.first(), seen.last(), "转一圈要回到起点：{seen:?}");
+        let mut uniq: Vec<u16> = seen[..seen.len() - 1].to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), UI_SCALE_STEPS.len(), "每档都该轮到：{seen:?}");
+        for v in &uniq {
+            assert!(UI_SCALE_STEPS.contains(v), "{v} 不在允许档位里");
+        }
+        // 存下来能读回，越界被吸附
+        let s = Settings { ui_scale_pct: 150, ..Settings::default() };
+        assert_eq!(Settings::from_json(&s.to_json()).ui_scale_pct, 150);
+        assert_eq!(Settings::from_json(r#"{"ui_scale_pct":137}"#).ui_scale_pct, 125);
+        assert_eq!(Settings::from_json(r#"{"ui_scale_pct":99999}"#).ui_scale_pct, 150);
+        assert_eq!(Settings::from_json(r#"{"ui_scale_pct":"大"}"#).ui_scale_pct, 100);
     }
 
 }

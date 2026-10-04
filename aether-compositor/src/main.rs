@@ -1352,6 +1352,10 @@ fn run_fbdev() -> anyhow::Result<()> {
 
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
                     // §3.5：语言切换同样**立即生效**（左栏与各项标题下一帧就变）。
+                    // §3.4：字号切换同样立即生效（下一帧所有文字就变了）
+                    if matches!(hit, settings::SettingsHit::CycleUiScale) {
+                        draw::theme::ui::set_scale_pct(renderer.settings.ui_scale_pct);
+                    }
                     if matches!(hit, settings::SettingsHit::Locale(_)) {
                         crate::i18n::set_lang(crate::i18n::Lang::from_locale(
                             renderer.settings.locale,
@@ -3148,6 +3152,8 @@ fn main() -> anyhow::Result<()> {
             // 无障碍设置与主题一起应用（§3.4）：高对比度也要在**第一帧之前**生效，
             // 否则开机瞬间会闪一下低对比界面。
             draw::theme::color::set_high_contrast(saved.high_contrast);
+            // §3.4 字号也要在**第一帧之前**生效（否则开机会先闪一屏 100%，再跳成 125%）
+            draw::theme::ui::set_scale_pct(saved.ui_scale_pct);
             if saved.dark_mode {
                 draw::theme::color::Mode::Dark
             } else {
