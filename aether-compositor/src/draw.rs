@@ -3635,7 +3635,7 @@ fn draw_settings_content(
             tr.draw(
                 buf, w, h, (content.x + 24) as f32, ry as f32,
                 crate::i18n::tr(
-                    "把更新包放进 /var/lib/aether/update/incoming/ 后点刷新；暂存后重启生效",
+                    crate::i18n::pick(lang, "把更新包放进 /var/lib/aether/update/incoming/ 后点刷新；暂存后重启生效", "Drop a bundle into /var/lib/aether/update/incoming/ and refresh; it applies on reboot"),
                     "Drop a bundle into /var/lib/aether/update/incoming/ then refresh; reboot to apply",
                 ),
                 font::CAPTION, color::text_dim(), 0.75,
@@ -3702,7 +3702,7 @@ fn draw_settings_content(
             tr.draw(
                 buf, w, h, (content.x + 24) as f32, ry as f32,
                 crate::i18n::tr(
-                    "只包含 /etc 与 /var/lib/aether 下的几个配置文件；不含应用与用户数据。回滚需点两次确认。",
+                    crate::i18n::pick(lang, "只包含 /etc 与 /var/lib/aether 下的几个配置文件；不含应用与用户数据。回滚需点两次确认。", "Contains only a few config files under /etc and /var/lib/aether; no apps or user data. Rolling back needs two clicks."),
                     "Covers a few config files only; no apps or user data. Rollback needs two clicks.",
                 ),
                 font::CAPTION, color::text_dim(), 0.85,
@@ -4179,19 +4179,25 @@ fn draw_settings_content(
             }
         }
         "时钟与时区" => {
+            // §3.5：本页文案双语
+            let lang = crate::i18n::lang();
             // 实时预览：改任何一项都能立刻看到结果（不用重启、不用"应用"按钮）
             let now = crate::text::now_utc_secs();
             let preview = crate::text::clock_fmt(now, s.tz_offset_min, s.clock_24h, s.clock_seconds);
             tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, &preview, font::HERO, color::text(), 0.98);
-            let tz = format!("{}　·　每次微调 30 分钟", s.tz_label());
+            let tz = if crate::i18n::is_en() {
+                format!("{}　·　steps of 30 minutes", s.tz_label())
+            } else {
+                format!("{}　·　每次微调 30 分钟", s.tz_label())
+            };
             tr.draw(buf, w, h, (content.x + 24) as f32, (ry + 42) as f32, &tz, font::CAPTION, color::text_dim(), 0.9);
             ry += 78;
 
             let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
-            toggle_row(buf, w, h, mouse, tr, r1, "24 小时制", Some("关闭后显示为「下午 9:10」"), s.clock_24h, SettingsHit::Clock24h, hits);
+            toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "24 小时制", "24-hour clock"), Some(crate::i18n::pick(lang, "关闭后显示为「下午 9:10」", "Off shows 9:10 PM")), s.clock_24h, SettingsHit::Clock24h, hits);
             ry += 48;
             let r2 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
-            toggle_row(buf, w, h, mouse, tr, r2, "显示秒", Some("顶栏时钟精确到秒"), s.clock_seconds, SettingsHit::ClockSeconds, hits);
+            toggle_row(buf, w, h, mouse, tr, r2, crate::i18n::pick(lang, "显示秒", "Show seconds"), Some(crate::i18n::pick(lang, "顶栏时钟精确到秒", "Top-bar clock shows seconds")), s.clock_seconds, SettingsHit::ClockSeconds, hits);
             ry += 54;
 
             // 时区微调：用两个按钮而不是滑杆 —— 时区是离散值、且要能精确到半小时
@@ -4199,7 +4205,7 @@ fn draw_settings_content(
             let fwd = Rect { x: content.x + 72, y: ry + 6, w: 40, h: 30 };
             widgets::button(buf, w, h, back, "-1", widgets::BtnKind::Secondary, widgets::States::at(back, mouse), Some(tr));
             widgets::button(buf, w, h, fwd, "+1", widgets::BtnKind::Secondary, widgets::States::at(fwd, mouse), Some(tr));
-            tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, 42.0, font::CAPTION), "时区（半小时制）", font::CAPTION, color::text_dim(), 0.9);
+            tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, 42.0, font::CAPTION), crate::i18n::pick(lang, "时区（半小时制）", "Time zone (30-min steps)"), font::CAPTION, color::text_dim(), 0.9);
             hits.push((back, SettingsHit::TzShift(-30)));
             hits.push((fwd, SettingsHit::TzShift(30)));
 
@@ -4262,12 +4268,14 @@ fn draw_settings_content(
             hits.push((r_write, SettingsHit::SetTimezoneNow));
         }
         "输入" => {
+            // §3.5：本页文案双语
+            let lang = crate::i18n::lang();
             let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
-            toggle_row(buf, w, h, mouse, tr, r1, "默认启用中文输入法", Some("开机即生效，Ctrl+空格 可随时切换"), s.ime_default, SettingsHit::ImeDefault, hits);
+            toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "默认启用中文输入法", "Chinese IME on by default"), Some(crate::i18n::pick(lang, "开机即生效，Ctrl+空格 可随时切换", "Active from boot; Ctrl+Space toggles it")), s.ime_default, SettingsHit::ImeDefault, hits);
             ry += 58;
             // 鼠标速度：合成器原先对相对位移**硬编码 ×2**，用户反馈在 VMware/真机上太快。
             // 默认 100（1:1），这里给三档；数值走 `SettingsHit::MouseSpeed`（真实写盘）。
-            widgets::group_header(buf, w, h, content.x + 24, ry, "鼠标速度", Some(tr));
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "鼠标速度", "Mouse speed"), Some(tr));
             ry += 24;
             let seg = Rect { x: content.x + 24, y: ry, w: 300, h: 30 };
             let active = match s.mouse_speed_pct {
@@ -4275,7 +4283,13 @@ fn draw_settings_content(
                 p if p > 120 => 2,
                 _ => 1,
             };
-            let rects = widgets::segmented(buf, w, h, seg, &["慢", "标准", "快"], active, mouse, Some(tr));
+            // 段控件的三个标签也要跟着语言（数组不是 `format!`，可以直接分支）
+            let speed_labels = if crate::i18n::is_en() {
+                ["Slow", "Normal", "Fast"]
+            } else {
+                ["慢", "标准", "快"]
+            };
+            let rects = widgets::segmented(buf, w, h, seg, &speed_labels, active, mouse, Some(tr));
             for (i, rr) in rects.iter().enumerate() {
                 hits.push((*rr, SettingsHit::MouseSpeed([60, 100, 150][i])));
             }
@@ -4287,14 +4301,14 @@ fn draw_settings_content(
                 font::CAPTION, color::text_dim(), 0.85,
             );
             ry += 46;
-            widgets::group_header(buf, w, h, content.x + 24, ry, "键盘快捷键", Some(tr));
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "键盘快捷键", "Keyboard shortcuts"), Some(tr));
             ry += 22;
             for (k, v) in [
-                ("Alt+1 … Alt+4", "切换窗口布局"),
-                ("Ctrl+空格", "中英文切换"),
-                ("Ctrl+Shift+C / V", "复制 / 粘贴"),
-                ("Enter", "命令栏发送"),
-                ("Esc", "关闭菜单或命令栏"),
+                ("Alt+1 … Alt+4", crate::i18n::pick(lang, "切换窗口布局", "Switch window layout")),
+                ("Ctrl+Space", crate::i18n::pick(lang, "中英文切换", "Toggle Chinese/English IME")),
+                ("Ctrl+Shift+C / V", crate::i18n::pick(lang, "复制 / 粘贴", "Copy / paste")),
+                ("Enter", crate::i18n::pick(lang, "命令栏发送", "Send from the command bar")),
+                ("Esc", crate::i18n::pick(lang, "关闭菜单或命令栏", "Close menu or command bar")),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
                 tr.draw(buf, w, h, (content.x + 190) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
@@ -4302,24 +4316,26 @@ fn draw_settings_content(
             }
         }
         "AI" => {
-            widgets::group_header(buf, w, h, content.x + 24, ry, "推理通道", Some(tr));
+            // §3.5：本页文案双语
+            let lang = crate::i18n::lang();
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "推理通道", "Inference pipeline"), Some(tr));
             ry += 24;
             for (k, v) in [
-                ("aetherd", "本地服务（socket / TCP 7311）"),
-                ("离线意图", "内置规则，断网可用"),
-                ("动作执行", "布局 / 开应用 / 关窗口"),
-                ("权限闸门", "危险动作需确认卡片"),
+                (crate::i18n::pick(lang, "aetherd", "aetherd"), crate::i18n::pick(lang, "本地服务（socket / TCP 7311）", "Local service (socket / TCP 7311)")),
+                (crate::i18n::pick(lang, "离线意图", "Offline intent"), crate::i18n::pick(lang, "内置规则，断网可用", "Built-in rules, works offline")),
+                (crate::i18n::pick(lang, "动作执行", "Action execution"), crate::i18n::pick(lang, "布局 / 开应用 / 关窗口", "Layout / open app / close window")),
+                (crate::i18n::pick(lang, "权限闸门", "Permission gate"), crate::i18n::pick(lang, "危险动作需确认卡片", "Risky actions need a confirmation card")),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
                 tr.draw(buf, w, h, (content.x + 140) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
                 ry += 24;
             }
             ry += 10;
-            tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32, "模型与密钥由 aetherd 管理，不经过合成器进程。", font::CAPTION, color::text_dim(), 0.8);
+            tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32, crate::i18n::pick(lang, "模型与密钥由 aetherd 管理，不经过合成器进程。", "The model and its key are managed by aetherd; they never pass through the compositor process."), font::CAPTION, color::text_dim(), 0.8);
             ry += 28;
             // 第二个"能改系统"的动作（P4.4）：AI 卡住时把 aetherd 重启一次
             let ai_act = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
-            widgets::row(buf, w, h, ai_act, "重启 AI 服务", Some("aetherd 重启后由 init 拉起（会话会中断）"),
+            widgets::row(buf, w, h, ai_act, crate::i18n::pick(lang, "重启 AI 服务", "Restart AI service"), Some(crate::i18n::pick(lang, "aetherd 重启后由 init 拉起（会话会中断）", "init starts aetherd again after the restart (the session is interrupted)")),
                          widgets::States::at(ai_act, mouse), Some(tr));
             hits.push((ai_act, SettingsHit::RestartService("aetherd")));
         }
@@ -4360,6 +4376,8 @@ fn draw_settings_content(
             }
         }
         "通知" => {
+            // §3.5：本页文案双语
+            let lang = crate::i18n::lang();
             // §3.2：通知历史。两个控件：是否记录 + 清空。
             let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
             toggle_row(
@@ -4369,8 +4387,8 @@ fn draw_settings_content(
                 mouse,
                 tr,
                 r1,
-                "记录通知历史",
-                Some("关掉后不再记录（提示条本身照常显示，只是不再进历史）"),
+                crate::i18n::pick(lang, "记录通知历史", "Keep notification history"),
+                Some(crate::i18n::pick(lang, "关掉后不再记录（提示条本身照常显示，只是不再进历史）", "When off, nothing is recorded (toasts still show, they just stay out of history)")),
                 s.record_notifications,
                 SettingsHit::ToggleRecordNotifications,
                 hits,
@@ -4383,8 +4401,8 @@ fn draw_settings_content(
                 w,
                 h,
                 clear,
-                "清空通知历史",
-                Some("只清历史，不影响任何其它设置"),
+                crate::i18n::pick(lang, "清空通知历史", "Clear notification history"),
+                Some(crate::i18n::pick(lang, "只清历史，不影响任何其它设置", "Clears history only; no other setting is touched")),
                 widgets::States::at(clear, mouse),
                 Some(tr),
             );
@@ -4396,7 +4414,7 @@ fn draw_settings_content(
                 h,
                 (content.x + 24) as f32,
                 ry as f32,
-                "通知中心在控制中心里打开（点顶栏状态簇）。",
+                crate::i18n::pick(lang, "通知中心在控制中心里打开（点顶栏状态簇）。", "The notification center opens from the control center (click the status cluster in the top bar)."),
                 font::CAPTION,
                 color::text_dim(),
                 0.75,
@@ -4413,7 +4431,7 @@ fn draw_settings_content(
                 buf, w, h, mouse, tr, r_on,
                 crate::i18n::tr("提示音", "Notification sounds"),
                 Some(crate::i18n::tr(
-                    "AI 完成 / 需要确认 / 失败各用不同音高",
+                    crate::i18n::pick(lang, "AI 完成 / 需要确认 / 失败各用不同音高", "AI done / needs confirmation / failed each use a different pitch"),
                     "Different tones for done / confirm / error",
                 )),
                 s.notify_sound, SettingsHit::ToggleNotifySound, hits,
