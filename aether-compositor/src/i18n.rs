@@ -59,6 +59,13 @@ pub fn lang() -> Lang {
 }
 
 /// 按语言二选一（**纯函数**：测试不必碰全局状态，也就不会有并行用例互相污染）。
+/// 当前是不是英文。**给"要把语言传进数据层"的调用点用**（例如
+/// `audit::export_text(…, en)`、`Entry::age_text_en`）——
+/// 数据层不该依赖 `i18n`，所以那里收的是 `bool`，由界面层用这个函数转。
+pub fn is_en() -> bool {
+    lang() == Lang::En
+}
+
 pub fn pick(l: Lang, zh: &'static str, en: &'static str) -> &'static str {
     match l {
         Lang::Zh => zh,

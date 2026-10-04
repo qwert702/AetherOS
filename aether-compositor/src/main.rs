@@ -2989,7 +2989,8 @@ fn open_notifications(
 fn export_audit() -> Result<String, String> {
     let now = crate::text::now_utc_secs().max(0) as u64;
     let info = crate::audit::read(crate::audit::AUDIT_PATH, 200);
-    let text = crate::audit::export_text(&info, now);
+    // §3.5：导出也要跟着界面语言 —— 否则会出现「页面英文、导出中文」的错位
+    let text = crate::audit::export_text(&info, now, crate::i18n::is_en());
     let dir = std::path::Path::new(crate::audit::AUDIT_PATH)
         .parent()
         .map(|p| p.to_path_buf())

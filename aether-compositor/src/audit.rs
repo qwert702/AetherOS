@@ -44,6 +44,39 @@ impl Entry {
         self.verdict == "failed"
     }
 
+    /// 相对时间的英文版（§3.5）。
+    ///
+    /// 为什么单独一个函数而不是传语言进来：`audit.rs` 是**数据层**，
+    /// 不该依赖 `i18n`（那是界面层的事）。两个函数各自纯、各自可测，
+    /// 由界面决定用哪个。
+    pub fn age_text_en(&self, now: u64) -> String {
+        let d = now.saturating_sub(self.ts);
+        if d < 60 {
+            "just now".to_string()
+        } else if d < 3600 {
+            let m = d / 60;
+            if m == 1 {
+                "1 minute ago".to_string()
+            } else {
+                format!("{m} minutes ago")
+            }
+        } else if d < 86_400 {
+            let h = d / 3600;
+            if h == 1 {
+                "1 hour ago".to_string()
+            } else {
+                format!("{h} hours ago")
+            }
+        } else {
+            let days = d / 86_400;
+            if days == 1 {
+                "1 day ago".to_string()
+            } else {
+                format!("{days} days ago")
+            }
+        }
+    }
+
     /// 相对时间描述。刻意**不显示绝对日期**：审计时间戳是 Unix 秒，
     /// 转本地日历时间需要一套历法换算，而这一页真正想回答的是"多久以前"。
     pub fn age_text(&self, now: u64) -> String {
@@ -120,38 +153,70 @@ pub struct AuditInfo {
 /// （非 Linux 分支没有审计文件可写，直接返回错误）。测试要在所有平台跑，
 /// 所以带上 `test` —— 否则这个纯函数在开发机上从未被执行过。
 #[cfg(any(target_os = "linux", test))]
-pub fn export_text(info: &AuditInfo, now: u64) -> String {
+pub fn export_text(info: &AuditInfo, now: u64, en: bool) -> String {
     let mut s = String::new();
-    s.push_str("AetherOS 审计日志导出\n");
-    s.push_str("==================\n");
-    s.push_str(&format!("来源：{}\n", info.path));
-    s.push_str(&format!("文件存在：{}\n", if info.exists { "是" } else { "否" }));
-    s.push_str(&format!(
-        "总条数：{} · 被拒绝：{} · 失败：{} · 无法解析：{}\n",
-        info.total, info.denied, info.failed, info.unparsed
-    ));
-    s.push_str(&format!("导出时间（Unix 秒）：{now}\n\n"));
+    if en {
+        s.push_str("AetherOS audit log export\n");
+        s.push_str("========================\n");
+        s.push_str(&format!("Source: {}\n", info.path));
+        s.push_str(&format!(
+            "File exists: {}\n",
+            if info.exists { "yes" } else { "no" }
+        ));
+        s.push_str(&format!(
+            "Total: {} · denied: {} · failed: {} · unparsable: {}\n",
+            info.total, info.denied, info.failed, info.unparsed
+        ));
+    } else {
+        s.push_str("AetherOS 审计日志导出\n");
+        s.push_str("==================\n");
+        s.push_str(&format!("来源：{}\n", info.path));
+        s.push_str(&format!("文件存在：{}\n", if info.exists { "是" } else { "否" }));
+        s.push_str(&format!(
+            "总条数：{} · 被拒绝：{} · 失败：{} · 无法解析：{}\n",
+            info.total, info.denied, info.failed, info.unparsed
+        ));
+    }
+    if en {
+        s.push_str(&format!("Exported at (Unix seconds): {now}\n\n"));
+    } else {
+        s.push_str(&format!("导出时间（Unix 秒）：{now}\n\n"));
+    }
     if info.recent.is_empty() {
-        s.push_str("（没有记录）\n");
+        s.push_str(if en { "(no records)\n" } else { "（没有记录）\n" });
         return s;
     }
-    s.push_str("最近记录（新的在前）：\n");
+    s.push_str(if en {
+        "Recent records (newest first):\n"
+    } else {
+        "最近记录（新的在前）：\n"
+    });
     for e in &info.recent {
-        // 用制表符分隔，便于贴进表格工具；时间同时给"多久以前"（人看）与原始秒（机器看）
+        // 用制表符分隔，便于贴进表格工具；时间同时给"多久以前"（人看）与原始秒（机器看）。
+        // 最后一列是**结论的人话**（与 verdict 的机器名并列：一个给人看、一个给脚本看）
+        let verdict_zh = if e.is_denied() {
+            "被拒绝"
+        } else if e.is_failed() {
+            "失败"
+        } else {
+            "正常"
+        };
+        let verdict_en = if e.is_denied() {
+            "denied"
+        } else if e.is_failed() {
+            "failed"
+        } else {
+            "ok"
+        };
+        let age = if en { e.age_text_en(now) } else { e.age_text(now) };
         s.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\n",
             e.ts,
-            e.age_text(now),
+            age,
             e.level,
             e.tool,
             e.verdict,
-            if e.is_denied() {
-                "被拒绝"
-            } else if e.is_failed() {
-                "失败"
-            } else {
-                "正常"
-            }
+            if en { verdict_en } else { verdict_zh }
         ));
     }
     s
@@ -319,7 +384,7 @@ mod tests {
             failed: 1,
             unparsed: 3,
         };
-        let out = export_text(&info, 1060);
+        let out = export_text(&info, 1060, false);
         assert!(out.contains("/var/log/aether/aether-audit.log"), "应含来源路径");
         assert!(out.contains("总条数：7"), "{out}");
         assert!(out.contains("被拒绝：2"), "{out}");
@@ -331,7 +396,7 @@ mod tests {
 
         // 空记录也要能导出（导出"什么都没有"是有用信息，不是错误）
         let empty = AuditInfo { exists: false, ..AuditInfo::default() };
-        let out2 = export_text(&empty, 0);
+        let out2 = export_text(&empty, 0, false);
         assert!(out2.contains("没有记录"), "{out2}");
         assert!(out2.contains("文件存在：否"), "{out2}");
     }
@@ -366,6 +431,76 @@ mod tests {
         assert_eq!(matching(&list, "read_file"), vec![0, 2], "保留原顺序");
         assert_eq!(matching(&list, ""), vec![0, 1, 2], "空查询=全命中");
         assert!(matching(&list, "nope").is_empty());
+    }
+
+    /// §3.5：英文导出**必须是英文**，且**不能少字段**。
+    ///
+    /// 这条测试盯的是"半翻译"：头换了英文、条目行还是中文 —— 那种导出
+    /// 贴进 issue 会更让人困惑。所以逐项断言英文关键词都在。
+    #[test]
+    fn english_export_is_fully_english() {
+        let info = AuditInfo {
+            path: "/var/log/aether/aether-audit.log".into(),
+            exists: true,
+            recent: vec![Entry {
+                ts: 1000,
+                level: "L2".into(),
+                tool: "read_file".into(),
+                args: "{/etc/hosts}".into(),
+                verdict: "denied_by_user".into(),
+            }],
+            total: 1,
+            denied: 1,
+            failed: 0,
+            unparsed: 0,
+        };
+        let en = export_text(&info, 2000, true);
+        for needle in [
+            "AetherOS audit log export",
+            "Source:",
+            "File exists: yes",
+            "Total: 1",
+            "denied: 1",
+            "Exported at (Unix seconds): 2000",
+            "Recent records (newest first):",
+            "16 minutes ago",
+        ] {
+            assert!(en.contains(needle), "英文导出缺少「{needle}」：\n{en}");
+        }
+        // 不允许残留中文（半翻译是最糟的形态）
+        assert!(
+            !en.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "英文导出里不该有汉字：\n{en}"
+        );
+        // 中文那份不受影响
+        let zh = export_text(&info, 2000, false);
+        assert!(zh.contains("审计日志导出") && zh.contains("被拒绝"), "中文导出不该被改坏");
+        // 空记录也要分语言
+        let empty = AuditInfo { exists: true, ..Default::default() };
+        assert!(export_text(&empty, 0, true).contains("(no records)"));
+        assert!(export_text(&empty, 0, false).contains("（没有记录）"));
+    }
+
+    /// §3.5：`age_text_en` 的单复数（"1 minute ago" 不是 "1 minutes ago"）。
+    #[test]
+    fn english_age_text_handles_singular_and_plural() {
+        let mk = |ts: u64| Entry {
+            ts,
+            level: "L0".into(),
+            tool: "t".into(),
+            args: String::new(),
+            verdict: "allowed".into(),
+        };
+        let now = 1_000_000u64;
+        assert_eq!(mk(now - 5).age_text_en(now), "just now");
+        assert_eq!(mk(now - 60).age_text_en(now), "1 minute ago");
+        assert_eq!(mk(now - 120).age_text_en(now), "2 minutes ago");
+        assert_eq!(mk(now - 3600).age_text_en(now), "1 hour ago");
+        assert_eq!(mk(now - 7200).age_text_en(now), "2 hours ago");
+        assert_eq!(mk(now - 86_400).age_text_en(now), "1 day ago");
+        assert_eq!(mk(now - 172_800).age_text_en(now), "2 days ago");
+        // 时钟回拨（ts 在未来）也要给"just now"，不能算成负数天
+        assert_eq!(mk(now + 999).age_text_en(now), "just now");
     }
 
 }

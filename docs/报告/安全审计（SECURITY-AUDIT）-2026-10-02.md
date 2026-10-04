@@ -2025,3 +2025,51 @@ let title = desktop.wins.remove(idx).title;   // 窗口被移出来，然后释�
 * `closing_is_undoable_and_does_not_fall_through`（改写后，保留「不跳步」性质）；
 * `cargo test` **724 项全绿**；Windows 与 **musl** 双目标 **0 警告**；
 * **未实机验证**：真机上按 `Ctrl+W` / 点红灯 / 让 AI 关窗，再 `Ctrl+Z` 看会话是否真的还在。
+
+---
+
+## 附录 Z：i18n 的第一批页面 —— 三处设计选择（2026-10-04 批次 AX-1）
+
+这一批把「权限与隐私」（审计页）的正文与导出文本双语化。它不是安全修复，
+但它碰到的三个问题都属于"**分层与边界**"，值得记下来。
+
+### Z.1 数据层不依赖界面层
+
+相对时间与导出文本原本只有中文，而它们住在 `audit.rs`（**数据层**）。
+直白的做法是 `use crate::i18n` —— 那会让数据层依赖界面层，
+以后单独测 `audit.rs`、或把这一层搬到别处，都会被拖住。
+
+**做法**：数据层收**布尔**（`export_text(info, now, en)`、`Entry::age_text_en`），
+界面层用新增的 `i18n::is_en()` 去转。分层保住了，代价只是多一个 3 行函数。
+
+### Z.2 页面英文时，导出也必须英文
+
+导出是"贴到 issue 的文本"，如果页面是英文而导出是中文，
+读 issue 的人会以为系统自己没搞清楚语言。所以**导出跟着界面语言走**，
+并且新增的测试**逐项断言英文关键词都在、且整份导出里不许有汉字** ——
+"半翻译"（头换了英文、条目行还是中文）是最糟的形态，必须被测试挡住。
+
+### Z.3 `format!` 要字面量模板（项目早就写过，我又踩了一次）
+
+我第一版写成 `format!(pick(lang, "共 {} 条…", "{} entries…"), a, b)`，
+编译直接报 `format argument must be a string literal`。
+项目在 i18n 的文档里**早就写明**：动态文本要**按语言分支**，不能把模板当变量传。
+于是改成 `if is_en() { format!("{} entries…") } else { format!("共 {} 条…") }`。
+
+这是"**文档里写着的坑，自己又踩一遍**"——记下来，因为它说明：
+知道了规则不等于会用规则，**编译器的报错才是最后一道门**。
+
+### Z.4 本批改动的风险点（musl 检查覆盖）
+
+`export_text` 是 `#[cfg(any(target_os = "linux", test))]`，它的**生产调用点**
+在 `main.rs` 的 Linux-only 导出函数里 —— 改它的签名时，**Windows 构建看不到那个调用点**。
+所以这一批照例跑了 `cargo check --target x86_64-unknown-linux-musl`（两次），
+确认没有"只在 Linux 上编译失败"的漏改。
+
+### Z.5 验证与边界
+
+* 新增 `english_export_is_fully_english`（英文关键词齐全 + **无汉字** + 中文那份没被改坏 + 空记录分语言）；
+* 新增 `english_age_text_handles_singular_and_plural`（`1 minute ago` 不是 `1 minutes ago`；时钟回拨仍是 `just now`）；
+* `cargo test` **726 项全绿**；Windows 与 **musl** 双目标 **0 警告**；
+* **未实机验证**：真机上切到英文看这一页（本机没有 evdev/fbdev）。
+* **仍未做**：其余设置页正文、通知正文（后者来自几十个发送方，是 §3.5 剩下的大头）。

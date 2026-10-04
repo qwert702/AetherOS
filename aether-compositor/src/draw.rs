@@ -3163,6 +3163,9 @@ fn draw_settings_content(
 
     match title {
         "权限与隐私" => {
+            // §3.5：这一页的文案全部走 `pick(lang, …)` —— 它是整句说明最多的页面，
+            // 也是安全相关的页面，中英文都要**说得准**。
+            let lang = crate::i18n::lang();
             // 数据来源：aetherd 权限门的审计日志（`perm::Gate::audit` 追加写），
             // 解析与单测见 `audit.rs`。**只读展示** —— 这一页不改任何权限。
             //
@@ -3182,22 +3185,43 @@ fn draw_settings_content(
                 w,
                 h,
                 export,
-                "导出审计日志",
-                Some("写到 /var/log/aether/，并显示路径"),
+                crate::i18n::pick(lang, "导出审计日志", "Export audit log"),
+                Some(crate::i18n::pick(
+                    lang,
+                    "写到 /var/log/aether/，并显示路径",
+                    "Writes to /var/log/aether/ and shows the path",
+                )),
                 widgets::States::at(export, mouse),
                 Some(tr),
             );
             hits.push((export, SettingsHit::ExportAudit));
             ry += 46;
-            widgets::group_header(buf, w, h, content.x + 24, ry, "审计日志", Some(tr));
+            widgets::group_header(
+                buf,
+                w,
+                h,
+                content.x + 24,
+                ry,
+                crate::i18n::pick(lang, "审计日志", "Audit log"),
+                Some(tr),
+            );
             ry += 24;
             // §5.2 搜索框：点一下进入编辑态（`audit_editing`），
             // 之后按键由事件循环送进 `audit_query`（与 DNS 输入框同一套做法）。
             let qrow = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 34 };
             let qtext = if audit_query.is_empty() {
-                "搜索：工具名 / 参数 / 结论（点这里输入）".to_string()
+                crate::i18n::pick(
+                    lang,
+                    "搜索：工具名 / 参数 / 结论（点这里输入）",
+                    "Search: tool / args / verdict (click to type)",
+                )
+                .to_string()
             } else {
-                format!("搜索：{}▏", audit_query)
+                format!(
+                    "{}{}▏",
+                    crate::i18n::pick(lang, "搜索：", "Search: "),
+                    audit_query
+                )
             };
             widgets::row(
                 buf, w, h, qrow, &qtext, None,
@@ -3207,13 +3231,37 @@ fn draw_settings_content(
             ry += 42;
             if !info.exists {
                 tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
-                        "暂无审计记录（本会话还没发生工具调用）。", font::CAPTION, color::text_dim(), 0.9);
+                        crate::i18n::pick(
+                            lang,
+                            "暂无审计记录（本会话还没发生工具调用）。",
+                            "No audit records yet (no tool call has happened this session).",
+                        ),
+                        font::CAPTION, color::text_dim(), 0.9);
                 ry += 26;
             } else {
                 // 有搜索词时如实说"命中几条 / 读了几条"——只报总数会让人以为列表被截断
                 let idx = crate::audit::matching(&info.recent, audit_query);
                 let mut line = if audit_query.trim().is_empty() {
-                    format!("共 {} 条 · 被拒绝 {} · 失败 {}", info.total, info.denied, info.failed)
+                    // `format!` 的模板必须是字面量 → 按语言分支（i18n 文档里的既定做法）
+                    if crate::i18n::is_en() {
+                        format!(
+                            "{} entries · {} denied · {} failed",
+                            info.total, info.denied, info.failed
+                        )
+                    } else {
+                        format!(
+                            "共 {} 条 · 被拒绝 {} · 失败 {}",
+                            info.total, info.denied, info.failed
+                        )
+                    }
+                } else if crate::i18n::is_en() {
+                    format!(
+                        "{} matched / {} read · {} denied · {} failed",
+                        idx.len(),
+                        info.recent.len(),
+                        info.denied,
+                        info.failed
+                    )
                 } else {
                     format!(
                         "命中 {} / 已读 {} 条 · 被拒绝 {} · 失败 {}",
@@ -3224,7 +3272,11 @@ fn draw_settings_content(
                     )
                 };
                 if info.unparsed > 0 {
-                    line.push_str(&format!(" · 无法解析 {}", info.unparsed));
+                    if crate::i18n::is_en() {
+                        line.push_str(&format!(" · {} unparsable", info.unparsed));
+                    } else {
+                        line.push_str(&format!(" · 无法解析 {}", info.unparsed));
+                    }
                 }
                 tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, &line, font::BODY, color::text(), 0.92);
                 ry += 22;
@@ -3232,7 +3284,11 @@ fn draw_settings_content(
                 ry += 26;
                 if idx.is_empty() {
                     tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
-                            "没有匹配的记录 —— 换个词，或清空搜索框。",
+                            crate::i18n::pick(
+                                lang,
+                                "没有匹配的记录 —— 换个词，或清空搜索框。",
+                                "No matching records — try another word, or clear the search box.",
+                            ),
                             font::CAPTION, color::text_dim(), 0.9);
                     ry += 22;
                 }
@@ -3248,7 +3304,12 @@ fn draw_settings_content(
                     rounded_rect(buf, w, h, Rect { x: content.x + 22, y: ry + 5, w: 6, h: 6 }, 3.0, dot, 0.95);
                     let head = format!("{} · {} · {}", e.level, e.tool, e.verdict);
                     tr.draw(buf, w, h, (content.x + 36) as f32, ry as f32, &head, font::CAPTION, color::text(), 0.9);
-                    let age = e.age_text(now);
+                    // §3.5：相对时间也有英文版（`audit.rs` 是数据层，不依赖 i18n）
+                    let age = if crate::i18n::is_en() {
+                        e.age_text_en(now)
+                    } else {
+                        e.age_text(now)
+                    };
                     let aw = tr.measure(&age, font::CAPTION);
                     tr.draw(buf, w, h, (content.x + row_w + 10) as f32 - aw, ry as f32, &age, font::CAPTION, color::text_dim(), 0.8);
                     ry += 20;
@@ -3265,7 +3326,11 @@ fn draw_settings_content(
             }
             ry += 8;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
-                    "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
+                    crate::i18n::pick(
+                        lang,
+                        "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
+                        "Levels: L0 read-only / L1 needs confirmation / L2 high-risk needs explicit confirmation. Changing the policy needs IPC and user confirmation (next step).",
+                    ),
                     font::CAPTION, color::text_dim(), 0.7);
         }
         "应用商店" => {
