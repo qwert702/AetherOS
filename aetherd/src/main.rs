@@ -172,7 +172,7 @@ pub(crate) fn agent_run(
         };
         eprintln!("[aetherd] 通道: {:?} · 模型: {}", channel, endpoint.model);
 
-        let resp = llm::complete(endpoint, &messages, Some(&tools_json()))
+        let resp = llm::complete(endpoint, &messages, Some(&tools_json()), en)
             .inspect_err(|e| eprintln!("[aetherd] ERROR LLM 请求失败（{}/{}）: {e}", endpoint.base_url, endpoint.model))?;
 
         // 无工具调用 → 最终回答

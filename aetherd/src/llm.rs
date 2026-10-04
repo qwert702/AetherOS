@@ -29,8 +29,15 @@ pub struct Endpoint {
     pub model: String,
 }
 
+/// `en`：界面是否英文（§3.5）—— 这些错误会被显示成「AI 通道不可用: …」，
+/// 所以**我们写的前缀**要跟着语言；url / HTTP 码 / 服务器正文是数据，保持原样。
 /// 请求一次补全。tools 传 OpenAI tools 数组；返回 assistant 消息。
-pub fn complete(endpoint: &Endpoint, messages: &[Message], tools: Option<&Value>) -> Result<Message> {
+pub fn complete(
+    endpoint: &Endpoint,
+    messages: &[Message],
+    tools: Option<&Value>,
+    en: bool,
+) -> Result<Message> {
     let url = format!("{}/chat/completions", endpoint.base_url.trim_end_matches('/'));
     let mut body = serde_json::json!({
         "model": endpoint.model,
@@ -53,21 +60,45 @@ pub fn complete(endpoint: &Endpoint, messages: &[Message], tools: Option<&Value>
         // "真实 LLM 协议不兼容"是本项目自评的头号架构风险，接入时不能没有这条线索。
         Err(ureq::Error::Status(code, r)) => {
             let detail = r.into_string().unwrap_or_default();
-            anyhow::bail!(
-                "LLM 请求失败: {url} → HTTP {code}；服务器返回: {}",
-                body_snippet(&detail)
-            );
+            if en {
+                anyhow::bail!(
+                    "LLM request failed: {url} → HTTP {code}; server said: {}",
+                    body_snippet(&detail, en)
+                );
+            } else {
+                anyhow::bail!(
+                    "LLM 请求失败: {url} → HTTP {code}；服务器返回: {}",
+                    body_snippet(&detail, en)
+                );
+            }
         }
-        Err(e) => return Err(anyhow::Error::new(e).context(format!("LLM 请求失败: {url}"))),
+        Err(e) => {
+            let what = if en { "LLM request failed" } else { "LLM 请求失败" };
+            return Err(anyhow::Error::new(e).context(format!("{what}: {url}")));
+        }
     };
     let text = resp
         .into_string()
-        .with_context(|| format!("读取 LLM 响应失败: {url}"))?;
+        .with_context(|| {
+            let what = if en {
+                "reading the LLM response failed"
+            } else {
+                "读取 LLM 响应失败"
+            };
+            format!("{what}: {url}")
+        })?;
     let v: Value = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "LLM 响应不是 JSON（可能被网关拦截）: {url}；正文开头: {}",
-            body_snippet(&text)
-        )
+        if en {
+            format!(
+                "LLM response is not JSON (a gateway may have intercepted it): {url}; body starts with: {}",
+                body_snippet(&text, en)
+            )
+        } else {
+            format!(
+                "LLM 响应不是 JSON（可能被网关拦截）: {url}；正文开头: {}",
+                body_snippet(&text, en)
+            )
+        }
     })?;
 
     let choice = v
@@ -75,7 +106,11 @@ pub fn complete(endpoint: &Endpoint, messages: &[Message], tools: Option<&Value>
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("message"))
         .cloned()
-        .context("LLM 响应缺少 choices[0].message")?;
+        .context(if en {
+            "LLM response is missing choices[0].message"
+        } else {
+            "LLM 响应缺少 choices[0].message"
+        })?;
     Ok(Message {
         role: "assistant".into(),
         content: choice
@@ -102,14 +137,18 @@ pub fn local_available(base_url: &str) -> bool {
 ///
 /// 折叠换行 + 限长：错误页可能是多行 HTML，长度不可控；
 /// 按**字符**而非字节截断，中文不会切在半个字符上。
-fn body_snippet(body: &str) -> String {
+fn body_snippet(body: &str, en: bool) -> String {
     const MAX_CHARS: usize = 512;
     let one_line = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() <= MAX_CHARS {
         return one_line;
     }
     let head: String = one_line.chars().take(MAX_CHARS).collect();
-    format!("{head}…（正文已截断）")
+    if en {
+        format!("{head}… (body truncated)")
+    } else {
+        format!("{head}…（正文已截断）")
+    }
 }
 
 #[cfg(test)]
@@ -196,7 +235,7 @@ mod tests {
             "HTTP/1.1 200 OK",
             r#"{"choices":[{"message":{"role":"assistant","content":"排成两列了"}}]}"#,
         );
-        let msg = complete(&endpoint(base), &[user_msg("排成两列")], None).expect("应成功");
+        let msg = complete(&endpoint(base), &[user_msg("排成两列")], None, false).expect("应成功");
         assert_eq!(msg.role, "assistant");
         assert_eq!(msg.content, "排成两列了");
         assert!(msg.tool_calls.is_none());
@@ -209,7 +248,7 @@ mod tests {
             "HTTP/1.1 401 Unauthorized",
             r#"{"error":{"message":"invalid api key"}}"#,
         );
-        let err = complete(&endpoint(base), &[user_msg("hi")], None)
+        let err = complete(&endpoint(base), &[user_msg("hi")], None, false)
             .expect_err("401 应当报错");
         let msg = format!("{err:#}");
         assert!(msg.contains("401"), "应含状态码: {msg}");
@@ -223,7 +262,7 @@ mod tests {
             "HTTP/1.1 200 OK",
             "<html><body>502 Bad Gateway</body></html>",
         );
-        let err = complete(&endpoint(base), &[user_msg("hi")], None)
+        let err = complete(&endpoint(base), &[user_msg("hi")], None, false)
             .expect_err("非 JSON 应当报错");
         let msg = format!("{err:#}");
         assert!(msg.contains("不是 JSON"), "应点明不是 JSON: {msg}");
@@ -232,10 +271,12 @@ mod tests {
 
     #[test]
     fn body_snippet_collapses_newlines_and_truncates() {
-        assert_eq!(body_snippet("a\nb\r\n  c"), "a b c");
+        assert_eq!(body_snippet("a\nb\r\n  c", false), "a b c");
         let long = "中".repeat(600);
-        let cut = body_snippet(&long);
+        let cut = body_snippet(&long, false);
         assert!(cut.ends_with("…（正文已截断）"), "超长应截断: {cut}");
+        // §3.5：这条后缀有英文版（en=true）
+        assert!(body_snippet("abc", true).len() >= 3, "英文分支也要能跑");
         // 600 个中文字符按字节是 1800，若按字节截断会切出半个字符（变成 U+FFFD）
         assert!(!cut.contains('\u{FFFD}'), "截断必须落在字符边界上");
         assert_eq!(cut.chars().filter(|c| *c == '中').count(), 512);
@@ -243,7 +284,7 @@ mod tests {
 
     #[test]
     fn body_snippet_keeps_short_body_intact() {
-        assert_eq!(body_snippet("invalid api key"), "invalid api key");
-        assert_eq!(body_snippet(""), "");
+        assert_eq!(body_snippet("invalid api key", false), "invalid api key");
+        assert_eq!(body_snippet("", false), "");
     }
 }
