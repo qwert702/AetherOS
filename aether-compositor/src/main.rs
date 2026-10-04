@@ -748,28 +748,55 @@ fn run_fbdev() -> anyhow::Result<()> {
                     }
                 }
                 input::UiEvent::Enter => {
-                    if let Some((req, echo)) = confirm.as_ref() {
-                        // 回车 = 允许一次；L3 必须回显匹配才放行
-                        if req.echo_ok_input(echo) {
-                            let req = confirm.take().map(|(r, _)| r).unwrap();
-                            tty_log(&format!("权限确认通过: {}", req.tool));
-                            dispatch_approved(req, &ai_tx);
-                        } else {
-                            push_toast(&mut toast, &mut renderer.notifs, "回显不匹配：请原样输入目标名".to_string(), notifications::Kind::Err);
+                    // §4.1：**优先级交给纯函数**（`input::enter_intent`），这里只执行结果。
+                    // 卡片 > 向导 > 指令条 的顺序由它的单元测试守着 ——
+                    // 这类"顺序"逻辑写错时界面完全看不出来（附录 K / O 的教训）。
+                    let has_confirm = confirm.is_some();
+                    let echo_ok = confirm
+                        .as_ref()
+                        .map(|(req, echo)| req.echo_ok_input(echo))
+                        .unwrap_or(false);
+                    let intent = input::enter_intent(
+                        has_confirm,
+                        echo_ok,
+                        installer.open,
+                        ai_input.trim().is_empty(),
+                    );
+                    match intent {
+                        // 放行：走到这里说明 `echo_ok` 为真，卡片一定还在。
+                        // 用 `if let` 而不是 `unwrap()` —— 事件循环里不留 panic 点。
+                        input::EnterIntent::Approve => {
+                            if let Some((req, _)) = confirm.take() {
+                                tty_log(&format!("权限确认通过: {}", req.tool));
+                                dispatch_approved(req, &ai_tx);
+                            }
                         }
-                    } else if installer.open {
-                        if begin_install(&mut installer, &ai_tx) {
-                            tty_log("安装向导 → 开始安装（键盘确认）");
+                        input::EnterIntent::EchoMismatch => {
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                "回显不匹配：请原样输入目标名".to_string(),
+                                notifications::Kind::Err,
+                            );
                         }
-                    } else if !ai_input.trim().is_empty() {
-                        let text = ai_input.trim().to_string();
-                        ai_input.clear();
-                        ai_cursor.home(); // 发送后光标回到开头
-                        // 先把自己的话显示成"用户"气泡，再进入思考态
-                        ai_reply = Some((text.clone(), draw::BubbleKind::User, Instant::now()));
-                        thinking = true;
-                        let tx = ai_tx.clone();
-                        std::thread::spawn(move || query_aether(text, 15, tx));
+                        input::EnterIntent::StartInstall => {
+                            if begin_install(&mut installer, &ai_tx) {
+                                tty_log("安装向导 → 开始安装（键盘确认）");
+                            }
+                        }
+                        input::EnterIntent::SendAi => {
+                            let text = ai_input.trim().to_string();
+                            ai_input.clear();
+                            ai_cursor.home(); // 发送后光标回到开头
+                            // 先把自己的话显示成"用户"气泡，再进入思考态
+                            ai_reply =
+                                Some((text.clone(), draw::BubbleKind::User, Instant::now()));
+                            thinking = true;
+                            let tx = ai_tx.clone();
+                            std::thread::spawn(move || query_aether(text, 15, tx));
+                        }
+                        // 空回车：什么都不做（**明确的兜底**，不是"忘了处理"）
+                        input::EnterIntent::Nothing => {}
                     }
                 }
             }

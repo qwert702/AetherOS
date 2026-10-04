@@ -1839,3 +1839,60 @@ server::ipc_gating_tests::every_request_handler_is_gated_and_classified
 三遍下来**没有发现新的安全漏洞**（第 1 遍那一处低危是"策略不一致"而非可利用漏洞），
 但产出了两样比"结论"更重要的东西：**一条会红的门禁**（V.3）与
 **两次方法论更正**（U.2 的"扫描器结论必须人工复核"、V.3 的"取证要变成不变量"）。
+
+---
+
+## 附录 W：§4.1 第三个切片 —— `Enter` 的**优先级**（2026-10-04 批次 AU-1）
+
+### W.1 为什么挑 `Enter`
+
+回车是界面上"最重"的键，它的语义取决于**当时开着什么**：
+确认卡片（权限）> 安装向导 > AI 指令条。这类**链式优先级**在本项目历史上出过事
+（附录 K 的守卫顺序、附录 O 的无条件调用）—— 而且它藏在事件循环里，**没有测试**。
+
+改之前它就长这样：
+
+```rust
+if let Some((req, echo)) = confirm.as_ref() {
+    if req.echo_ok_input(echo) { …放行… } else { …提示回显不匹配… }
+} else if installer.open {
+    if begin_install(…) { … }
+} else if !ai_input.trim().is_empty() {
+    …发给 AI…
+}
+```
+
+三件事都正确，但**正确性没有保障**：把 `else if` 两行换个位置，行为就变了，
+而界面看不出任何异常。另外 `confirm.take().map(…).unwrap()` 在事件循环里留了一个 panic 点。
+
+### W.2 改法
+
+```rust
+pub enum EnterIntent { Approve, EchoMismatch, StartInstall, SendAi, Nothing }
+pub fn enter_intent(has_confirm: bool, echo_ok: bool, installer_open: bool, ai_empty: bool) -> EnterIntent
+```
+
+* **优先级成为被测对象** —— 测试里直接构造"同时开着"的组合：
+  卡片开着时，即使向导也开着、指令条里还有字，回车也只与卡片有关；
+  回显不匹配时**既不放行、也不把指令条的字顺手发出去**；
+* **`EchoMismatch` 是独立结果**，不再藏在 `else` 的落点里 ——
+  以前它靠"`else` 恰好接在放行之后"才成立，这不够牢；
+* 顺手去掉了那个 `unwrap()`：事件循环里不留 panic 点
+  （与附录 T 的"守护进程零 `unwrap()`"是同一条取向，这次是**界面进程**）。
+
+### W.3 验证
+
+* `enter_priority_is_confirm_then_installer_then_ai_bar`（新增，含最容易写错的三种"同时开着"）；
+* `cargo test` **722 项全绿**；Windows 与 **musl** 双目标 **0 警告**。
+
+### W.4 §4.1 进度（三个切片之后）
+
+| 切片 | 抽出的纯函数 | 对应历史问题 |
+|---|---|---|
+| AQ-1 | `input::super_intent` | 附录 O / P（无条件调用、写死常量） |
+| AR-1 | `input::ctrl_intent` | 附录 Q（手抄事实副本） |
+| **AU-1** | **`input::enter_intent`** | 附录 K 那一族（顺序即语义） |
+
+还剩 `Char`（IME / 向导让位 / 确认卡片独占键盘）与 `Nav`（三级分流）两个分支。
+`Char` 那一支牵扯输入法状态机，是这几支里最难抽的 —— 要么整支抽，
+要么承认"它已经由 `ime` 自己的单测覆盖"并写明理由（**不能假装已经做完**）。

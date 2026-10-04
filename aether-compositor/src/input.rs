@@ -180,6 +180,54 @@ pub fn super_intent(c: char, shift: bool, space_count: usize) -> SuperIntent {
     SuperIntent::Ignore
 }
 
+/// `Enter` 键的意图。**纯数据**，由 [`enter_intent`] 产出、由主循环执行。
+///
+/// 回车在界面上是"最重"的那个键，它的语义取决于**当时开着什么**：
+/// 确认卡片（权限）、安装向导、AI 指令条。三者的优先级写在这里、由测试守着。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnterIntent {
+    /// 确认卡片：**放行一次**（L3 需要回显匹配，见 `echo_ok`）
+    Approve,
+    /// 确认卡片：回显不匹配 → 提示用户原样输入（**不放行**）
+    EchoMismatch,
+    /// 安装向导：开始安装
+    StartInstall,
+    /// AI 指令条：把输入发给 AI
+    SendAi,
+    /// 什么都不做（指令条是空的，也没有别的浮层要处理）
+    Nothing,
+}
+
+/// 判断一次回车想做什么。
+///
+/// 优先级（**这是本函数存在的意义**，也是它唯一需要测试的东西）：
+/// 1. **确认卡片最高** —— 它是"权限"这一步，绝不能因为后面还开着向导或
+///    指令条里有字就被跳过；卡片开着时，回车永远只与卡片有关
+///    （放行或提示回显不匹配，**不会**顺手把指令条里的字发出去）；
+/// 2. 其次是安装向导 —— 它是一次不可逆操作的入口，回车即"开始"；
+/// 3. 最后才是指令条 —— 且必须**有非空内容**（空回车不该发出一个空查询）。
+pub fn enter_intent(
+    has_confirm: bool,
+    echo_ok: bool,
+    installer_open: bool,
+    ai_empty: bool,
+) -> EnterIntent {
+    if has_confirm {
+        return if echo_ok {
+            EnterIntent::Approve
+        } else {
+            EnterIntent::EchoMismatch
+        };
+    }
+    if installer_open {
+        return EnterIntent::StartInstall;
+    }
+    if !ai_empty {
+        return EnterIntent::SendAi;
+    }
+    EnterIntent::Nothing
+}
+
 #[cfg(target_os = "linux")]
 pub fn spawn(tx: Sender<UiEvent>) {
     std::thread::spawn(move || {
@@ -711,6 +759,32 @@ mod tests {
         assert_eq!(super_intent('4', true, 4), SuperIntent::MoveToSpace(3));
         // 只有 1 个桌面时，Super+2 无效（而不是越界）
         assert_eq!(super_intent('2', false, 1), SuperIntent::Ignore);
+    }
+
+    /// 回车的**优先级**：确认卡片 > 安装向导 > AI 指令条。
+    ///
+    /// 这三条断言对应三种"同时开着"的情形 —— 它们正是这类逻辑最容易写错的地方
+    ///（把 `else if` 的顺序颠倒一行，行为就变了，而界面看不出任何异常）。
+    #[test]
+    fn enter_priority_is_confirm_then_installer_then_ai_bar() {
+        // ① 确认卡片开着：即使向导也开着、指令条里还有字，回车也只与卡片有关
+        assert_eq!(enter_intent(true, true, true, false), EnterIntent::Approve);
+        assert_eq!(
+            enter_intent(true, false, true, false),
+            EnterIntent::EchoMismatch,
+            "回显不匹配时**不能**放行，也不能顺手把指令条的字发出去"
+        );
+        // ② 没有卡片：向导优先于指令条
+        assert_eq!(enter_intent(false, false, true, false), EnterIntent::StartInstall);
+        // ③ 都没有：指令条有非空内容才发
+        assert_eq!(enter_intent(false, false, false, false), EnterIntent::SendAi);
+        assert_eq!(
+            enter_intent(false, false, false, true),
+            EnterIntent::Nothing,
+            "空回车不该发出一个空查询"
+        );
+        // ④ 边界：什么都没有（三个都假）→ Nothing，不 panic
+        assert_eq!(enter_intent(false, false, false, true), EnterIntent::Nothing);
     }
 
 }
