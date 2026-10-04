@@ -2639,7 +2639,11 @@ impl Renderer {
                 if crate::i18n::lang() == crate::i18n::Lang::En {
                     format!("Notifications ({unread})")
                 } else {
-                    format!("通知（{unread} 条未读）")
+                    if crate::i18n::is_en() {
+                        format!("Notifications ({unread} unread)")
+                    } else {
+                        format!("通知（{unread} 条未读）")
+                    }
                 }
             } else {
                 crate::i18n::tr("通知", "Notifications").to_string()
@@ -5704,6 +5708,8 @@ pub fn draw_resize_cursor(
 // ---------------------------------------------------------------------------
 impl Renderer {
     fn draw_installer(&mut self, buf: &mut [u32], w: usize, h: usize, inst: &InstallerUi, mouse: (f32, f32), mouse_down: bool, tr: Option<&TextRenderer>) {
+    // §3.5：安装器界面文案双语
+    let lang = crate::i18n::lang();
         let win_w = 640i32;
         let win_h = 400i32;
         let win = Rect {
@@ -5749,7 +5755,7 @@ impl Renderer {
 
         // 提示行
         draw_text(tr, buf, w, h, (win.x + 18) as f32, (win.y + 52) as f32,
-                  "选择目标磁盘并确认。整盘覆盖，目标盘上的数据将丢失。", font::CAPTION, color::text_dim(), 0.9);
+                  crate::i18n::pick(lang, "选择目标磁盘并确认。整盘覆盖，目标盘上的数据将丢失。", "Pick a target disk and confirm. The whole disk is erased; its data will be lost."), font::CAPTION, color::text_dim(), 0.9);
 
         // 磁盘行
         self.installer_rows.clear();
@@ -5766,7 +5772,11 @@ impl Renderer {
                 rounded_outline(buf, w, h, Rect { x: r.x + 11, y: r.y + 15, w: 14, h: 14 }, 7.0, color::text_dim(), 0.7);
             }
             tr.draw_bold(buf, w, h, (r.x + 36) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), dev, font::BODY, color::text(), 0.92);
-            let sz = format!("{mb} MB 可用");
+            let sz = if crate::i18n::is_en() {
+                format!("{mb} MB free")
+            } else {
+                format!("{mb} MB 可用")
+            };
             let sw = tr.measure(&sz, font::CAPTION);
             draw_text(tr, buf, w, h, (r.x + r.w - 16) as f32 - sw, tr.vcenter(r.y as f32, r.h as f32, font::CAPTION), &sz, font::CAPTION, color::text_dim(), 0.8);
             self.installer_rows.push((r, dev.clone(), *mb));
@@ -5776,7 +5786,7 @@ impl Renderer {
         let msg_y = (win.y + win_h - 104) as f32;
         match (inst.phase, inst.message) {
             (InstallerPhase::Running, _) => {
-                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "正在写入磁盘，请勿关机…", font::BODY, color::accent(), 0.95);
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, crate::i18n::pick(lang, "正在写入磁盘，请勿关机…", "Writing to disk, do not power off…"), font::BODY, color::accent(), 0.95);
             }
             (InstallerPhase::Done, Some(m)) => {
                 let mut shown: String = m.to_string();
@@ -5793,17 +5803,22 @@ impl Renderer {
                 draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, &shown, font::CAPTION, color::danger(), 0.95);
             }
             _ => {
-                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, "就绪。也可以选中磁盘后按 Enter 开始。", font::CAPTION, color::text_dim(), 0.85);
+                draw_text(tr, buf, w, h, (win.x + 18) as f32, msg_y, crate::i18n::pick(lang, "就绪。也可以选中磁盘后按 Enter 开始。", "Ready. You can also pick a disk and press Enter to start."), font::CAPTION, color::text_dim(), 0.85);
             }
         }
 
         // 主按钮（四状态：默认 / 悬停 / 按下 / 禁用；禁用以状态色而非灰表达语义）
         let button = Rect { x: win.x + win.w / 2 - 160, y: win.y + win_h - 62, w: 320, h: 44 };
-        let label = match inst.phase {
-            InstallerPhase::Idle => "开始安装（整盘覆盖）",
-            InstallerPhase::Running => "安装中…",
-            InstallerPhase::Done => "完成 · 重启后从磁盘引导",
-            InstallerPhase::Failed => "重试安装",
+        // 四状态按钮：先取 (中文, English)，再按语言挑 —— 比写两遍 match 短，
+        // 也不会出现"新增一个阶段却只加了一种语言"
+        let label = {
+            let (zh, en) = match inst.phase {
+                InstallerPhase::Idle => ("开始安装（整盘覆盖）", "Install (erase disk)"),
+                InstallerPhase::Running => ("安装中…", "Installing…"),
+                InstallerPhase::Done => ("完成 · 重启后从磁盘引导", "Done · boots from disk after reboot"),
+                InstallerPhase::Failed => ("重试安装", "Retry install"),
+            };
+            crate::i18n::pick(lang, zh, en)
         };
         let enabled = matches!(inst.phase, InstallerPhase::Idle | InstallerPhase::Failed);
         let hovered = enabled && button.contains(mouse.0, mouse.1);
@@ -5844,14 +5859,23 @@ impl Renderer {
 // ---------------------------------------------------------------------------
 
 /// 工具 ID → 用户可读的操作名（确认卡片标题）。
-fn tool_label(tool: &str) -> &str {
-    match tool {
-        "install_disk" => "整盘安装到磁盘",
-        "desktop" => "桌面操作",
-        "read_file" => "读取文件",
-        "sys_probe" => "运行系统探针",
-        "sys_info" => "查询系统状态",
-        other => other,
+/// 工具名 → 给人看的中文/英文名（§3.5）。
+///
+/// 收 `en: bool` 而不是在内部读全局：绘制工具函数保持**纯**，
+/// 语言由调用方决定 —— 与 `audit::age_text_en` 同一套做法。
+fn tool_label(tool: &str, en: bool) -> &str {
+    match (tool, en) {
+        ("install_disk", false) => "整盘安装到磁盘",
+        ("install_disk", true) => "Install to disk (erase)",
+        ("desktop", false) => "桌面操作",
+        ("desktop", true) => "Desktop actions",
+        ("read_file", false) => "读取文件",
+        ("read_file", true) => "Read file",
+        ("sys_probe", false) => "运行系统探针",
+        ("sys_probe", true) => "Run system probe",
+        ("sys_info", false) => "查询系统状态",
+        ("sys_info", true) => "Query system state",
+        _ => tool,
     }
 }
 
@@ -5910,7 +5934,15 @@ impl Renderer {
         // 标题行：等级徽章（L2 黄 / L3 红）+ 操作名
         let badge_rgb = c.badge_color();
         let badge_text_rgb = c.badge_text_color();
-        let badge_text = format!("L{} {}", c.level, if c.level >= 3 { "危险" } else { "敏感写" });
+        let badge_text = if crate::i18n::is_en() {
+            format!(
+                "L{} {}",
+                c.level,
+                if c.level >= 3 { "danger" } else { "sensitive write" }
+            )
+        } else {
+            format!("L{} {}", c.level, if c.level >= 3 { "危险" } else { "敏感写" })
+        };
         let bw = tr.measure_bold(&badge_text, font::LABEL) + 18.0;
         let badge = Rect { x: win.x + 20, y: win.y + 20, w: bw as i32, h: 22 };
         // 底色压到 0.12：再浓就会把文字对比度拖到 AA 以下（P2-20 同类）
@@ -5921,13 +5953,14 @@ impl Renderer {
             buf, w, h,
             (badge.x + badge.w + 12) as f32,
             tr.vcenter(win.y as f32 + 18.0, 26.0, 17.0),
-            tool_label(c.tool), 17.0, color::text(), 0.96,
+            tool_label(c.tool, crate::i18n::is_en()), 17.0, color::text(), 0.96,
         );
         fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + 58, w: win.w - 2, h: 1 }, color::hairline(), 0.08);
 
         // 参数明文（逐项原样展示：确认的前提是看清对象）
         let mut y = win.y + 74;
-        draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), "工具", font::CAPTION, color::text_faint(), 0.9);
+        draw_text(tr, buf, w, h, (win.x + 20) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION),
+            crate::i18n::pick(crate::i18n::lang(), "工具", "Tool"), font::CAPTION, color::text_faint(), 0.9);
         draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), c.tool, font::BODY, color::text_dim(), 0.95);
         y += 22;
         for (k, v) in &args {
@@ -5953,7 +5986,11 @@ impl Renderer {
 
         // L3 回显确认：必须原样输入目标，防"手滑点确认"
         if let Some(target) = c.echo_required {
-            let tip = format!("L3 危险操作：请原样输入 {target} 以确认");
+            let tip = if crate::i18n::is_en() {
+            format!("L3 dangerous action: type {target} exactly to confirm")
+        } else {
+            format!("L3 危险操作：请原样输入 {target} 以确认")
+        };
             draw_text(tr, buf, w, h, (win.x + 20) as f32, y as f32, &tip, font::CAPTION, color::text_dim(), 0.9);
             y += 22;
             let field = Rect { x: win.x + 20, y, w: win.w - 40, h: 38 };
