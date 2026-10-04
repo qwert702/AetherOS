@@ -1623,6 +1623,8 @@ pub struct Renderer {
     pub time: crate::timeview::TimeView,
     /// 「快照与回滚」页的状态（§5.6）。
     pub snapshots: crate::snapview::SnapView,
+    /// 「系统更新」页的状态（§3.1）。
+    pub update: crate::updateview::UpdateView,
     /// 当前虚拟桌面数量（§5.4）。绘制要用它显示"N 个桌面"——
     /// 桌面状态住在事件循环的 `spaces` 里（那里才拿得到窗口），所以这里只镜像一个数字。
     pub space_count: usize,
@@ -1947,6 +1949,7 @@ impl Renderer {
         store: Default::default(),
         time: Default::default(),
         snapshots: Default::default(),
+        update: Default::default(),
         space_count: crate::spaces::Spaces::<Win>::COUNT,
             settings_hits: Vec::new(),
             control_open: false,
@@ -2152,6 +2155,7 @@ impl Renderer {
                     store: &self.store,
                     time: &self.time,
                     snapshots: &self.snapshots,
+                    update: &self.update,
                 },
                 t, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
@@ -2834,6 +2838,7 @@ pub struct PageCtx<'a> {
     pub store: &'a crate::store::StoreView,
     pub time: &'a crate::timeview::TimeView,
     pub snapshots: &'a crate::snapview::SnapView,
+    pub update: &'a crate::updateview::UpdateView,
 }
 
 /// 测试用：与 `test_ctx` 相同，但可以注入一个**非空**的商店视图
@@ -2857,6 +2862,7 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
     static STORE: OnceLock<crate::store::StoreView> = OnceLock::new();
     static TIME: OnceLock<crate::timeview::TimeView> = OnceLock::new();
     static SNAPS: OnceLock<crate::snapview::SnapView> = OnceLock::new();
+    static UPD: OnceLock<crate::updateview::UpdateView> = OnceLock::new();
     PageCtx {
         mouse: (0.0, 0.0),
         tr,
@@ -2866,6 +2872,7 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
         store: STORE.get_or_init(Default::default),
         time: TIME.get_or_init(Default::default),
         snapshots: SNAPS.get_or_init(Default::default),
+        update: UPD.get_or_init(Default::default),
     }
 }
 
@@ -2886,7 +2893,17 @@ fn draw_settings_content(
     hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
     // 解构成**与原来同名**的局部变量：这样函数体一行都不用改（重构风险最低的做法）
-    let PageCtx { mouse, tr, settings: s, dns: dns_field, policy, store, time, snapshots } = ctx;
+    let PageCtx {
+        mouse,
+        tr,
+        settings: s,
+        dns: dns_field,
+        policy,
+        store,
+        time,
+        snapshots,
+        update,
+    } = ctx;
     use crate::settings::{SettingsHit, PAGES};
     use crate::widgets;
     const SIDEBAR_W: i32 = 168;
@@ -3169,6 +3186,79 @@ fn draw_settings_content(
                 widgets::States::at(act, mouse), Some(tr),
             );
             hits.push((act, SettingsHit::RefreshStore));
+        }
+        "系统更新" => {
+            // §3.1：**离线更新包**。界面只负责"列出来 + 点一下"，
+            // 版本比较、哈希校验、白名单全在 aetherd —— 界面不猜。
+            let lang = crate::i18n::lang();
+            widgets::group_header(
+                buf, w, h, content.x + 24, ry,
+                crate::i18n::tr("系统更新", "System update"), Some(tr),
+            );
+            ry += 22;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                &update.status_line(lang),
+                font::CAPTION, color::text_dim(), 0.9,
+            );
+            ry += 24;
+            tr.draw(
+                buf, w, h, (content.x + 24) as f32, ry as f32,
+                crate::i18n::tr(
+                    "把更新包放进 /var/lib/aether/update/incoming/ 后点刷新；暂存后重启生效",
+                    "Drop a bundle into /var/lib/aether/update/incoming/ then refresh; reboot to apply",
+                ),
+                font::CAPTION, color::text_dim(), 0.75,
+            );
+            ry += 26;
+
+            let r_refresh = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 36 };
+            widgets::row(
+                buf, w, h, r_refresh,
+                crate::i18n::tr("刷新列表", "Refresh list"),
+                None,
+                widgets::States::at(r_refresh, mouse), Some(tr),
+            );
+            hits.push((r_refresh, SettingsHit::RefreshUpdates));
+            ry += 44;
+
+            if let Some(err) = update.error() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    &format!("{}：{err}", crate::i18n::tr("有问题", "Problem")),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            } else if let Some(msg) = update.message() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    msg,
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+                ry += 22;
+            }
+
+            if update.is_loaded() && update.packages().is_empty() {
+                tr.draw(
+                    buf, w, h, (content.x + 24) as f32, ry as f32,
+                    crate::i18n::tr("投递目录里没有更新包", "No update bundle in the drop folder"),
+                    font::CAPTION, color::text_dim(), 0.9,
+                );
+            }
+            let names: Vec<String> = update.packages().to_vec();
+            for (i, name) in names.iter().enumerate() {
+                let row = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
+                let hint = update.row_hint(i, lang);
+                widgets::row(buf, w, h, row, name, Some(&hint), widgets::States::at(row, mouse), Some(tr));
+                // 暂存中一律不登记命中区：**不给"点了没反应"的机会**
+                if update.can_click() {
+                    hits.push((row, SettingsHit::StageUpdate(i)));
+                }
+                ry += 46;
+                if ry > content.y + content.h - 40 {
+                    break;
+                }
+            }
         }
         "快照与回滚" => {
             // §5.6：**配置**快照（不是盘镜像）。文案必须这么说，

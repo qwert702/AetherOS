@@ -361,6 +361,10 @@ pub enum SettingsHit {
     RestoreSnapshot(usize),
     /// 取消待确认的回滚（§5.6）。
     CancelRestore,
+    /// 暂存第 `i` 个更新包（§3.1）。**版本与哈希由 aetherd 校验**，界面不猜。
+    StageUpdate(usize),
+    /// 重新拉取更新列表（§3.1）。
+    RefreshUpdates,
     /// 卸载第 `i` 个已安装应用（§5.11）。服务端会**移入回收站**（不是直接删）。
     RemoveApp(usize),
     /// 立刻对一次时（§3.3）。
@@ -470,6 +474,8 @@ pub const PAGES: &[PageDef] = &[
     PageDef { title: "工具权限", title_en: "Tool Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §5.6：配置快照与回滚。放在"隐私和安全性"之后、同属"系统状态"这条线。
     PageDef { title: "快照与回滚", title_en: "Snapshots & Rollback", group: "系统", group_en: "System", enabled: true },
+    // §3.1：系统更新（离线更新包：放进投递目录 → 校验暂存 → 重启生效）。
+    PageDef { title: "系统更新", title_en: "System Update", group: "系统", group_en: "System", enabled: true },
     // §3.2：通知页（是否记录 + 清空历史）。放在最后一页：它是"回头看"的地方，
     // 不是日常要改的设置。
     PageDef { title: "通知", title_en: "Notifications", group: "系统", group_en: "System", enabled: true },
@@ -618,7 +624,10 @@ pub fn apply_hit(s: &mut Settings, page: &mut usize, hit: SettingsHit) {
         // §5.6 快照：创建/回滚要发 IPC；「取消」只改界面状态，也由事件循环处理。
         | SettingsHit::CreateSnapshot
         | SettingsHit::RestoreSnapshot(_)
-        | SettingsHit::CancelRestore => {}
+        | SettingsHit::CancelRestore
+        // §3.1 更新：暂存要发 IPC；「刷新」也是事件循环的活。
+        | SettingsHit::StageUpdate(_)
+        | SettingsHit::RefreshUpdates => {}
         // 壁纸是**状态类**改动：立即写进 settings（调用方随后落盘 + 重建背景缓存）
         SettingsHit::Wallpaper(i) => {
             s.wallpaper = i.min(WALLPAPER_COUNT.saturating_sub(1));

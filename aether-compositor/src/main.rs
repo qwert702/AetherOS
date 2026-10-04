@@ -46,6 +46,7 @@ mod setup;
 mod store;
 mod timeview;
 mod snapview;
+mod updateview;
 mod auth;
 mod i18n;
 mod lock;
@@ -847,6 +848,18 @@ fn run_fbdev() -> anyhow::Result<()> {
         // ---- 2. AI 事件轮询（非阻塞）----
         while let Ok(ev) = ai_rx.try_recv() {
             match ev {
+                AiEvent::UpdatesLoaded { packages, current, staged } => {
+                    renderer.update.on_list(packages, current, staged);
+                }
+                AiEvent::UpdateResult { ok, message, version } => {
+                    renderer.update.on_result(ok, message.clone(), version);
+                    let kind = if ok {
+                        notifications::Kind::Ok
+                    } else {
+                        notifications::Kind::Err
+                    };
+                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                }
                 AiEvent::SnapshotsLoaded(items) => {
                     renderer.snapshots.on_list(items);
                 }
@@ -1226,6 +1239,41 @@ fn run_fbdev() -> anyhow::Result<()> {
                             renderer.snapshots.mark_pending();
                             create_snapshot(ai_tx.clone());
                             push_toast(&mut toast, &mut renderer.notifs, "正在创建配置快照…".to_string(), notifications::Kind::Info);
+                        }
+                    }
+                    // §3.1「系统更新」页：进入时取一次列表
+                    if let settings::SettingsHit::Page(i) = hit {
+                        let is_upd = settings::PAGES
+                            .get(i)
+                            .map(|p| p.title == "系统更新")
+                            .unwrap_or(false);
+                        if is_upd && !renderer.update.is_loaded() {
+                            fetch_updates(ai_tx.clone());
+                        }
+                    }
+                    // §3.1：刷新更新列表（不需要先置 pending：清单回来时 on_list 会清掉临时错误）
+                    if let settings::SettingsHit::RefreshUpdates = hit {
+                        fetch_updates(ai_tx.clone());
+                    }
+                    // §3.1：暂存某个更新包。**界面不判断能不能装** ——
+                    // 版本与哈希的结论由 aetherd 给，界面只负责把原因显示出来。
+                    if let settings::SettingsHit::StageUpdate(i) = hit {
+                        if !renderer.update.can_click() {
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                "上一次暂存还没结束，请稍候".to_string(),
+                                notifications::Kind::Info,
+                            );
+                        } else if let Some(name) = renderer.update.packages().get(i).cloned() {
+                            renderer.update.mark_pending(&name);
+                            stage_update(ai_tx.clone(), name.clone());
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                format!("正在校验并暂存 {name}…"),
+                                notifications::Kind::Info,
+                            );
                         }
                     }
                     // §5.6：**两步确认的回滚**。
@@ -2025,6 +2073,18 @@ enum AiEvent {
         ok: bool,
         message: String,
         notes: Vec<String>,
+    },
+    /// 更新列表取回来了（§3.1）。
+    UpdatesLoaded {
+        packages: Vec<String>,
+        current: String,
+        staged: Option<String>,
+    },
+    /// 暂存更新的回执。
+    UpdateResult {
+        ok: bool,
+        message: String,
+        version: Option<String>,
     },
 }
 
@@ -3891,6 +3951,18 @@ fn preview_main() -> anyhow::Result<()> {
         // ---- AI 事件轮询（非阻塞）----
         while let Ok(ev) = rx.try_recv() {
             match ev {
+                AiEvent::UpdatesLoaded { packages, current, staged } => {
+                    renderer.update.on_list(packages, current, staged);
+                }
+                AiEvent::UpdateResult { ok, message, version } => {
+                    renderer.update.on_result(ok, message.clone(), version);
+                    let kind = if ok {
+                        notifications::Kind::Ok
+                    } else {
+                        notifications::Kind::Err
+                    };
+                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                }
                 AiEvent::SnapshotsLoaded(items) => {
                     renderer.snapshots.on_list(items);
                 }
@@ -5146,6 +5218,66 @@ fn handle_dns_key(
         }
         _ => false,
     }
+}
+
+/// 取一次更新列表（§3.1）。
+#[cfg(target_os = "linux")]
+fn fetch_updates(tx: mpsc::Sender<AiEvent>) {
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::ListUpdates) {
+            Ok(Response::UpdateList { packages, current_version, staged_version }) => {
+                AiEvent::UpdatesLoaded {
+                    packages,
+                    current: current_version,
+                    staged: staged_version,
+                }
+            }
+            Ok(Response::Error { code, message }) => AiEvent::UpdateResult {
+                ok: false,
+                message: format!("读取更新列表被拒绝（{code}）：{message}"),
+                version: None,
+            },
+            Ok(_) => AiEvent::UpdateResult {
+                ok: false,
+                message: "读取更新列表：收到意外响应".into(),
+                version: None,
+            },
+            Err(e) => AiEvent::UpdateResult {
+                ok: false,
+                message: format!("连接 aetherd 失败：{e}"),
+                version: None,
+            },
+        };
+        let _ = tx.send(ev);
+    });
+}
+
+/// 暂存一个更新包（§3.1）。**版本与哈希由 aetherd 校验** —— 这里只传包名。
+#[cfg(target_os = "linux")]
+fn stage_update(tx: mpsc::Sender<AiEvent>, name: String) {
+    std::thread::spawn(move || {
+        let ev = match admin_request(&Request::StageUpdate { name }) {
+            Ok(Response::UpdateStaged { ok, message, version }) => {
+                AiEvent::UpdateResult { ok, message, version }
+            }
+            Ok(Response::Error { code, message }) => AiEvent::UpdateResult {
+                ok: false,
+                message: format!("被拒绝（{code}）：{message}"),
+                version: None,
+            },
+            Ok(_) => AiEvent::UpdateResult {
+                ok: false,
+                message: "暂存更新：收到意外响应".into(),
+                version: None,
+            },
+            Err(e) => AiEvent::UpdateResult {
+                ok: false,
+                message: format!("连接 aetherd 失败：{e}"),
+                version: None,
+            },
+        };
+        let _ = tx.send(ev);
+    });
 }
 
 /// 取一次快照清单（§5.6）。
