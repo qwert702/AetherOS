@@ -119,14 +119,16 @@ impl ModelConfig {
                     "****".to_string()
                 }
             }
-            None => "(未配置)".to_string(),
+            None => "(not set)".to_string(),
         };
+        // §3.5：这是**机器可读**的状态输出（脚本/工具会解析它），
+        // 所以值用中性英文，不夹中文人话（人类可读的说明由调用方渲染）。
         serde_json::json!({
             "configured": self.is_configured(),
-            "local_url": self.local_url.as_deref().unwrap_or("(默认 http://127.0.0.1:11434/v1)"),
-            "local_model": self.local_model.as_deref().unwrap_or("(默认 qwen2.5:7b)"),
-            "cloud_base": self.cloud_base.as_deref().unwrap_or("(默认 GLM)"),
-            "cloud_model": self.cloud_model.as_deref().unwrap_or("(默认 glm-4-flash)"),
+            "local_url": self.local_url.as_deref().unwrap_or("(default http://127.0.0.1:11434/v1)"),
+            "local_model": self.local_model.as_deref().unwrap_or("(default qwen2.5:7b)"),
+            "cloud_base": self.cloud_base.as_deref().unwrap_or("(default GLM)"),
+            "cloud_model": self.cloud_model.as_deref().unwrap_or("(default glm-4-flash)"),
             "api_key": key_hint,
             "local_only": self.local_only,
         })
@@ -207,7 +209,10 @@ mod tests {
         assert!(only_base.api_key.is_none());
         // 摘要里要说清楚"Key 没配"，而不是显示一个空值让人以为配错了
         let s = only_base.summary().to_string();
-        assert!(s.contains("未配置"), "摘要应说明 Key 未配置: {s}");
+        // §3.5：这是**机器可读**的 JSON，值用中性英文（人类说明由调用方渲染）
+        assert!(s.contains("(not set)"), "摘要应说明 Key 未配置: {s}");
+        // 注意：这个用例**设了** cloud_base，所以 `configured` 是 true ——
+        // 结构化断言放在 `summary_handles_short_and_absent_key` 那个默认配置的用例里。
     }
 
     /// 摘要会经 IPC 回到合成器（可能上屏），**不能带 Key**。
@@ -227,7 +232,11 @@ mod tests {
         let short = ModelConfig { api_key: Some("ab".into()), ..Default::default() };
         assert!(!short.summary().to_string().contains("\"ab\""), "短 Key 也不该原样出现");
         let none = ModelConfig::default();
-        assert!(none.summary().to_string().contains("未配置"));
+        let s = none.summary().to_string();
+        assert!(s.contains("(not set)"));            // 值本身
+        // 事实字段（解析 JSON 断言，不受紧凑格式影响）
+        let v: serde_json::Value = serde_json::from_str(&s).expect("摘要应是 JSON");
+        assert_eq!(v["configured"], serde_json::json!(false), "默认配置应是未配置: {s}");
     }
 
     /// M-12 回归：含多字节字符的 Key 不得 panic，且脱敏仍然正确。

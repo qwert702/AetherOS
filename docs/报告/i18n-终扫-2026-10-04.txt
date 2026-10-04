@@ -1,0 +1,652 @@
+# 全库 i18n 终扫（生产代码，排除日志/测试/关键词表/提示词）
+
+aether-compositor: 285 处 （待核对）
+aether-init: 51 处 （待核对）
+aether-install: 40 处 （有意保持单一语言）
+aether-ipc: 1 处 （待核对）
+aether-ops: 26 处 （有意保持单一语言）
+aether-shell: 0 处 ✓
+aetherd: 233 处 （待核对）
+
+### aether-compositor：285 处 （待核对）
+    audio.rs:60: (AudioState::Ready, false) => "就绪",
+    audio.rs:62: (AudioState::NoDevice, false) => "无音频设备",
+    audio.rs:64: (AudioState::Unknown, false) => "未检测到音频（可能缺少 aplay）",
+    audio.rs:169: SoundTheme::Classic => "经典",
+    audio.rs:170: SoundTheme::Soft => "柔和",
+    audio.rs:171: SoundTheme::Bright => "明亮",
+    audio.rs:330: "amixer 拒绝了设置：{}",
+    audit.rs:85: "刚刚".to_string()
+    audit.rs:87: format!("{} 分钟前", d / 60)
+    audit.rs:89: format!("{} 小时前", d / 3600)
+    audit.rs:91: format!("{} 天前", d / 86_400)
+    audit.rs:171: s.push_str("AetherOS 审计日志导出\n");
+    audit.rs:173: s.push_str(&format!("来源：{}\n", info.path));
+    audit.rs:174: s.push_str(&format!("文件存在：{}\n", if info.exists { "是" } else { "否" }));
+    audit.rs:176: "总条数：{} · 被拒绝：{} · 失败：{} · 无法解析：{}\n",
+    audit.rs:183: s.push_str(&format!("导出时间（Unix 秒）：{now}\n\n"));
+    audit.rs:186: s.push_str(if en { "(no records)\n" } else { "（没有记录）\n" });
+    audit.rs:192: "最近记录（新的在前）：\n"
+    audit.rs:198: "被拒绝"
+    audit.rs:200: "失败"
+    audit.rs:202: "正常"
+    audit.rs:297: "L0" => if en { "L0 read-only" } else { "L0 只读" }.to_string(),
+    audit.rs:298: "L1" => if en { "L1 reversible write" } else { "L1 可逆写" }.to_string(),
+    audit.rs:299: "L2" => if en { "L2 sensitive write" } else { "L2 敏感写" }.to_string(),
+    audit.rs:300: "L3" => if en { "L3 dangerous" } else { "L3 危险" }.to_string(),
+    audit.rs:311: ("L0", "L0 只读", "L0 read-only"),
+    audit.rs:312: ("L1", "L1 可逆写", "L1 reversible write"),
+    audit.rs:313: ("L2", "L2 敏感写", "L2 sensitive write"),
+    audit.rs:314: ("L3", "L3 危险", "L3 dangerous"),
+    audit.rs:322: "英文里不该有汉字：{raw}"
+    audit.rs:342: "allowed" => return if en { "allowed" } else { "已放行" }.to_string(),
+    audit.rs:344: return if en { "needs confirmation" } else { "待确认" }.to_string()
+    audit.rs:346: "failed" => return if en { "failed" } else { "失败" }.to_string(),
+    audit.rs:354: "已拒绝：该工具被设为「禁止」"
+    audit.rs:362: format!("已被用户拒绝，{secs} 秒内不再询问")
+    audit.rs:380: "已拒绝：该工具被设为「禁止」"
+    audit.rs:384: "已被用户拒绝，300 秒内不再询问"
+    audit.rs:402: "英文里不该有汉字：{raw}"
+    audit.rs:407: verdict_text(Lang::En, "该工具已被用户明确禁止（install_disk）"),
+    audit.rs:408: "该工具已被用户明确禁止（install_disk）"
+    auth.rs:189: "读不到 /etc/shadow 里的该账户 —— **本次未校验口令**".to_string(),
+    auth.rs:192: "该账户未设口令（Live 演示镜像的默认状态）—— 这道锁不防物理接触".to_string(),
+    auth.rs:197: "该账户的口令已被禁用（/etc/shadow 里的 ! 或 * —— 通常是 passwd -l 的结果）"
+    auth.rs:207: "账户已于第 {days} 天过期（/etc/shadow 的过期字段）"
+    auth.rs:220: if why == "口令不正确" {
+    auth.rs:224: "{why}（第 {} 次失败，请等待 {delay} 秒后再试）",
+    fbdev.rs:145: .context("打开 /dev/fb0 失败（内核需提供 framebuffer 驱动）")?;
+    i18n.rs:45: Lang::Zh => "中文",
+    ime.rs:22: ("ni", &["你", "尼", "泥"]),
+    ime.rs:23: ("hao", &["好", "号", "耗"]),
+    ime.rs:24: ("nihao", &["你好"]),
+    ime.rs:25: ("wo", &["我", "握", "窝"]),
+    ime.rs:26: ("de", &["的", "得", "地"]),
+    ime.rs:27: ("le", &["了", "乐"]),
+    ime.rs:28: ("shi", &["是", "事", "时", "十"]),
+    ime.rs:29: ("bu", &["不", "部", "步"]),
+    ime.rs:30: ("zai", &["在", "再", "载"]),
+    ime.rs:31: ("you", &["有", "又", "友", "由"]),
+    ime.rs:32: ("zhongwen", &["中文"]),
+    ime.rs:33: ("zhong", &["中", "种", "重", "终"]),
+    ime.rs:34: ("wen", &["文", "问", "闻"]),
+    ime.rs:35: ("shuru", &["输入"]),
+    ime.rs:36: ("shurufa", &["输入法"]),
+    ime.rs:37: ("diannao", &["电脑"]),
+    ime.rs:38: ("xitong", &["系统"]),
+    ime.rs:39: ("wenjian", &["文件"]),
+    ime.rs:40: ("wenjianjia", &["文件夹"]),
+    ime.rs:41: ("mulu", &["目录"]),
+    ime.rs:42: ("chuangkou", &["窗口"]),
+    ime.rs:43: ("zhuomian", &["桌面"]),
+    ime.rs:44: ("zhongduan", &["终端"]),
+    ime.rs:45: ("mingling", &["命令"]),
+    ime.rs:46: ("yunxing", &["运行"]),
+    ime.rs:47: ("chengxu", &["程序"]),
+    ime.rs:48: ("yingyong", &["应用"]),
+    ime.rs:49: ("shezhi", &["设置"]),
+    ime.rs:50: ("peizhi", &["配置"]),
+    ime.rs:51: ("moxing", &["模型"]),
+    ime.rs:52: ("zhineng", &["智能"]),
+    ime.rs:53: ("renzhi", &["人智"]),
+    ime.rs:54: ("rengong", &["人工"]),
+    ime.rs:55: ("jiqi", &["机器"]),
+    ime.rs:56: ("xuexi", &["学习"]),
+    ime.rs:57: ("bangzhu", &["帮助"]),
+    ime.rs:58: ("dakai", &["打开"]),
+    ime.rs:59: ("guanbi", &["关闭"]),
+    ime.rs:60: ("chakan", &["查看"]),
+    ime.rs:61: ("shiyong", &["使用"]),
+    ime.rs:62: ("anzhuang", &["安装"]),
+    ime.rs:63: ("xiazai", &["下载"]),
+    ime.rs:64: ("shangchuan", &["上传"]),
+    ime.rs:65: ("baocun", &["保存"]),
+    ime.rs:66: ("shanchu", &["删除"]),
+    ime.rs:67: ("chongmingming", &["重命名"]),
+    ime.rs:68: ("xinjian", &["新建"]),
+    ime.rs:69: ("fuzhi", &["复制"]),
+    ime.rs:70: ("zhantie", &["粘贴"]),
+    ime.rs:71: ("jianqie", &["剪切"]),
+    ime.rs:72: ("sousuo", &["搜索"]),
+    ime.rs:73: ("chazhao", &["查找"]),
+    ime.rs:74: ("xuanze", &["选择"]),
+    ime.rs:75: ("quxiao", &["取消"]),
+    ime.rs:76: ("queding", &["确定"]),
+    ime.rs:77: ("queren", &["确认"]),
+    ime.rs:78: ("fanhui", &["返回"]),
+    ime.rs:79: ("shangyi", &["上一"]),
+    ime.rs:80: ("xiayi", &["下一"]),
+    ime.rs:81: ("xiangqing", &["详情"]),
+    ime.rs:82: ("bangben", &["版本"]),
+    ime.rs:83: ("gengxin", &["更新"]),
+    ime.rs:84: ("rizhi", &["日志"]),
+    ime.rs:85: ("cuowu", &["错误"]),
+    ime.rs:86: ("jinggao", &["警告"]),
+    ime.rs:87: ("chenggong", &["成功"]),
+    ime.rs:88: ("shibai", &["失败"]),
+    ime.rs:89: ("wancheng", &["完成"]),
+    ime.rs:90: ("kaishi", &["开始"]),
+    ime.rs:91: ("jieshu", &["结束"]),
+    ime.rs:92: ("dengdai", &["等待"]),
+    ime.rs:93: ("lianjie", &["连接"]),
+    ime.rs:94: ("duankai", &["断开"]),
+    ime.rs:95: ("wangluo", &["网络"]),
+    ime.rs:96: ("liulanqi", &["浏览器"]),
+    ime.rs:97: ("yinyue", &["音乐"]),
+    ime.rs:98: ("tupian", &["图片"]),
+    ime.rs:99: ("wenzhang", &["文章"]),
+    ime.rs:100: ("riqi", &["日期"]),
+    ime.rs:101: ("shijian", &["时间"]),
+    ime.rs:102: ("jintian", &["今天"]),
+    ime.rs:103: ("mingtian", &["明天"]),
+    ime.rs:104: ("zuotian", &["昨天"]),
+    ime.rs:105: ("xianzai", &["现在"]),
+    ime.rs:106: ("zenme", &["怎么"]),
+    ime.rs:107: ("weishenme", &["为什么"]),
+    ime.rs:108: ("shenme", &["什么"]),
+    ime.rs:109: ("keyi", &["可以"]),
+    ime.rs:110: ("xuyao", &["需要"]),
+    ime.rs:111: ("qing", &["请", "清", "轻"]),
+    ime.rs:112: ("xiexie", &["谢谢"]),
+    ime.rs:113: ("zaijian", &["再见"]),
+    ime.rs:114: ("duibuqi", &["对不起"]),
+    ime.rs:115: ("meiguanxi", &["没关系"]),
+    ime.rs:116: ("anquan", &["安全"]),
+    ime.rs:117: ("quanxian", &["权限"]),
+    ime.rs:118: ("yinsi", &["隐私"]),
+    ime.rs:119: ("mima", &["密码"]),
+    ime.rs:120: ("zhanghao", &["账号"]),
+    layout.rs:47: Layout::Float => "自由布局",
+    layout.rs:48: Layout::TwoCol => "两列平铺",
+    layout.rs:49: Layout::ThreeCol => "三列平铺",
+    layout.rs:50: Layout::Monocle => "独占堆叠",
+    layout.rs:132: Snap::Left => "吸附：左半屏",
+    layout.rs:133: Snap::Right => "吸附：右半屏",
+    layout.rs:134: Snap::Top => "吸附：最大化",
+    lock.rs:110: self.message = Some(format!("尝试过于频繁，请等待 {wait} 秒"));
+    main.rs:640: "桌面 {}/{} · {} 个窗口",
+    main.rs:1314: .map(|p| p.title == "快照与回滚")
+    main.rs:1379: .map(|p| p.title == "显示输出")
+    main.rs:1393: .map(|p| p.title == "系统更新")
+    main.rs:1511: .map(|p| p.title == "工具权限")
+    main.rs:1522: .map(|p| p.title == "应用商店")
+    main.rs:1568: output: format!("请求卸载失败：{e}"),
+    main.rs:1613: output: format!("请求安装失败：{e}"),
+    main.rs:1692: toast = Some((format!("已清空 {had} 条通知"), Instant::now()));
+    main.rs:2181: Some(format!("请求删除「{name}」…"))
+    main.rs:2370: "未找到 UI 通道密钥（设置 AETHER_UI_KEY，或确认 aetherd 已生成 /run/aether/ui.key）"
+    main.rs:2404: other => anyhow::bail!("意外响应：{other:?}"),
+    main.rs:2468: let _ = tx.send(AiEvent::ToolDone { ok: false, output: "aetherd 返回了意外响应".into(), origin 
+    main.rs:2506: emit("(parse)", false, "不是合法 JSON", &mut out);
+    main.rs:2528: &format!("未知查询「{other}」（可用：layout / windows / active / titles）"),
+    main.rs:2535: None => emit("undo", false, "没有可撤销的动作", &mut out),
+    main.rs:2542: &format!("未知动作或参数不合法：{action}"),
+    main.rs:2558: .map_err(|e| anyhow::anyhow!("aetherd 不可达（127.0.0.1:{}）：{e}", aether_ipc::DEFAULT_PORT))
+    main.rs:2589: "AI 回复超过 {} 字节上限，已中止本轮（防内存耗尽）",
+    net.rs:52: None => "未发现网络接口".to_string(),
+    net.rs:55: format!("{} · {}", i.name, if i.up { "链路已连接" } else { "链路断开" })
+    net.rs:158: NetInfo { iface: None, dns: Vec::new(), note: "非 Linux 目标：无网络接口信息".to_string() }
+    net.rs:192: "未发现网络接口（/sys/class/net 为空）".to_string()
+    palette.rs:42: Kind::App => "应用",
+    palette.rs:43: Kind::Setting => "设置",
+    palette.rs:44: Kind::File => "文件",
+    palette.rs:181: format!("{} · 文件夹", Kind::File.label())
+    policyview.rs:111: 0 => "L0 只读",
+    policyview.rs:112: 1 => "L1 可逆写",
+    policyview.rs:113: 2 => "L2 敏感写",
+    policyview.rs:114: _ => "L3 危险",
+    policyview.rs:130: ToolPolicyWire::Default => "按等级",
+    policyview.rs:131: ToolPolicyWire::Ask => "每次询问",
+    policyview.rs:132: ToolPolicyWire::Allow => "允许",
+    policyview.rs:133: ToolPolicyWire::Deny => "禁止",
+    pty.rs:90: let name = name.to_str().map_err(|_| io::Error::other("pts 名字不是 UTF-8"))?;
+    setup.rs:40: ("中文", "中文", Action::SetLang(0)),
+    setup.rs:45: ("时区 −1 小时", "Time −1h", Action::TzShift(-1)),
+    setup.rs:46: ("时区 +1 小时", "Time +1h", Action::TzShift(1)),
+    setup.rs:50: ("深色模式", "Dark mode", Action::SetDark),
+    setup.rs:51: ("高对比", "High contrast", Action::SetContrast),
+    setup.rs:54: 3 => vec![("开始使用", "Get started", Action::Next)],
+    setup.rs:185: 0 => ("选择界面语言", "Choose your language"),
+    setup.rs:186: 1 => ("设置时区", "Set the time zone"),
+    setup.rs:187: 2 => ("选择外观", "Pick an appearance"),
+    setup.rs:188: 3 => ("连接网络", "Connect to the network"),
+    setup.rs:197: "按 1 用中文，按 2 用 English。回车继续，Esc 跳过向导。",
+    setup.rs:201: "按 - 或 = 按半小时调整。回车继续。",
+    setup.rs:205: "按 D 切换深色模式，按 C 切换高对比度。回车继续。",
+    setup.rs:209: "按 D 使用默认 DNS（1.1.1.1 / 8.8.8.8），也可以回车先跳过，稍后在设置里填。",
+    sha512crypt.rs:306: return Err("该账户未设置口令（shadow 里是锁定/空占位符）".to_string());
+    sha512crypt.rs:313: "1" => "MD5 crypt（$1$，已知弱，已被破解）",
+    sha512crypt.rs:317: _ => "未知方案",
+    sha512crypt.rs:320: "不支持的口令哈希方案：{name}。本系统只校验 $6$（SHA-512 crypt）"
+    sha512crypt.rs:328: .ok_or_else(|| "哈希格式错误：rounds= 后缺少 $".to_string())?;
+    sha512crypt.rs:331: .map_err(|_| format!("哈希格式错误：rounds 不是数字（{n}）"))?;
+    sha512crypt.rs:340: .ok_or_else(|| "哈希格式错误：缺少盐或哈希体".to_string())?;
+    sha512crypt.rs:343: "哈希格式错误：盐长度应在 1~{MAX_SALT_LEN}（实得 {}）",
+    sha512crypt.rs:348: return Err("哈希格式错误：盐含非法字符".to_string());
+    sha512crypt.rs:355: Err("口令不正确".to_string())
+    shortcuts.rs:43: desc: "切换窗口布局（四档）",
+    shortcuts.rs:50: desc: "锁定屏幕（解锁需重新验证口令）",
+    shortcuts.rs:63: desc: "切换虚拟桌面（默认 4 个、可增删到 8；切走的窗口不会关掉）",
+    shortcuts.rs:70: desc: "把当前窗口搬到第 N 个桌面（默认 4 个、可增删到 8）",
+    shortcuts.rs:77: desc: "打开命令面板（搜应用 / 设置页 / 当前目录文件）",
+    shortcuts.rs:84: desc: "撤销上一步 AI 的桌面改动",
+    shortcuts.rs:91: desc: "关闭当前窗口",
+    shortcuts.rs:100: desc: "切换中文输入法",
+    shortcuts.rs:107: desc: "关闭浮层（控制中心）；输入法拼字中先取消拼字",
+    shortcuts.rs:113: keys: "方向键 / Tab / Delete",
+    shortcuts.rs:114: desc: "窗口与文件列表导航",
+    shortcuts.rs:121: desc: "在权限确认卡片里放行一次（L3 需原样回显）",
+    shortcuts.rs:127: keys: "Alt+1…4（键位翻译）",
+    shortcuts.rs:128: desc: "布局快捷键在输入层从裸数字改为 Alt 组合（2026-09-29 修复）",
+    shortcuts.rs:134: keys: "Super（元键）",
+    shortcuts.rs:135: desc: "输入层跟踪 Meta 键 —— 没有它，Super 组合键不可能实现",
+    store.rs:60: StoreAction::Install => "安装",
+    store.rs:61: StoreAction::Reinstall => "重新安装",
+    store.rs:62: StoreAction::UpToDate => "已安装",
+    term.rs:80: status: TermStatus::Unavailable(format!("PTY 不可用：{e}")),
+    term.rs:94: status: TermStatus::Unavailable("开发机预览：PTY 仅在 Linux 上可用".into()),
+    term.rs:110: \x1b[1;36maether@localhost\x1b[0m:\x1b[1;34m{dir}\x1b[0m$ echo \"宽字符对齐：中文与 ASCII 混排\"\r\
+    text.rs:331: pub const MENUS: &[&str] = &["文件", "编辑", "显示", "帮助"];
+    text.rs:340: &["新建窗口", "关闭窗口", "退出"],
+    text.rs:341: &["撤销", "重做", "复制", "粘贴"],
+    text.rs:342: &["两列", "三列", "独占堆叠", "自由布局"],
+    text.rs:343: &["关于 Aether"],
+    text.rs:382: pub const AI_BAR_HINT: &str = "询问 Aether，或说出你想做的事";
+    text.rs:385: pub const WIN_FILES: &str = "文件";
+    text.rs:386: pub const WIN_TERM: &str = "终端";
+    text.rs:387: pub const WIN_BROWSER: &str = "浏览器";
+    text.rs:388: pub const WIN_MUSIC: &str = "音乐";
+    text.rs:389: pub const WIN_SETTINGS: &str = "设置";
+    text.rs:391: pub const INSTALLER: &str = "安装";
+    text.rs:395: ("以太漂移", "Aether Ensemble", "4:12"),
+    text.rs:396: ("深空回声", "Nova Field", "3:48"),
+    text.rs:397: ("极光边界", "Aurora Line", "5:06"),
+    text.rs:398: ("静默轨道", "Orbit Minor", "3:21"),
+    text.rs:399: ("信号衰减", "Nova Field", "4:55"),
+    text.rs:400: ("夜航", "Aether Ensemble", "6:03"),
+    text.rs:401: ("低轨道", "Orbit Minor", "3:37"),
+    text.rs:402: ("冷启动", "Nova Field", "4:28"),
+    text.rs:403: ("视界线", "Aurora Line", "5:41"),
+    text.rs:404: ("微光层", "Aether Ensemble", "2:58"),
+    text.rs:405: ("长夜频道", "Nova Field", "4:09"),
+    text.rs:406: ("归航信号", "Aurora Line", "3:52"),
+    text.rs:409: pub const NOW_PLAYING: &str = "正在播放";
+    session.rs:132: message: format!("未知对象 id {obj_id}"),
+    session.rs:138: message: format!("服务端未实现接口 {iface_name}"),
+    session.rs:145: message: format!("{}.{} 非法 opcode {opcode}", iface.name, iface.name),
+    session.rs:166: message: "未知对象".into(),
+    session.rs:228: message: format!("bind 了未实现的全局 {iface_str}"),
+    session.rs:234: message: format!("global name {name} 与接口 {iface_str} 不匹配"),
+    session.rs:298: message: "commit 了不存在的 surface".into(),
+    session.rs:329: message: "xdg_surface 未 ack configure 就 commit（协议要求先等配置）".into(),
+    session.rs:362: message: format!("create_pool 的 size 为负（{size}）"),
+    session.rs:419: message: "get_xdg_surface 的参数不是 wl_surface".into(),
+    session.rs:512: message: format!("{iface} 非法 opcode {}", msg.opcode),
+    session.rs:524: message: format!("参数 {i} 应为 {}，实得 {:?}", $desc, other),
+    session.rs:542: message: format!("参数 {i} 应为 string，实得 {:?}", other),
+    shm.rs:41: write!(f, "buffer 需要 {need} 字节，pool 只有 {pool_size}")
+    shm.rs:43: ShmError::UnsupportedFormat(fmt) => write!(f, "不支持的像素格式 {fmt:#x}"),
+    shm.rs:45: write!(f, "非法几何：{width}×{height}，stride {stride}")
+    wire.rs:74: WireError::ShortHeader => write!(f, "消息头不足 8 字节"),
+    wire.rs:75: WireError::BadSize(n) => write!(f, "非法的消息长度 {n}"),
+    wire.rs:76: WireError::Truncated => write!(f, "参数区提前用尽"),
+    wire.rs:78: write!(f, "签名 {signature:?} 在第 {at} 个参数处与消息体不匹配")
+    wire.rs:80: WireError::UnknownType(c) => write!(f, "未知的签名类型字符 {c:?}"),
+    wire.rs:81: WireError::UnterminatedString => write!(f, "字符串缺少结尾 NUL"),
+    wire.rs:138: "签名 {signature:?} 与参数个数 {} 不符",
+### aether-init：51 处 （待核对）
+    ipc.rs:223: let message = if en { "service not found" } else { "服务不存在" };
+    ipc.rs:252: anyhow::bail!("服务 {unit} 不存在")
+    logtee.rs:169: "目标是符号链接，拒绝改权限",
+    main.rs:64: Some("--rescue") => rescue_console("手动进入救援模式（--rescue）"),
+    main.rs:116: Ok(Ok(())) => rescue_console("PID 1 主流程意外返回（监督循环不应结束）"),
+    main.rs:117: Ok(Err(e)) => rescue_console(&format!("PID 1 启动失败：{e:#}")),
+    main.rs:118: Err(_) => rescue_console("PID 1 主流程发生 panic（回溯见上方输出）"),
+    main.rs:255: let msg = format!("服务目录 {services_dir} 无可用服务定义");
+    manager.rs:61: bail!("服务名重复");
+    manager.rs:68: bail!("服务 {} 依赖不存在的 {}", s.spec.name, dep);
+    manager.rs:88: bail!("检测到循环依赖: {} -> {}", visiting.join(" -> "), name);
+    manager.rs:125: bail!("服务 {name} 不存在");
+    manager.rs:147: bail!("服务 {name} 不存在");
+    manager.rs:180: "{} 退出 (code={code}, restarts={})",
+    manager.rs:187: events.push(format!("{} 状态查询失败: {e}", svc.spec.name));
+    manager.rs:207: events.push(format!("{} 已重启 (第 {} 次)", svc.spec.name, svc.restarts));
+    manager.rs:213: events.push(format!("{} 重启失败（第 {} 次）: {e}", svc.spec.name, svc.restarts));
+    manager.rs:261: "{} 退出 (code={code}, restarts={})",
+    manager.rs:288: Ok(st) => events.push(format!("已停止服务 {name}（{:?}）", st.state)),
+    manager.rs:289: Err(e) => events.push(format!("停止服务 {name} 失败（继续关机）：{e}")),
+    manager.rs:349: .map_err(|e| anyhow::anyhow!("服务 {name} 需要降权到「{user}」，但读不到 /etc/passwd：{e}"))?;
+    manager.rs:351: .map_err(|e| anyhow::anyhow!("服务 {name} 需要降权到「{user}」，但读不到 /etc/group：{e}"))?;
+    manager.rs:353: .ok_or_else(|| anyhow::anyhow!("服务 {name} 指定了不存在的用户「{user}」"))?;
+    manager.rs:359: anyhow::anyhow!("服务 {name} 的用户「{user}」没有主组（/etc/passwd 第 4 字段与 /etc/group 都查不到）")
+    manager.rs:373: format!("附加组不存在: {g}"),
+    manager.rs:391: .map_err(|e| anyhow::anyhow!("启动 {name} 失败: {e}"))?;
+    persist.rs:306: Some(other) => Err(format!("卷标是「{other}」，不是 {PERSIST_LABEL}")),
+    persist.rs:307: None => Err("没有 ext4 超级块".to_string()),
+    persist.rs:309: None => Err("读不到设备头部（权限或设备异常）".to_string()),
+    persist.rs:402: format!("{ts} 启动（第 {boot_index} 次）\n")
+    persist.rs:407: text.lines().filter(|l| l.contains("启动")).count()
+    unit.rs:39: other => bail!("未知服务「{other}」：服务必须内建于 aether-init 白名单"),
+    unit.rs:223: std::fs::read_dir(dir).with_context(|| format!("读取服务目录 {dir:?} 失败"))?;
+    unit.rs:230: .with_context(|| format!("读取服务文件 {path:?} 失败"))
+    unit.rs:233: .with_context(|| format!("解析 {path:?} 失败"))
+    update.rs:76: return Err(format!("第 {} 行：字段过多（路径里不该有 tab）", i + 1));
+    update.rs:82: "第 {} 行格式不对（应为 sha256<TAB>bytes<TAB>target）",
+    update.rs:88: return Err(format!("第 {} 行：sha256 形态不对", i + 1));
+    update.rs:92: .map_err(|_| format!("第 {} 行：bytes 不是数字", i + 1))?;
+    update.rs:94: return Err(format!("第 {} 行：目标路径不可信（{target:?}）", i + 1));
+    update.rs:103: return Err("待应用表里没有任何条目".to_string());
+    update.rs:138: .map_err(|e| format!("读不到 {}：{e}", list.display()))?;
+    update.rs:147: .map_err(|err| format!("{}：暂存文件不见了（{err}）", e.target))?;
+    update.rs:150: "{}：暂存文件大小不符（记录 {} / 实际 {}）—— 拒绝应用",
+    update.rs:159: .ok_or_else(|| format!("{}：路径没有父目录", e.target))?;
+    update.rs:161: .map_err(|err| format!("建目录失败 {}：{err}", dir.display()))?;
+    update.rs:168: std::fs::copy(&src, &tmp).map_err(|err| format!("写 {} 失败：{err}", tmp.display()))?;
+    update.rs:171: format!("替换 {} 失败：{err}", e.target)
+    update.rs:173: events.push(format!("已更新 {}", e.target));
+    update.rs:188: std::fs::remove_dir_all(&staged).map_err(|e| format!("清暂存失败：{e}"))?;
+    update.rs:190: std::fs::remove_file(&list).map_err(|e| format!("删标记失败：{e}"))?;
+### aether-install：40 处 （有意保持单一语言）
+    main.rs:85: .ok_or_else(|| anyhow::anyhow!("--disk 缺少参数"))?,
+    main.rs:92: "未知参数「{other}」（用法: aether-install --disk <块设备> --yes \
+    main.rs:98: let disk = disk.ok_or_else(|| anyhow::anyhow!("必须用 --disk 指定目标块设备（如 /dev/vda）"))?;
+    main.rs:105: let meta = std::fs::metadata(path).with_context(|| format!("目标 {disk} 不存在"))?;
+    main.rs:110: bail!("{disk} 不是块设备（拒绝写入，防止误写普通文件）");
+    main.rs:117: bail!("{disk} 只有 {mb}MB，小于最小要求 {MIN_DISK_MB}MB");
+    main.rs:130: let p = std::fs::canonicalize(disk).with_context(|| format!("目标 {disk} 不存在"))?;
+    main.rs:136: bail!("{} 不是块设备（拒绝写入，防止误写普通文件）", p.display());
+    main.rs:142: bail!("目标 {s} 不是 /dev 下的裸块设备名（拒绝写入）");
+    main.rs:178: .with_context(|| format!("无法读取 /sys/block/{name}/size（{disk} 不是块设备？）"))?;
+    main.rs:181: .with_context(|| format!("解析 {disk} 扇区数失败: {raw:?}"))
+    main.rs:300: bail!("分区号 {index} 越界（1..=4）");
+    main.rs:303: bail!("分区扇区数不能为 0");
+    main.rs:306: bail!("分区起始 LBA 不能为 0（0 保留给引导区）");
+    main.rs:353: .with_context(|| format!("打开 {disk} 失败"))?;
+    main.rs:364: bail!("分区节点 {} 未出现", node.display())
+    main.rs:379: .with_context(|| format!("打开 {disk} 失败"))?;
+    main.rs:381: f.read_exact(&mut mbr).context("读取 MBR 失败")?;
+    main.rs:383: bail!("MBR 签名缺失（ISO 是否经过 isohybrid？）");
+    main.rs:389: "磁盘放不下持久化分区（剩余空间不足，或 >2TB 超出 MBR 可表达范围）；系统仍可引导但运行在内存里"
+    main.rs:441: .context("执行 mkfs.ext4 失败")?;
+    main.rs:443: bail!("mkfs.ext4 {node_s} 失败: {st}");
+    main.rs:452: .context("挂载持久化分区失败")?;
+    main.rs:454: bail!("挂载 {node_s} 到 {PERSIST_MNT} 失败");
+    main.rs:463: .map_err(|e| anyhow::anyhow!("创建 {PERSIST_MNT}/{d} 失败: {e}"))?;
+    main.rs:490: .map_err(|e| anyhow::anyhow!("写入 {INSTALL_MARKER} 失败: {e} —— 持久分区将无法被识别"))?;
+    main.rs:493: format!("{ts} 安装完成（分区 {node_s}）\n"),
+    main.rs:495: .map_err(|e| anyhow::anyhow!("写入 boot.log 失败: {e}"))?;
+    main.rs:519: let mut f = std::fs::File::open(path).with_context(|| format!("打不开安装源 {path}"))?;
+    main.rs:521: f.read_exact(&mut mbr).with_context(|| format!("读取 {path} 头部失败"))?;
+    main.rs:536: bail!("目标盘不能是安装源（{SOURCE}）：拒绝自读自写");
+    main.rs:540: bail!("将整盘覆盖写入 {disk} —— 确认无误后追加 --yes 执行");
+    main.rs:546: "安装源 {SOURCE} 不是 isohybrid 镜像（首 512 字节无 MBR 签名 0x55AA）——\n\
+    main.rs:550: 已中止：**未对 {disk} 做任何写入**"
+    main.rs:564: .context("执行整盘清零失败")?;
+    main.rs:566: bail!("整盘清零失败: {st}");
+    main.rs:579: .context("执行 /bin/dd 失败")?;
+    main.rs:581: bail!("dd 写入失败: {status}");
+    main.rs:599: let sync = Command::new("/bin/sync").status().context("执行 /bin/sync 失败")?;
+    main.rs:601: bail!("sync 失败");
+### aether-ipc：1 处 （待核对）
+    lib.rs:621: let mut s = serde_json::to_string(msg).expect("aether-ipc: 序列化失败");
+### aether-ops：26 处 （有意保持单一语言）
+    diagnose.rs:37: (format!("服务「{unit}」异常退出 (code={exit_code})"), unit.clone())
+    diagnose.rs:40: (format!("服务「{unit}」日志异常"), unit.clone())
+    diagnose.rs:42: Incident::MemPressure => ("内存压力告警".into(), String::new()),
+    diagnose.rs:44: Incident::Manual => ("手动导出（用户主动请求，非故障触发）".into(), String::new()),
+    diagnose.rs:48: r.push_str("=== AetherOS 诊断报告 ===\n");
+    diagnose.rs:49: r.push_str(&format!("[事件] {title}\n"));
+    diagnose.rs:54: r.push_str(&format!("[日志] {line}\n"));
+    diagnose.rs:56: r.push_str(&format!("[时间] 运行 {}s\n", metrics.uptime_secs.unwrap_or(0)));
+    diagnose.rs:58: (Some(a), Some(t)) => r.push_str(&format!("[内存] 可用 {a}/{t}MB（{:.0}%）\n", a as f32 / t.ma
+    diagnose.rs:59: _ => r.push_str("[内存] 未知\n"),
+    diagnose.rs:61: r.push_str("[服务] ");
+    diagnose.rs:63: r.push_str("状态不可得\n");
+    diagnose.rs:75: r.push_str(&format!("[行动] {heal_note}\n"));
+    diagnose.rs:84: r.push_str(&format!("[日志] {target} 尾部：\n"));
+    diagnose.rs:89: r.push_str(&format!("[日志] {target} 无记录\n"));
+    diagnose.rs:92: r.push_str("[附注] 内存紧张可能与本事件相关（可用 <10%），建议排查泄漏或增加内存。\n");
+    main.rs:121: "手动导出（aether-ops --bundle）",
+    main.rs:183: &format!("自修复 → 重启 {unit}（第 {count} 次）: {msg}"),
+    monitor.rs:70: r.lines.push(format!("○ {} 已被人工停止（不干预）", s.unit));
+    monitor.rs:76: .push(format!("‼ 关键服务 {} 异常（状态 {}），需优先排查", s.unit, s.state));
+    monitor.rs:81: .push(format!("○ {} 状态 {}（重启策略为不重启，不干预）", s.unit, s.state));
+    monitor.rs:90: .push(format!("⚠ {} 状态 {}（自修复冷却中）", s.unit, s.state));
+    monitor.rs:98: "⚠ 内存紧张：可用 {}MB / {}MB",
+    monitor.rs:167: _ => Err(anyhow::anyhow!("aether-init 返回了意外响应")),
+    monitor.rs:183: _ => Err(anyhow::anyhow!("aether-init 返回了意外响应")),
+    monitor.rs:192: ["panic", "Segmentation fault", "ERROR", "查询失败", "无法连接"];
+### aetherd：233 处 （待核对）
+    clipboard.rs:56: format!("剪贴板内容 {bytes} 字节，超过上限 {MAX_BYTES}（拒绝整段，不做截断）")
+    intent.rs:85: format!("现在是 {clock}。")
+    llm.rs:70: "LLM 请求失败: {url} → HTTP {code}；服务器返回: {}",
+    llm.rs:76: let what = if en { "LLM request failed" } else { "LLM 请求失败" };
+    llm.rs:86: "读取 LLM 响应失败"
+    llm.rs:98: "LLM 响应不是 JSON（可能被网关拦截）: {url}；正文开头: {}",
+    llm.rs:112: "LLM 响应缺少 choices[0].message"
+    llm.rs:150: format!("{head}…（正文已截断）")
+    main.rs:35: 回答使用用户的语言，简洁、可执行。用户说'整理桌面'时调用 desktop 的 layout_set two_col。";
+    main.rs:196: "（模型未返回有效回答）".to_string()
+    main.rs:242: "[工具错误] 「{name}」读写用户环境数据，需要已注册的 UI 通道；本次对话未注册，已拒绝"
+    main.rs:261: format!("「{tool}」需要你确认后才能执行。")
+    main.rs:274: Err(e) => format!("[工具错误] {e}"),
+    main.rs:294: "（已达本轮工具调用上限，请拆分任务）".to_string()
+    modelcfg.rs:80: .with_context(|| format!("无法创建目录 {}", parent.display()))?;
+    modelcfg.rs:83: std::fs::write(path, json).with_context(|| format!("无法写入 {}", path.display()))?;
+    netset.rs:33: "# 本文件由 AetherOS 设置中心写入；首次写入前的原文件备份在 /etc/resolv.conf.aether-bak\n";
+    netset.rs:90: format!("DNS 设置被拒（{}）：{e}", e.as_str())
+    netset.rs:104: "{} 是符号链接（可能由其它解析器管理），拒绝覆盖",
+    netset.rs:113: format!("{} 不是普通文件，拒绝覆盖", path.display())
+    netset.rs:123: format!("备份 {} 失败：{e}", path.display())
+    netset.rs:135: format!("写入 {} 失败：{e}", path.display())
+    netset.rs:146: format!("DNS 已设为 {}（写入 {}）", rendered, path.display())
+    policy.rs:40: Err(e) => (Policy::default(), Some(format!("读取 {} 失败：{e}", path.display()))),
+    policy.rs:110: (ToolPolicy::Default, false) => "按等级",
+    policy.rs:112: (ToolPolicy::Ask, false) => "每次询问",
+    policy.rs:114: (ToolPolicy::Allow, false) => "允许",
+    policy.rs:116: (ToolPolicy::Deny, false) => "禁止",
+    removable.rs:195: "拒绝挂载 {dev}：它不在当前扫描到的可移动设备里（语法合法不代表它真是可移动介质）"
+    removable.rs:200: return Err(format!("{dev} 已经挂在 {mp} 了"));
+    removable.rs:204: std::fs::create_dir_all(&mp).map_err(|e| format!("建挂载点失败 {}：{e}", mp.display()))?;
+    removable.rs:209: .map_err(|e| format!("跑 mount 失败：{e}"))?;
+    removable.rs:214: return Err(format!("挂载 {dev} 失败：{why}"));
+    removable.rs:223: return Err(format!("设备名不合法：{dev:?}"));
+    removable.rs:228: return Err(format!("{dev} 不在当前扫描到的可移动设备里"));
+    removable.rs:231: return Err(format!("{dev} 没有挂载"));
+    removable.rs:236: "{dev} 挂在 {mounted}，不是本系统挂的（{}）—— 拒绝卸载",
+    removable.rs:243: .map_err(|e| format!("跑 umount 失败：{e}"))?;
+    removable.rs:246: return Err(format!("卸载 {dev} 失败：{why}"));
+    removable.rs:249: Ok(format!("已卸载 {dev}"))
+    router.rs:44: const PRIVACY_HINTS: &[&str] = &["密码", "密钥", "token", "身份证", "银行", "私人", "隐私"];
+    router.rs:50: const COMPLEX_HINTS: &[&str] = &["然后", "接着", "计划", "步骤", "批量", "所有窗口", "诊断", "为什么", "分析"
+    server.rs:575: "电源动作必须经 system_power 工具执行（L3，需用户确认）；\
+    server.rs:576: 不接受直接下发的 {}",
+    server.rs:652: format!("已只读挂载 {dev} → {mp}")
+    server.rs:747: "已暂存更新 {}（{} 个文件）· **重启后生效**",
+    server.rs:813: format!("已创建配置快照 {}（{n} 个文件）", m.id)
+    server.rs:831: format!("创建快照失败：{e}")
+    server.rs:863: format!("已回滚到配置快照 {id}")
+    server.rs:880: format!("回滚失败：{e}")
+    server.rs:909: "偏移 {offset_ms} 毫秒超出合理性上限（{} 小时），已拒绝调整系统时钟 —— \
+    server.rs:910: 如果确实相差这么多，请手动设置时间",
+    server.rs:915: "已在误差范围内，未调整".to_string()
+    server.rs:917: crate::timesync::Adjustment::Slew => "已平滑调整（不跳变）".to_string(),
+    server.rs:918: crate::timesync::Adjustment::Step => "已直接校正（偏移较大）".to_string(),
+    server.rs:941: format!("偏移 {offset_ms} ms · {what}")
+    server.rs:985: format!("系统时区已设为 {name}")
+    server.rs:1002: format!("失败：{e}")
+    server.rs:1085: format!("{} 已设为「{}」", tool, local.label(*ui_en))
+    server.rs:1108: format!("写入失败（设置未生效）：{e}")
+    server.rs:1298: "（未检测到可用模型：在终端运行 `aetherd config --help` 配置本地 Ollama 或云端 API Key）"
+    server.rs:1308: format!("AI 通道不可用: {e}{hint}")
+    snapshots.rs:175: format!("同一秒内快照过多（{base} 已有 {n} 份）"),
+    snapshots.rs:258: format!("快照 id 不合法：{id:?}"),
+    snapshots.rs:264: std::io::Error::new(std::io::ErrorKind::InvalidData, "清单解析失败")
+    snapshots.rs:275: format!("{}：不在快照白名单内，拒绝回滚", e.path),
+    snapshots.rs:279: notes.push(format!("{}：快照时不存在，未回滚", e.path));
+    snapshots.rs:292: format!("{}：快照内容损坏（校验和不符），已停止回滚", e.path),
+    snapshots.rs:306: notes.push(format!("{}：已回滚（{} 字节）", e.path, bytes.len()));
+    timesync.rs:58: return Err(format!("响应太短（{} 字节，至少 {}）", buf.len(), PACKET_LEN));
+    timesync.rs:65: return Err("服务器报告未同步（LI=3，alarm condition）—— 它的时间不可信".into());
+    timesync.rs:68: return Err(format!("模式 {mode} 不是服务器响应（应为 4 或 5）"));
+    timesync.rs:71: return Err(format!("版本 {vn} 不认识"));
+    timesync.rs:75: return Err("服务器要求停止请求（stratum 0 / kiss-o'-death）".into());
+    timesync.rs:78: return Err(format!("stratum {stratum} 越界（1..=15）"));
+    timesync.rs:85: return Err("发送时间戳为空".into());
+    timesync.rs:184: format!("时区名不合法：{name:?}"),
+    timesync.rs:196: format!("时区文件逃出了 {root:?}（可疑链接）"),
+    timesync.rs:202: format!("没有这个时区：{name}"),
+    tools.rs:51: description: "读取系统剪贴板的当前内容（跨进程）。剪贴板里常出现密码/令牌，读取会被记录到审计日志，且读到的内容会强制后续推理留在本地。",
+    tools.rs:66: description: "把一段文本写入系统剪贴板（跨进程），供用户粘贴到别处。",
+    tools.rs:75: "text": {"type": "string", "description": "要放入剪贴板的文本（上限 64KB）"}
+    tools.rs:88: description: "写入（或覆盖）一个文本文件。路径必须在用户数据区（家目录、/tmp）内；aether 自身的配置与日志不可写。",
+    tools.rs:93: "path": {"type": "string", "description": "目标文件绝对路径"},
+    tools.rs:94: "content": {"type": "string", "description": "文件内容（上限 256KB，超长整体拒绝）"}
+    tools.rs:99: consequence: "覆盖写入目标文件：原有内容不会进回收站，直接不可恢复（新建则无影响）",
+    tools.rs:105: description: "把文件或目录移入回收站（可恢复）。不做永久删除。",
+    tools.rs:110: "path": {"type": "string", "description": "要删除的路径"}
+    tools.rs:115: consequence: "移入回收站，可从回收站恢复；但超过 7 天、或回收站条目/容量超限时会被自动清理",
+    tools.rs:121: description: "重命名或移动文件/目录。源与目标都必须在用户数据区内。",
+    tools.rs:126: "from": {"type": "string", "description": "源路径"},
+    tools.rs:127: "to": {"type": "string", "description": "目标路径"}
+    tools.rs:132: consequence: "移动或改名；若目标已存在则拒绝（不覆盖）",
+    tools.rs:138: description: "列出回收站内容（条目名、原路径、大小）。删除后想找回东西时先用它。",
+    tools.rs:154: description: "把回收站里的某项恢复到原路径。entry 用 trash_list 给出的条目名。",
+    tools.rs:159: "entry": {"type": "string", "description": "条目名，形如 1759000000-1"}
+    tools.rs:164: consequence: "把文件搬回原路径；若原路径已被占用则拒绝（不覆盖现有文件）",
+    tools.rs:171: description: "查询系统状态：内存、磁盘、服务列表（由 aether 系统服务提供）",
+    tools.rs:176: "scope": {"type": "string", "enum": ["cpu", "memory", "disk", "services"], "description"
+    tools.rs:187: description: "读取一个文本文件的内容（只读）。仅可读用户数据区（家目录、/tmp）与 aether 自身配置/日志；系统区（/etc 除 aether 外、/pr
+    tools.rs:191: "properties": {"path": {"type": "string", "description": "文件绝对路径"}},
+    tools.rs:202: description: "运行一个预置的系统探针，返回只读信息（uname/disk/processes/whoami）",
+    tools.rs:207: "probe": {"type": "string", "enum": ["uname", "disk", "processes", "whoami"], "descripti
+    tools.rs:218: description: "操作桌面：切换窗口布局（layout_set）、打开应用窗口（open_app）、关闭当前活动窗口（close_active）",
+    tools.rs:226: "description": "桌面操作类型"
+    tools.rs:231: "description": "action=layout_set 时的目标布局"
+    tools.rs:235: "enum": ["文件", "终端", "浏览器", "音乐", "设置"],
+    tools.rs:236: "description": "action=open_app 时的应用名"
+    tools.rs:248: description: "把当前系统整盘安装到指定磁盘（isohybrid 镜像 dd 覆盖写，安装后从该盘引导）。整盘覆盖，目标盘数据将丢失！L3 危险操作：需用户确认，且
+    tools.rs:253: "disk": {"type": "string", "description": "目标块设备（如 /dev/vda、/dev/sda），整盘覆盖"},
+    tools.rs:254: "confirm": {"type": "string", "description": "回显确认：必须与 disk 完全相同，否则拒绝执行"}
+    tools.rs:259: consequence: "整盘覆盖写入：目标磁盘上的分区表与所有数据将被永久删除，不可恢复。",
+    tools.rs:265: description: "关机或重启这台机器。**不可逆**：未保存的工作会丢失。L3 危险操作：需用户确认，且 confirm 参数必须与 action 完全一致。",
+    tools.rs:270: "action": {"type": "string", "enum": ["poweroff", "reboot"], "description": "poweroff = 
+    tools.rs:271: "confirm": {"type": "string", "description": "回显确认：必须与 action 完全相同，否则拒绝执行"}
+    tools.rs:276: consequence: "整机关机/重启：正在运行的程序会立即停止，未保存的数据将丢失。",
+    tools.rs:283: name: "app_list",            description: "列出这台机器上已安装的应用。要装应用、排障、或者确认某个程序在不在，先看这个。",
+    tools.rs:297: description: "把一个应用包（含 app.json 的目录）装进系统，装完在终端里直接敲名字就能运行。**装之前会做依赖预检**：静态链接、缺哪些共享库、或者根本不
+    tools.rs:302: "path": {"type": "string", "description": "应用包目录（里面要有 app.json）。通常先把它放在家目录或 /tmp"}
+    tools.rs:307: consequence: "该目录会被复制进 /var/apps/<id>/，并出现在终端的 PATH 里。装进来的程序以你的权限运行。",
+    tools.rs:313: description: "卸载一个已安装的应用。不是直接删 —— 会移入回收站，删错了还能捞回来。",
+    tools.rs:318: "id": {"type": "string", "description": "应用 id（先用 app_list 查）"}
+    tools.rs:323: consequence: "该应用从系统里移除（移入回收站），终端里的命令随之失效。",
+    tools.rs:507: "<已脱敏：{} 字节，指纹 {}>",
+    tools.rs:530: "<已脱敏（非对象参数）：{} 字节，指纹 {}>",
+    tools.rs:560: bail!("未知工具: {name}");
+    tools.rs:572: format!("⚠ 审计日志写入失败（{e}），本次操作未留痕\n")
+    tools.rs:608: return Ok("（剪贴板为空）".into());
+    tools.rs:615: bail!("缺少参数 text");
+    tools.rs:619: Ok(format!("已写入剪贴板（{bytes} 字节）"))
+    tools.rs:626: return Ok(format!("还没有装任何应用（目录 {}）", root.display()));
+    tools.rs:628: let mut s = format!("已装 {} 个应用：\n", items.len());
+    tools.rs:644: bail!("缺少参数 path");
+    tools.rs:651: "已装「{}」（{}）→ {}\n大小 {} KB\n预检：{}",
+    tools.rs:659: s.push_str("\n⚠ 预检不通过但已装上 —— 它很可能跑不起来，缺什么上面写了。");
+    tools.rs:667: bail!("缺少参数 id");
+    tools.rs:671: Ok(format!("已卸载「{id}」，移入回收站：{}", trashed.display()))
+    tools.rs:687: Ok("内存: 本平台没有 /proc（开发机预览），无真实数据".into())
+    tools.rs:698: return Ok("运行中服务: 取不到（aether-init 未响应）".into());
+    tools.rs:708: Ok(format!("运行中服务（{} 个）: {}", lines.len(), lines.join(", ")))
+    tools.rs:711: "未知范围 {other}；可用范围: memory、services、cpu、disk"
+    tools.rs:816: return Err(anyhow::anyhow!("无法访问 {path}: {e}"));
+    tools.rs:834: "路径不在允许读取的范围内（{shown}）：read_file 仅可读用户数据区（家目录、/tmp）\
+    tools.rs:835: 与 aether 自身配置/日志；系统区与其它用户目录不可读"
+    tools.rs:840: bail!("拒绝读取凭证类路径（{shown}）");
+    tools.rs:862: std::fs::canonicalize(p).map_err(|e| anyhow::anyhow!("无法访问 {path}: {e}"))?
+    tools.rs:867: .ok_or_else(|| anyhow::anyhow!("路径缺少父目录: {path}"))?;
+    tools.rs:870: .ok_or_else(|| anyhow::anyhow!("路径缺少文件名: {path}"))?;
+    tools.rs:872: .map_err(|e| anyhow::anyhow!("父目录不可访问（{}）: {e}", parent.display()))?;
+    tools.rs:885: "路径不在允许写入的范围内（{shown}）：写操作仅限用户数据区（家目录、/tmp）。\
+    tools.rs:886: aether 自身的配置与日志不可写 —— 那等于让 AI 改自己的权限规则与审计记录"
+    tools.rs:890: bail!("拒绝写入凭证类路径（{shown}）");
+    tools.rs:897: bail!("缺少 path 参数");
+    tools.rs:918: bail!("缺少 path 参数");
+    tools.rs:921: bail!("缺少 content 参数");
+    tools.rs:925: "内容 {} 字节，超过单次写入上限 {MAX_WRITE_BYTES}（拒绝整段，不做截断）",
+    tools.rs:931: bail!("目标是目录，不能写入: {}", canon.display());
+    tools.rs:934: std::fs::write(&canon, content).with_context(|| format!("写入失败: {}", canon.display()))?;
+    tools.rs:936: "{} {}（{} 字节）",
+    tools.rs:937: if existed { "已覆盖" } else { "已创建" },
+    tools.rs:946: bail!("缺少 path 参数");
+    tools.rs:950: bail!("路径不存在: {}", canon.display());
+    tools.rs:956: let mut msg = format!("已移入回收站: {}（条目 {name}，可恢复）", canon.display());
+    tools.rs:958: msg.push_str(&format!("；顺带清理了 {purged} 个过期条目"));
+    tools.rs:966: bail!("缺少 from 参数");
+    tools.rs:969: bail!("缺少 to 参数");
+    tools.rs:974: bail!("源不存在: {}", src.display());
+    tools.rs:978: bail!("目标已存在，拒绝覆盖: {}", dst.display());
+    tools.rs:981: .with_context(|| format!("重命名失败: {} → {}", src.display(), dst.display()))?;
+    tools.rs:982: Ok(format!("已重命名: {} → {}", src.display(), dst.display()))
+    tools.rs:992: return Ok("回收站为空".into());
+    tools.rs:994: let mut out = format!("回收站共 {} 项（最新在前）：\n", entries.len());
+    tools.rs:997: "目录".to_string()
+    tools.rs:999: format!("{} 字节", e.bytes)
+    tools.rs:1001: out.push_str(&format!("- {}（{kind}，条目 {}）\n", e.origin, e.name));
+    tools.rs:1004: out.push_str(&format!("…（另有 {} 项未列出）\n", entries.len() - 50));
+    tools.rs:1006: out.push_str("\n恢复用 trash_restore，参数 entry 填上表的「条目」值");
+    tools.rs:1013: bail!("缺少 entry 参数（先用 trash_list 查条目名）");
+    tools.rs:1017: Ok(format!("已恢复到 {}", path.display()))
+    tools.rs:1028: other => bail!("未知探针: {other}"),
+    tools.rs:1030: .map_err(|e| anyhow::anyhow!("探针 {which} 运行失败: {e}"))?;
+    tools.rs:1039: const KNOWN_APPS: &[&str] = &["文件", "终端", "浏览器", "音乐", "设置"];
+    tools.rs:1067: .ok_or_else(|| anyhow::anyhow!("缺少 action 参数"))?;
+    tools.rs:1069: .ok_or_else(|| anyhow::anyhow!("未知电源动作「{raw}」：只接受 poweroff / reboot"))?;
+    tools.rs:1073: "关机/重启需回显确认：请将 confirm 参数设为与 action 完全相同（{}）以确认未保存的数据会丢失",
+    tools.rs:1082: bail!("缺少 disk 参数");
+    tools.rs:1085: bail!("磁盘参数必须是 /dev/<盘符> 形式（如 /dev/vda），拒绝: {disk}");
+    tools.rs:1090: "整盘擦除需回显确认：请将 confirm 参数设为与 disk 完全相同（{disk}）以确认目标盘数据将丢失"
+    tools.rs:1098: .map_err(|e| anyhow::anyhow!("安装器运行失败: {e}"))?;
+    tools.rs:1102: bail!("安装失败（{}）: {}", out.status, s.chars().take(400).collect::<String>());
+    tools.rs:1115: bail!("未知布局: {layout}");
+    tools.rs:1121: Ok(format!("已切换桌面布局为 {layout}"))
+    tools.rs:1126: bail!("未知应用: {app}");
+    tools.rs:1132: Ok(format!("已打开应用「{app}」"))
+    tools.rs:1139: Ok("已关闭当前活动窗口".into())
+    tools.rs:1141: other => bail!("未知桌面操作: {other}"),
+    trash.rs:97: bail!("回收站条目名冲突过多（同一秒内 1000 次删除）")
+    trash.rs:123: .with_context(|| format!("无法访问 {}", path.display()))?;
+    trash.rs:128: bail!("拒绝删除根目录 {}", abs.display());
+    trash.rs:132: .with_context(|| format!("无法创建回收站 {}", root.display()))?;
+    trash.rs:147: return Err(anyhow::anyhow!("移入回收站失败（{}）: {e}", abs.display()));
+    trash.rs:166: .with_context(|| format!("设置回收站权限失败 {}", p.display()))?;
+    trash.rs:216: bail!("非法的回收站条目名: {name}");
+    trash.rs:220: .with_context(|| format!("回收站条目不存在或已损坏: {name}"))?;
+    trash.rs:223: bail!("条目 {name} 的原路径为空");
+    trash.rs:227: bail!("原路径已被占用，未恢复: {}", origin.display());
+    trash.rs:231: .with_context(|| format!("无法重建目录 {}", parent.display()))?;
+    trash.rs:234: .with_context(|| format!("恢复失败: {}", origin.display()))?;
+    update.rs:146: serde_json::from_str(text).map_err(|e| format!("清单不是合法 JSON：{e}"))?;
+    update.rs:148: return Err(format!("版本号不合法：{:?}（只允许数字与点）", m.version));
+    update.rs:151: return Err("清单里没有任何文件".to_string());
+    update.rs:154: return Err(format!("清单里的文件过多（{}）", m.files.len()));
+    update.rs:160: "目标路径不在允许范围内：{:?}（允许的前缀：{}）",
+    update.rs:166: return Err(format!("{}：sha256 不是 64 位十六进制小写", f.path));
+    update.rs:170: return Err(format!("{}：在清单里出现了两次", f.path));
+    update.rs:183: .map_err(|e| format!("{}：包内找不到文件（{e}）", f.path))?;
+    update.rs:185: return Err(format!("{}：包内是符号链接，拒绝", f.path));
+    update.rs:188: return Err(format!("{}：包内不是普通文件", f.path));
+    update.rs:190: let got = crate::apps::sha256_file(&src).map_err(|e| format!("{}：算哈希失败（{e}）", f.path))?;
+    update.rs:193: "{}：哈希不符（清单 {} / 实际 {}）—— 整包拒绝",
+    update.rs:198: return Err(format!("{}：大小不符（清单 {} / 实际 {}）", f.path, f.bytes, md.len()));
+    update.rs:214: .map_err(|e| format!("读不到 {}：{e}", bundle.join(MANIFEST).display()))?;
+    update.rs:218: "拒绝降级/同版本：包内版本 {}，当前 {}（要回滚请用快照回滚）",
+    update.rs:228: .map_err(|e| format!("清不掉旧的暂存目录：{e}"))?;
+    update.rs:230: std::fs::create_dir_all(&staged_dir).map_err(|e| format!("建暂存目录失败：{e}"))?;
+    update.rs:235: std::fs::create_dir_all(p).map_err(|e| format!("建目录失败 {}：{e}", p.display()))?;
+    update.rs:238: .map_err(|e| format!("拷贝 {} 失败：{e}", f.path))?;
+    update.rs:247: std::fs::create_dir_all(p).map_err(|e| format!("建目录失败 {}：{e}", p.display()))?;
+    update.rs:250: .map_err(|e| format!("写版本文件失败：{e}"))?;
+    update.rs:260: std::fs::write(root.join(READY), json).map_err(|e| format!("写 {} 失败：{e}", READY))?;
+    update.rs:278: std::fs::write(root.join(APPLY_LIST), list).map_err(|e| format!("写 {} 失败：{e}", APPLY_LIS
+    update.rs:330: return Err(format!("包名不合法：{name:?}（只允许字母数字与 - _ .）"));
+    update.rs:335: "投递目录里没有这个包：{}（把更新包放到 {}/{} 下再试）",
