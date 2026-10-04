@@ -36,6 +36,7 @@ pub enum Kind {
 
 impl Kind {
     /// 展示用标签（中文）。
+
     pub fn label(self) -> &'static str {
         match self {
             Kind::App => "应用",
@@ -234,6 +235,20 @@ impl Palette {
         self.cursor = crate::textview::TextCursor::default();
         self.selected = 0;
         self.refresh();
+    }
+
+    /// 鼠标点选了**条目下标** `item`（不是可见行的行号 —— 行是过滤排序后的）。
+    ///
+    /// 返回要执行的 `Target`（与键盘回车返回的是同一个东西），越界给 `None`。
+    /// 抽成方法是为了**能测**：坐标 → 条目的换算由绘制侧登记，
+    /// 而"点了这一条要做什么"是纯逻辑。
+    pub fn activate_item(&mut self, item: usize) -> Option<Target> {
+        let target = self.items.get(item)?.target;
+        // 光标同步到该条目所在的可见行（万一面板没关，界面状态也是对的）
+        if let Some(row) = self.results.iter().position(|h| h.item == item) {
+            self.selected = row.min(self.results.len().saturating_sub(1));
+        }
+        Some(target)
     }
 
     pub fn close(&mut self) {
@@ -670,6 +685,25 @@ mod tests {
         let mut p = Palette::default();
         p.open_with(three_items());
         assert_eq!(handle_key(&mut p, &K::Escape), PaletteAction::Close);
+    }
+
+    /// 鼠标点选：**条目下标** → `Target`；越界给 `None`（不许 panic）。
+    #[test]
+    fn activate_item_maps_an_item_index_to_its_target() {
+        let items = build_items(&["a"], &[("设置：外观", "Settings: Appearance")], &[]);
+        let mut p = Palette::default();
+        p.open_with(items);
+        assert!(!p.results.is_empty(), "至少要有一条可见结果");
+        let item = p.results[0].item;
+        let target = p.activate_item(item);
+        assert!(target.is_some(), "可见条目应当能激活");
+        // 越界：条目下标与可见行号都可能越界，两种都要挡住
+        assert!(p.activate_item(p.items.len() + 5).is_none());
+        assert!(p.activate_item(usize::MAX).is_none());
+        // 光标会跟着同步到那一行（万一面板没关，界面状态也是对的）
+        let item0 = p.results[0].item;
+        let _ = p.activate_item(item0);
+        assert!(p.selected < p.results.len().max(1));
     }
 
 }

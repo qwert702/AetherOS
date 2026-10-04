@@ -617,7 +617,18 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 非拖拽的按下-抬起 = 一次点击。QMP/真机都可能把 down+up
                     // 打进同一批事件，在帧间锁存，否则快速点击会被吞掉。
                     if !was_drag {
-                        click_pending = true;
+                        // §5.5 鼠标点选：命令面板是**模态**的 —— 点击先归它。
+                        // 与键盘的守卫顺序同一道理（`KeyRoute::Palette`）：
+                        // 面板吃到就不置 `click_pending`，否则点击会穿透到背后的窗口。
+                        if let Some(item) = renderer.palette_hit(mouse.0, mouse.1) {
+                            if let Some(target) = renderer.palette.activate_item(item) {
+                                // 与键盘回车**完全同一条路**：先关面板再执行
+                                renderer.palette.close();
+                                run_palette_target(&mut desktop, &mut renderer, target, &mut toast);
+                            }
+                        } else {
+                            click_pending = true;
+                        }
                     }
                 }
                 input::UiEvent::Super(c, shift) => {

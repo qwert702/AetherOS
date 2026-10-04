@@ -1625,6 +1625,9 @@ pub struct Renderer {
     pub snapshots: crate::snapview::SnapView,
     /// 「系统更新」页的状态（§3.1）。
     pub update: crate::updateview::UpdateView,
+    /// 命令面板可见行的命中区（§5.5 鼠标点选）：(矩形, 条目下标)。
+    /// 每帧重算 —— 面板的候选会随输入变化，"上一帧的命中区"没有意义。
+    pub palette_hits: Vec<(Rect, usize)>,
     /// 显示输出（§3.8）：**只读**，没有交互状态，所以直接存列表而不是单开视图模块。
     pub displays: Vec<aether_ipc::DisplayWire>,
     /// 合成器驱动的输出下标（由 aetherd 告知，约定见 `aetherd::display::DRIVEN_INDEX`）。
@@ -1773,6 +1776,8 @@ fn draw_palette(
     h: usize,
     p: &crate::palette::Palette,
     tr: Option<&TextRenderer>,
+    // §5.5 鼠标点选：登记可见行的矩形 → **条目下标**（不是行号！行是过滤排序后的）
+    hits: &mut Vec<(Rect, usize)>,
 ) {
     use crate::draw::theme::color;
     // 压暗背景：面板是模态的，视觉上也该如此
@@ -1817,6 +1822,16 @@ fn draw_palette(
         let y = py + 56.0 + row_h * i as f32;
         let it = &p.items[hit.item];
         let sel = i == p.selected;
+        // 命中区：整行可点（含右侧的类别标签）—— 点了就执行这一条
+        hits.push((
+            Rect {
+                x: px as i32 + 8,
+                y: y as i32,
+                w: panel_w as i32 - 16,
+                h: row_h as i32 - 4,
+            },
+            hit.item,
+        ));
         if sel {
             fill_rect(
                 buf, w, h,
@@ -1964,6 +1979,7 @@ impl Renderer {
         time: Default::default(),
         snapshots: Default::default(),
         update: Default::default(),
+        palette_hits: Vec::new(),
         displays: Vec::new(),
         driven_index: 0,
         displays_loaded: false,
@@ -2214,7 +2230,8 @@ impl Renderer {
         }
         // 命令面板（§5.5）：在普通浮层之上、锁屏之下。
         if self.palette.open {
-            draw_palette(buf, w, h, &self.palette, tr);
+            self.palette_hits.clear();
+        draw_palette(buf, w, h, &self.palette, tr, &mut self.palette_hits);
             mark!("palette");
         }
         if let Some((reply, kind, age)) = ui.ai_reply {
@@ -2661,6 +2678,19 @@ impl Renderer {
             crate::i18n::tr("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
             font::LABEL, color::text_dim(), 0.7,
         );
+    }
+
+    /// 命令面板里被点中的**条目下标**（§5.5）。没有命中给 `None`。
+    ///
+    /// 用 `palette_hits`（上一帧绘制时登记的）来判断 —— 这是"命中区由绘制产生"的
+    /// 一贯做法（桌面图标、设置项、控制中心都这样），好处是**只有真的画出来的东西才能被点到**。
+    /// 调用点在 Linux 的 fbdev 循环里；非 Linux 上只有测试用它 —— 按平台 allow。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn palette_hit(&self, x: f32, y: f32) -> Option<usize> {
+        self.palette_hits
+            .iter()
+            .find(|(r, _)| r.contains(x, y))
+            .map(|(_, item)| *item)
     }
 
     /// 展开中的下拉菜单（登记各项命中区，悬停高亮）。
@@ -6574,6 +6604,42 @@ mod blit_tests {
         // 带未读数的动态文案走语言分支，单独核对两条分支都在
         assert!(src.contains("Notifications ({unread})"), "动态文案缺英文分支");
         assert!(src.contains("通知（{unread} 条未读）"), "动态文案缺中文分支");
+    }
+
+    /// §5.5：命令面板的**可见行都要能点**，且登记的是**条目下标**（不是行号）。
+    ///
+    /// 这条盯的是"点了没反应 / 点错了"：如果没有登记命中区，`palette_hit` 永远是 `None`；
+    /// 如果登记成了行号，点了第一条会执行到别的条目（行是过滤排序后的，两者不同）。
+    #[test]
+    fn palette_registers_a_clickable_row_for_every_visible_result() {
+        let Some(tr) = crate::text::TextRenderer::load() else {
+            eprintln!("无可用字体，跳过");
+            return;
+        };
+        let (w, h) = (800usize, 600usize);
+        let mut p = crate::palette::Palette::default();
+        p.open_with(crate::palette::build_items(
+            &["a", "b"],
+            &[("设置：外观", "Settings: Appearance"), ("设置：网络", "Settings: Network")],
+            &[],
+        ));
+        let mut buf = vec![0u32; w * h];
+        let mut hits = Vec::new();
+        crate::draw::draw_palette(&mut buf, w, h, &p, Some(&tr), &mut hits);
+        assert_eq!(
+            hits.len(),
+            p.visible().len(),
+            "每一条可见结果都该登记命中区"
+        );
+        assert!(!hits.is_empty(), "至少要有一条可见结果，否则这条测试没有意义");
+        // 命中区要有真实大小，且登记的必须是**条目下标**
+        for (i, (r, item)) in hits.iter().enumerate() {
+            assert!(r.w > 0 && r.h > 0, "命中区不能是空的：{r:?}");
+            assert_eq!(
+                *item, p.visible()[i].item,
+                "第 {i} 行登记的必须是它对应的条目下标"
+            );
+        }
     }
 
 }
