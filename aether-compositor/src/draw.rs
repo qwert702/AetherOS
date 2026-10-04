@@ -3346,7 +3346,7 @@ fn draw_settings_content(
             tr.draw(
                 buf, w, h, (content.x + 24) as f32, ry as f32,
                 crate::i18n::tr(
-                    "点一行即安装（装之前会弹确认卡片，还会做依赖预检）。",
+                    crate::i18n::pick(lang, "点一行即安装（装之前会弹确认卡片，还会做依赖预检）。", "Click a row to install (a confirmation card pops up first, plus a dependency pre-check)."),
                     "Click a row to install (a confirmation card appears; dependencies are pre-checked).",
                 ),
                 font::CAPTION, color::text_dim(), 0.85,
@@ -4020,6 +4020,8 @@ fn draw_settings_content(
             }
         }
         "应用" => {
+            // §3.5：本页文案双语（页面 chrome）
+            let lang = crate::i18n::lang();
             // 2026-10-01：把「应用」页从"待接入"变成**真能用的页**。
             //
             // 这里只列**内建应用**（每个都能真实打开）—— 不是偷懒：
@@ -4050,14 +4052,17 @@ fn draw_settings_content(
                     font::CAPTION, color::text_dim(), 0.85);
             ry += 20;
             tr.draw(buf, w, h, (content.x + 24) as f32, ry as f32,
-                    "在设置里列出/卸载它们需要 IPC 能力（aetherd 代理），下一步接入。",
+                    crate::i18n::pick(lang, "在设置里列出/卸载它们需要 IPC 能力（aetherd 代理），下一步接入。", "Listing/uninstalling them from Settings needs IPC capability (aetherd proxy); coming next."),
                     font::CAPTION, color::text_dim(), 0.75);
         }
         "外观" => {
+            // §3.5：本页文案双语（页面 chrome）。注意"界面语言"那条提示里
+            // 写着"正文尚未翻译"——等 §3.5 做完要一起改掉（别留一句过期的自述）。
+            let lang = crate::i18n::lang();
             // 主题开关：**默认明亮（纯白）**，切换立即生效 —— 改全局 MODE 并重建背景缓存，
             // 由事件循环执行（绘制期不改状态）。
             let r1 = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
-            toggle_row(buf, w, h, mouse, tr, r1, "深色模式", Some("默认关闭（明亮/纯白）；切换立即生效"), s.dark_mode, SettingsHit::ToggleDark, hits);
+            toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "深色模式", "Dark mode"), Some(crate::i18n::pick(lang, "默认关闭（明亮/纯白）；切换立即生效", "Off by default (bright / pure white); takes effect immediately")), s.dark_mode, SettingsHit::ToggleDark, hits);
             // §3.4 无障碍：高对比度。紧跟主题开关 —— 它是"看得清"这条线上的第二项。
             // 说明文字直接给出**可验证的依据**（WCAG AA），而不是"更清楚"这种主观话。
             let r_hc = Rect { x: r1.x, y: r1.y + 56, w: r1.w, h: r1.h };
@@ -4089,8 +4094,8 @@ fn draw_settings_content(
                 "{} · {}",
                 lang.label(),
                 crate::i18n::tr(
-                    "切换后左栏与页标题立即生效；正文尚未翻译（见缺口清单 §3.5）",
-                    "Sidebar and titles switch immediately; page bodies are not translated yet",
+                    "切换后左栏与页标题立即生效；**部分页面的正文仍在翻译中**（见缺口清单 §3.5）",
+                    "Sidebar and titles switch immediately; some page bodies are still being translated",
                 )
             );
             let next_locale = if s.locale == 1 { 0 } else { 1 };
@@ -4098,15 +4103,15 @@ fn draw_settings_content(
                        s.locale == 1, SettingsHit::Locale(next_locale), hits);
             let _ = lang;
 
-            toggle_row(buf, w, h, mouse, tr, r_hc, "高对比度",
-                       Some("把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交"),
+            toggle_row(buf, w, h, mouse, tr, r_hc, crate::i18n::pick(lang, "高对比度", "High contrast"),
+                       Some(crate::i18n::pick(lang, "把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交", "Raises text/background contrast above WCAG AA (4.5:1); orthogonal to the theme")),
                        s.high_contrast, SettingsHit::ToggleContrast, hits);
             ry += 58;
-            widgets::group_header(buf, w, h, content.x + 24, ry, "当前配色", Some(tr));
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "当前配色", "Current colors"), Some(tr));
             ry += 22;
             // 壁纸色板（批次 L-1）：**真的能换** —— 点一下立即生效并落盘。
             // 色板用壁纸自身的配色画，所见即所得（不做"点了才知道什么颜色"的控件）。
-            widgets::group_header(buf, w, h, content.x + 24, ry, "壁纸", Some(tr));
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "壁纸", "Wallpaper"), Some(tr));
             ry += 24;
             for i in 0..crate::settings::WALLPAPER_COUNT {
                 let sw = Rect { x: content.x + 24 + (i as i32) * 46, y: ry, w: 38, h: 30 };
@@ -4129,10 +4134,17 @@ fn draw_settings_content(
             // 息屏档位（§3.6）：固定档位按钮，当前档高亮。
             // 0 = 永不 —— 演示与排障时需要它，所以它必须是一个**能选中的档**，
             // 而不是"设了 0 却显示成 5 分钟"这种含糊状态。
-            widgets::group_header(buf, w, h, content.x + 24, ry, "空闲息屏", Some(tr));
+            widgets::group_header(buf, w, h, content.x + 24, ry, crate::i18n::pick(lang, "空闲息屏", "Idle blanking"), Some(tr));
             ry += 24;
             for (i, min) in crate::settings::IDLE_BLANK_OPTIONS.iter().enumerate() {
-                let label = if *min == 0 { "永不".to_string() } else { format!("{min} 分钟") };
+                // 带参数 → 按语言分支（`format!` 的模板必须是字面量）
+                let label = if *min == 0 {
+                    crate::i18n::pick(lang, "永不", "Never").to_string()
+                } else if crate::i18n::is_en() {
+                    format!("{min} min")
+                } else {
+                    format!("{min} 分钟")
+                };
                 let b = Rect { x: content.x + 24 + (i as i32) * 84, y: ry, w: 76, h: 34 };
                 let on = s.idle_blank_min == *min;
                 widgets::row(buf, w, h, b, &label, None, widgets::States::at(b, mouse), Some(tr));
@@ -4145,21 +4157,21 @@ fn draw_settings_content(
             // 性能 HUD（§5.10）：**默认关**。说明里写清"显示的是真实数字"，
             // 因为本项目对假数据零容忍 —— 用户有权知道这块面板值不值得信。
             let hud = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 44 };
-            toggle_row(buf, w, h, mouse, tr, hud, "性能 HUD",
-                       Some("右下角显示真实帧时间与内存占用（排障用，默认关）"),
+            toggle_row(buf, w, h, mouse, tr, hud, crate::i18n::pick(lang, "性能 HUD", "Performance HUD"),
+                       Some(crate::i18n::pick(lang, "右下角显示真实帧时间与内存占用（排障用，默认关）", "Shows real frame time and memory in the bottom-right (for troubleshooting, off by default)")),
                        s.perf_hud, SettingsHit::TogglePerfHud, hits);
             ry += 58;
             // 恢复默认（批次 L-1）：用户改坏了能回去。**真的重置**，不是只改显示。
             let reset = Rect { x: content.x + 18, y: ry, w: row_w + 12, h: 40 };
-            widgets::row(buf, w, h, reset, "恢复默认外观",
-                         Some("主题/壁纸/时钟/输入等恢复出厂值（时区保留）"),
+            widgets::row(buf, w, h, reset, crate::i18n::pick(lang, "恢复默认外观", "Restore default appearance"),
+                         Some(crate::i18n::pick(lang, "主题/壁纸/时钟/输入等恢复出厂值（时区保留）", "Resets theme / wallpaper / clock / input to factory values (time zone kept)")),
                          widgets::States::at(reset, mouse), Some(tr));
             hits.push((reset, SettingsHit::ResetDefaults));
             ry += 52;
             for (k, v) in [
-                ("主色", "teal（单一强调色，AI 元素同色）"),
-                ("圆角", "4 / 6 / 8"),
-                ("层次", "两层轻影 + 1px 描边"),
+                (crate::i18n::pick(lang, "主色", "Accent"), crate::i18n::pick(lang, "teal（单一强调色，AI 元素同色）", "teal (single accent, same as AI elements)")),
+                (crate::i18n::pick(lang, "圆角", "Radius"), "4 / 6 / 8"),
+                (crate::i18n::pick(lang, "层次", "Depth"), crate::i18n::pick(lang, "两层轻影 + 1px 描边", "two soft shadows + 1px outline")),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + 24) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
                 tr.draw(buf, w, h, (content.x + 120) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
