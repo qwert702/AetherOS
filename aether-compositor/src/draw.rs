@@ -1625,6 +1625,8 @@ pub struct Renderer {
     pub snapshots: crate::snapview::SnapView,
     /// 「系统更新」页的状态（§3.1）。
     pub update: crate::updateview::UpdateView,
+    /// 首启向导选项按钮的命中区（§5.8 鼠标点选）：(矩形, 选项下标)。
+    pub setup_hits: Vec<(Rect, usize)>,
     /// 命令面板可见行的命中区（§5.5 鼠标点选）：(矩形, 条目下标)。
     /// 每帧重算 —— 面板的候选会随输入变化，"上一帧的命中区"没有意义。
     pub palette_hits: Vec<(Rect, usize)>,
@@ -1872,7 +1874,8 @@ fn draw_palette(
 
 /// 首次启动向导覆层（§5.8）。
 ///
-/// 键盘驱动（与命令面板同一取舍），所以**每一步都必须把"按哪个键做什么"写在脸上** ——
+/// 每一步都有**真按钮**（§5.8）—— 键盘与鼠标都走 `setup::options` 这张表；
+/// 底部的按键提示仍然保留（键盘用户更快），但**按钮才是"看得见能做"的那一份**。
 /// 提示文案来自 `setup::hint`，与按键映射同源（`setup::handle_key`），不会分叉。
 fn draw_setup(
     buf: &mut [u32],
@@ -1881,8 +1884,13 @@ fn draw_setup(
     s: &crate::setup::Setup,
     settings: &crate::settings::Settings,
     tr: Option<&TextRenderer>,
+    mouse: (f32, f32),
+    // §5.8 鼠标点选：登记"选项按钮的矩形 → 选项下标"。
+    // **先画按钮、再登记命中区** —— 本项目零假控件：能点的东西必须看得见。
+    hits: &mut Vec<(Rect, usize)>,
 ) {
     use crate::draw::theme::color;
+    use crate::widgets;
     // 全屏压暗：开机第一屏，背后本来就没什么内容，但模态语义要一致
     fill_rect(
         buf,
@@ -1926,6 +1934,34 @@ fn draw_setup(
         if settings.high_contrast { crate::i18n::tr("高对比", "High contrast") } else { crate::i18n::tr("标准", "Standard") },
     );
     tr.draw(buf, w, h, px + 24.0, py + 96.0, &cur, font::CAPTION, color::text_dim(), 0.85);
+
+    // §5.8：每一步的**真按钮**（键盘与鼠标共用 `setup::options` 这张表）。
+    // 画出来的每个按钮都登记命中区；点下去执行的动作就是表里写的那个。
+    {
+        let opts = crate::setup::options(s.step);
+        let mut bx = px + 24.0;
+        let by = py + 132.0;
+        let bh = 34.0;
+        for (i, (zh, en, _)) in opts.iter().enumerate() {
+            let label = crate::i18n::pick(lang, zh, en);
+            let bw = (tr.measure(label, font::BODY) + 36.0).max(96.0);
+            // 超出面板就不画（也不登记命中区）—— 宁可少一个按钮，也不要画出界
+            if bx + bw > px + panel_w - 16.0 {
+                break;
+            }
+            let r = Rect { x: bx as i32, y: by as i32, w: bw as i32, h: bh as i32 };
+            // 只有"这一步就一个按钮"时才用主操作样式（例如收尾步的「开始使用」）；
+            // 多选一步（语言/时区/外观）里几个按钮是平级的
+            let kind = if opts.len() == 1 {
+                widgets::BtnKind::Primary
+            } else {
+                widgets::BtnKind::Secondary
+            };
+            widgets::button(buf, w, h, r, label, kind, widgets::States::at(r, mouse), Some(tr));
+            hits.push((r, i));
+            bx += bw + 12.0;
+        }
+    }
 
     // 步骤指示 + 操作提示
     let footer = format!(
@@ -1979,6 +2015,7 @@ impl Renderer {
         time: Default::default(),
         snapshots: Default::default(),
         update: Default::default(),
+        setup_hits: Vec::new(),
         palette_hits: Vec::new(),
         displays: Vec::new(),
         driven_index: 0,
@@ -2225,7 +2262,17 @@ impl Renderer {
         // 首次启动向导（§5.8）：**盖在命令面板之上**（开机第一次进来，
         // 向导是当前唯一该做的事），但仍在锁屏之下（锁屏必须最后画，见文件末尾注释）。
         if self.setup.open {
-            draw_setup(buf, w, h, &self.setup, &self.settings, tr);
+            self.setup_hits.clear();
+        draw_setup(
+            buf,
+            w,
+            h,
+            &self.setup,
+            &self.settings,
+            tr,
+            ui.mouse,
+            &mut self.setup_hits,
+        );
             mark!("setup");
         }
         // 命令面板（§5.5）：在普通浮层之上、锁屏之下。
@@ -2678,6 +2725,18 @@ impl Renderer {
             crate::i18n::tr("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
             font::LABEL, color::text_dim(), 0.7,
         );
+    }
+
+    /// 向导里被点中的**选项下标**（§5.8）。没有命中给 `None`。
+    ///
+    /// 与 `palette_hit` 同一做法：命中区由绘制产生，
+    /// 所以**只有真的画出来的按钮才能被点到**（画不下就不画、也就不登记）。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn setup_hit(&self, x: f32, y: f32) -> Option<usize> {
+        self.setup_hits
+            .iter()
+            .find(|(r, _)| r.contains(x, y))
+            .map(|(_, idx)| *idx)
     }
 
     /// 命令面板里被点中的**条目下标**（§5.5）。没有命中给 `None`。

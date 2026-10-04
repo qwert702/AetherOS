@@ -443,94 +443,17 @@ fn run_fbdev() -> anyhow::Result<()> {
             // §5.8 首次启动向导：**优先级高于命令面板与 DNS 编辑** ——
             // 开机第一次进来时它是当前唯一该做的事，别的浮层不该抢键。
             if matches!(route, KeyRoute::Setup) {
+                // 键盘与鼠标**共用同一个动作应用函数**（`apply_setup_action`）——
+                // 否则"按 1 选语言"与"点语言按钮"会各写一份，两份迟早分叉。
                 let act = match &ev {
                     input::UiEvent::Char(c) => setup::handle_key(renderer.setup.step, *c),
                     input::UiEvent::Enter => setup::Action::Next,
                     input::UiEvent::Escape => setup::Action::SkipAll,
                     _ => setup::Action::None,
                 };
-                // 记"已完成"并落盘：走完与跳过**都算完成**（否则下次开机又弹）。
-                let mut mark_done = false;
-                match act {
-                    setup::Action::None => {}
-                    setup::Action::Next => {
-                        if renderer.setup.advance() {
-                            mark_done = true;
-                        }
-                    }
-                    setup::Action::Back => renderer.setup.back(),
-                    setup::Action::SkipAll => {
-                        renderer.setup.finish();
-                        mark_done = true;
-                    }
-                    // 下面是"让用户做一次已有的设置操作"——**复用设置中心那条命中路径**
-                    // （`apply_hit`），本处不复制任何设置逻辑，否则两份必然分叉。
-                    setup::Action::SetLang(i) => {
-                        settings::apply_hit(
-                            &mut renderer.settings,
-                            &mut renderer.settings_page,
-                            settings::SettingsHit::Locale(i),
-                        );
-                        crate::i18n::set_lang(crate::i18n::Lang::from_locale(renderer.settings.locale));
-                    }
-                    setup::Action::TzShift(d) => {
-                        settings::apply_hit(
-                            &mut renderer.settings,
-                            &mut renderer.settings_page,
-                            settings::SettingsHit::TzShift(d),
-                        );
-                    }
-                    setup::Action::SetDark => {
-                        settings::apply_hit(
-                            &mut renderer.settings,
-                            &mut renderer.settings_page,
-                            settings::SettingsHit::ToggleDark,
-                        );
-                        // 先取值再调用：同一表达式里既 `&mut renderer` 又读它的字段会借不过
-                        // （这段在 `cfg(target_os = "linux")` 的循环里 —— **又是 musl 抓出来的**）
-                        let (dark, hc) = (
-                            renderer.settings.dark_mode,
-                            renderer.settings.high_contrast,
-                        );
-                        apply_theme(&mut renderer, dark, hc);
-                    }
-                    setup::Action::SetContrast => {
-                        settings::apply_hit(
-                            &mut renderer.settings,
-                            &mut renderer.settings_page,
-                            settings::SettingsHit::ToggleContrast,
-                        );
-                        // 先取值再调用：同一表达式里既 `&mut renderer` 又读它的字段会借不过
-                        // （这段在 `cfg(target_os = "linux")` 的循环里 —— **又是 musl 抓出来的**）
-                        let (dark, hc) = (
-                            renderer.settings.dark_mode,
-                            renderer.settings.high_contrast,
-                        );
-                        apply_theme(&mut renderer, dark, hc);
-                    }
-                    setup::Action::UseDefaultDns => {
-                        // 走与设置页同一条出口（`set_dns` → aetherd → resolv.conf）
-                        set_dns(ai_tx.clone(), setup::DEFAULT_DNS.to_string());
-                        push_toast(
-                            &mut toast,
-                            &mut renderer.notifs,
-                            "正在写入默认 DNS…".to_string(),
-                            notifications::Kind::Info,
-                        );
-                    }
-                }
+                let mark_done = apply_setup_action(act, &mut renderer, &ai_tx, &mut toast);
                 if mark_done {
-                    renderer.settings.setup_done = true;
-                    if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
-                        // 存不下来要**说出来**：否则下次开机又弹一遍，用户不知道为什么
-                        eprintln!("[aether-compositor] 保存向导完成状态失败：{e}");
-                        push_toast(
-                            &mut toast,
-                            &mut renderer.notifs,
-                            format!("向导状态保存失败：{e}"),
-                            notifications::Kind::Err,
-                        );
-                    }
+                    save_setup_done(&mut renderer, &mut toast);
                 }
                 continue;
             }
@@ -617,10 +540,28 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 非拖拽的按下-抬起 = 一次点击。QMP/真机都可能把 down+up
                     // 打进同一批事件，在帧间锁存，否则快速点击会被吞掉。
                     if !was_drag {
-                        // §5.5 鼠标点选：命令面板是**模态**的 —— 点击先归它。
-                        // 与键盘的守卫顺序同一道理（`KeyRoute::Palette`）：
-                        // 面板吃到就不置 `click_pending`，否则点击会穿透到背后的窗口。
-                        if let Some(item) = renderer.palette_hit(mouse.0, mouse.1) {
+                        // §5.8 鼠标点选：向导（若开着）是模态的，点击先归它 ——
+                        // 与键盘的 `KeyRoute::Setup` 同序。走的是与键盘**同一个**
+                        // `apply_setup_action`，所以"按 1 选语言"与"点语言按钮"不会分叉。
+                        let wizard_action = if renderer.setup.open {
+                            renderer
+                                .setup_hit(mouse.0, mouse.1)
+                                .and_then(|i| crate::setup::options(renderer.setup.step).get(i).map(|o| o.2))
+                        } else {
+                            None
+                        };
+                        if let Some(act) = wizard_action {
+                            let mark_done =
+                                apply_setup_action(act, &mut renderer, &ai_tx, &mut toast);
+                            if mark_done {
+                                save_setup_done(&mut renderer, &mut toast);
+                            }
+                        } else if renderer.setup.open {
+                            // 向导开着但点的是别处：**吞掉**这次点击（模态语义），
+                            // 不让它穿透到背后的窗口
+                        } else if let Some(item) = renderer.palette_hit(mouse.0, mouse.1) {
+                            // 与键盘的守卫顺序同一道理（`KeyRoute::Palette`）：
+                            // 面板吃到就不置 `click_pending`，否则点击会穿透到背后的窗口。
                             if let Some(target) = renderer.palette.activate_item(item) {
                                 // 与键盘回车**完全同一条路**：先关面板再执行
                                 renderer.palette.close();
@@ -5819,6 +5760,101 @@ pub fn ctrl_intent(c: char, shift: bool) -> CtrlIntent {
         ('v', true) => CtrlIntent::Paste,
         ('w', false) => CtrlIntent::CloseWindow,
         _ => CtrlIntent::Unhandled,
+    }
+}
+
+/// 应用向导的一个动作（**键盘与鼠标共用这一条路**）。
+///
+/// 返回是否要把"向导已完成"落盘（走完与跳过都算完成，见调用方）。
+///
+/// 为什么抽出来：向导的动作原本写在事件循环的 `Setup` 分支里，
+/// 而 §5.8 要给它加鼠标 —— 如果鼠标那条路自己再写一遍，
+/// "按 1 选语言"与"点语言按钮"就会是两份实现，迟早分叉。
+// 只在 Linux 的输入循环里被调用（键盘与鼠标两条路都在那儿），
+// 而它内部用到的 `set_dns` 本身也是 Linux-only —— 按平台门控最诚实。
+#[cfg(target_os = "linux")]
+fn apply_setup_action(
+    act: setup::Action,
+    renderer: &mut draw::Renderer,
+    ai_tx: &mpsc::Sender<AiEvent>,
+    toast: &mut Option<(String, Instant)>,
+) -> bool {
+    let mut mark_done = false;
+    match act {
+        setup::Action::None => {}
+        setup::Action::Next => {
+            if renderer.setup.advance() {
+                mark_done = true;
+            }
+        }
+        setup::Action::Back => renderer.setup.back(),
+        setup::Action::SkipAll => {
+            renderer.setup.finish();
+            mark_done = true;
+        }
+        // 下面是"让用户做一次已有的设置操作"——**复用设置中心那条命中路径**
+        // （`apply_hit`），本处不复制任何设置逻辑，否则两份必然分叉。
+        setup::Action::SetLang(i) => {
+            settings::apply_hit(
+                &mut renderer.settings,
+                &mut renderer.settings_page,
+                settings::SettingsHit::Locale(i),
+            );
+            crate::i18n::set_lang(crate::i18n::Lang::from_locale(renderer.settings.locale));
+        }
+        setup::Action::TzShift(d) => {
+            settings::apply_hit(
+                &mut renderer.settings,
+                &mut renderer.settings_page,
+                settings::SettingsHit::TzShift(d),
+            );
+        }
+        setup::Action::SetDark => {
+            settings::apply_hit(
+                &mut renderer.settings,
+                &mut renderer.settings_page,
+                settings::SettingsHit::ToggleDark,
+            );
+            // 先取值再调用：同一表达式里既 `&mut renderer` 又读它的字段会借不过
+            let (dark, hc) = (renderer.settings.dark_mode, renderer.settings.high_contrast);
+            apply_theme(renderer, dark, hc);
+        }
+        setup::Action::SetContrast => {
+            settings::apply_hit(
+                &mut renderer.settings,
+                &mut renderer.settings_page,
+                settings::SettingsHit::ToggleContrast,
+            );
+            let (dark, hc) = (renderer.settings.dark_mode, renderer.settings.high_contrast);
+            apply_theme(renderer, dark, hc);
+        }
+        setup::Action::UseDefaultDns => {
+            // 走与设置页同一条出口（`set_dns` → aetherd → resolv.conf）
+            set_dns(ai_tx.clone(), setup::DEFAULT_DNS.to_string());
+            push_toast(
+                toast,
+                &mut renderer.notifs,
+                "正在写入默认 DNS…".to_string(),
+                notifications::Kind::Info,
+            );
+        }
+    }
+    mark_done
+}
+
+/// 把"向导已完成"落盘。**失败要大声说出来** ——
+/// 否则下次开机又弹一遍，而用户不知道为什么。
+#[cfg(target_os = "linux")]
+fn save_setup_done(renderer: &mut draw::Renderer, toast: &mut Option<(String, Instant)>) {
+    renderer.settings.setup_done = true;
+    if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
+        eprintln!("[aether-compositor] 保存向导完成状态失败：{e}");
+        push_toast(
+            toast,
+            &mut renderer.notifs,
+            format!("向导状态保存失败：{e}"),
+            notifications::Kind::Err,
+        );
     }
 }
 

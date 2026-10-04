@@ -22,6 +22,40 @@
 // 但「按键 → 动作 → 改动设置」这条链在 Linux 的 fbdev 事件循环里，
 // 因此非目标平台上这些项目只有测试在用 —— 与 `palette`/`spaces`/`policyview` 同一处理。
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
+/// 向导每一步的**按钮**：`(中文标签, English 标签, 按下去要执行的动作)`。
+///
+/// 键盘与鼠标**共用这张表**：绘制按它画按钮、点击按它取 `Action`。
+/// 于是"画了按钮却点了没反应"在结构上不可能 —— 除非表里根本没那一项。
+///
+/// 为什么现在才有这张表：向导本来是纯键盘驱动的，界面上只有提示文字；
+/// 要加鼠标支持就必须先让"可点的东西"真的存在于界面上（本项目零假控件）。
+/// 每一步的按钮就把键盘提示（"按 1/2 选语言"）变成了看得见、点得到的东西。
+///
+/// 未知步骤返回空表（**不 panic**：步骤号来自状态机，但对外接口不该假设它一定合法）。
+pub fn options(step: usize) -> Vec<(&'static str, &'static str, Action)> {
+    match step {
+        // 语言：两个都写"中文 / English"，因为语言名本身就该用它自己的语言写
+        0 => vec![
+            ("中文", "中文", Action::SetLang(0)),
+            ("English", "English", Action::SetLang(1)),
+        ],
+        // 时区：按小时增减（与键盘 T/Z 同源的动作）
+        1 => vec![
+            ("时区 −1 小时", "Time −1h", Action::TzShift(-1)),
+            ("时区 +1 小时", "Time +1h", Action::TzShift(1)),
+        ],
+        // 外观：两个开关
+        2 => vec![
+            ("深色模式", "Dark mode", Action::SetDark),
+            ("高对比", "High contrast", Action::SetContrast),
+        ],
+        // 收尾：一个"开始使用"（等价于回车 = 完成）
+        3 => vec![("开始使用", "Get started", Action::Next)],
+        _ => Vec::new(),
+    }
+}
+
 /// 向导步数（语言 / 时区 / 主题 / 连网）。
 pub const STEP_COUNT: usize = 4;
 
@@ -291,4 +325,33 @@ mod tests {
             );
         }
     }
+    /// 每一步都要有按钮，且**每个动作都不是 `Action::None`**。
+    ///
+    /// 后半句是重点：`Action::None` 是"这个按键/按钮什么都不做"的表示，
+    /// 它在按钮表里出现就等于**画了一个按下去没反应的按钮**。
+    #[test]
+    fn every_step_has_buttons_with_real_actions() {
+        for step in 0..STEP_COUNT {
+            let opts = options(step);
+            assert!(!opts.is_empty(), "第 {} 步没有任何按钮", step + 1);
+            for (zh, en, act) in &opts {
+                assert!(!zh.is_empty() && !en.is_empty(), "按钮标签不能为空：{zh}/{en}");
+                assert_ne!(
+                    *act,
+                    Action::None,
+                    "第 {} 步的按钮「{zh}」没有动作 —— 那是个假按钮",
+                    step + 1
+                );
+            }
+        }
+        // 语言步：两个选项，且分别对应两个语言（与 handle_key 的 1/2 一致）
+        let lang = options(0);
+        assert_eq!(lang.len(), 2);
+        assert_eq!(lang[0].2, Action::SetLang(0));
+        assert_eq!(lang[1].2, Action::SetLang(1));
+        // 未知步骤给空表，不 panic
+        assert!(options(99).is_empty());
+        assert!(options(usize::MAX).is_empty());
+    }
+
 }
