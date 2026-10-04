@@ -111,6 +111,10 @@ def main() -> int:
         # 纵向越界不判红 —— 设置正文可滚动，内容比可视区高是正常的。
         steps.append(("布局几何（越界 / 重叠）",
                       [PY, "scripts/layout-check.py", "--strict"]))
+        # 静态扫描「尺寸缩放而步长写死」—— 本会话修掉的 6 处都是这一类，
+        # 而它们只在 125%/150% 下才暴露（100% 恰好不重叠）。这一步是瞬时的。
+        steps.append(("缩放硬编码扫描（步长 vs 缩放高度）",
+                      [PY, "scripts/scale-audit.py", "--strict"]))
         # 性能门禁（FEATURE-GAPS §4.2）：跑 `--bench` 看 P99 是否在一帧预算内。
         # 需要刚构建出来的二进制，所以排在 cargo build 之后、与 e2e 同批。
         steps.append(("性能门禁（P99 帧时间 ≤ 一帧预算）",

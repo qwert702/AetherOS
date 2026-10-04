@@ -3773,7 +3773,9 @@ fn draw_settings_content(
                 widgets::States::at(r_refresh, mouse), Some(tr),
             );
             hits.push((r_refresh, SettingsHit::RefreshRemovables));
-            ry += 40;
+            // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
+            // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
+            ry += theme::size::px(theme::size::ROW_H_SM) + 4;
             tr.draw(
                 buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                 crate::i18n::tr(
@@ -4140,7 +4142,9 @@ fn draw_settings_content(
                 widgets::States::at(r_new, mouse), Some(tr),
             );
             hits.push((r_new, SettingsHit::CreateSnapshot));
-            ry += 50;
+            // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
+            // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
+            ry += theme::size::px(theme::size::ROW_H) + 10;
 
             if snapshots.is_loaded() && snapshots.is_empty() {
                 tr.draw(
@@ -4594,7 +4598,9 @@ fn draw_settings_content(
                          Some(crate::i18n::pick(lang, "主题/壁纸/时钟/输入等恢复出厂值（时区保留）", "Resets theme / wallpaper / clock / input to factory values (time zone kept)")),
                          widgets::States::at(reset, mouse), Some(tr));
             hits.push((reset, SettingsHit::ResetDefaults));
-            ry += 52;
+            // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
+            // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
+            ry += theme::size::px(theme::size::CTRL_H) + 8;
             for (k, v) in [
                 (crate::i18n::pick(lang, "主色", "Accent"), crate::i18n::pick(lang, "teal（单一强调色，AI 元素同色）", "teal (single accent, same as AI elements)")),
                 (crate::i18n::pick(lang, "圆角", "Radius"), "4 / 6 / 8"),
@@ -4622,10 +4628,14 @@ fn draw_settings_content(
 
             let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "24 小时制", "24-hour clock"), Some(crate::i18n::pick(lang, "关闭后显示为「下午 9:10」", "Off shows 9:10 PM")), s.clock_24h, SettingsHit::Clock24h, hits);
-            ry += 48;
+            // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
+            // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
+            ry += theme::size::px(theme::size::CTRL_H) + 4;
             let r2 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, r2, crate::i18n::pick(lang, "显示秒", "Show seconds"), Some(crate::i18n::pick(lang, "顶栏时钟精确到秒", "Top-bar clock shows seconds")), s.clock_seconds, SettingsHit::ClockSeconds, hits);
-            ry += 54;
+            // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
+            // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
+            ry += theme::size::px(theme::size::CTRL_H) + 10;
 
             // 时区微调：用两个按钮而不是滑杆 —— 时区是离散值、且要能精确到半小时
             let back = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry + 6, w: theme::size::px(theme::size::CTRL_H_SM) + 10, h: theme::size::px(theme::size::CTRL_H_SM) };
@@ -4825,7 +4835,9 @@ fn draw_settings_content(
                 widgets::States::at(r_reload, mouse), Some(tr),
             );
             hits.push((r_reload, SettingsHit::RefreshUsers));
-            ry += 40;
+            // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
+            // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
+            ry += theme::size::px(theme::size::ROW_H_SM) + 4;
             tr.draw(
                 buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                 crate::i18n::tr(
