@@ -102,6 +102,11 @@ def main() -> int:
         # 放在 cargo build 之后：它需要刚构建出来的合成器二进制。
         steps.append(("自动 e2e（无界面动作运行器）",
                       [PY, "scripts/e2e-ui-actions.py"]))
+        # 像素回归：`--shot` 逐字节与基线比对（确定模式，见审计附录 CF / CH）。
+        # 渲染不出来时脚本自己 [SKIP] 并返回 0（例如目标平台没有字体）——
+        # 会打印原因，不是静默跳过。
+        steps.append(("像素回归（--shot 逐字节 vs 基线）",
+                      [PY, "scripts/shot-diff.py", "verify"]))
         # 性能门禁（FEATURE-GAPS §4.2）：跑 `--bench` 看 P99 是否在一帧预算内。
         # 需要刚构建出来的二进制，所以排在 cargo build 之后、与 e2e 同批。
         steps.append(("性能门禁（P99 帧时间 ≤ 一帧预算）",
