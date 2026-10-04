@@ -4395,7 +4395,9 @@ fn draw_settings_content(
                              widgets::States::at(dns_act, mouse), Some(tr));
             }
             hits.push((dns_act, SettingsHit::EditDns));
-            ry += 50;
+            // 步长跟着按钮高度走：写死 50 的话 150% 下按钮变高、步长不变，两行会压住
+            // （几何断言发现，附录 CM）。`px(CTRL_H) + 6` 在 100% 下与 50 完全等价。
+            ry += theme::size::px(theme::size::CTRL_H) + 6;
 
             // 唯一一个"重启服务"的动作（P4.4）：走 aetherd → init，不是本地假动作
             let act = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
@@ -4412,7 +4414,9 @@ fn draw_settings_content(
                 )),
                          widgets::States::at(act, mouse), Some(tr));
             hits.push((act, SettingsHit::RestartService("network")));
-            ry += 50;
+            // 步长跟着按钮高度走：写死 50 的话 150% 下按钮变高、步长不变，两行会压住
+            // （几何断言发现，附录 CM）。`px(CTRL_H) + 6` 在 100% 下与 50 完全等价。
+            ry += theme::size::px(theme::size::CTRL_H) + 6;
             tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                     crate::i18n::pick(
                     lang,
@@ -4512,6 +4516,10 @@ fn draw_settings_content(
             toggle_row(buf, w, h, mouse, tr, r_hc, crate::i18n::pick(lang, "高对比度", "High contrast"),
                        Some(crate::i18n::pick(lang, "把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交", "Raises text/background contrast above WCAG AA (4.5:1); orthogonal to the theme")),
                        s.high_contrast, SettingsHit::ToggleContrast, hits);
+            // 第一组四行是用 `r1.y + 偏移` 定位的 —— `ry` 必须**手动推到它们下面**，
+            // 否则后面的「当前配色 / 壁纸 / 语言 / 息屏」几节会画在这四行身上。
+            // （由 `scripts/layout-check.py` 的几何断言发现：两个不同控件重叠 26 像素。）
+            ry = r1.y + 154 + r1.h;
             ry += theme::size::px(theme::size::GAP_HUGE);
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "当前配色", "Current colors"), Some(tr));
             ry += theme::size::px(theme::size::GROUP_GAP);
@@ -4793,7 +4801,9 @@ fn draw_settings_content(
                 let act = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
                 widgets::row(buf, w, h, act, label, Some(hint), widgets::States::at(act, mouse), Some(tr));
                 hits.push((act, hit));
-                ry += 48;
+                // 步长必须跟着**按钮高度**走：写死的话 150% 下按钮变高、步长不变，
+                // 三个按钮会互相压住（几何断言发现，附录 CM）。
+                ry += theme::size::px(theme::size::CTRL_H) + 4;
             }
         }
         "账户" => {

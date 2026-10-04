@@ -107,6 +107,10 @@ def main() -> int:
         # 会打印原因，不是静默跳过。
         steps.append(("像素回归（--shot 逐字节 vs 基线）",
                       [PY, "scripts/shot-diff.py", "verify"]))
+        # 几何断言：19 页 × 3 档，查**横向越界**与控件重叠（后者只报告）。
+        # 纵向越界不判红 —— 设置正文可滚动，内容比可视区高是正常的。
+        steps.append(("布局几何（越界 / 重叠）",
+                      [PY, "scripts/layout-check.py", "--strict"]))
         # 性能门禁（FEATURE-GAPS §4.2）：跑 `--bench` 看 P99 是否在一帧预算内。
         # 需要刚构建出来的二进制，所以排在 cargo build 之后、与 e2e 同批。
         steps.append(("性能门禁（P99 帧时间 ≤ 一帧预算）",

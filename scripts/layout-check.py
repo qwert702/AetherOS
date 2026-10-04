@@ -45,7 +45,7 @@ def overlap(a, b) -> int:
 
 def main() -> int:
     strict = "--strict" in sys.argv
-    off_screen, off_width, overlaps = [], [], []
+    off_screen, off_width, overlaps, needs_scroll = [], [], [], []
     checked = 0
     for scale in SCALES:
         for page in range(PAGE_COUNT):
@@ -58,10 +58,14 @@ def main() -> int:
             win = next((x for x in d["wins"] if "设置" in x.get("title", "")), None)
             for r in d["hits"]:
                 tag = f"page-{page}@{scale}% {r['kind']} ({r['x']},{r['y']},{r['w']}x{r['h']})"
-                if r["x"] < 0 or r["y"] < 0 or r["x"] + r["w"] > w or r["y"] + r["h"] > h:
+                # **横向**越界：任何情况下都不该发生（判红）
+                if r["x"] < 0 or r["x"] + r["w"] > w:
                     off_screen.append(tag)
                 elif win and (r["x"] < win["x"] or r["x"] + r["w"] > win["x"] + win["w"]):
                     off_width.append(tag)
+                # **纵向**越界：设置正文可以滚动，内容比可视区高是正常的 → 只报告
+                if r["y"] < 0 or r["y"] + r["h"] > h:
+                    needs_scroll.append(tag)
             hits = d["hits"]
             for i in range(len(hits)):
                 for j in range(i + 1, len(hits)):
@@ -71,21 +75,24 @@ def main() -> int:
                             f"page-{page}@{scale}% {hits[i]['kind']} ∩ {hits[j]['kind']} = {a}px²")
 
     print(f"检查：{checked} 个组合（{PAGE_COUNT} 页 × {SCALES} 档）")
-    print(f"  ① 越出屏幕：{len(off_screen)}")
+    print(f"  ① 横向越出屏幕：{len(off_screen)}")
     for t in off_screen[:6]:
         print(f"    {t}")
     print(f"  ② 左右越出设置窗口：{len(off_width)}")
     for t in off_width[:6]:
         print(f"    {t}")
-    print(f"  ③ 控件矩形重叠（**只报告**，判据不够硬）：{len(overlaps)}")
+    print(f"  ③ 纵向越界（= 这一页需要滚动，**不判红**）：{len(needs_scroll)}")
+    for t2 in needs_scroll[:4]:
+        print(f"    {t2}")
+    print(f"  ④ 控件矩形重叠（**只报告**，判据不够硬）：{len(overlaps)}")
     for t in overlaps[:8]:
         print(f"    {t}")
 
     if strict and (off_screen or off_width):
-        print("[FAIL] 有控件越界")
+        print("[FAIL] 有控件横向越界")
         return 1
-    print("[ OK ] 没有越界（① 与 ② 都是 0）" if not (off_screen or off_width)
-          else "[FAIL] 有越界")
+    print("[ OK ] 没有横向越界（① 与 ② 都是 0）" if not (off_screen or off_width)
+          else "[FAIL] 有横向越界")
     return 0 if not (off_screen or off_width) else 1
 
 
