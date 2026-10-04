@@ -1114,7 +1114,7 @@ fn handle_request(
                 }
             }
         }
-        Request::ServiceControl { unit, action } => {
+        Request::ServiceControl { unit, action, en } => {
             // 服务控制是"改系统状态"，与剪贴板/配置重载同一门槛：**必须**由已注册的
             // UI 通道发起。此前这里是个桩（直接回 ok:false + "M3 就绪后生效"），
             // 于是合成器的「重启服务」永远失败且原因是一句陈旧占位文案。
@@ -1123,13 +1123,17 @@ fn handle_request(
                 eprintln!("[aetherd] 拒绝服务控制：本连接未注册为 UI 通道");
                 return vec![Response::Error {
                     code: 403,
-                    message: "服务控制必须由已注册的 UI 通道发起".into(),
+                    message: if en {
+                        "Service control must come from a registered UI channel".into()
+                    } else {
+                        "服务控制必须由已注册的 UI 通道发起".into()
+                    },
                 }];
             }
             // 审计参数走 audit_call（Gate 内部统一脱敏）：服务名与动作都是安全字段，
             // 但仍走同一条路径，避免"新增一处直接落盘"的口子。
             let args = serde_json::json!({ "unit": unit, "action": format!("{action:?}") });
-            match crate::control_init_service(&unit, action) {
+            match crate::control_init_service(&unit, action, en) {
                 Ok(message) => {
                     if let Err(e) = gate.audit_call("service_control", Level::L2, &args, verdict::ALLOWED) {
                         eprintln!("[aetherd] 审计日志写入失败: {e}");
@@ -1314,6 +1318,7 @@ mod ipc_gating_tests {
             &aether_ipc::encode(&Request::ServiceControl {
                 unit: "network".into(),
                 action: aether_ipc::ServiceAction::Restart,
+                en: false,
             }),
             &mut not_ui,
         );
@@ -1337,6 +1342,7 @@ mod ipc_gating_tests {
             &aether_ipc::encode(&Request::ServiceControl {
                 unit: "network".into(),
                 action: aether_ipc::ServiceAction::Status,
+                en: false,
             }),
             &mut is_ui,
         );

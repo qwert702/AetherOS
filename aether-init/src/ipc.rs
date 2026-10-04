@@ -162,7 +162,7 @@ fn read_line_capped<R: BufRead + ?Sized>(reader: &mut R, max: u64) -> std::io::R
     if n as u64 >= max && !line.ends_with('\n') {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("请求行超过 {max} 字节上限"),
+            format!("request line exceeds the {max} byte cap"),
         ));
     }
     Ok(line)
@@ -179,7 +179,9 @@ fn handle_conn<S: DuplexStream>(stream: S, manager: Arc<Mutex<Manager>>) -> anyh
         }
         let resp = match decode::<Request>(&line) {
             Ok(Request::Ping) => Response::Pong,
-            Ok(Request::ServiceControl { unit, action }) => service_control(&manager, &unit, action),
+            Ok(Request::ServiceControl { unit, action, en }) => {
+                service_control(&manager, &unit, action, en)
+            }
             Ok(Request::SysInfo { .. }) => sys_report(&manager),
             // 电源请求：**只置标志**，真正的执行在监督主循环里（见 power.rs 的说明）。
             // 这样 IPC 线程不会被"停服务"的长操作占住，日志顺序也由主循环主导。
@@ -189,15 +191,17 @@ fn handle_conn<S: DuplexStream>(stream: S, manager: Arc<Mutex<Manager>>) -> anyh
                     action,
                     accepted,
                     message: if accepted {
-                        format!("已受理 {}：正在停止服务并断电", action.as_str())
+                        // 合成器当前不显示 PowerAck 的 message（它只当"已受理"用），
+                        // 所以这里给中性英文，避免又一处要靠协议传语言的文案
+                        format!("accepted {}: stopping services and powering off", action.as_str())
                     } else {
-                        "已有电源动作正在处理中（重复请求已忽略）".to_string()
+                        "a power action is already in progress (duplicate ignored)".to_string()
                     },
                 }
             }
             Ok(_) => Response::Error {
                 code: 1,
-                message: "aether-init 仅处理 ping/sys_info/service_control/system_power".into(),
+                message: "aether-init only handles ping/sys_info/service_control/system_power".into(),
             },
             Err(e) => Response::Error { code: 1, message: e.to_string() },
         };
@@ -206,10 +210,18 @@ fn handle_conn<S: DuplexStream>(stream: S, manager: Arc<Mutex<Manager>>) -> anyh
     }
 }
 
-fn service_control(manager: &Arc<Mutex<Manager>>, unit: &str, action: ServiceAction) -> Response {
+/// `en`：这条回执会被合成器显示给用户（§3.5），所以要跟着界面语言。
+/// 状态本身用 `{:?}` 渲染（`Running` / `Stopped` 本来就是英文），不需要翻译。
+fn service_control(
+    manager: &Arc<Mutex<Manager>>,
+    unit: &str,
+    action: ServiceAction,
+    en: bool,
+) -> Response {
     let mut m = lock_ok(manager);
     if !m.has(unit) {
-        return Response::ServiceAck { unit: unit.into(), ok: false, message: "服务不存在".into() };
+        let message = if en { "service not found" } else { "服务不存在" };
+        return Response::ServiceAck { unit: unit.into(), ok: false, message: message.into() };
     }
     let result = match action {
         ServiceAction::Start | ServiceAction::Restart => {
@@ -223,7 +235,7 @@ fn service_control(manager: &Arc<Mutex<Manager>>, unit: &str, action: ServiceAct
             let s = m.status_all().into_iter().find(|s| s.name == unit);
             match s {
                 Some(s) => Ok(format!("{:?} restarts={}", s.state, s.restarts)),
-                None => bail_unit(unit),
+                None => bail_unit(unit, en),
             }
         }
     };
@@ -233,8 +245,12 @@ fn service_control(manager: &Arc<Mutex<Manager>>, unit: &str, action: ServiceAct
     }
 }
 
-fn bail_unit(unit: &str) -> anyhow::Result<String> {
-    anyhow::bail!("服务 {unit} 不存在")
+fn bail_unit(unit: &str, en: bool) -> anyhow::Result<String> {
+    if en {
+        anyhow::bail!("service {unit} not found")
+    } else {
+        anyhow::bail!("服务 {unit} 不存在")
+    }
 }
 
 fn sys_report(manager: &Arc<Mutex<Manager>>) -> Response {

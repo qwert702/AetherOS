@@ -2775,3 +2775,62 @@ Windows 构建看不到（那段在 Linux-only 的输入循环里），
 * **单次** `cargo test --workspace`：**730 通过 / 0 失败**（8 个测试二进制；输出已落盘再统计）；
 * Windows 与 **musl** 双目标 **0 警告**（`aetherd` 因 `ring` 需要 musl-gcc，本机不可查 —— 如实说明）；
 * **未实机验证**：真机切英文问一句"排成两列"看回复。
+
+---
+
+## 附录 BL：aether-init 回执与对端校验错误 —— 一条分层规矩（2026-10-04 批次 BK-1）
+
+### BL.1 一条规矩（本批把它写死）
+
+> **会被用户看到的文案 → 跟着界面语言；只进日志/只属协议层的 → 中性英文。**
+
+据此本批的处理是：
+
+| 位置 | 会不会被用户看到 | 怎么改 |
+|---|---|---|
+| `ServiceAck.message` | **会**（合成器走 `AiEvent::ToolDone` 显示） | 加 `ServiceControl{en}`，一路透传：合成器 → aetherd → init |
+| `check_peer` 的两条拒绝原因 | 不会（调用方只打日志） | **中性英文** |
+| 超长请求行的 io 错误 | 不会 | **中性英文** |
+| "aether-init 只处理这些请求" | 不会（协议误用） | **中性英文** |
+| `PowerAck.message` | **不会**（合成器根本没引用 `PowerAck`） | **中性英文** |
+
+`ServiceControl{en}` 实际只翻一条文案（"服务不存在"）——
+因为状态本身是 `format!("{:?}", state)`，`Running`/`Stopped` 本来就是英文。
+为一条文案加一个协议字段看着不划算，但**它同时也是"语言从哪来"的唯一入口**；
+将来 init 若有更多回执文案，不必再改协议。
+
+### BL.2 本轮踩到的两件事（都是"我以为只有一个"）
+
+1. **同一个函数名有两个 `#[cfg]` 变体**：`control_init_service` 在 `aetherd` 里有
+   **Linux 实现**和**非 Linux 桩**两份。我只改了报错里指出的那一份，
+   第二次编译又报一次 —— 才知道有两份。
+2. **精确字符串锚点漏了多行写法**：Linux 实现里的请求构造是
+
+       aether_ipc::encode(&aether_ipc::Request::ServiceControl {
+           unit: unit.to_string(),
+           action,
+       })
+
+   我按 `Request::ServiceControl { unit: unit.to_string(), action }`（单行、
+   **且没有 `aether_ipc::` 前缀**）去找，0 命中 —— 差点以为"这里根本不发请求"。
+
+   这是同一个形状的第 N 次：**我以为我知道代码长什么样**。
+   而正确做法（本会话已经写过好几次）是：**先读到真实的那几行，再写替换**。
+
+### BL.3 顺带确认的一件事
+
+`intent::try_handle`（离线快速意图通道）**在生产代码里是接上的** ——
+我上一轮一度以为它是死代码，是因为我那次 `grep` 加了 `Select-Object -First 10`
+把结果截断了（附录 BK.4 记的同一类问题）。这一轮专门确认了 `server.rs` 的调用点。
+
+### BL.4 仍未做
+
+* `aetherd` 自己的中文消息（`main.rs` 里"连不上 aether-init（{e}）—— 服务控制不可用"、
+  电源通道那几条等）—— **剩下最大的一块**；
+* `aether-ops` 的诊断报告正文；`aether-install` 的命令行用法与错误文案。
+
+### BL.5 验证
+
+* **单次** `cargo test --workspace`：**730 通过 / 0 失败**（输出落盘再统计）；
+* Windows 与 **musl**（compositor）双目标 **0 错误 0 警告**；
+* **未实机验证**：真机切英文点"重启服务"看回执。

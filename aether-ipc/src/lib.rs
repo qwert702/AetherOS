@@ -84,6 +84,9 @@ pub enum Request {
     ServiceControl {
         unit: String,
         action: ServiceAction,
+        /// 请求方界面是否英文（§3.5，理由同 `Chat::en`）。
+        #[serde(default)]
+        en: bool,
     },
     /// 电源动作（**不可逆**）：关机 / 重启。
     ///
@@ -685,7 +688,8 @@ pub fn check_peer(stream: &std::os::unix::net::UnixStream) -> Result<(), String>
     if peer_uid_allowed(uid) {
         Ok(())
     } else {
-        Err(format!("对端 uid {uid:?} 不是 root（SO_PEERCRED）"))
+        // 中性英文：这一层是协议/日志层，不该替用户选语言（同 `DnsError::Display`）
+        Err(format!("peer uid {uid:?} is not root (SO_PEERCRED)"))
     }
 }
 
@@ -695,7 +699,7 @@ pub fn check_peer(stream: &std::os::unix::net::UnixStream) -> Result<(), String>
 /// 若将来要支持别的 unix，应在这里补对应实现，而不是悄悄放行。
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn check_peer(_stream: &std::os::unix::net::UnixStream) -> Result<(), String> {
-    Err("本平台没有 SO_PEERCRED，无法校验对端身份（按拒绝处理）".into())
+    Err("no SO_PEERCRED on this platform; cannot verify the peer (rejecting)".into())
 }
 
 #[cfg(test)]

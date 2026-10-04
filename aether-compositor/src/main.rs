@@ -5376,7 +5376,12 @@ fn control_service(tx: mpsc::Sender<AiEvent>, unit: &'static str, action: aether
             let mut reader = BufReader::new(stream.try_clone()?);
             register_ui(&mut stream, &mut reader)?;
             stream.write_all(
-                aether_ipc::encode(&Request::ServiceControl { unit: unit.to_string(), action }).as_bytes(),
+                aether_ipc::encode(&Request::ServiceControl {
+                    unit: unit.to_string(),
+                    action,
+                    en: crate::i18n::is_en(),
+                })
+                .as_bytes(),
             )?;
             let line = read_line_capped(&mut reader, MAX_IPC_LINE)?;
             serde_json::from_str::<Response>(line.trim()).map_err(|e| anyhow::anyhow!("解析响应失败: {e}"))

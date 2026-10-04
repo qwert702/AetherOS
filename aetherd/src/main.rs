@@ -638,7 +638,8 @@ fn aether_init_socket() -> &'static str {
 pub(crate) fn control_init_service(
     unit: &str,
     action: aether_ipc::ServiceAction,
-) -> anyhow::Result<String> {
+
+    en: bool,) -> anyhow::Result<String> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -651,6 +652,8 @@ pub(crate) fn control_init_service(
         aether_ipc::encode(&aether_ipc::Request::ServiceControl {
             unit: unit.to_string(),
             action,
+            // §3.5：合成器传来的界面语言，原样转给 init（回执会被显示）
+            en,
         })
         .as_bytes(),
     )?;
@@ -672,6 +675,7 @@ pub(crate) fn control_init_service(
 pub(crate) fn control_init_service(
     _unit: &str,
     _action: aether_ipc::ServiceAction,
+    _en: bool,
 ) -> anyhow::Result<String> {
     anyhow::bail!("本平台没有 aether-init 控制通道（仅 Linux 提供）")
 }

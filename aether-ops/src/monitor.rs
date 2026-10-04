@@ -170,9 +170,12 @@ pub fn query_services() -> anyhow::Result<Vec<ServiceStatus>> {
 
 /// 执行服务控制动作。
 pub fn service_control(unit: &str, action: ServiceAction) -> anyhow::Result<String> {
+    // §3.5：这条回执进的是**本守护进程的串口日志**（不是界面），
+    // 所以固定用中文 —— 与本工具其余日志保持一致，不引入第二种语言。
     match call_init(&Request::ServiceControl {
         unit: unit.to_string(),
         action,
+        en: false,
     })? {
         Response::ServiceAck { ok, message, .. } if ok => Ok(message),
         Response::ServiceAck { message, .. } => Err(anyhow::anyhow!(message)),
