@@ -38,6 +38,7 @@ ROOT = D.parent
 BASELINE = ROOT / "docs" / "证据" / "shot-baseline.json"
 
 # 覆盖主要界面形态的截图档位（与 main.rs 的 --shot 支持对应）
+# 固定形态
 CASES = [
     ("layout1", ["--shot", "1"]),
     ("layout2", ["--shot", "2"]),
@@ -51,9 +52,40 @@ CASES = [
     ("confirm", ["--shot", "1", "--confirm"]),
 ]
 
+# 设置页逐页（`--settings-page N` 与 `settings::PAGES` 下标一致）。
+# 走查早就支持这个参数，但基线一直只覆盖第 0 页 —— 18 个页面从没进过像素回归。
+PAGE_COUNT = 19
+for _i in range(PAGE_COUNT):
+    CASES.append((f"page-{_i}", ["--shot", "1", "--settings", "--settings-page", str(_i)]))
+
+# 内容区（去掉顶栏与左侧导航栏）——"不是空白页"的检查只看这里
+CONTENT_X0 = 260
+CONTENT_Y0 = 60
+
+
+def content_colors(raw: bytes) -> int:
+    """数内容区里**不同颜色**的个数。空白页很少，画了内容的页很多（文字抗锯齿）。"""
+    px = raw[HDR:]
+    seen = set()
+    for y in range(CONTENT_Y0, H - 8):
+        row = (H - 1 - y) * W
+        for x in range(CONTENT_X0, W - 8):
+            i = (row + x) * 3
+            seen.add(px[i : i + 3])
+            if len(seen) > 4000:      # 够多了，不必数完
+                return len(seen)
+    return len(seen)
+
 # 历史上需要掩码的天然非确定区。现在**是空的** —— 见模块文档。
 # 保留机制：将来若又出现非确定区，往这里加 (x0, x1, y0, y1) 并写明原因。
 MASK_REGIONS: list[tuple[int, int, int, int]] = []
+
+
+# 每次渲染时记下各档的内容区颜色数（"不是空白页"的检查用它）
+COLORS: dict[str, int] = {}
+
+# 空白页的颜色数上限：**实测标定**（见审计附录 CK），不是拍脑袋
+BLANK_MAX_COLORS = 24
 
 
 def _env() -> dict:
@@ -78,6 +110,7 @@ def render_all(keep: bool = False) -> dict:
         if len(raw) != HDR + W * H * 3:
             raise RuntimeError(f"{name}: {len(raw)} 字节，与 {W}x{H} 不符")
         out[name] = hashlib.sha256(raw).hexdigest()
+        COLORS[name] = content_colors(raw)
         if keep:
             (D / f"shot-{name}.bmp").write_bytes(raw)
     return out
@@ -105,6 +138,15 @@ def cmd_verify() -> int:
     except RuntimeError as e:
         print(f"[SKIP] 渲染不出截图，跳过像素回归：{e}")
         return 0
+    # 设置页不该是空白：内容区颜色数太少 = 这一页什么都没画出来
+    blank = [f"page-{i}" for i in range(PAGE_COUNT)
+             if COLORS.get(f"page-{i}", 0) <= BLANK_MAX_COLORS]
+    for i in range(PAGE_COUNT):
+        name = f"page-{i}"
+        print(f"  [{'BLANK' if name in blank else '有内容'}] {name}: 内容区颜色数 {COLORS.get(name, 0)}")
+    if blank:
+        print(f"[FAIL] {len(blank)} 个设置页看起来是**空白**（内容区颜色数 <= {BLANK_MAX_COLORS}）：{blank}")
+
     bad = [k for k in want if want[k] != got.get(k)]
     missing = [k for k in got if k not in want]
     for k in want:
@@ -112,8 +154,9 @@ def cmd_verify() -> int:
         print(f"  [{mark}] {k}")
     if missing:
         print(f"  （基线里没有的新档位，未比对：{missing}）")
-    if bad:
-        print(f"[FAIL] {len(bad)} 档与基线不同：{bad}")
+    if bad or blank:
+        if bad:
+            print(f"[FAIL] {len(bad)} 档与基线不同：{bad}")
         print("       如果这次改动**本来就要改变画面**，跑 `save` 更新基线并说明原因；")
         print("       如果**不该有视觉变化**，那这就是回归。")
         return 1
