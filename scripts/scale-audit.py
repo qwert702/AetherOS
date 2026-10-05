@@ -88,6 +88,24 @@ def main() -> int:
             if val:
                 horizontal.append((i + 1, int(ms.group(1)), mw.group(1), val))
 
+    # ---- ④ 循环/累积步长写死（`i * N` / `y += N` / `base += N`，N >= 20）----
+    # 与 ③ 同类但写法不同：位置由「基准 + i * 步长」算出。本批的文件侧栏就是这样。
+    loop_steps = []
+    for i, line in enumerate(lines):
+        if 'theme::size::px' in line:
+            continue
+        if '.len()' in line:      # `items.len() * N` 是**数量乘**，不是步长（实测误报）
+            continue
+        for m in re.finditer(r'(?:\*|\+=)\s*(\d+)\b', line):
+            n = int(m.group(1))
+            if n < 20:
+                continue
+            st = line.strip()
+            if not any(k in st for k in (' y', 'y ', 'base', 'x')):
+                continue
+            loop_steps.append((i + 1, st[:90]))
+            break
+
     # ---- ③ 「矩形.y + N」的布局步长（N >= 20 才算；小偏移是细线/内衬，故意不缩）----
     fixed_offsets = []
     for i, line in enumerate(lines):
@@ -106,6 +124,9 @@ def main() -> int:
             print(f"   行 {ln}: ry += {step}  高度 {name}={val}  150% 需 ≥ {x150}  ← 会重叠")
     print(f"   其中会重叠：{len(v_bad)}")
 
+    print(f"④ 循环/累积步长写死（>=20）：{len(loop_steps)} 处")
+    for (ln, frag) in loop_steps:
+        print(f"   行 {ln}: {frag}")
     print(f"③ 「矩形.y/x + 裸数字」的布局步长（>=20）：{len(fixed_offsets)} 处")
     for (ln, frag, n) in fixed_offsets:
         print(f"   行 {ln}: {frag}")
@@ -120,10 +141,10 @@ def main() -> int:
         print(f"   行 {ln}: STEP {step}  宽度 {name}={val}  150% 需 ≥ {x150}{flag}")
     print(f"   其中会重叠：{len(h_bad)}")
 
-    if strict and (v_bad or h_bad or fixed_offsets):
+    if strict and (v_bad or h_bad or fixed_offsets or loop_steps):
         print("[FAIL] 有「步长小于缩放后尺寸」或「矩形偏移写死」的地方")
         return 1
-    print("[ OK ] 三类都没有问题" if not (v_bad or h_bad or fixed_offsets)
+    print("[ OK ] 四类都没有问题" if not (v_bad or h_bad or fixed_offsets or loop_steps)
           else "[报告] 见上")
     return 0
 

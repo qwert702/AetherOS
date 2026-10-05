@@ -2867,7 +2867,7 @@ impl Renderer {
         tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
         tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::pick(crate::i18n::lang(), ui.ai_status.label(), ui.ai_status.label_en()),
             font::CAPTION, color::text_dim(), 0.9);
-        y += 26;
+        y += theme::size::px(26);
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
 
@@ -2899,7 +2899,7 @@ impl Renderer {
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
         widgets::group_header(buf, w, h, panel.x + theme::size::px(theme::size::INSET_SM), y, crate::i18n::tr("快捷跳转", "Quick actions"), Some(tr));
-        y += 20;
+        y += theme::size::px(20);
         // 「通知」带**真实未读数**（不是装饰性的小红点）：没有未读时不显示数字，
         // 因为"0 条未读"和"没有通知中心"在界面上应该长得不一样。
         let unread = self.notifs.unread();
@@ -2945,7 +2945,7 @@ impl Renderer {
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
         widgets::group_header(buf, w, h, panel.x + theme::size::px(theme::size::INSET_SM), y, crate::i18n::tr("声音", "Sound"), Some(tr));
-        y += 20;
+        y += theme::size::px(20);
         {
             let r = row(y);
             if ui.audio_enabled {
@@ -2985,7 +2985,7 @@ impl Renderer {
             ),
             Some(tr),
         );
-        y += 20;
+        y += theme::size::px(20);
         for (zh, en, hit) in [
             ("新增桌面", "New desktop", ControlHit::AddSpace),
             ("移除当前桌面", "Remove this desktop", ControlHit::RemoveSpace),
@@ -3004,7 +3004,7 @@ impl Renderer {
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
         widgets::group_header(buf, w, h, panel.x + theme::size::px(theme::size::INSET_SM), y, crate::i18n::tr("电源", "Power"), Some(tr));
-        y += 20;
+        y += theme::size::px(20);
         let power: [(&str, &str, ControlHit); 3] = [
             ("关机", "Power off", ControlHit::PowerOff),
             ("重启", "Restart", ControlHit::Reboot),
@@ -3411,7 +3411,7 @@ fn draw_settings_content(
                 y += 10;
             }
             widgets::group_header(buf, w, h, r.x + theme::size::px(theme::size::INSET_SM), y, p.group_in(lang), Some(tr));
-            y += 20;
+            y += theme::size::px(20);
             group = p.group;
         }
         // 仍然放不下（页数极多）：如实裁剪而不是画到窗口外
@@ -3439,7 +3439,7 @@ fn draw_settings_content(
                 tag_text, font::LABEL, color::text_dim(), 0.5,
             );
         }
-        y += 32;
+        y += theme::size::px(32);
         if y > r.y + r.h - 40 {
             break; // 窗口再矮也不越界
         }
@@ -3535,7 +3535,7 @@ fn draw_settings_content(
                 widgets::States::at(qrow, mouse), Some(tr),
             );
             hits.push((qrow, crate::settings::SettingsHit::AuditQuery));
-            ry += 42;
+            ry += theme::size::px(42);
             if !info.exists {
                 tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                         crate::i18n::pick(
@@ -3664,7 +3664,7 @@ fn draw_settings_content(
                 ),
                 font::CAPTION, color::text_dim(), 0.85,
             );
-            ry += 28;
+            ry += theme::size::px(28);
 
             if let Some(err) = store.error() {
                 tr.draw(
@@ -4202,7 +4202,7 @@ fn draw_settings_content(
                 ),
                 font::CAPTION, color::text_dim(), 0.85,
             );
-            ry += 28;
+            ry += theme::size::px(28);
 
             // 三种"没有行"的状态必须**分开说**：取不到 ≠ 一个工具都没有 ≠ 还没取
             if let Some(err) = policy.error() {
@@ -4625,7 +4625,7 @@ fn draw_settings_content(
                 format!("{}　·　每次微调 30 分钟", s.tz_label())
             };
             tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, (ry + 42) as f32, &tz, font::CAPTION, color::text_dim(), 0.9);
-            ry += 78;
+            ry += theme::size::px(78);
 
             let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
             toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "24 小时制", "24-hour clock"), Some(crate::i18n::pick(lang, "关闭后显示为「下午 9:10」", "Off shows 9:10 PM")), s.clock_24h, SettingsHit::Clock24h, hits);
@@ -4774,7 +4774,7 @@ fn draw_settings_content(
             }
             ry += 10;
             tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, crate::i18n::pick(lang, "模型与密钥由 aetherd 管理，不经过合成器进程。", "The model and its key are managed by aetherd; they never pass through the compositor process."), font::CAPTION, color::text_dim(), 0.8);
-            ry += 28;
+            ry += theme::size::px(28);
             // 第二个"能改系统"的动作（P4.4）：AI 卡住时把 aetherd 重启一次
             let ai_act = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
             widgets::row(buf, w, h, ai_act, crate::i18n::pick(lang, "重启 AI 服务", "Restart AI service"), Some(crate::i18n::pick(lang, "aetherd 重启后由 init 拉起（会话会中断）", "init starts aetherd again after the restart (the session is interrupted)")),
@@ -4785,7 +4785,7 @@ fn draw_settings_content(
             // §3.5：本页文案双语
             let lang = crate::i18n::lang();
             tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, "AetherOS", font::TITLE, color::text(), 0.98);
-            ry += 36;
+            ry += theme::size::px(36);
             for (k, v) in [
                 (crate::i18n::pick(lang, "版本", "Version"), env!("CARGO_PKG_VERSION")),
                 (crate::i18n::pick(lang, "许可证", "License"), "GPL-3.0-only"),
@@ -4984,7 +4984,7 @@ fn draw_settings_content(
                 Some(tr),
             );
             hits.push((clear, SettingsHit::ClearNotifications));
-            ry += 52;
+            ry += theme::size::px(52);
             tr.draw(
                 buf,
                 w,
@@ -5146,7 +5146,7 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
     let t0 = strings::TRACKS[0].0;
     let tw = tr.measure_bold(t0, font::BODY);
     tr.draw_bold(buf, w, h, cx - tw / 2.0, ty, t0, font::BODY, color::text(), 0.98);
-    ty += 22.0;
+    ty += theme::size::px(22) as f32;
     let a0 = strings::TRACKS[0].1;
     let aw = tr.measure(a0, font::LABEL);
     draw_text(tr, buf, w, h, cx - aw / 2.0, ty, a0, font::LABEL, color::text_dim(), 0.88);
@@ -5381,10 +5381,10 @@ fn draw_files_content(
                 if hovered { 0.98 } else { 0.88 },
             );
             *up = row;
-            base += 30;
+            base += theme::size::px(30);
         }
         for (i, (label, path)) in fv.sidebar.iter().enumerate() {
-            let y = base + i as i32 * 30;
+            let y = base + i as i32 * theme::size::px(30);
             // 当前所在位置高亮：用户随时知道"我在哪一栏"（此前恒为 false，等于没有反馈）
             let selected = path == fv.cwd || fv.cwd.starts_with(&format!("{path}{}", std::path::MAIN_SEPARATOR));
             let row = Rect { x: r.x + theme::size::px(theme::size::PAD_SM), y, w: sidebar.w - 16, h: theme::size::px(theme::size::CTRL_H_XS) };
@@ -6534,11 +6534,11 @@ impl Renderer {
         draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION),
             crate::i18n::pick(crate::i18n::lang(), "工具", "Tool"), font::CAPTION, color::text_faint(), 0.9);
         draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), c.tool, font::BODY, color::text_dim(), 0.95);
-        y += 22;
+        y += theme::size::px(22);
         for (k, v) in &args {
             draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), k, font::CAPTION, color::text_faint(), 0.9);
             tr.draw_bold(buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), v, font::BODY, color::text(), 0.96);
-            y += 22;
+            y += theme::size::px(22);
         }
 
         // 后果说明（风险色）+ 警示三角（几何绘制，不依赖字体字形）
@@ -6554,7 +6554,7 @@ impl Renderer {
         // 文字用主文字色：彩色文字在淡底上达不到 AA；警示语义由左侧三角与徽章承担。
         let shown = ellipsize(tr, c.consequence, font::CAPTION, (win.w - 64) as f32);
         draw_text(tr, buf, w, h, (win.x + 42) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), &shown, font::CAPTION, color::text(), 0.95);
-        y += 34;
+        y += theme::size::px(34);
 
         // L3 回显确认：必须原样输入目标，防"手滑点确认"
         if let Some(target) = c.echo_required {
@@ -6564,7 +6564,7 @@ impl Renderer {
             format!("L3 危险操作：请原样输入 {target} 以确认")
         };
             draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, y as f32, &tip, font::CAPTION, color::text_dim(), 0.9);
-            y += 22;
+            y += theme::size::px(22);
             let field = Rect { x: win.x + theme::size::px(theme::size::PAD_LG), y, w: win.w - 40, h: 38 };
             let ok = c.echo_ok();
             rounded_rect(buf, w, h, field, radius::SM, color::inset(), 0.9);
@@ -6581,7 +6581,7 @@ impl Renderer {
                 fill_rect(buf, w, h, Rect { x: (field.x + theme::size::px(theme::size::TIGHT)) as i32 + tw as i32, y: field.y + 10, w: 2, h: 18 }, color::accent(), 0.9);
             }
             self.confirm_echo = field;
-            y += 50;
+            y += theme::size::px(50);
         }
 
         // 按钮：拒绝（danger 描边）/ 允许一次（accent 实心，回显未匹配时禁用）。
