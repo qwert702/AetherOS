@@ -2838,12 +2838,18 @@ impl Renderer {
         // 高度由行数推导（见 control_layout）：加行自动变高，不存在"忘了同步"
         const PANEL_H: i32 = control_layout::PANEL_H;
         // 右对齐到状态簇（并保证不出屏）
-        let x = (self.status_cluster.x + self.status_cluster.w - PANEL_W).max(8);
+        let x = (self.status_cluster.x + self.status_cluster.w - theme::size::px(PANEL_W)).max(8);
         let panel = Rect {
             x,
             y: metric::MENUBAR_H as i32 + 6,
             w: PANEL_W,
-            h: PANEL_H,
+            // 面板高度：跟着缩放，但**夹在屏幕可用高度内**（不让它跑出屏幕）。
+            // 150% 下内容仍装不下（需滚动或两栏，见审计附录 CZ）——
+            // 这里保证的是「面板本身不出屏」，不是「内容一定放得下」。
+            h: theme::size::px(PANEL_H).min(
+                (h as i32 - (metric::MENUBAR_H as i32 + theme::size::px(6)) - theme::size::px(8))
+                    .max(theme::size::px(120)),
+            ),
         };
         shadow(buf, w, h, panel, radius::MD, elevation::elev_2());
         rounded_rect(buf, w, h, panel, radius::MD, color::glass(), color::glass_alpha(true));
@@ -2853,27 +2859,27 @@ impl Renderer {
         let Some(tr) = tr else { return };
 
         let row = |y: i32| Rect {
-            x: panel.x + 4,
+            x: panel.x + theme::size::px(4),
             y,
-            w: panel.w - 8,
-            h: 34,
+            w: panel.w - theme::size::px(8),
+            h: theme::size::px(34),
         };
         // 与设置中心同一手法：**只登记开关本身**，整行与开关都登记会让一次点击命中两个目标
         let knob = |r: Rect| Rect {
-            x: r.x + r.w - 54,
-            y: r.y + 7,
-            w: 46,
-            h: 20,
+            x: r.x + r.w - theme::size::px(54),
+            y: r.y + theme::size::px(7),
+            w: theme::size::px(46),
+            h: theme::size::px(20),
         };
 
         let mut y = panel.y + theme::size::px(theme::size::TIGHT);
         // ① AI 三态（只读）
-        rounded_rect(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::INSET_SM), y: y + 6, w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
-        tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
-        tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), crate::i18n::pick(crate::i18n::lang(), ui.ai_status.label(), ui.ai_status.label_en()),
+        rounded_rect(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::INSET_SM), y: y + theme::size::px(6), w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
+        tr.draw(buf, w, h, (panel.x + theme::size::px(32)) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
+        tr.draw(buf, w, h, (panel.x + theme::size::px(120)) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), crate::i18n::pick(crate::i18n::lang(), ui.ai_status.label(), ui.ai_status.label_en()),
             font::CAPTION, color::text_dim(), 0.9);
         y += theme::size::px(26);
-        widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
+        widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - theme::size::px(24), h: 1 });
         y += 8;
 
         // ② 深色模式（默认关 = 白色；用户最常切的一项放最前）
@@ -2882,7 +2888,7 @@ impl Renderer {
         let s0 = knob(r0);
         widgets::switch(buf, w, h, s0, self.settings.dark_mode, widgets::States::at(s0, ui.mouse));
         self.control_hits.push((s0, ControlHit::ToggleDark));
-        y += control_layout::ROW_H_SWITCH;
+        y += theme::size::px(control_layout::ROW_H_SWITCH);
 
         // ③ 中文输入法
         let r1 = row(y);
@@ -2890,7 +2896,7 @@ impl Renderer {
         let s1 = knob(r1);
         widgets::switch(buf, w, h, s1, self.ime_on, widgets::States::at(s1, ui.mouse));
         self.control_hits.push((s1, ControlHit::ToggleIme));
-        y += control_layout::ROW_H_SWITCH;
+        y += theme::size::px(control_layout::ROW_H_SWITCH);
 
         // ③ 24 小时制
         let r2 = row(y);
@@ -2898,7 +2904,7 @@ impl Renderer {
         let s2 = knob(r2);
         widgets::switch(buf, w, h, s2, self.settings.clock_24h, widgets::States::at(s2, ui.mouse));
         self.control_hits.push((s2, ControlHit::ToggleClock24h));
-        y += control_layout::ROW_H_SWITCH;
+        y += theme::size::px(control_layout::ROW_H_SWITCH);
 
         // ④ 快捷跳转
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
@@ -2918,7 +2924,7 @@ impl Renderer {
             let label = crate::i18n::pick(crate::i18n::lang(), zh, en);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, hit));
-            y += control_layout::ROW_H_ACTION;
+            y += theme::size::px(control_layout::ROW_H_ACTION);
         }
         // 「通知」单独走一支：它的文案**带未读数**（动态），
         // 而 `i18n::pick` 要求 `&'static str`（那是"两种语言写在调用点"这个设计的代价）。
@@ -2940,7 +2946,7 @@ impl Renderer {
             let r = row(y);
             widgets::row(buf, w, h, r, &label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, ControlHit::Notifications));
-            y += control_layout::ROW_H_ACTION;
+            y += theme::size::px(control_layout::ROW_H_ACTION);
         }
 
         // ⑤ 音量（批次 K-2）
@@ -2971,14 +2977,14 @@ impl Renderer {
                              widgets::States::at(r, ui.mouse), Some(tr));
                 // **不登记命中区**：不可用时点不动，也就不该有可点击区域
             }
-            y += control_layout::ROW_H_ACTION;
+            y += theme::size::px(control_layout::ROW_H_ACTION);
         }
 
         // ⑦ 虚拟桌面（§5.4）：把"切"之外的"增删"也放到手边
         //
         // 为什么放在控制中心而不是再占一个快捷键：`Super+1..9` 已经是"切到第 N 个"，
         // 再给增删各配一个组合键既难记又容易误触；而"给桌面加一个"是低频动作，
-        // 收进控制中心正合适。行数由 `control_layout::SPACE_ROWS` 决定（面板自动变高）。
+        // 收进控制中心正合适。行数由 `theme::size::px(control_layout::SPACE_ROWS)` 决定（面板自动变高）。
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
         y += 8;
         widgets::group_header(
@@ -2999,7 +3005,7 @@ impl Renderer {
             let label = crate::i18n::pick(crate::i18n::lang(), zh, en);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, hit));
-            y += control_layout::ROW_H_ACTION;
+            y += theme::size::px(control_layout::ROW_H_ACTION);
         }
 
         // ⑥ 电源（2026-10-02 功能批次 J-2）
@@ -3020,7 +3026,7 @@ impl Renderer {
             let label = crate::i18n::pick(crate::i18n::lang(), zh, en);
             widgets::row(buf, w, h, r, label, None, widgets::States::at(r, ui.mouse), Some(tr));
             self.control_hits.push((r, hit));
-            y += control_layout::ROW_H_ACTION;
+            y += theme::size::px(control_layout::ROW_H_ACTION);
         }
         tr.draw(
             buf, w, h,
