@@ -211,6 +211,51 @@ def mask_set():
     return mask
 
 
+def cmd_render_scale(pct: int, outdir: str) -> int:
+    """把**全部档位**在指定缩放下渲染成 PNG —— 供「逐界面实拍」复查。
+
+    为什么要有它：150% 的观感检查以前靠「我记着看过哪些」，那是**不可复查**的。
+    这个子命令一次渲染全部档位，于是「看过哪些」变成一份**文件清单**。
+    """
+    out = ROOT / outdir
+    out.mkdir(parents=True, exist_ok=True)
+    bmp = ROOT / "preview.bmp"
+    n = 0
+    blank: list[tuple[str, int]] = []
+    for name, args in CASES:
+        if bmp.exists():
+            bmp.unlink()
+        proc = subprocess.run(
+            ["cargo", "run", "-q", "--offline", "--locked", "--bin", "aether-compositor",
+             "--", *args, "--scale", str(pct)],
+            cwd=ROOT, capture_output=True, text=True, env=_env(),
+        )
+        if not bmp.exists():
+            print(f"  [SKIP] {name}: {proc.stderr.strip()[:100]}")
+            continue
+        raw = bmp.read_bytes()
+        colors = content_colors(raw) if len(raw) == HDR + W * H * 3 else 0
+        png = out / f"{name}.png"
+        subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "bmp2png.py"), str(bmp), str(png)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        flag = "  <== 疑似空白" if colors <= BLANK_MAX_COLORS else ""
+        print(f"  {name:14} 内容色 {colors:5} -> {png.relative_to(ROOT)}{flag}")
+        n += 1
+        blank.append((name, colors))
+    if blank:
+        lo = min(blank, key=lambda x: x[1])
+        hi = max(blank, key=lambda x: x[1])
+        print(f"内容色范围：{lo[1]}（{lo[0]}）~ {hi[1]}（{hi[0]}）")
+        bad = [nm for nm, c in blank if c <= BLANK_MAX_COLORS]
+        if bad:
+            print(f"[FAIL] {len(bad)} 档疑似空白：{bad}")
+            return 1
+    print(f"完成：{n}/{len(CASES)} 档 @ {pct}%，没有空白档")
+    return 0 if n == len(CASES) else 1
+
+
 def main():
     args = sys.argv[1:]
     if not args:
@@ -223,6 +268,10 @@ def main():
         return cmd_save(keep)
     if cmd == "verify":
         return cmd_verify()
+    if cmd == "render-scale":
+        pct = int(rest[0]) if rest and rest[0].isdigit() else 150
+        outdir = rest[1] if len(rest) > 1 else f"docs/证据/_scale/{pct}"
+        return cmd_render_scale(pct, outdir)
 
     # ---- 历史子命令 ----
     if cmd == "mask":

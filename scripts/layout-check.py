@@ -75,8 +75,11 @@ def check_desktop() -> tuple[int, int, list[str]]:
     for scale in SCALES:
         for name, args in DESKTOP_CASES:
             d = dump_args(args, scale)
+            colors = blank_of_shot()
             if d is None:
                 continue
+            if 0 <= colors <= BLANK_MAX_COLORS:
+                blanks.append(f"{name}@{scale}%（内容色 {colors}）")
             w = d["w"]
             ws = d.get("widgets", [])
             for r in ws:
@@ -103,13 +106,55 @@ def check_desktop() -> tuple[int, int, list[str]]:
     return off, len(ov), ov
 
 
+# ---- 空白判定（与 shot-diff.py 同源，见审计附录 CK / DB）----
+# 内容区（去掉顶栏与左侧导航栏）
+CONTENT_X0 = 260
+CONTENT_Y0 = 60
+# 实测：非空白档的内容色最少 782（desktop），阈值取 24 极保守，只抓「整档没画出来」
+BLANK_MAX_COLORS = 24
+HDR = 54          # 24bpp BMP 头
+W, H = 1280, 760
+
+
+def content_colors(raw: bytes) -> int:
+    """数内容区里**不同颜色**的个数。"""
+    if len(raw) != HDR + W * H * 3:
+        return -1
+    px = raw[HDR:]
+    seen = set()
+    for y in range(CONTENT_Y0, H - 8):
+        row = (H - 1 - y) * W
+        for x in range(CONTENT_X0, W - 8):
+            i = (row + x) * 3
+            seen.add(px[i:i + 3])
+            if len(seen) > 4000:
+                return len(seen)
+    return len(seen)
+
+
+def blank_of_shot() -> int:
+    """读渲染器刚写出的 preview.bmp，返回内容色个数（读不到返回 -1）。"""
+    bmp = ROOT / "preview.bmp"
+    if not bmp.exists():
+        return -1
+    return content_colors(bmp.read_bytes())
+
+
+def dump_with_blank(page: int, scale: int):
+    """渲染一档，返回 (布局, 内容色数)。"""
+    return dump(page, scale), blank_of_shot()
+
+
 def main() -> int:
     strict = "--strict" in sys.argv
     off_screen, off_width, overlaps, needs_scroll = [], [], [], []
+    blanks: list[str] = []
     checked = 0
     for scale in SCALES:
         for page in range(PAGE_COUNT):
-            d = dump(page, scale)
+            d, colors = dump_with_blank(page, scale)
+            if 0 <= colors <= BLANK_MAX_COLORS:
+                blanks.append(f"page-{page}@{scale}%（内容色 {colors}）")
             if d is None:
                 print(f"[SKIP] page-{page}@{scale}%：没拿到布局（渲染不出来？）")
                 return 0
@@ -151,17 +196,20 @@ def main() -> int:
     # 窗口类界面
     d_off, d_ov, d_list = check_desktop()
     print(f"  ⑤ 窗口类界面横向越界：{d_off}")
+    print(f"  ⑦ 空白档（内容色 <= {BLANK_MAX_COLORS}）：{len(blanks)}")
+    for b in blanks[:6]:
+        print(f"    {b}")
     print(f"  ⑥ 窗口类界面同组重叠（**只报告**）：{d_ov}")
     for t3 in d_list[:6]:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    if strict and (off_screen or off_width or d_off):
+    if strict and (off_screen or off_width or d_off or blanks):
         print("[FAIL] 有控件横向越界")
         return 1
     print("[ OK ] 没有横向越界（① ② ⑤ 都是 0）" if not (off_screen or off_width or d_off)
           else "[FAIL] 有横向越界")
-    return 0 if not (off_screen or off_width or d_off) else 1
+    return 0 if not (off_screen or off_width or d_off or blanks) else 1
 
 
 if __name__ == "__main__":

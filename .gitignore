@@ -35,3 +35,5 @@ site/sitemap.xml
 site/robots.txt
 site/404.html
 site/assets/img/
+# 逐界面实拍的工作产物（29 档 × N 档缩放，体积大；清单提交，图片不提交）
+docs/证据/_scale/
