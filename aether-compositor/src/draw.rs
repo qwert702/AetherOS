@@ -3077,7 +3077,7 @@ impl Renderer {
             .map(|s| tr.measure(s, font::BODY))
             .fold(120.0f32, f32::max)
             + 44.0;
-        let panel = Rect { x: label.x, y: metric::MENUBAR_H + 4, w: panel_w as i32, h: items.len() as i32 * 30 + 8 };
+        let panel = Rect { x: label.x, y: metric::MENUBAR_H + theme::size::px(4), w: panel_w as i32, h: items.len() as i32 * theme::size::px(30) + theme::size::px(8) };
         shadow(buf, w, h, panel, radius::MD, elevation::elev_2());
         rounded_rect(buf, w, h, panel, radius::MD, color::surface_2(), 0.98);
         rounded_outline(buf, w, h, panel, radius::MD, color::hairline(), 0.12);
@@ -6503,7 +6503,13 @@ impl Renderer {
             .collect();
         let echo_block = if c.echo_required.is_some() { 96 } else { 0 };
         let win_w = 560i32;
-        let win_h = 104 + args.len() as i32 * 22 + 54 + echo_block + 68;
+        // 高度由「数量 × 每行高度 + 固定块」算出：**每一项都要跟着缩放**，
+    // 否则 150% 下参数行长大、窗口不长 → 内容被切（附录 DA）。
+    let win_h = theme::size::px(104)
+        + args.len() as i32 * theme::size::px(22)
+        + theme::size::px(54)
+        + echo_block
+        + theme::size::px(68);
         let win = Rect {
             x: w as i32 / 2 - win_w / 2,
             y: ((h as i32 - win_h) / 2 - 10).max(48),

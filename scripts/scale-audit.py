@@ -94,7 +94,13 @@ def main() -> int:
     for i, line in enumerate(lines):
         if 'theme::size::px' in line:
             continue
-        if '.len()' in line:      # `items.len() * N` 是**数量乘**，不是步长（实测误报）
+        # `数量 * N`：N 若是**裸数字**，容器会随数量线性变大却不随缩放变大
+        # （附录 CL 曾把这类整体排除，结果藏住了附录 DA 实拍发现的面板高度 bug）。
+        # 判据：N 没走 `theme::size::px(...)` 才算问题。
+        if '.len()' in line:
+            mm = re.search(r'\.len\(\)[^;]*?\*\s*(\d+)\b', line)
+            if mm:
+                loop_steps.append((i + 1, f"数量乘未缩放：{line.strip()[:84]}"))
             continue
         for m in re.finditer(r'(?:\*|\+=)\s*(\d+)\b', line):
             n = int(m.group(1))
