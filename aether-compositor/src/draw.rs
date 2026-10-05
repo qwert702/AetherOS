@@ -2564,6 +2564,12 @@ impl Renderer {
         }
         if self.control_open {
             self.draw_control_center(buf, w, h, ui, tr);
+            // 控制中心滚起来后内容会越过面板上边界（`tr.draw` 不裁剪）——
+            // 把菜单栏那一条**重画一遍**盖住它。`draw_menubar` 是幂等的。
+            // **只在真的滚了时做**：100% 下滚动量恒为 0，基线画面不变。
+            if self.control_scroll > 0 {
+                self.draw_menubar(buf, w, h, ui, tr);
+            }
             mark!("control");
         }
         if ui.open_menu.is_some() {
@@ -2867,12 +2873,21 @@ impl Renderer {
         self.control_hits.clear();
         self.control_panel = panel;
         let Some(tr) = tr else { return };
+        // 内容裁剪到面板内：滚起来时上半部分不该画到菜单栏上（审计附录 DD）
+        tr.set_clip_y(Some((panel.y, panel.y + panel.h)));
 
-        let row = |y: i32| Rect {
-            x: panel.x + theme::size::px(4),
-            y,
-            w: panel.w - theme::size::px(8),
-            h: theme::size::px(34),
+        // 行矩形。**完全在面板之外的行挪到屏幕外**（y = -1000）：
+        // 渲染器会跳过屏外像素，于是文字不画、命中区也失效 ——
+        // 看不见的行本来就不该能点。这样滚动时内容不会溢出到面板外面。
+        let row = |y: i32| {
+            let h = theme::size::px(34);
+            let visible = y + h > panel.y && y < panel.y + panel.h;
+            Rect {
+                x: panel.x + theme::size::px(4),
+                y: if visible { y } else { -1000 },
+                w: panel.w - theme::size::px(8),
+                h,
+            }
         };
         // 与设置中心同一手法：**只登记开关本身**，整行与开关都登记会让一次点击命中两个目标
         let knob = |r: Rect| Rect {
@@ -3060,6 +3075,7 @@ impl Renderer {
             crate::i18n::tr("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
             font::LABEL, color::text_dim(), 0.7,
         );
+        tr.set_clip_y(None);
     }
 
     /// 向导里被点中的**选项下标**（§5.8）。没有命中给 `None`。

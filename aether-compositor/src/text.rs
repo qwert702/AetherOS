@@ -22,6 +22,12 @@ pub struct TextRenderer {
     /// 重算上百个字形 —— 这是 `windows` 阶段最大的一笔浪费。
     /// 光栅化结果只取决于 (字体, 字符, 字号)，缓存后每帧只剩查表 + 混合。
     glyphs: RefCell<HashMap<GlyphKey, Arc<(fontdue::Metrics, Vec<u8>)>>>,
+    /// 可选的**纵向裁剪区间** `(y0, y1)`（屏幕坐标）。
+    ///
+    /// 为什么要它：控制中心滚起来后内容会越过面板上边界，而 `render()` 只按**屏幕**边界检查 ——
+    /// 于是文字画到了菜单栏上（审计附录 DD）。所有文字都经过 `render()`，所以裁剪做在这一处就够。
+    /// 用 `Cell` 是因为绘制入口拿的是 `&TextRenderer`。
+    clip_y: std::cell::Cell<Option<(i32, i32)>>,
 }
 
 /// 字形缓存键。字号在入口已 `round()`，这里再乘 100 定点化，避免拿 f32 当 key。
@@ -180,6 +186,11 @@ impl TextRenderer {
         top + height / 2.0 - ascent + ink_c
     }
 
+    /// 设置纵向裁剪区间（`None` = 不裁剪）。见 `clip_y` 的说明。
+    pub fn set_clip_y(&self, range: Option<(i32, i32)>) {
+        self.clip_y.set(range);
+    }
+
     pub fn load() -> Option<Self> {
         let regular_list = resolve_fonts("AETHER_FONT", REGULAR_FONTS);
         let bold_list = resolve_fonts("AETHER_FONT_BOLD", BOLD_FONTS);
@@ -196,7 +207,7 @@ impl TextRenderer {
             .horizontal_line_metrics(40.0)
             .map(|m| m.ascent)
             .unwrap_or(32.0);
-        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()) })
+        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip_y: std::cell::Cell::new(None) })
     }
 
     /// 取（并缓存）字形位图。命中时只做一次哈希查找，不再走字形解析与光栅化。
@@ -267,6 +278,12 @@ impl TextRenderer {
                     let px_y = gy + row as i32;
                     if px_x < 0 || px_y < 0 || px_x >= w as i32 || px_y >= h as i32 {
                         continue;
+                    }
+                    // 调用方设的纵向裁剪区间（例如控制中心的内容区）
+                    if let Some((y0, y1)) = self.clip_y.get() {
+                        if px_y < y0 || px_y >= y1 {
+                            continue;
+                        }
                     }
                     blend_pixel(buf, px_y as usize * w + px_x as usize, rgb, cov);
                 }
