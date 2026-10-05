@@ -87,21 +87,24 @@ def check_desktop() -> tuple[int, int, list[str]]:
                     off += 1
                     print(f"    [越界] {name}@{scale}% {r['group']}/{r['kind']} "
                           f"({r['x']},{r['y']},{r['w']}x{r['h']})")
-            for i in range(len(ws)):
-                for j in range(i + 1, len(ws)):
-                    a = overlap(ws[i], ws[j])
+            # 屏幕外的矩形不参与「重叠」判断：控制中心的裁剪把「完全在面板之外的行」
+            # 挪到 y = -1000（附录 DD），多行共用同一个屏幕外坐标**不是**布局重叠。
+            vis = [w for w in ws if w["y"] >= 0 and w["y"] + w["h"] <= d["h"]]
+            for i in range(len(vis)):
+                for j in range(i + 1, len(vis)):
+                    a = overlap(vis[i], vis[j])
                     if a <= 0:
                         continue
-                    # 同一组内的重叠才算问题（跨组本来就是"浮层盖在窗口上"）
-                    if ws[i]["group"] != ws[j]["group"]:
+                    # 同一组内的重叠才算问题（跨组本来就是「浮层盖在窗口上」）
+                    if vis[i]["group"] != vis[j]["group"]:
                         continue
                     # 窗口三键再限定**同一个窗口**：堆叠布局下多个窗口共用区域，
                     # 它们的按钮位置本来就重合（`layout4` 实测 106 处，全部是这个原因）。
-                    ki, kj = ws[i]["kind"], ws[j]["kind"]
+                    ki, kj = vis[i]["kind"], vis[j]["kind"]
                     if ki.startswith("win") and kj.startswith("win"):
                         if ki.split("-")[0] != kj.split("-")[0]:
                             continue
-                    ov.append(f"{name}@{scale}% {ws[i]['group']}: "
+                    ov.append(f"{name}@{scale}% {vis[i]['group']}: "
                               f"{ki} ∩ {kj} = {a}px²")
     return off, len(ov), ov
 
@@ -199,17 +202,17 @@ def main() -> int:
     print(f"  ⑦ 空白档（内容色 <= {BLANK_MAX_COLORS}）：{len(blanks)}")
     for b in blanks[:6]:
         print(f"    {b}")
-    print(f"  ⑥ 窗口类界面同组重叠（**只报告**）：{d_ov}")
+    print(f"  ⑥ 窗口类界面同组重叠（判红）：{d_ov}")
     for t3 in d_list[:6]:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    if strict and (off_screen or off_width or d_off or blanks):
+    if strict and (off_screen or off_width or d_off or blanks or d_ov):
         print("[FAIL] 有控件横向越界")
         return 1
     print("[ OK ] 没有横向越界（① ② ⑤ 都是 0）" if not (off_screen or off_width or d_off)
           else "[FAIL] 有横向越界")
-    return 0 if not (off_screen or off_width or d_off or blanks) else 1
+    return 0 if not (off_screen or off_width or d_off or blanks or d_ov) else 1
 
 
 if __name__ == "__main__":

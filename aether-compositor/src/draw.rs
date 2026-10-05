@@ -2880,7 +2880,11 @@ impl Renderer {
         // 渲染器会跳过屏外像素，于是文字不画、命中区也失效 ——
         // 看不见的行本来就不该能点。这样滚动时内容不会溢出到面板外面。
         let row = |y: i32| {
-            let h = theme::size::px(34);
+            // 行高必须 **≥ 步长**，否则相邻行重叠（实测：写死 34 而动作行步长是 32
+            // → 100% 下就重叠 2px、150% 下 3px；几何断言报的 14 处就是它）。
+            // 用步长常量本身，则「步长 ≥ 行高」对所有行成立：
+            // 动作行 32 = 32（不重叠），开关行 36 > 32（留 4px 缝）。
+            let h = theme::size::px(control_layout::ROW_H_ACTION);
             let visible = y + h > panel.y && y < panel.y + panel.h;
             Rect {
                 x: panel.x + theme::size::px(4),
