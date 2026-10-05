@@ -3783,13 +3783,15 @@ fn draw_settings_content(
                 crate::i18n::tr("可安装的应用", "Available apps"), Some(tr),
             );
             ry += theme::size::px(theme::size::LINE_GAP);
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(
+                tr,
+                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                 crate::i18n::tr(
                     crate::i18n::pick(lang, "点一行即安装（装之前会弹确认卡片，还会做依赖预检）。", "Click a row to install (a confirmation card pops up first, plus a dependency pre-check)."),
                     "Click a row to install (a confirmation card appears; dependencies are pre-checked).",
                 ),
                 font::CAPTION, color::text_dim(), 0.85,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
             );
             ry += theme::size::px(28);
 
@@ -4144,13 +4146,15 @@ fn draw_settings_content(
             }
 
             ry += theme::size::px(theme::size::GAP_TIGHT);
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(
+                tr,
+                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                 crate::i18n::tr(
                     "本系统只绘制主输出；多显示器需要布局与坐标体系改造（见缺口清单 §3.8）",
                     "Only the primary output is drawn; multi-monitor needs a layout/coordinate rework",
                 ),
                 font::CAPTION, color::text_dim(), 0.75,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
             );
         }
         "系统更新" => {
@@ -4168,13 +4172,15 @@ fn draw_settings_content(
                 font::CAPTION, color::text_dim(), 0.9,
             );
             ry += theme::size::px(theme::size::LINE_GAP);
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(
+                tr,
+                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                 crate::i18n::tr(
                     crate::i18n::pick(lang, "把更新包放进 /var/lib/aether/update/incoming/ 后点刷新；暂存后重启生效", "Drop a bundle into /var/lib/aether/update/incoming/ and refresh; it applies on reboot"),
                     "Drop a bundle into /var/lib/aether/update/incoming/ then refresh; reboot to apply",
                 ),
                 font::CAPTION, color::text_dim(), 0.75,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
             );
             ry += theme::size::px(theme::size::HINT_GAP);
 
@@ -5133,16 +5139,18 @@ fn draw_settings_content(
             );
             hits.push((clear, SettingsHit::ClearNotifications));
             ry += theme::size::px(52);
-            tr.draw(
+            draw_wrapped(
+                tr,
                 buf,
                 w,
                 h,
                 (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
-                ry as f32,
+                &mut ry,
                 crate::i18n::pick(lang, "通知中心在控制中心里打开（点顶栏状态簇）。", "The notification center opens from the control center (click the status cluster in the top bar)."),
                 font::CAPTION,
                 color::text_dim(),
                 0.75,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
             );
             // §5.12 声音：开关 + 主题（这个开关此前**只有字段没有界面**）
             ry += theme::size::px(theme::size::GAP_TIGHT);

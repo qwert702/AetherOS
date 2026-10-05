@@ -219,8 +219,26 @@ impl TextRenderer {
                 lines.push(self.fit(&rest, px, max_w));
                 return lines;
             }
-            lines.push(cur);
-            start = end;
+            // 英文优先在**空格**处断行（中文没有空格 → 仍按字符断，渲染不变）。
+            // 只在空格足够靠后（超过本行的 60%）时才回退，否则会出现极短的行。
+            let brk = if let Some(sp) = cur.rfind(' ') {
+                let used = sp as f32 / cur.chars().count().max(1) as f32;
+                if used > 0.6 {
+                    start + cur[..sp].chars().count() + 1
+                } else {
+                    end
+                }
+            } else {
+                end
+            };
+            if brk < end {
+                let head: String = chars[start..brk].iter().collect();
+                lines.push(head.trim_end().to_string());
+                start = brk;
+            } else {
+                lines.push(cur);
+                start = end;
+            }
         }
         lines
     }
