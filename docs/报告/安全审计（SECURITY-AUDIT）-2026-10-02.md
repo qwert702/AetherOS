@@ -4693,3 +4693,94 @@ let r_scale = Rect { x: r1.x, y: r1.y + 154, … };  // ✗
 * 负向测试：改成 748 → 退出码 1（已还原）；
 * `python scripts/gates.py` → **全部 19 项门禁通过**；
 * 构建 0 错误 0 警告；`cargo test --workspace`：749 通过 / 0 失败。
+
+---
+
+## 附录 CV：终端字距 —— 根因、一次**可证明失败**的尝试，与正确的修法（2026-10-05 批次 CV-1）
+
+### CV.1 根因（代码证据，不是猜）
+
+| 环节 | 事实 |
+|---|---|
+| 终端排版 | `draw_term_content` 用**等宽网格**：`tr.mono_cell()` 取格宽，按 `col * cell_w` 定位字符；列数/行数/选择范围都依赖统一格宽 |
+| 格宽怎么算 | `mono_cell()` 里 `w = measure("M", font::MONO)` —— **拿最宽字母之一当基准** |
+| 实际字体 | 正文体是 **Noto Sans SC（比例字体）**，拉丁字母宽窄不一 |
+| 结果 | 窄字母（t / l / i）在自己格子里**右边留空** → 看起来就是「字距被撑开」。100% 只有 1~2px 几乎看不出，**150% 放大 1.5 倍就很明显** |
+
+### CV.2 第一次尝试：**修好了一半，另一半更糟** —— 而且我证明了自己没修对
+
+给终端单独加载等宽字体（`MONO_FONTS` + `AETHER_FONT_MONO` + 缓存键加 `mono` 位）。
+实拍结果：
+
+* ✓ **拉丁间距正确了**：`aether@localhost:~$`、`AetherOS 0.1.0 aether-kernel`（此前是 `Aet her OS 0. 1. 0`）；
+* ✗ **中文变成豆腐块** □ —— Consolas 不含中日韩字形。
+
+我加了"缺字形就退回正文体"，判断条件写成 `width == 0 || height == 0`。
+**实测无效** —— 证据是**渲染出来的图与改前逐字节相同（同一 sha256）**：
+Consolas 对缺字形返回的是 `.notdef` **豆腐块字形，它是有宽度的**。
+
+**这次实验没有提交**：带着"终端中文变豆腐块"这种已知回归留在工作区是不负责任的，
+所以 `git checkout` 回滚，回到已提交、已绿色的状态。**回滚本身也是本批的结论之一。**
+
+### CV.3 第二次（正确）：先读库源码，再改
+
+按本会话反复得到的教训 —— **别猜 API，去读它**。
+在 `~/.cargo/registry/.../fontdue-0.9.4/src/font.rs:630` 读到：
+
+```rust
+pub fn has_glyph(&self, character: char) -> bool {
+    self.lookup_glyph_index(character) != 0
+}
+```
+
+`lookup_glyph_index` 对**字体里没有的字符返回 0** —— 这才是"缺字形"的正确判据。
+于是改成**逐字回退**：
+
+```rust
+let use_mono = mono && self.mono.has_glyph(ch);
+let font = if use_mono { &self.mono } else if bold { &self.bold } else { &self.regular };
+```
+
+（缓存键仍用**请求**的 `mono`，不用回退后的选择：同一请求的结果是确定的。）
+
+### CV.4 验证：两档都实拍看过
+
+* **100%**：`aether@localhost:~$ uname -srv` / `AetherOS 0.1.0 aether-kernel` / `docs  src  run.sh  core.log`
+  —— 等宽、整齐；中文 `宽字符对齐：中文 与 ASCII 混排` 正常；
+* **150%**：同样正确（这正是本轮要修的那一档）；
+* 证据：`docs/证据/CV-100%-等宽字体.png`、`docs/证据/CV-150%-等宽字体.png`。
+
+### CV.5 基线重新标定 —— 以及我**为什么**敢说变化是"只有终端"
+
+换字体**有意改变**了 100% 的画面，所以重新 `save` 基线。但"重新标定"不能变成
+"看到红的就抹掉"，所以先查了两件事：
+
+1. **`font::MONO` 只被终端使用** —— 全库 2 个调用点（`draw.rs:5238`、`draw.rs:5289`），
+   都在 `draw_term_content` 里；
+2. **每一档都能看到终端窗口**（设置窗口浮在它上面），**只有 `desktop`（`--desktop-only`）
+   不画窗口**。
+
+预测：`desktop` 应当是**唯一没变**的档。实测：**28 档变化、`desktop` 未变** ✓ —— 与预测一致，
+所以这次重新标定是有依据的，不是掩盖。
+
+### CV.6 诚实的边界：**目标系统上这一步还不生效**
+
+`MONO_FONTS` 里给目标系统列的是 `NotoSansMonoCJKsc-Regular.otf` 等路径，
+但 **overlay 目前只子集化了 Noto Sans SC（比例字体）**，没有等宽字体。
+也就是说：**在没有等宽字体的机器上，`load_font` 会退回正文体，终端退化成今天的样子**
+（间距略松，但不缺字形、不崩）。要让修法在真机生效，需要
+`platform/build-iso.sh` 再子集化一份等宽字体放进 overlay —— **构建侧待补**。
+本批只改合成器，**没有**动构建链。
+
+### CV.7 顺手记一个流程失误
+
+本批我忘了跑 `sync-doc-numbers.py` 与 `gen-site.py --refresh`，
+于是**门禁当场红了 2 项**（文档规模 + 站点：`text.rs` 从 695 行长到 740 行）。
+这正是门禁该做的事 —— 它没让我把过期数字提交进去。
+
+### CV.8 验证
+
+* 构建 0 错误 0 警告；`cargo test --workspace`：**749 通过 / 0 失败**；
+* `shot-diff.py verify` → **29 档与基线逐字节相同**（基线已按 CV.5 重新标定并说明理由）；
+* `gates.py` → **19 项全过**；
+* 实拍：100% 与 150% 两档终端中英混排都正确。

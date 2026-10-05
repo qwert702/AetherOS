@@ -11,6 +11,8 @@ use std::sync::Arc;
 pub struct TextRenderer {
     regular: fontdue::Font,
     bold: fontdue::Font,
+    /// 等宽字体：终端与代码专用（见 `MONO_FONTS`）。缺字形时**逐字**退回 `regular`。
+    mono: fontdue::Font,
     /// 40px 下的行高基准，用于按目标字号换算
     base_ascent: f32,
     /// 字形缓存：(粗体, 字符, 取整字号) → 光栅化结果。
@@ -26,6 +28,8 @@ pub struct TextRenderer {
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 struct GlyphKey {
     bold: bool,
+    /// 是否取自等宽字体 —— **必须进键**，否则同字号下正文与终端会互相串字形。
+    mono: bool,
     ch: char,
     px100: u32,
 }
@@ -56,6 +60,26 @@ const BOLD_FONTS: &[&str] = &[
 /// 把环境变量指定的字体排到候选表最前（**验证/调参用**，不改变默认行为）：
 ///
 /// ```text
+/// 等宽字体（终端 / 代码）。
+///
+/// **为什么要单独一份**：终端按**等宽网格**排版 —— 列数、行数、选择范围都依赖统一格宽；
+/// 而正文体 Noto Sans SC 的拉丁字母是**比例宽度**，窄字母（t / l / i）在按 "M" 算出的
+/// 格子里右边留空，看起来就是「字距被撑开」。100% 下 1~2px 几乎看不出，
+/// **150% 放大 1.5 倍就很明显**（审计附录 CV）。
+///
+/// **缺字形必须逐字回退**：等宽字体常常不含中日韩字形，而 `.notdef` 豆腐块**是有宽度的**，
+/// 所以不能靠 `width == 0` 判断（上一版就这么误判过）—— 用 `has_glyph()`。
+const MONO_FONTS: &[&str] = &[
+    // 目标系统：由 platform/build-iso.sh 子集化后放进 overlay（构建侧待补，见附录 CV.6）
+    "/usr/share/fonts/truetype/aether/NotoSansMonoCJKsc-Regular.otf",
+    "/usr/share/fonts/truetype/aether/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    // 开发机（Windows）
+    "C:/Windows/Fonts/consola.ttf",
+    "C:/Windows/Fonts/lucon.ttf",
+];
+
 /// AETHER_FONT=./subset.otf AETHER_FONT_BOLD=./subset-bold.otf aether-compositor --fonttest
 /// ```
 ///
@@ -96,6 +120,14 @@ fn load_font(paths: &[String]) -> Option<fontdue::Font> {
     }
     eprintln!("aether-compositor: 无可用字体，尝试过 {paths:?}");
     None
+}
+
+/// 这个逻辑字号是否该用**等宽字体**。
+///
+/// 依据：`font::MONO` 的注释写明它只服务"终端、代码"，所以按字号分派是安全的；
+/// 以后若出现别的等宽场景，应改成显式 API，而不是继续加字号判断。
+fn is_mono_size(px: f32) -> bool {
+    (px - crate::draw::theme::font::MONO).abs() < 0.01
 }
 
 /// 小字号覆盖增益：fontdue 是无 hinting 的解析式光栅化，≤14px 时细笔画
@@ -155,20 +187,30 @@ impl TextRenderer {
         let bold = load_font(&bold_list).unwrap_or_else(|| {
             load_font(&regular_list).expect("regular font already loaded once")
         });
+        // 等宽字体：找不到就退回正文体（终端退化成今天的样子，但不会少画东西）
+        let mono_list = resolve_fonts("AETHER_FONT_MONO", MONO_FONTS);
+        let mono = load_font(&mono_list).unwrap_or_else(|| {
+            load_font(&regular_list).expect("regular font already loaded once")
+        });
         let base_ascent = regular
             .horizontal_line_metrics(40.0)
             .map(|m| m.ascent)
             .unwrap_or(32.0);
-        Some(Self { regular, bold, base_ascent, glyphs: RefCell::new(HashMap::new()) })
+        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()) })
     }
 
     /// 取（并缓存）字形位图。命中时只做一次哈希查找，不再走字形解析与光栅化。
-    fn glyph(&self, bold: bool, ch: char, px: f32) -> Arc<(fontdue::Metrics, Vec<u8>)> {
-        let key = GlyphKey { bold, ch, px100: (px * 100.0) as u32 };
+    fn glyph(&self, bold: bool, mono: bool, ch: char, px: f32) -> Arc<(fontdue::Metrics, Vec<u8>)> {
+        let key = GlyphKey { bold, mono, ch, px100: (px * 100.0) as u32 };
         if let Some(g) = self.glyphs.borrow().get(&key) {
             return Arc::clone(g);
         }
-        let font = if bold { &self.bold } else { &self.regular };
+        // **逐字回退**：等宽字体（Consolas / DejaVu Sans Mono 等）常常不含中日韩字形，
+        // 直接用会画成豆腐块；而 `.notdef` 豆腐块**是有宽度的**，所以不能靠 width == 0
+        // 判断（上一版就这么误判，渲染图与改前逐字节相同 —— 见附录 CV）。
+        // 缓存键仍用**请求**的 mono，不回退后的选择：同一请求结果确定。
+        let use_mono = mono && self.mono.has_glyph(ch);
+        let font = if use_mono { &self.mono } else if bold { &self.bold } else { &self.regular };
         let g = Arc::new(font.rasterize(ch, px));
         self.glyphs.borrow_mut().insert(key, Arc::clone(&g));
         g
@@ -187,6 +229,8 @@ impl TextRenderer {
         alpha: f32,
         bold: bool,
     ) -> f32 {
+        // 等宽判定要在**缩放之前**做：调用点传的是 `font::MONO` 这个"逻辑字号"。
+        let mono = is_mono_size(px);
         // §3.4 字号：**所有文字都从这里过** —— 缩放做在这一处，
         // 几百个 `tr.draw(..., font::BODY, ...)` 调用点一行都不用改。
         let px = crate::draw::theme::ui::font(px);
@@ -201,7 +245,7 @@ impl TextRenderer {
                 cx += px * 0.28;
                 continue;
             }
-            let g = self.glyph(bold, ch, px);
+            let g = self.glyph(bold, mono, ch, px);
             let (m, bitmap) = (&g.0, &g.1);
             if m.width == 0 || m.height == 0 {
                 cx += m.advance_width;
@@ -286,6 +330,7 @@ impl TextRenderer {
     }
 
     fn measure_with(&self, text: &str, px: f32, bold: bool) -> f32 {
+        let mono = is_mono_size(px);
         // §3.4：测量也要用同一个实际字号（否则「量出来 20px、画出来 25px」会对不齐）
         let px = crate::draw::theme::ui::font(px);
         // 与 render() 同步取整，保证测量宽度 == 实际绘制宽度
@@ -296,7 +341,7 @@ impl TextRenderer {
                 w += px * 0.28;
                 continue;
             }
-            w += self.glyph(bold, ch, px).0.advance_width;
+            w += self.glyph(bold, mono, ch, px).0.advance_width;
         }
         w
     }
@@ -553,8 +598,8 @@ mod tests {
             let font = if bold { &tr.bold } else { &tr.regular };
             for ch in ['A', '中', '文', 'x', '1', '（'] {
                 let direct = font.rasterize(ch, px);
-                let c1 = tr.glyph(bold, ch, px);
-                let c2 = tr.glyph(bold, ch, px);
+                let c1 = tr.glyph(bold, false, ch, px);
+                let c2 = tr.glyph(bold, false, ch, px);
                 assert_eq!(
                     direct.1, c1.1,
                     "bold={bold} px={px} ch={ch:?}：首次缓存与直接光栅化的位图不一致"
@@ -571,8 +616,8 @@ mod tests {
         let Some(tr) = TextRenderer::load() else {
             return;
         };
-        let a = tr.glyph(false, '中', 11.0);
-        let b = tr.glyph(false, '中', 20.0);
+        let a = tr.glyph(false, false, '中', 11.0);
+        let b = tr.glyph(false, false, '中', 20.0);
         assert_ne!(a.1.len(), b.1.len(), "不同字号的位图尺寸应当不同");
     }
 
