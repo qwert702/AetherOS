@@ -5057,49 +5057,49 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         ([92, 164, 176], [46, 104, 122]),
     ];
 
-    let mut y = list.y + 8;
+    let mut y = list.y + theme::size::px(8);
     let mut i = 0usize;
     loop {
         // 按可用高度铺满：曲目用完后循环取用（演示内容，不是真实曲库）
-        if y + ROW_H > list.y + list.h - 6 {
+        if y + theme::size::px(ROW_H) > list.y + list.h - theme::size::px(6) {
             break;
         }
         let (title, artist, dur) = strings::TRACKS[i % strings::TRACKS.len()];
-        let row = Rect { x: list.x + theme::size::px(theme::size::PAD_SM), y, w: list.w - 16, h: ROW_H - 4 };
+        let row = Rect { x: list.x + theme::size::px(theme::size::PAD_SM), y, w: list.w - 16, h: theme::size::px(ROW_H) - theme::size::px(4) };
         let hovered = row.contains(mouse.0, mouse.1);
         let playing = i == 0;
         if hovered || playing {
             fill_clipped(buf, w, h, row, win, radius::LG, color::hairline(), if playing { 0.06 } else { state::hover() });
         }
         if playing {
-            rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + 9, w: 2, h: row.h - 18 }, 1.0, color::accent(), 0.95);
+            rounded_rect(buf, w, h, Rect { x: row.x, y: row.y + theme::size::px(9), w: 2, h: row.h - theme::size::px(18) }, 1.0, color::accent(), 0.95);
         }
         let (at, ab) = arts[i % arts.len()];
-        gradient_tile(buf, w, Rect { x: row.x + theme::size::px(theme::size::TIGHT), y: row.y + 5, w: ART, h: ART }, 6.0, at, ab, 0.95);
+        gradient_tile(buf, w, Rect { x: row.x + theme::size::px(theme::size::TIGHT), y: row.y + theme::size::px(5), w: theme::size::px(ART), h: ART }, 6.0, at, ab, 0.95);
 
-        let tx = (row.x + theme::size::px(theme::size::TIGHT) + ART + 12) as f32;
+        let tx = (row.x + theme::size::px(theme::size::TIGHT) + theme::size::px(ART) + theme::size::px(12)) as f32;
         // 给时长让出位置，标题/艺人按剩余宽度截断（窄窗口下不会压到时长上）
         let dur_w = tr.measure(dur, font::LABEL) + 20.0;
         let text_w = (row.x + row.w) as f32 - tx - dur_w;
         let title_s = ellipsize(tr, title, font::BODY, text_w);
         let artist_s = ellipsize(tr, artist, font::LABEL, text_w);
         tr.draw_bold(
-            buf, w, h, tx, tr.vcenter(row.y as f32 + 2.0, 20.0, font::BODY),
+            buf, w, h, tx, tr.vcenter(row.y as f32 + theme::size::px(2) as f32, theme::size::px(20) as f32, font::BODY),
             &title_s, font::BODY,
             if playing { color::accent() } else { color::text() },
             0.96,
         );
         draw_text(
-            tr, buf, w, h, tx, tr.vcenter(row.y as f32 + 22.0, 16.0, font::LABEL),
+            tr, buf, w, h, tx, tr.vcenter(row.y as f32 + theme::size::px(22) as f32, theme::size::px(16) as f32, font::LABEL),
             &artist_s, font::LABEL, color::text_dim(), 0.92,
         );
         let dw = tr.measure(dur, font::LABEL);
         draw_text(
             tr, buf, w, h, (row.x + row.w - 12) as f32 - dw,
-            tr.vcenter(row.y as f32 + 2.0, ROW_H as f32 - 4.0, font::LABEL),
+            tr.vcenter(row.y as f32 + theme::size::px(2) as f32, theme::size::px(ROW_H) as f32 - theme::size::px(4) as f32, font::LABEL),
             dur, font::LABEL, color::text_faint(), 0.85,
         );
-        y += ROW_H;
+        y += theme::size::px(ROW_H);
         i += 1;
     }
 
