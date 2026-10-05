@@ -167,6 +167,17 @@ def main() -> int:
     print(f"⑥ 步长来自按空间摊的变量（clamp 且无 px()）：{len(var_steps)} 处")
     for ln, msg in var_steps[:8]:
         print(f"   行 {ln}: {msg}")
+    # ⑦ 裁剪区间「设了必须清」的配对（文件级计数，见函数注释）
+    clip_bad = []
+    for f in sorted((ROOT / "aether-compositor/src").glob("*.rs")):
+        src = f.read_text(encoding="utf-8")
+        sets = src.count("set_clip_y(Some(")
+        clears = src.count("set_clip_y(None")
+        if sets > clears:
+            clip_bad.append(f"{f.name}: set={sets} clear={clears}")
+    print(f"⑦ 裁剪区间配对（set 多于 clear 即报警）：{len(clip_bad)} 个文件")
+    for msg in clip_bad:
+        print(f"   {msg}")
     for (ln, frag) in loop_steps:
         print(f"   行 {ln}: {frag}")
     print(f"③ 「矩形.y/x + 裸数字」的布局步长（>=20）：{len(fixed_offsets)} 处")
