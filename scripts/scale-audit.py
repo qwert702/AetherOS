@@ -88,6 +88,14 @@ def main() -> int:
             if val:
                 horizontal.append((i + 1, int(ms.group(1)), mw.group(1), val))
 
+    # ---- ③ 「矩形.y + N」的布局步长（N >= 20 才算；小偏移是细线/内衬，故意不缩）----
+    fixed_offsets = []
+    for i, line in enumerate(lines):
+        for m in re.finditer(r'[xy]:\s*([a-z_0-9]+)\.([xy])\s*\+\s*(\d+)', line):
+            n = int(m.group(3))
+            if n >= 20 and 'theme::size::px' not in line:
+                fixed_offsets.append((i + 1, m.group(0), n))
+
     print()
     print(f"① 纵向「ry += N vs 缩放高度」：{len(vertical)} 处")
     v_bad = []
@@ -98,6 +106,9 @@ def main() -> int:
             print(f"   行 {ln}: ry += {step}  高度 {name}={val}  150% 需 ≥ {x150}  ← 会重叠")
     print(f"   其中会重叠：{len(v_bad)}")
 
+    print(f"③ 「矩形.y/x + 裸数字」的布局步长（>=20）：{len(fixed_offsets)} 处")
+    for (ln, frag, n) in fixed_offsets:
+        print(f"   行 {ln}: {frag}")
     print(f"② 横向「x 的 STEP vs 缩放宽度」：{len(horizontal)} 处")
     h_bad = []
     for (ln, step, name, val) in horizontal:
@@ -109,10 +120,10 @@ def main() -> int:
         print(f"   行 {ln}: STEP {step}  宽度 {name}={val}  150% 需 ≥ {x150}{flag}")
     print(f"   其中会重叠：{len(h_bad)}")
 
-    if strict and (v_bad or h_bad):
-        print("[FAIL] 有「步长小于缩放后尺寸」的地方")
+    if strict and (v_bad or h_bad or fixed_offsets):
+        print("[FAIL] 有「步长小于缩放后尺寸」或「矩形偏移写死」的地方")
         return 1
-    print("[ OK ] 纵向与横向都没有「步长小于缩放后尺寸」" if not (v_bad or h_bad)
+    print("[ OK ] 三类都没有问题" if not (v_bad or h_bad or fixed_offsets)
           else "[报告] 见上")
     return 0
 

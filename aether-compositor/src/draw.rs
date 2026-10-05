@@ -3073,7 +3073,7 @@ impl Renderer {
 
         let mut rects = Vec::new();
         for (i, item) in items.iter().enumerate() {
-            let ir = Rect { x: panel.x + 4, y: panel.y + 4 + i as i32 * 30, w: panel.w - 8, h: theme::size::px(theme::size::CTRL_H_SM) };
+            let ir = Rect { x: panel.x + 4, y: panel.y + theme::size::px(4) + i as i32 * theme::size::px(30), w: panel.w - 8, h: theme::size::px(theme::size::CTRL_H_SM) };
             if ir.contains(ui.mouse.0, ui.mouse.1) {
                 rounded_rect(buf, w, h, Rect { x: ir.x + 4, y: ir.y + 3, w: ir.w - 8, h: ir.h - 6 }, radius::SM, color::surface_3(), 0.9);
             }
@@ -3608,7 +3608,8 @@ fn draw_settings_content(
                     } else {
                         color::accent()
                     };
-                    rounded_rect(buf, w, h, Rect { x: content.x + 22, y: ry + 5, w: 6, h: 6 }, 3.0, dot, 0.95);
+                    // 圆点尺寸（6px）**故意不缩**（见 size 模块注释），但它的**位置**要跟着行高走
+            rounded_rect(buf, w, h, Rect { x: content.x + theme::size::px(22), y: ry + theme::size::px(5), w: 6, h: 6 }, 3.0, dot, 0.95);
                     // §3.5：日志里存 token（L2），显示时按界面语言取词（旧日志里的人话名原样透传）
                     let level_txt = crate::audit::level_text(crate::i18n::lang(), &e.level);
                     // §3.5：verdict 也过显示函数（日志里存的是 token/码）
@@ -4479,11 +4480,11 @@ fn draw_settings_content(
             toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "深色模式", "Dark mode"), Some(crate::i18n::pick(lang, "默认关闭（明亮/纯白）；切换立即生效", "Off by default (bright / pure white); takes effect immediately")), s.dark_mode, SettingsHit::ToggleDark, hits);
             // §3.4 无障碍：高对比度。紧跟主题开关 —— 它是"看得清"这条线上的第二项。
             // 说明文字直接给出**可验证的依据**（WCAG AA），而不是"更清楚"这种主观话。
-            let r_hc = Rect { x: r1.x, y: r1.y + 56, w: r1.w, h: r1.h };
+            let r_hc = Rect { x: r1.x, y: r1.y + theme::size::px(56), w: r1.w, h: r1.h };
             // §3.5 语言：**用该语言自己写语言名**（英文界面里出现"英语"两个字是半成品的样子）。
             // 开关语义 = "是否英文"，`Locale` 的值由当前状态算出。
             // §3.4 字号：界面里"存了不用"的又一个 —— 本批接上（缩放做在文本渲染器里）
-            let r_scale = Rect { x: r1.x, y: r1.y + 154, w: r1.w, h: r1.h };
+            let r_scale = Rect { x: r1.x, y: r1.y + theme::size::px(154), w: r1.w, h: r1.h };
             let scale_hint = crate::i18n::tr(
                 "只缩放文字；行高与边距仍是固定值（150% 会偏挤，见缺口清单 §3.4）",
                 "Scales text only; row heights stay fixed (150% is tight)",
@@ -4499,7 +4500,7 @@ fn draw_settings_content(
                 widgets::States::at(r_scale, mouse), Some(tr),
             );
             hits.push((r_scale, SettingsHit::CycleUiScale));
-            let r_lang = Rect { x: r1.x, y: r1.y + 112, w: r1.w, h: r1.h };
+            let r_lang = Rect { x: r1.x, y: r1.y + theme::size::px(112), w: r1.w, h: r1.h };
             let lang = crate::i18n::lang();
             let lang_title = crate::i18n::tr("界面语言", "Language");
             // 提示里带上**当前语言名**（用该语言自身拼写）——
@@ -5122,7 +5123,7 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
     );
     let cover = Rect {
         x: panel.x + (panel.w - cover_s) / 2,
-        y: panel.y + 30,
+        y: panel.y + theme::size::px(30),
         w: cover_s,
         h: cover_s,
     };
@@ -5929,7 +5930,7 @@ impl Renderer {
             let phase = (t * 3.0 - i as f32 * 0.5).sin() * 0.5 + 0.5;
             let a = 0.25 + 0.6 * phase;
             let cx = caret_x as i32 + i * 8;
-            rounded_rect(buf, w, h, Rect { x: cx, y: bar.y + 23, w: 5, h: 5 }, 2.5, color::accent(), a);
+            rounded_rect(buf, w, h, Rect { x: cx, y: bar.y + theme::size::px(23), w: 5, h: 5 }, 2.5, color::accent(), a);
         }
     // 用**传入的 `t`**，不用 `t_now()`：渲染必须是输入的纯函数，
         // 否则同一个状态会画出不同的画面（走查图与像素回归都做不了）。
@@ -5970,7 +5971,7 @@ fn draw_ime_candidates(
         + (gap * (cands.len() as i32 - 1)).max(0) as f32;
     let box_h = 36i32;
     let rect = Rect {
-        x: bar.x + 58, // 与指令条里的文字左对齐
+        x: bar.x + theme::size::px(58), // 与指令条里的文字左对齐
         y: bar.y - box_h - 8,
         w: content.ceil() as i32,
         h: box_h,
@@ -6526,7 +6527,7 @@ impl Renderer {
             tr.vcenter(win.y as f32 + 18.0, 26.0, 17.0),
             tool_label(c.tool, crate::i18n::is_en()), 17.0, color::text(), 0.96,
         );
-        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + 58, w: win.w - 2, h: 1 }, color::hairline(), 0.08);
+        fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + theme::size::px(58), w: win.w - 2, h: 1 }, color::hairline(), 0.08);
 
         // 参数明文（逐项原样展示：确认的前提是看清对象）
         let mut y = win.y + 74;
