@@ -2864,8 +2864,8 @@ impl Renderer {
         let mut y = panel.y + theme::size::px(theme::size::TIGHT);
         // ① AI 三态（只读）
         rounded_rect(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::INSET_SM), y: y + 6, w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
-        tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
-        tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), crate::i18n::pick(crate::i18n::lang(), ui.ai_status.label(), ui.ai_status.label_en()),
+        tr.draw(buf, w, h, (panel.x + 32) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
+        tr.draw(buf, w, h, (panel.x + 120) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), crate::i18n::pick(crate::i18n::lang(), ui.ai_status.label(), ui.ai_status.label_en()),
             font::CAPTION, color::text_dim(), 0.9);
         y += theme::size::px(26);
         widgets::divider(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::TIGHT), y, w: panel.w - 24, h: 1 });
@@ -4645,7 +4645,7 @@ fn draw_settings_content(
             let fwd = Rect { x: back.x + back.w + theme::size::px(theme::size::GAP_TIGHT), y: back.y, w: back.w, h: back.h };
             widgets::button(buf, w, h, back, "-1", widgets::BtnKind::Secondary, widgets::States::at(back, mouse), Some(tr));
             widgets::button(buf, w, h, fwd, "+1", widgets::BtnKind::Secondary, widgets::States::at(fwd, mouse), Some(tr));
-            tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, 42.0, font::CAPTION), crate::i18n::pick(lang, "时区（半小时制）", "Time zone (30-min steps)"), font::CAPTION, color::text_dim(), 0.9);
+            tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, theme::size::px(42) as f32, font::CAPTION), crate::i18n::pick(lang, "时区（半小时制）", "Time zone (30-min steps)"), font::CAPTION, color::text_dim(), 0.9);
             hits.push((back, SettingsHit::TzShift(-30)));
             hits.push((fwd, SettingsHit::TzShift(30)));
 
@@ -5118,7 +5118,7 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
     draw_text(
         tr, buf, w, h,
         panel.x as f32 + (panel.w as f32 - lab_w) / 2.0,
-        tr.vcenter(panel.y as f32 + 6.0, 18.0, font::LABEL),
+        tr.vcenter(panel.y as f32 + theme::size::px(6) as f32, theme::size::px(18) as f32, font::LABEL),
         strings::NOW_PLAYING, font::LABEL, color::text_faint(), 0.9,
     );
     let cover = Rect {
@@ -5666,7 +5666,7 @@ fn draw_icon_grid(buf: &mut [u32], w: usize, h: usize, area: Rect, win: Rect, mo
         draw_text(
             tr, buf, w, h,
             cell.x as f32 + (GRID_CELL_W as f32 - lw) / 2.0,
-            tr.vcenter(label_y as f32, 14.0, font::LABEL),
+            tr.vcenter(label_y as f32, theme::size::px(14) as f32, font::LABEL),
             &shown, font::LABEL,
             if is_sel || hovered { color::text() } else { color::text_dim() },
             if is_sel { 1.0 } else if hovered { 0.98 } else { 0.94 },
@@ -6524,20 +6524,20 @@ impl Renderer {
         tr.draw_bold(
             buf, w, h,
             (badge.x + badge.w + 12) as f32,
-            tr.vcenter(win.y as f32 + 18.0, 26.0, 17.0),
+            tr.vcenter(win.y as f32 + theme::size::px(18) as f32, theme::size::px(26) as f32, 17.0),
             tool_label(c.tool, crate::i18n::is_en()), 17.0, color::text(), 0.96,
         );
         fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + theme::size::px(58), w: win.w - 2, h: 1 }, color::hairline(), 0.08);
 
         // 参数明文（逐项原样展示：确认的前提是看清对象）
         let mut y = win.y + 74;
-        draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION),
+        draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION),
             crate::i18n::pick(crate::i18n::lang(), "工具", "Tool"), font::CAPTION, color::text_faint(), 0.9);
-        draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), c.tool, font::BODY, color::text_dim(), 0.95);
+        draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::BODY), c.tool, font::BODY, color::text_dim(), 0.95);
         y += theme::size::px(22);
         for (k, v) in &args {
-            draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), k, font::CAPTION, color::text_faint(), 0.9);
-            tr.draw_bold(buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, 20.0, font::BODY), v, font::BODY, color::text(), 0.96);
+            draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), k, font::CAPTION, color::text_faint(), 0.9);
+            tr.draw_bold(buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::BODY), v, font::BODY, color::text(), 0.96);
             y += theme::size::px(22);
         }
 
@@ -6553,7 +6553,7 @@ impl Renderer {
         // 从尾部静默截断会把最要紧的半句吃掉（P3-23）。
         // 文字用主文字色：彩色文字在淡底上达不到 AA；警示语义由左侧三角与徽章承担。
         let shown = ellipsize(tr, c.consequence, font::CAPTION, (win.w - 64) as f32);
-        draw_text(tr, buf, w, h, (win.x + 42) as f32, tr.vcenter(y as f32, 20.0, font::CAPTION), &shown, font::CAPTION, color::text(), 0.95);
+        draw_text(tr, buf, w, h, (win.x + 42) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), &shown, font::CAPTION, color::text(), 0.95);
         y += theme::size::px(34);
 
         // L3 回显确认：必须原样输入目标，防"手滑点确认"

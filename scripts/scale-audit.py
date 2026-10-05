@@ -124,10 +124,26 @@ def main() -> int:
             print(f"   行 {ln}: ry += {step}  高度 {name}={val}  150% 需 ≥ {x150}  ← 会重叠")
     print(f"   其中会重叠：{len(v_bad)}")
 
+    # ---- ⑤ 浮点带高 / 浮点偏移（行内文字排版；③ 只认整数，扫不到这一类）----
+    # 判据先"只报告"：会不会真重叠，要看同一行里另一行文字的位置，需要人工过一遍。
+    float_bands = []
+    for i, line in enumerate(lines):
+        if 'theme::size::px' in line:
+            continue
+        if 'vcenter(' in line or 'draw_text(' in line:
+            for m in re.finditer(r'(?<!\d)(\d+\.\d+)f?', line):
+                v = float(m.group(1))
+                if v >= 12.0:      # 12px 以下多为微调（描边、基线微移），不算带高
+                    float_bands.append((i + 1, m.group(1), line.strip()[:84]))
+                    break
+
     print(f"④ 循环/累积步长写死（>=20）：{len(loop_steps)} 处")
     for (ln, frag) in loop_steps:
         print(f"   行 {ln}: {frag}")
     print(f"③ 「矩形.y/x + 裸数字」的布局步长（>=20）：{len(fixed_offsets)} 处")
+    print(f"⑤ 浮点带高/偏移（行内文字排版）：{len(float_bands)} 处")
+    for (ln, v, frag) in float_bands[:14]:
+        print(f"   行 {ln}: {v} | {frag}")
     for (ln, frag, n) in fixed_offsets:
         print(f"   行 {ln}: {frag}")
     print(f"② 横向「x 的 STEP vs 缩放宽度」：{len(horizontal)} 处")
@@ -141,10 +157,10 @@ def main() -> int:
         print(f"   行 {ln}: STEP {step}  宽度 {name}={val}  150% 需 ≥ {x150}{flag}")
     print(f"   其中会重叠：{len(h_bad)}")
 
-    if strict and (v_bad or h_bad or fixed_offsets or loop_steps):
-        print("[FAIL] 有「步长小于缩放后尺寸」或「矩形偏移写死」的地方")
+    if strict and (v_bad or h_bad or fixed_offsets or loop_steps or float_bands):
+        print("[FAIL] 有「步长/偏移/带高写死」的地方")
         return 1
-    print("[ OK ] 四类都没有问题" if not (v_bad or h_bad or fixed_offsets or loop_steps)
+    print("[ OK ] 五类都没有问题" if not (v_bad or h_bad or fixed_offsets or loop_steps or float_bands)
           else "[报告] 见上")
     return 0
 
