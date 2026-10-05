@@ -3406,6 +3406,33 @@ pub fn test_ctx(tr: Option<&TextRenderer>) -> PageCtx<'_> {
 /// 是零容忍（P2 刚删掉假电量与假搜索胶囊），所以宁可少画。
 ///
 /// 绘制期**只登记命中区**（`hits`），不改任何状态：状态变更由事件循环按命中结果执行。
+/// 画一段可能超宽的文字，并把**多占的高度补进 `ry`** —— 调用点折行的统一写法。
+///
+/// **为什么必须在调用点折行**：渲染层偷偷折行会让布局不知道多占了行，从而压住下一行
+/// （附录 DO 的实测结论）。把"折行"与"补高度"绑在一起，就不会只改一半。
+///
+/// `max_w` 传内容区可用宽度；最多折 3 行，再放不下由 `wrap()` 自己截断补 `…`。
+fn draw_wrapped(
+    tr: &TextRenderer,
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    x: f32,
+    ry: &mut i32,
+    text: &str,
+    px: f32,
+    rgb: [u8; 3],
+    alpha: f32,
+    max_w: f32,
+) {
+    let step = theme::size::px(20);
+    let segs = tr.wrap(text, px, max_w, 3);
+    for (i, seg) in segs.iter().enumerate() {
+        tr.draw(buf, w, h, x, (*ry + i as i32 * step) as f32, seg, px, rgb, alpha);
+    }
+    *ry += (segs.len() as i32 - 1) * step;
+}
+
 fn draw_settings_content(
     buf: &mut [u32],
     w: usize,
@@ -3476,6 +3503,8 @@ fn draw_settings_content(
     // 正文裁剪到**窗口矩形**：折行/超长的行不该画到窗口外面去（附录 DI）。
     // 注意不能用 content —— 可滚动页面的 content 是完整内容高度，裁到它等于没裁。
     tr.set_clip(Some((r.x, r.y, r.x + r.w, r.y + r.h)));
+    // 只读报表：记录正文里哪些文字超过内容区宽度（不改变绘制）
+    tr.set_over_width(Some((r.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32));
     let chrome = 12 + groups * 20 + groups.saturating_sub(1) * 10;
     let row_h = (((r.h - chrome).max(0)) / PAGES.len().max(1) as i32).clamp(20, 30);
     for (i, p) in PAGES.iter().enumerate() {
@@ -4206,13 +4235,22 @@ fn draw_settings_content(
                 crate::i18n::tr("配置快照", "Config snapshots"), Some(tr),
             );
             ry += theme::size::px(theme::size::GROUP_GAP);
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
-                crate::i18n::tr(
+            let tip = crate::i18n::tr(
                     crate::i18n::pick(lang, "只包含 /etc 与 /var/lib/aether 下的几个配置文件；不含应用与用户数据。回滚需点两次确认。", "Contains only a few config files under /etc and /var/lib/aether; no apps or user data. Rolling back needs two clicks."),
                     "Covers a few config files only; no apps or user data. Rollback needs two clicks.",
-                ),
-                font::CAPTION, color::text_dim(), 0.85,
+                );
+            draw_wrapped(
+                tr,
+                buf,
+                w,
+                h,
+                (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
+                &mut ry,
+                &tip,
+                font::CAPTION,
+                color::text_dim(),
+                0.85,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
             );
             ry += theme::size::px(theme::size::HINT_GAP);
 
@@ -4292,13 +4330,22 @@ fn draw_settings_content(
                 crate::i18n::tr("每个工具一行", "One row per tool"), Some(tr),
             );
             ry += theme::size::px(theme::size::LINE_GAP);
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
-                crate::i18n::tr(
+            let tip = crate::i18n::tr(
                     crate::i18n::pick(lang, "点击一行循环切换：按等级 → 每次询问 → 允许 → 禁止。禁止优先于一切；L3 永不免确认。", "Click a row to cycle: by level → ask every time → allow → deny. Deny beats everything; L3 never skips confirmation."),
                     "Click a row to cycle: By level → Always ask → Allow → Deny. Deny wins over everything; L3 always confirms.",
-                ),
-                font::CAPTION, color::text_dim(), 0.85,
+                );
+            draw_wrapped(
+                tr,
+                buf,
+                w,
+                h,
+                (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
+                &mut ry,
+                &tip,
+                font::CAPTION,
+                color::text_dim(),
+                0.85,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
             );
             ry += theme::size::px(28);
 

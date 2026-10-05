@@ -4288,6 +4288,8 @@ fn main() -> anyhow::Result<()> {
     if let Some(pos) = args.iter().position(|a| a == "--shot") {
         // `--scale 100|125|150`（§2.4）：走查直接渲染指定缩放档。
         // **不写设置文件** —— 走查不该改用户配置；合法档位由 `ui::set_scale_pct` 吸附。
+        // `--report-overflow`：渲染完打印"超过内容区宽度的文字"（只读走查，见附录 DP）。
+        let report_overflow = args.iter().any(|a| a == "--report-overflow");
         if let Some(pct) = args
             .iter()
             .position(|a| a == "--scale")
@@ -4433,6 +4435,14 @@ fn main() -> anyhow::Result<()> {
         // 单帧输出必须先把壁纸补全（交互路径是分帧生成的）
         renderer.prepare_background(WIDTH, HEIGHT, 1.2);
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
+        // 只读走查报表：哪些文字超过内容区宽度（不改变绘制结果，见附录 DP）
+        if report_overflow {
+            if let Some(t) = tr.as_ref() {
+                for s in t.take_over_hits() {
+                    println!("OVERFLOW {s}");
+                }
+            }
+        }
         draw::write_bmp("preview.bmp", &buf, WIDTH, HEIGHT)?;
         // `--dump-layout`（§2.4 的几何判据）：把这一帧登记过的矩形打成 JSON。
         //

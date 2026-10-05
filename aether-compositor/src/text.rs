@@ -28,6 +28,10 @@ pub struct TextRenderer {
     /// 于是文字画到了菜单栏上（审计附录 DD）。所有文字都经过 `render()`，所以裁剪做在这一处就够。
     /// 用 `Cell` 是因为绘制入口拿的是 `&TextRenderer`。
     clip: std::cell::Cell<Option<(i32, i32, i32, i32)>>,
+    /// 只读报表：当前允许的最大文字宽度（`None` = 不检查）。
+    over_w: std::cell::Cell<Option<f32>>,
+    /// 只读报表：超出 `over_w` 的文字（按出现顺序，去重后供走查打印）。
+    over_hits: std::cell::RefCell<Vec<String>>,
 }
 
 /// 字形缓存键。字号在入口已 `round()`，这里再乘 100 定点化，避免拿 f32 当 key。
@@ -247,6 +251,18 @@ impl TextRenderer {
         self.clip.set(rect);
     }
 
+    /// 设定「只读报表」的宽度上限：这段区间内的文字若更宽，会被 `render()` 记一笔。
+    ///
+    /// **它不改变任何绘制结果** —— 只为回答"到底哪几处需要折行"（审计附录 DP）。
+    pub fn set_over_width(&self, w: Option<f32>) {
+        self.over_w.set(w);
+    }
+
+    /// 取走已记录的超宽文字（调用方负责打印/清空）。
+    pub fn take_over_hits(&self) -> Vec<String> {
+        std::mem::take(&mut *self.over_hits.borrow_mut())
+    }
+
     pub fn load() -> Option<Self> {
         let regular_list = resolve_fonts("AETHER_FONT", REGULAR_FONTS);
         let bold_list = resolve_fonts("AETHER_FONT_BOLD", BOLD_FONTS);
@@ -263,7 +279,7 @@ impl TextRenderer {
             .horizontal_line_metrics(40.0)
             .map(|m| m.ascent)
             .unwrap_or(32.0);
-        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None) })
+        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None), over_w: std::cell::Cell::new(None), over_hits: std::cell::RefCell::new(Vec::new()) })
     }
 
     /// 取（并缓存）字形位图。命中时只做一次哈希查找，不再走字形解析与光栅化。
@@ -296,6 +312,15 @@ impl TextRenderer {
         alpha: f32,
         bold: bool,
     ) -> f32 {
+        // 只读报表：这段文字是否超过当前允许宽度（不改变绘制结果）
+        if let Some(max_w) = self.over_w.get() {
+            if !text.is_empty() && self.measure_with(text, px, bold) > max_w {
+                let mut h = self.over_hits.borrow_mut();
+                if !h.iter().any(|x| x == text) {
+                    h.push(text.to_string());
+                }
+            }
+        }
         // 等宽判定要在**缩放之前**做：调用点传的是 `font::MONO` 这个"逻辑字号"。
         let mono = is_mono_size(px);
         // §3.4 字号：**所有文字都从这里过** —— 缩放做在这一处，
