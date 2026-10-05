@@ -4620,9 +4620,9 @@ fn draw_settings_content(
                     crate::i18n::pick(lang, "从宿主安装的程序显示在 Dock 上（数据来自 /var/apps）。", "Programs installed from the host show up in the Dock (data from /var/apps)."),
                     font::CAPTION, color::text_dim(), 0.85);
             ry += theme::size::px(theme::size::GAP_STD);
-            tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(tr, buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                     crate::i18n::pick(lang, "在设置里列出/卸载它们需要 IPC 能力（aetherd 代理），下一步接入。", "Listing/uninstalling them from Settings needs IPC capability (aetherd proxy); coming next."),
-                    font::CAPTION, color::text_dim(), 0.75);
+                    font::CAPTION, color::text_dim(), 0.75, (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,);
         }
         "外观" => {
             // §3.5：本页文案双语（页面 chrome）。注意"界面语言"那条提示里
@@ -4927,7 +4927,7 @@ fn draw_settings_content(
                 ry += theme::size::px(theme::size::LINE_GAP);
             }
             ry += 10;
-            tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, crate::i18n::pick(lang, "模型与密钥由 aetherd 管理，不经过合成器进程。", "The model and its key are managed by aetherd; they never pass through the compositor process."), font::CAPTION, color::text_dim(), 0.8);
+            draw_wrapped(tr, buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry, crate::i18n::pick(lang, "模型与密钥由 aetherd 管理，不经过合成器进程。", "The model and its key are managed by aetherd; they never pass through the compositor process."), font::CAPTION, color::text_dim(), 0.8, (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,);
             ry += theme::size::px(28);
             // 第二个"能改系统"的动作（P4.4）：AI 卡住时把 aetherd 重启一次
             let ai_act = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
