@@ -2813,7 +2813,13 @@ impl Renderer {
         //
         // 2026-09-30 P4：**这块同时是控制中心的入口**（状态簇）。刻意不额外塞一个图标按钮 ——
         // "状态"与"操作"放同一处正是 Win11/macOS 状态簇的语义，也少一个视觉元素。
-        let ai_label = ui.ai_status.label();
+        // 走 i18n：`label_en()` 早就写好了，此前调用处只用了 `label()`（英文界面里
+        // 状态栏仍是中文 —— 英文实拍发现，审计附录 DL）。
+        let ai_label = crate::i18n::pick(
+            crate::i18n::lang(),
+            ui.ai_status.label(),
+            ui.ai_status.label_en(),
+        );
         let ai_w = tr.measure(ai_label, font::CAPTION);
         let ai_x = clock_x as f32 - 20.0 - ai_w;
         let cluster = Rect {

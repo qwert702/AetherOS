@@ -4289,6 +4289,15 @@ fn main() -> anyhow::Result<()> {
         {
             draw::theme::ui::set_scale_pct(pct);
         }
+            // `--lang en|zh`：走查直接渲染指定语言。**不写设置文件**（与 --scale 同一约定）。
+            // 为什么需要它：界面支持中英双语，而**英文文案宽度不同** —— 布局问题可能是英文专属的，
+            // 而几何/空白/像素这些判据全是中文跑出来的（审计附录 DL）。
+            if let Some(pos) = args.iter().position(|a| a == "--lang") {
+                if let Some(v) = args.get(pos + 1) {
+                    let en = v.eq_ignore_ascii_case("en");
+                    crate::i18n::set_lang(if en { crate::i18n::Lang::En } else { crate::i18n::Lang::Zh });
+                }
+            }
         let lay = args
             .get(pos + 1)
             .and_then(|s| s.parse::<usize>().ok())
