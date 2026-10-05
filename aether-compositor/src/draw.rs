@@ -3522,7 +3522,15 @@ fn draw_settings_content(
 
     // ---- 右侧页面 ----
     let content = Rect { x: r.x + SIDEBAR_W, y: r.y, w: r.w - SIDEBAR_W, h: r.h };
-    let title = PAGES.get(page).map(|p| p.title).unwrap_or("设置");
+    // 大标题也要走 i18n：侧栏用的是 title_in(lang)，标题此前只取中文
+    // —— 英文模式下同一屏里侧栏是 Appearance、标题却是「外观」（英文实拍发现，附录 DN）。
+    // 注意 `title` 有**两个**用途：① 画大标题；② 下面的 `match` 用它**分发页面内容**。
+    // 所以中文原文必须保留一份给 match —— 只翻译显示用的那一份（附录 DN 的教训）。
+    let title_zh = PAGES.get(page).map(|p| p.title).unwrap_or("设置");
+    let title = PAGES
+        .get(page)
+        .map(|p| p.title_in(lang))
+        .unwrap_or_else(|| crate::i18n::pick(lang, "设置", "Settings"));
     tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, (content.y + 18) as f32, title, font::PAGE_TITLE, color::text(), 0.98);
     widgets::divider(buf, w, h, Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: content.y + 54, w: (content.w - 48).max(0), h: 1 });
 
@@ -3543,7 +3551,7 @@ fn draw_settings_content(
         hits.push((sw, id));
     }
 
-    match title {
+    match title_zh {
         "权限与隐私" => {
             // §3.5：这一页的文案全部走 `pick(lang, …)` —— 它是整句说明最多的页面，
             // 也是安全相关的页面，中英文都要**说得准**。

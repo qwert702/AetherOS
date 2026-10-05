@@ -3932,7 +3932,10 @@ fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
     let win = Win {
         rect: Rect { x: 200 + (idx % 4) as i32 * 40, y: 90 + (idx % 3) as i32 * 30, w: 500, h: 380 },
         target: None,
-        title: APP_TITLES[icon].to_string(),
+        // 标题走 i18n（英文实拍：设置窗口标题栏仍是「设置」，附录 DN）。
+        // 注意：APP_TITLES **列表本身不能翻译** —— 3311 行用它反查图标索引（`*t == app`）。
+        // 翻译只发生在显示这一步。
+        title: text::strings::win_label(APP_TITLES[icon]).to_string(),
         kind,
         floating: true,
         restore: None,
