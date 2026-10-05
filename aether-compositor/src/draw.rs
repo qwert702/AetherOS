@@ -1938,6 +1938,10 @@ pub struct Renderer {
     pub status_cluster: Rect,
     /// 控制中心面板矩形（用于区分"点面板内空白"与"点别处关闭"）
     pub control_panel: Rect,
+    /// 控制中心的滚动偏移（像素）。100% 下内容装得下 → 恒为 0，画面不变。
+    pub control_scroll: i32,
+    /// 控制中心**内容实际高度**（绘制时量出），用于把滚动量夹住。
+    pub control_content_h: i32,
     /// 背景缓存需要重建（主题切换等）。惰性标记：下一帧 `prepare_background` 自动处理，
     /// 免得为切个主题把 `w/h` 传遍所有调用点。
     pub bg_dirty: bool,
@@ -2321,6 +2325,8 @@ impl Renderer {
             control_open: false,
             status_cluster: Rect { x: 0, y: 0, w: 0, h: 0 },
             control_panel: Rect { x: 0, y: 0, w: 0, h: 0 },
+            control_scroll: 0,
+            control_content_h: 0,
             bg_dirty: false,
             perf_text: None,
             notifs: crate::notifications::Notifications::new(),
@@ -2552,6 +2558,10 @@ impl Renderer {
         self.draw_menubar(buf, w, h, ui, tr);
         mark!("menubar");
         // 控制中心（P4）：画在顶栏之上、其它窗口之下 —— 弹出面板的常规层级
+        if !self.control_open {
+            // 关掉就归零：下次打开不会停在上次滚到的位置
+            self.control_scroll = 0;
+        }
         if self.control_open {
             self.draw_control_center(buf, w, h, ui, tr);
             mark!("control");
@@ -2872,7 +2882,19 @@ impl Renderer {
             h: theme::size::px(20),
         };
 
-        let mut y = panel.y + theme::size::px(theme::size::TIGHT);
+        // 内容从「面板顶 + 留白 - 滚动量」开始：滚轮滚动的是内容，面板本身不动。
+    let content_top = panel.y + theme::size::px(theme::size::TIGHT);
+    // 夹取滚动量（内容高度是上一帧量出来的；首帧还不知道就别夹，免得把参数抹成 0）
+    if self.control_content_h > 0 {
+        let max_scroll = (self.control_content_h - panel.h).max(0);
+        if self.control_scroll > max_scroll {
+            self.control_scroll = max_scroll;
+        }
+        if self.control_scroll < 0 {
+            self.control_scroll = 0;
+        }
+    }
+    let mut y = content_top - self.control_scroll;
         // ① AI 三态（只读）
         rounded_rect(buf, w, h, Rect { x: panel.x + theme::size::px(theme::size::INSET_SM), y: y + theme::size::px(6), w: 8, h: 8 }, 4.0, ui.ai_status.color(), 0.95);
         tr.draw(buf, w, h, (panel.x + theme::size::px(32)) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION), crate::i18n::tr("AI 中枢", "AI core"), font::CAPTION, color::text(), 0.9);
@@ -3028,10 +3050,13 @@ impl Renderer {
             self.control_hits.push((r, hit));
             y += theme::size::px(control_layout::ROW_H_ACTION);
         }
+        // 量出内容实际高度（供滚动夹取）。页脚**钉在面板底**，不参与滚动。
+        self.control_content_h =
+            (y - content_top).max(0) + theme::size::px(control_layout::FOOTER);
         tr.draw(
             buf, w, h,
             (panel.x + theme::size::px(theme::size::INSET_SM)) as f32,
-            (panel.y + panel.h - 22) as f32,
+            (panel.y + panel.h - theme::size::px(22)) as f32,
             crate::i18n::tr("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
             font::LABEL, color::text_dim(), 0.7,
         );

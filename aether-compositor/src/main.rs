@@ -518,6 +518,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // `visible = 1`：滚轮可以一路滚到列表末尾，真实可见区间由状态条显示
                     // （"1–8 / 76"）。这里刻意**不复制一份网格页大小的算法**——那会与
                     // draw.rs 的布局常量各算一套、迟早漂移。
+                    // 控制中心开着时**先滚它**（面板是覆盖层）；否则走原来的文件网格。
+                    if renderer.control_open {
+                        let max = (renderer.control_content_h - renderer.control_panel.h).max(0);
+                        renderer.control_scroll = (renderer.control_scroll
+                            - dy * widgets::WHEEL_LINES as i32 * draw::theme::size::px(20))
+                            .clamp(0, max);
+                    } else {
                     let active_is_files = desktop
                         .wins
                         .get(desktop.active)
@@ -531,6 +538,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             1,
                             widgets::WHEEL_LINES,
                         );
+                    }
                     }
                 }
                 input::UiEvent::MouseUp => {
@@ -4314,6 +4322,13 @@ fn main() -> anyhow::Result<()> {
         }
         // `--settings-page N`：设置窗口打开后切到第 N 页（走查各页的视觉基线）。
         // 索引与 `settings::PAGES` 一致；夹一次上限，越界会静默拍成别的页。
+        // `--control-scroll N`：走查控制中心**滚到底**的样子 —— 滚轮事件在 --shot 里
+        // 发不出来，没有它就没法把滚动后的状态渲出来看。只为可观测，不写设置。
+        if let Some(pos) = args.iter().position(|a| a == "--control-scroll") {
+            if let Some(n) = args.get(pos + 1).and_then(|s| s.parse::<i32>().ok()) {
+                renderer.control_scroll = n.max(0);
+            }
+        }
         if let Some(pos) = args.iter().position(|a| a == "--settings-page") {
             if let Some(n) = args.get(pos + 1).and_then(|s| s.parse::<usize>().ok()) {
                 let n_pages = settings::PAGES.len();
