@@ -186,6 +186,62 @@ impl TextRenderer {
         top + height / 2.0 - ascent + ink_c
     }
 
+    /// 按**量出来的宽度**把文本折成多行（最多 `max_lines` 行；放不下的末行用 `fit()` 补 `…`）。
+    ///
+    /// 与 `fit()` 的分工：`fit()` 是「截掉」，`wrap()` 是「换行」——
+    /// 只有折行也放不下时才退化成截断（附录 DI）。
+    pub fn wrap(&self, s: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<String> {
+        if max_w <= 0.0 || max_lines == 0 {
+            return vec![s.to_string()];
+        }
+        let chars: Vec<char> = s.chars().collect();
+        let mut lines: Vec<String> = Vec::new();
+        let mut start = 0usize;
+        while start < chars.len() {
+            let mut end = start + 1;
+            let mut cur: String = chars[start..end].iter().collect();
+            while end < chars.len() {
+                let mut cand = cur.clone();
+                cand.push(chars[end]);
+                if self.measure(&cand, px) > max_w {
+                    break;
+                }
+                cur = cand;
+                end += 1;
+            }
+            if lines.len() + 1 == max_lines {
+                // 已是最后一行：剩下的全交给 fit()（放不下就截断补 …）
+                let rest: String = chars[start..].iter().collect();
+                lines.push(self.fit(&rest, px, max_w));
+                return lines;
+            }
+            lines.push(cur);
+            start = end;
+        }
+        lines
+    }
+
+    /// 按**量出来的宽度**把文本截到 `max_w` 以内，超出时补省略号 `…`。
+    ///
+    /// 为什么不按"截 N 个字符"：那个写法**不随缩放变化** —— 150% 下同一段文字更宽，
+    /// 固定字数会照样溢出（附录 DI）。`measure()` 本身是缩放感知的，所以这里也感知。
+    pub fn fit(&self, s: &str, px: f32, max_w: f32) -> String {
+        if max_w <= 0.0 || self.measure(s, px) <= max_w {
+            return s.to_string();
+        }
+        let chars: Vec<char> = s.chars().collect();
+        let mut n = chars.len();
+        while n > 0 {
+            n -= 1;
+            let mut cand: String = chars[..n].iter().collect();
+            cand.push('…');
+            if self.measure(&cand, px) <= max_w {
+                return cand;
+            }
+        }
+        "…".to_string()
+    }
+
     /// 设置纵向裁剪区间（`None` = 不裁剪）。见 `clip_y` 的说明。
     pub fn set_clip_y(&self, range: Option<(i32, i32)>) {
         self.clip_y.set(range);

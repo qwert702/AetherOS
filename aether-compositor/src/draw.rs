@@ -2404,6 +2404,10 @@ impl Renderer {
         ui: &UiState,
         tr: Option<&TextRenderer>,
     ) {
+        // 每帧清一次裁剪区间：裁剪是「当帧」的语义，不跨帧泄漏（附录 DD/DI）。
+        if let Some(t) = tr {
+            t.set_clip_y(None);
+        }
         let timing = Self::timing_enabled();
         // 计时关闭时 tmark 只写不读（宏体不展开），显式放行
         #[allow(unused_assignments)]
@@ -3292,6 +3296,11 @@ fn draw_window(
             buf, w, h, content, ctx, settings_page, settings_hits,
         ),
     }
+    // 正文画完立刻清裁剪：否则后面画的菜单栏/AI 气泡/Dock 会被一起裁掉（附录 DI）。
+    // 外层 tr 是 Option，所以要 if let。
+    if let Some(t) = tr {
+        t.set_clip_y(None);
+    }
 }
 
 /// 绘制设置页所需的"外部世界"。
@@ -3458,6 +3467,9 @@ fn draw_settings_content(
         }
         n
     };
+    // 正文裁剪到**窗口矩形**：折行/超长的行不该画到窗口外面去（附录 DI）。
+    // 注意不能用 content —— 可滚动页面的 content 是完整内容高度，裁到它等于没裁。
+    tr.set_clip_y(Some((r.y, r.y + r.h)));
     let chrome = 12 + groups * 20 + groups.saturating_sub(1) * 10;
     let row_h = (((r.h - chrome).max(0)) / PAGES.len().max(1) as i32).clamp(20, 30);
     for (i, p) in PAGES.iter().enumerate() {
@@ -3695,13 +3707,28 @@ fn draw_settings_content(
                 }
             }
             ry += theme::size::px(theme::size::GAP_TIGHT);
-            tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
-                    crate::i18n::pick(
-                        lang,
-                        "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
-                        "Levels: L0 read-only / L1 needs confirmation / L2 high-risk needs explicit confirmation. Changing the policy needs IPC and user confirmation (next step).",
-                    ),
-                    font::CAPTION, color::text_dim(), 0.7);
+            // 长句按**量出来的宽度**截断：不然它会横穿出设置窗口（附录 DI，实拍发现）。
+            // 长句**折行**（不是截掉）：实拍发现它会横穿出设置窗口（附录 DI）。
+            // 这一行是该页最后一行，折行只往下多占一两行，不会顶掉别的内容。
+            let lv = crate::i18n::pick(
+                lang,
+                "等级：L0 只读 / L1 需确认 / L2 高危需显式确认。改权限配置需要 IPC 与用户确认（下一步）。",
+                "Levels: L0 read-only / L1 needs confirmation / L2 high-risk needs explicit confirmation. Changing the policy needs IPC and user confirmation (next step).",
+            );
+            let lv_w = (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32;
+            for (li, seg) in tr.wrap(&lv, font::CAPTION, lv_w, 3).iter().enumerate() {
+                tr.draw(
+                    buf,
+                    w,
+                    h,
+                    (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
+                    (ry + li as i32 * theme::size::px(18)) as f32,
+                    seg,
+                    font::CAPTION,
+                    color::text_dim(),
+                    0.7,
+                );
+            }
         }
         "应用商店" => {
             // §5.11：列出可安装包。内容来自 `Renderer::store`（进页面时才扫描）——
