@@ -1969,6 +1969,9 @@ pub struct Renderer {
     pub file_up: Rect,
     /// 侧栏"位置"命中区：(矩形, 侧栏索引)
     pub sidebar_hits: Vec<(Rect, usize)>,
+    /// 音乐列表行矩形（**只作几何取证**：`--dump-layout` 用它，
+    /// 让 `layout-check.py` 能查「行与行是否重叠」；本批**不**接点击行为）。
+    pub music_hits: Vec<(Rect, usize)>,
     /// 面包屑路径段命中区：(矩形, 目标路径)
     pub crumb_hits: Vec<(Rect, String)>,
     /// 窗口红绿灯命中区：(窗口索引, 关闭按钮, 最大化按钮)。
@@ -2331,6 +2334,7 @@ impl Renderer {
             file_up: Rect { x: 0, y: 0, w: 0, h: 0 },
             window_lights: Vec::new(),
             sidebar_hits: Vec::new(),
+            music_hits: Vec::new(),
             crumb_hits: Vec::new(),
             installer_button: Rect { x: 0, y: 0, w: 0, h: 0 },
             confirm_buttons: Vec::new(),
@@ -2504,6 +2508,7 @@ impl Renderer {
         self.file_cells.clear();
         self.window_lights.clear();
         self.sidebar_hits.clear();
+        self.music_hits.clear();
         self.crumb_hits.clear();
         self.settings_hits.clear();
         for (i, win) in desktop.wins.iter().enumerate() {
@@ -2535,7 +2540,7 @@ impl Renderer {
                 },
                 t, &fv,
                 &mut self.file_cells, &mut self.file_up, i, &mut self.window_lights,
-                &mut self.sidebar_hits, &mut self.crumb_hits,
+                &mut self.sidebar_hits, &mut self.crumb_hits, &mut self.music_hits,
                 self.settings_page, &mut self.settings_hits,
             );
         }
@@ -3123,6 +3128,7 @@ fn draw_window(
     lights_out: &mut Vec<(usize, Rect, Rect, Rect)>,
     sidebar_hits: &mut Vec<(Rect, usize)>,
     crumb_hits: &mut Vec<(Rect, String)>,
+    music_hits: &mut Vec<(Rect, usize)>,
     settings_page: usize,
     settings_hits: &mut Vec<(Rect, crate::settings::SettingsHit)>,
 ) {
@@ -3224,7 +3230,7 @@ fn draw_window(
     let content = Rect { x: r.x + 1, y: r.y + metric::TITLE_H + 1, w: r.w - 2, h: r.h - metric::TITLE_H - 2 };
     match kind {
         WinKind::Terminal => draw_term_content(buf, w, h, r, win.term.as_ref(), active, t, tr),
-        WinKind::Music => draw_music_content(buf, w, h, content, r, mouse, tr),
+        WinKind::Music => draw_music_content(buf, w, h, content, r, mouse, tr, music_hits),
         // Preview 暂时复用文件管理器的纸面底，真正的预览渲染在后续阶段接入
         WinKind::Files => draw_files_content(
             buf, w, h, content, r, mouse, tr, fv, cells, up, sidebar_hits, crumb_hits,
@@ -5037,7 +5043,8 @@ fn draw_settings_content(
 ///
 /// 存在的意义是"内容形态跟着窗口语义走"——满窗一模一样的文件夹图标，
 /// 是"演示占位"最刺眼的信号。窗口够宽时右挂播放面板，窄时退化为纯列表。
-fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>) {
+fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, mouse: (f32, f32), tr: Option<&TextRenderer>,
+    music_hits: &mut Vec<(Rect, usize)>) {
     const ROW_H: i32 = 46;
     const ART: i32 = 30;
     const PANEL_W: i32 = 250;
@@ -5066,6 +5073,8 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
         }
         let (title, artist, dur) = strings::TRACKS[i % strings::TRACKS.len()];
         let row = Rect { x: list.x + theme::size::px(theme::size::PAD_SM), y, w: list.w - 16, h: theme::size::px(ROW_H) - theme::size::px(4) };
+        // 登记行矩形：几何断言据此检查行与行是否重叠（本批只取证，不接点击）
+        music_hits.push((row, i));
         let hovered = row.contains(mouse.0, mouse.1);
         let playing = i == 0;
         if hovered || playing {

@@ -4445,6 +4445,9 @@ fn main() -> anyhow::Result<()> {
             for (r, s) in &renderer.crumb_hits {
                 push("files-crumb", s.clone(), r);
             }
+            for (r, i) in &renderer.music_hits {
+                push("music-rows", format!("row-{i}"), r);
+            }
             for (wi, close, min, max) in &renderer.window_lights {
                 push("window-lights", format!("win{wi}-close"), close);
                 push("window-lights", format!("win{wi}-min"), min);
