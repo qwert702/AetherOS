@@ -144,6 +144,29 @@ def main() -> int:
                     break
 
     print(f"④ 循环/累积步长写死（>=20）：{len(loop_steps)} 处")
+    # ⑥ 步长来自"按空间摊出来的变量"（clamp 且不含 px()）—— 静态扫描原本看不见这类
+    var_steps = []
+    for f in sorted((ROOT / "aether-compositor/src").glob("*.rs")):
+        ls = f.read_text(encoding="utf-8").split("\n")
+        for i, line in enumerate(ls):
+            m = re.match(r"\s*(?:y|ry|x|rx|cy|cx)\s*\+=\s*([a-z_][a-z0-9_]*)\s*;", line)
+            if not m:
+                continue
+            name = m.group(1)
+            # 先回退到所在**顶层函数**开头，再在函数范围内找定义
+            # （上一版限制 120 行窗口，而实测定义可能在 900 行之外 → 判据从不触发）
+            fn_start = next((k for k in range(i, -1, -1) if ls[k].startswith("fn ")), 0)
+            for j in range(i - 1, fn_start - 1, -1):
+                d = re.match(rf"\s*let\s+{re.escape(name)}\s*(?::[^=]+)?=\s*(.+)$", ls[j])
+                if not d:
+                    continue
+                body = d.group(1)
+                if "clamp(" in body and "theme::size::px(" not in body:
+                    var_steps.append((i + 1, f"{name} 来自 {j + 1} 行：{line.strip()[:70]}"))
+                break
+    print(f"⑥ 步长来自按空间摊的变量（clamp 且无 px()）：{len(var_steps)} 处")
+    for ln, msg in var_steps[:8]:
+        print(f"   行 {ln}: {msg}")
     for (ln, frag) in loop_steps:
         print(f"   行 {ln}: {frag}")
     print(f"③ 「矩形.y/x + 裸数字」的布局步长（>=20）：{len(fixed_offsets)} 处")

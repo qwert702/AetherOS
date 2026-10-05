@@ -4368,7 +4368,10 @@ fn draw_settings_content(
             );
             ry += theme::size::px(theme::size::LINE_GAP);
             tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, &n.summary(), font::BODY, color::text(), 0.92);
-            ry += row_h;
+            // 这里必须用**内容行距**，不能借用侧栏的 `row_h` —— 侧栏行高是按窗口高度
+            // 摊出来的（clamp 20..30）且**不随缩放变化**，150% 下会让状态行压住第一行（附录 DG）。
+            // 与下面各行（4416 行）用同一个节奏常量。
+            ry += theme::size::px(theme::size::LINE_GAP);
             let (name, mac, gw, up) = match &n.iface {
                 Some(i) => (i.name.clone(), i.mac.clone(), i.gateway.clone(), i.up),
                 None => (
