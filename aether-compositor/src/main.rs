@@ -2159,9 +2159,9 @@ fn shot_fixture() -> Option<(String, Vec<draw::FsEntry>, Option<String>)> {
 #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅预览/走查路径使用
 fn demo_desktop() -> Desktop {
     let mut wins = vec![
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_FILES.to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None, wayland: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_TERM.to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) , wayland: None },
-        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::WIN_MUSIC.to_string(), kind: draw::WinKind::Music, floating: false, restore: None, preview: None, term: None, wayland: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::win_label(text::strings::WIN_FILES).to_string(), kind: draw::WinKind::Files, floating: false, restore: None, preview: None, term: None, wayland: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::win_label(text::strings::WIN_TERM).to_string(), kind: draw::WinKind::Terminal, floating: false, restore: None, preview: None, term: Some(term::Terminal::spawn(80, 24, None)) , wayland: None },
+        Win { rect: Rect { x: 0, y: 0, w: 0, h: 0 }, target: None, title: text::strings::win_label(text::strings::WIN_MUSIC).to_string(), kind: draw::WinKind::Music, floating: false, restore: None, preview: None, term: None, wayland: None },
     ];
     let work = layout::work_area(WIDTH, HEIGHT);
     let tg = layout::tiled_targets(wins.len(), Layout::TwoCol, work);
@@ -4123,7 +4123,11 @@ fn navigate_to(desktop: &mut Desktop, path: &str, label: &str) -> Option<String>
 /// 侧栏"位置"列表：只列**真实存在**的目录，不存在的不显示（而不是画一个点了没反应的项）。
 fn sidebar_targets() -> Vec<(String, String)> {
     let home = draw::default_cwd();
-    let mut out = vec![("主目录".to_string(), home.clone())];
+    // 走 i18n（英文实拍发现同一栏里 "Parent folder" 是英文、「主目录」是中文，审计附录 DL/DM）。
+    let mut out = vec![(
+        crate::i18n::pick(crate::i18n::lang(), "主目录", "Home").to_string(),
+        home.clone(),
+    )];
     for (label, sub) in [
         ("文档", "Documents"),
         ("图片", "Pictures"),

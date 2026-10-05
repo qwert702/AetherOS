@@ -91,7 +91,14 @@ impl Terminal {
             let mut term = Terminal {
                 screen,
                 read_buf: Vec::new(),
-                status: TermStatus::Unavailable("开发机预览：PTY 仅在 Linux 上可用".into()),
+                status: TermStatus::Unavailable(
+            crate::i18n::pick(
+                crate::i18n::lang(),
+                "开发机预览：PTY 仅在 Linux 上可用",
+                "Dev preview: PTY is only available on Linux",
+            )
+            .into(),
+        ),
                 sel: None,
             };
             term.feed_demo(cwd);

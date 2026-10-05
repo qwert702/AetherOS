@@ -507,6 +507,40 @@ pub mod strings {
     pub const WIN_SETTINGS: &str = "设置";
     /// Dock 第 6 图标（仅 Live ISO 会话显示）：打开安装向导
     pub const INSTALLER: &str = "安装";
+    /// 与上面六个**逐项对应**的英文（§3.5）。形状与 `MENUS_EN` 同一约定。
+    pub const WIN_FILES_EN: &str = "Files";
+    pub const WIN_TERM_EN: &str = "Terminal";
+    pub const WIN_BROWSER_EN: &str = "Browser";
+    pub const WIN_MUSIC_EN: &str = "Music";
+    pub const WIN_SETTINGS_EN: &str = "Settings";
+    pub const INSTALLER_EN: &str = "Install";
+
+    /// 窗口 / Dock 标题的当前语言版本。**取不到英文就退回中文**
+    /// （与 `menu_label` 同一约定：宁可显示中文，也不要空白）。
+    ///
+    /// 注意：**Dock 的应用名列表本身不能翻译** —— `draw.rs` 里用
+    /// `*name == INSTALLER` 做比较，翻译了会破坏它。翻译只发生在"显示"这一步。
+    pub fn win_label(zh: &'static str) -> &'static str {
+        let en = if zh == WIN_FILES {
+            WIN_FILES_EN
+        } else if zh == WIN_TERM {
+            WIN_TERM_EN
+        } else if zh == WIN_BROWSER {
+            WIN_BROWSER_EN
+        } else if zh == WIN_MUSIC {
+            WIN_MUSIC_EN
+        } else if zh == WIN_SETTINGS {
+            WIN_SETTINGS_EN
+        } else if zh == INSTALLER {
+            INSTALLER_EN
+        } else {
+            return zh;
+        };
+        match crate::i18n::lang() {
+            crate::i18n::Lang::En => en,
+            _ => zh,
+        }
+    }
     /// 音乐窗口曲目（演示内容）：(曲名, 艺人, 时长)。
     /// 数量要够把这扇窗填满，否则列表下方会留一大片空灰。
     pub const TRACKS: &[(&str, &str, &str)] = &[
@@ -525,6 +559,8 @@ pub mod strings {
     ];
     /// 播放条文案
     pub const NOW_PLAYING: &str = "正在播放";
+    /// 同上，英文版（§3.5）。
+    pub const NOW_PLAYING_EN: &str = "Now playing";
 }
 
 /// 无 `TZ` 时的默认时区偏移（分钟）。产品默认面向中文用户，所以是 +8。

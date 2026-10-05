@@ -5210,12 +5210,12 @@ fn draw_music_content(buf: &mut [u32], w: usize, h: usize, r: Rect, win: Rect, m
 
     let cover_s = (PANEL_W - 76).min(r.h / 2);
     // 面板小标题
-    let lab_w = tr.measure(strings::NOW_PLAYING, font::LABEL);
+    let lab_w = tr.measure(crate::i18n::pick(crate::i18n::lang(), strings::NOW_PLAYING, strings::NOW_PLAYING_EN), font::LABEL);
     draw_text(
         tr, buf, w, h,
         panel.x as f32 + (panel.w as f32 - lab_w) / 2.0,
         tr.vcenter(panel.y as f32 + theme::size::px(6) as f32, theme::size::px(18) as f32, font::LABEL),
-        strings::NOW_PLAYING, font::LABEL, color::text_faint(), 0.9,
+        crate::i18n::pick(crate::i18n::lang(), strings::NOW_PLAYING, strings::NOW_PLAYING_EN), font::LABEL, color::text_faint(), 0.9,
     );
     let cover = Rect {
         x: panel.x + (panel.w - cover_s) / 2,
@@ -6216,9 +6216,9 @@ impl Renderer {
         let mut y = metric::MENUBAR_H as i32 + 20;
         // 序号与 `open_app` 的映射一致：0 文件 / 1 终端 / 4 设置
         for (idx, name) in [
-            (0usize, strings::WIN_FILES),
-            (1, strings::WIN_TERM),
-            (4, strings::WIN_SETTINGS),
+            (0usize, strings::win_label(strings::WIN_FILES)),
+            (1, strings::win_label(strings::WIN_TERM)),
+            (4, strings::win_label(strings::WIN_SETTINGS)),
         ] {
             let cell = Rect { x: x - 12, y: y - 6, w: CELL_W, h: CELL_H };
             let tile = Rect { x, y, w: ICON, h: ICON };
