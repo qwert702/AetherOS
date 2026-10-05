@@ -2406,7 +2406,7 @@ impl Renderer {
     ) {
         // 每帧清一次裁剪区间：裁剪是「当帧」的语义，不跨帧泄漏（附录 DD/DI）。
         if let Some(t) = tr {
-            t.set_clip_y(None);
+            t.set_clip(None);
         }
         let timing = Self::timing_enabled();
         // 计时关闭时 tmark 只写不读（宏体不展开），显式放行
@@ -2878,7 +2878,7 @@ impl Renderer {
         self.control_panel = panel;
         let Some(tr) = tr else { return };
         // 内容裁剪到面板内：滚起来时上半部分不该画到菜单栏上（审计附录 DD）
-        tr.set_clip_y(Some((panel.y, panel.y + panel.h)));
+        tr.set_clip(Some((panel.x, panel.y, panel.x + panel.w, panel.y + panel.h)));
 
         // 行矩形。**完全在面板之外的行挪到屏幕外**（y = -1000）：
         // 渲染器会跳过屏外像素，于是文字不画、命中区也失效 ——
@@ -3083,7 +3083,7 @@ impl Renderer {
             crate::i18n::tr("Esc 或点击别处关闭", "Esc or click elsewhere to close"),
             font::LABEL, color::text_dim(), 0.7,
         );
-        tr.set_clip_y(None);
+        tr.set_clip(None);
     }
 
     /// 向导里被点中的**选项下标**（§5.8）。没有命中给 `None`。
@@ -3299,7 +3299,7 @@ fn draw_window(
     // 正文画完立刻清裁剪：否则后面画的菜单栏/AI 气泡/Dock 会被一起裁掉（附录 DI）。
     // 外层 tr 是 Option，所以要 if let。
     if let Some(t) = tr {
-        t.set_clip_y(None);
+        t.set_clip(None);
     }
 }
 
@@ -3469,7 +3469,7 @@ fn draw_settings_content(
     };
     // 正文裁剪到**窗口矩形**：折行/超长的行不该画到窗口外面去（附录 DI）。
     // 注意不能用 content —— 可滚动页面的 content 是完整内容高度，裁到它等于没裁。
-    tr.set_clip_y(Some((r.y, r.y + r.h)));
+    tr.set_clip(Some((r.x, r.y, r.x + r.w, r.y + r.h)));
     let chrome = 12 + groups * 20 + groups.saturating_sub(1) * 10;
     let row_h = (((r.h - chrome).max(0)) / PAGES.len().max(1) as i32).clamp(20, 30);
     for (i, p) in PAGES.iter().enumerate() {
