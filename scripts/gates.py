@@ -158,9 +158,17 @@ def main() -> int:
     steps.append(("自动 e2e 判定逻辑自检", [PY, "scripts/e2e-ui-actions.py", "--selftest"]))
     # 性能门禁的判定逻辑同样自检：不需要合成器、不需要真机（阈值与解析都要能验）
     steps.append(("性能门禁判定逻辑自检", [PY, "scripts/bench-gate.py", "--selftest"]))
+    # 文档里的数字必须与来源一致（手抄必然失实：2026-10-04 那个提交就是现场）。
+    # 它读 `docs/证据/gate-count.txt` —— 那份文件在本函数**跑之前**写入（见下），
+    # 所以同一次运行内自洽：改了门禁步骤数 → 这一步当场红，逼着改文档。
+    steps.append(("文档数字一致性（测试 / 门禁 / 附录）",
+                  [PY, "scripts/doc-numbers-check.py"]))
     steps.append(("Python 语法检查", [PY, "-m", "py_compile", *[
         str(p.relative_to(ROOT)) for p in sorted((ROOT / "scripts").glob("*.py"))
     ]]))
+
+    # 把本次运行的步骤数落盘（**跑之前**写，见上一步的说明）
+    (ROOT / "docs" / "证据" / "gate-count.txt").write_text(f"{len(steps)}\n", encoding="utf-8")
 
     failed: list[str] = []
     for name, cmd in steps:
