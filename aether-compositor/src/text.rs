@@ -32,6 +32,8 @@ pub struct TextRenderer {
     over_w: std::cell::Cell<Option<f32>>,
     /// 只读报表：超出 `over_w` 的文字（按出现顺序，去重后供走查打印）。
     over_hits: std::cell::RefCell<Vec<(String, f32)>>,
+    report_cjk: std::cell::Cell<bool>,
+    cjk_hits: std::cell::RefCell<Vec<String>>,
 }
 
 /// 字形缓存键。字号在入口已 `round()`，这里再乘 100 定点化，避免拿 f32 当 key。
@@ -277,6 +279,14 @@ impl TextRenderer {
     }
 
     /// 取走已记录的超宽文字（调用方负责打印/清空）。
+    pub fn set_cjk_report(&self, on: bool) {
+        self.report_cjk.set(on);
+    }
+
+    pub fn take_cjk_hits(&self) -> Vec<String> {
+        std::mem::take(&mut *self.cjk_hits.borrow_mut())
+    }
+
     pub fn take_over_hits(&self) -> Vec<(String, f32)> {
         std::mem::take(&mut *self.over_hits.borrow_mut())
     }
@@ -297,7 +307,7 @@ impl TextRenderer {
             .horizontal_line_metrics(40.0)
             .map(|m| m.ascent)
             .unwrap_or(32.0);
-        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None), over_w: std::cell::Cell::new(None), over_hits: std::cell::RefCell::new(Vec::new()) })
+        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None), over_w: std::cell::Cell::new(None), over_hits: std::cell::RefCell::new(Vec::new()), report_cjk: std::cell::Cell::new(false), cjk_hits: std::cell::RefCell::new(Vec::new()) })
     }
 
     /// 取（并缓存）字形位图。命中时只做一次哈希查找，不再走字形解析与光栅化。
@@ -331,6 +341,13 @@ impl TextRenderer {
         bold: bool,
     ) -> f32 {
         // 只读报表：这段文字是否超过当前允许宽度（不改变绘制结果）
+        // 只读报表：英文模式下画出来的中文（漏译信号，来源不限 —— 附录 FQ）
+        if self.report_cjk.get() && text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+            let mut h = self.cjk_hits.borrow_mut();
+            if !h.iter().any(|x| x == text) {
+                h.push(text.to_string());
+            }
+        }
         if let Some(max_w) = self.over_w.get() {
             let tw = self.measure_with(text, px, bold);
             if !text.is_empty() && tw > max_w {

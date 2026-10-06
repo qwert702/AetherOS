@@ -4290,6 +4290,7 @@ fn main() -> anyhow::Result<()> {
         // **不写设置文件** —— 走查不该改用户配置；合法档位由 `ui::set_scale_pct` 吸附。
         // `--report-overflow`：渲染完打印"超过内容区宽度的文字"（只读走查，见附录 DP）。
         let report_overflow = args.iter().any(|a| a == "--report-overflow");
+        let report_cjk = args.iter().any(|a| a == "--report-cjk");
         if let Some(pct) = args
             .iter()
             .position(|a| a == "--scale")
@@ -4434,6 +4435,7 @@ fn main() -> anyhow::Result<()> {
         };
         // 单帧输出必须先把壁纸补全（交互路径是分帧生成的）
         renderer.prepare_background(WIDTH, HEIGHT, 1.2);
+        if report_cjk { if let Some(t) = tr.as_ref() { t.set_cjk_report(true); } }
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         // 只读走查报表：哪些文字超过内容区宽度（不改变绘制结果，见附录 DP）
         if report_overflow {
@@ -4443,6 +4445,13 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+                if report_cjk {
+                    if let Some(t) = tr.as_ref() {
+                        for s in t.take_cjk_hits() {
+                            println!("CJK {s}");
+                        }
+                    }
+                }
         draw::write_bmp("preview.bmp", &buf, WIDTH, HEIGHT)?;
         // `--dump-layout`（§2.4 的几何判据）：把这一帧登记过的矩形打成 JSON。
         //

@@ -54,13 +54,16 @@ def overflow_of(page: int, scale: int, lang: str) -> list:
     proc = subprocess.run(
         ["cargo", "run", "-q", "--offline", "--locked", "--bin", "aether-compositor", "--",
          "--shot", "1", "--settings", "--settings-page", str(page),
-         "--scale", str(scale), *extra, "--report-overflow"],
+         "--scale", str(scale), *extra, "--report-overflow", "--report-cjk"],
         cwd=ROOT, capture_output=True, text=True, env=ENV,
     )
     out = []
     for line in proc.stdout.splitlines():
         if line.startswith("OVERFLOW "):
             out.append((page, scale, lang, line[len("OVERFLOW "):].strip()))
+        elif line.startswith("CJK ") and lang == "en":
+            # 只统计**英文模式**：中文模式下满屏中文，没有信号（附录 FQ）。
+            CJK_SEEN.append((page, scale, lang, line[len("CJK "):].strip()))
     return out
 
 
@@ -149,6 +152,11 @@ BLANK_MAX_COLORS = 24
 TEXT_MIN_GAP = 1
 # 判据 ⑨：文字超宽（绘制调用超出可用宽度）的收集处，由 dump() 填充。
 OVERFLOW_SEEN: list = []
+# 判据 ⑩：**英文模式下画出来的中文**（漏译信号，来源不限 —— 附录 FQ）。
+# 注意：里面含**夹具数据**（例如文件管理器里夹具建的「文档」「图片」目录名），
+# 所以用棘轮而不是判 0；"上升"才是新漏译的信号。
+CJK_SEEN: list = []
+CJK_MAX = 1608          # 首次运行后按实测填
 # 判据 ⑨ 的**棘轮**：当前实测值。超过就判红（防回归）；减少也允许（提示更新此数）。
 # 59 条**全在 125%/150%**（100% 是 0）—— 尚未逐条判读是"取整的 1–2px"还是"真被裁"。
 # 如实记：所以这里用棘轮，不假装它们已经解决（见审计附录 FH）。
@@ -314,6 +322,7 @@ def main() -> int:
     for b in gaps_bad[:6]:
         print(f"    {b}")
     print(f"  ⑨ 文字超宽（绘制调用超出可用宽度）：{len(OVERFLOW_SEEN)}（棘轮上限 {OVERFLOW_MAX}）")
+    print(f"  ⑩ 英文模式下的中文（含夹具数据）：{len(CJK_SEEN)}（棘轮上限 {CJK_MAX}）")
     for _pg, _sc, _lg, _tx in OVERFLOW_SEEN[:6]:
         print(f"    page-{_pg}@{_sc}%·{_lg}：{_tx[:70]}")
     print(f"  ⑥ 窗口类界面同组重叠（判红）：{d_ov}")
@@ -321,7 +330,7 @@ def main() -> int:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX
+    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX or len(CJK_SEEN) > CJK_MAX
     if strict and (off_screen or off_width or d_off or blanks or d_ov or gaps_bad or over_ratchet):
         print("[FAIL] 有控件横向越界")
         return 1
