@@ -3930,7 +3930,7 @@ fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
         _ => draw::WinKind::Files,
     };
     let win = Win {
-        rect: Rect { x: 200 + (idx % 4) as i32 * 40, y: 90 + (idx % 3) as i32 * 30, w: 500, h: 380 },
+        rect: Rect { x: 200 + (idx % 4) as i32 * 40, y: 90 + (idx % 3) as i32 * 30, w: draw::theme::size::px(500), h: draw::theme::size::px(380) },
         target: None,
         // 标题走 i18n（英文实拍：设置窗口标题栏仍是「设置」，附录 DN）。
         // 注意：APP_TITLES **列表本身不能翻译** —— 3311 行用它反查图标索引（`*t == app`）。
@@ -4029,7 +4029,7 @@ fn open_installed_app(desktop: &mut Desktop, id: &str, name: &str) -> Option<Str
     // 早写不会丢 —— 行规程会缓冲，shell 读到就读（真实终端也是这个行为）。
     term.write(format!("exec {id}\r").as_bytes());
     desktop.wins.push(Win {
-        rect: Rect { x: 200 + (idx % 4) as i32 * 40, y: 90 + (idx % 3) as i32 * 30, w: 500, h: 380 },
+        rect: Rect { x: 200 + (idx % 4) as i32 * 40, y: 90 + (idx % 3) as i32 * 30, w: draw::theme::size::px(500), h: draw::theme::size::px(380) },
         target: None,
         title: name.to_string(),
         kind: draw::WinKind::Terminal,
