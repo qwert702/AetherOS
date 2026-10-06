@@ -58,6 +58,14 @@ PAGE_COUNT = 19
 for _i in range(PAGE_COUNT):
     CASES.append((f"page-{_i}", ["--shot", "1", "--settings", "--settings-page", str(_i)]))
 
+# 英文设置页（§3.5 i18n）：英文路径此前只有实拍覆盖，这里补一层**像素回归护栏**
+# （审计附录 DX）。只加设置页 —— 英文的问题都出在"文案更长"的设置正文里；
+# 窗口形态的英文由实拍覆盖，不进基线。
+for _i in range(PAGE_COUNT):
+    CASES.append(
+        (f"page-{_i}-en", ["--shot", "1", "--settings", "--settings-page", str(_i), "--lang", "en"])
+    )
+
 # 内容区（去掉顶栏与左侧导航栏）——"不是空白页"的检查只看这里
 CONTENT_X0 = 260
 CONTENT_Y0 = 60
