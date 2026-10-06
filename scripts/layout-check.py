@@ -27,6 +27,10 @@ ENV = dict(os.environ, AETHER_FAKE_UTC="1", AETHER_SHOT_FIXTURE="1")
 
 
 def dump(page: int, scale: int, lang: str = "zh") -> dict | None:
+    """渲染一档并返回布局；**同时**把 `OVERFLOW` 行写进全局 OVERFLOW_SEEN。
+
+    顺带做「文字超宽」判据 ⑨：不额外渲染，只是给同一次渲染加 `--report-overflow`。
+    """
     extra = [] if lang == "zh" else ["--lang", lang]
     proc = subprocess.run(
         ["cargo", "run", "-q", "--offline", "--locked", "--bin", "aether-compositor", "--",
@@ -38,6 +42,26 @@ def dump(page: int, scale: int, lang: str = "zh") -> dict | None:
         if line.startswith("LAYOUT "):
             return json.loads(line[len("LAYOUT "):])
     return None
+
+
+def overflow_of(page: int, scale: int, lang: str) -> list:
+    """单独跑一次拿「文字超宽」清单。
+
+    **不能**和 `--dump-layout` 混用：实测两者同时给时 dump 拿不到 LAYOUT 行
+    （于是走 SKIP 静默通过 —— 附录 FH 记了这个洞，本批已把它改成判红）。
+    """
+    extra = [] if lang == "zh" else ["--lang", lang]
+    proc = subprocess.run(
+        ["cargo", "run", "-q", "--offline", "--locked", "--bin", "aether-compositor", "--",
+         "--shot", "1", "--settings", "--settings-page", str(page),
+         "--scale", str(scale), *extra, "--report-overflow"],
+        cwd=ROOT, capture_output=True, text=True, env=ENV,
+    )
+    out = []
+    for line in proc.stdout.splitlines():
+        if line.startswith("OVERFLOW "):
+            out.append((page, scale, lang, line[len("OVERFLOW "):].strip()))
+    return out
 
 
 def overlap(a, b) -> int:
@@ -123,6 +147,12 @@ BLANK_MAX_COLORS = 24
 # 判据 ⑧：同一窗口内相邻**文字带**的最小间隙（px）。<=0 表示两行文字压在一起。
 # 实测基线（外观页）：中文 150% 为 3px、英文 4px —— 取 1 留余量。
 TEXT_MIN_GAP = 1
+# 判据 ⑨：文字超宽（绘制调用超出可用宽度）的收集处，由 dump() 填充。
+OVERFLOW_SEEN: list = []
+# 判据 ⑨ 的**棘轮**：当前实测值。超过就判红（防回归）；减少也允许（提示更新此数）。
+# 59 条**全在 125%/150%**（100% 是 0）—— 尚未逐条判读是"取整的 1–2px"还是"真被裁"。
+# 如实记：所以这里用棘轮，不假装它们已经解决（见审计附录 FH）。
+OVERFLOW_MAX = 59
 HDR = 54          # 24bpp BMP 头
 W, H = 1280, 760
 
@@ -230,12 +260,15 @@ def main() -> int:
             d, colors, gap = dump_with_blank(page, scale, lang)
             if 0 <= colors <= BLANK_MAX_COLORS:
                 blanks.append(f"page-{page}@{scale}%（内容色 {colors}）")
+            # 判据 ⑨：文字超宽（单独一次渲染，见 overflow_of 的注释）
+            OVERFLOW_SEEN.extend(overflow_of(page, scale, lang))
             # 判据 ⑧：同一窗口内两行文字压在一起（间隙 <= TEXT_MIN_GAP）
             if 0 <= gap <= TEXT_MIN_GAP:
                 gaps_bad.append(f"page-{page}@{scale}%·{lang}（文字带最小间隙 {gap}px）")
             if d is None:
-                print(f"[SKIP] page-{page}@{scale}%：没拿到布局（渲染不出来？）")
-                return 0
+                # **不能静默通过**：检查没跑成就是失败（附录 FH 的洞）。
+                print(f"[FAIL] page-{page}@{scale}%·{lang}：没拿到布局（渲染不出来？）")
+                return 1
             checked += 1
             w, h = d["w"], d["h"]
             win = next((x for x in d["wins"] if "设置" in x.get("title", "")), None)
@@ -280,17 +313,21 @@ def main() -> int:
     print(f"  ⑧ 文字压文字（相邻文字带间隙 <= {TEXT_MIN_GAP}px）：{len(gaps_bad)}")
     for b in gaps_bad[:6]:
         print(f"    {b}")
+    print(f"  ⑨ 文字超宽（绘制调用超出可用宽度）：{len(OVERFLOW_SEEN)}（棘轮上限 {OVERFLOW_MAX}）")
+    for _pg, _sc, _lg, _tx in OVERFLOW_SEEN[:6]:
+        print(f"    page-{_pg}@{_sc}%·{_lg}：{_tx[:70]}")
     print(f"  ⑥ 窗口类界面同组重叠（判红）：{d_ov}")
     for t3 in d_list[:6]:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    if strict and (off_screen or off_width or d_off or blanks or d_ov or gaps_bad):
+    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX
+    if strict and (off_screen or off_width or d_off or blanks or d_ov or gaps_bad or over_ratchet):
         print("[FAIL] 有控件横向越界")
         return 1
     print("[ OK ] 没有横向越界（① ② ⑤ 都是 0）" if not (off_screen or off_width or d_off)
           else "[FAIL] 有横向越界")
-    return 0 if not (off_screen or off_width or d_off or blanks or d_ov or gaps_bad) else 1
+    return 0 if not (off_screen or off_width or d_off or blanks or d_ov or gaps_bad or over_ratchet) else 1
 
 
 if __name__ == "__main__":
