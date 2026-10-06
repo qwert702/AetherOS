@@ -491,9 +491,9 @@ pub const PAGES: &[PageDef] = &[
     // §2.3：账户。与「权限与隐私」同组 —— 都是"谁是这个系统上的人、能做什么"。
     // 范围：**只读列出人类账户 + 改口令**。增删用户按项目决定留 M3（见缺口清单 §2.3）。
     PageDef { title: "账户", title_en: "Accounts", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
-    PageDef { title: "权限与隐私", title_en: "Privacy & Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
+    PageDef { title: "权限与隐私", title_en: "Privacy", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §5.3：逐工具的权限策略编辑器。与上一页同组：都属"谁能动我的东西"。
-    PageDef { title: "工具权限", title_en: "Tool Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
+    PageDef { title: "工具权限", title_en: "Permissions", group: "隐私和安全性", group_en: "Privacy & Security", enabled: true },
     // §5.6：配置快照与回滚。放在"隐私和安全性"之后、同属"系统状态"这条线。
     PageDef { title: "快照与回滚", title_en: "Snapshots & Rollback", group: "系统", group_en: "System", enabled: true },
     // §3.1：系统更新（离线更新包：放进投递目录 → 校验暂存 → 重启生效）。
