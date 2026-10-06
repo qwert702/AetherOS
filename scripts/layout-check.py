@@ -20,14 +20,19 @@ import sys
 ROOT = pathlib.Path(__file__).parent.parent
 PAGE_COUNT = 19
 SCALES = [100, 125, 150]
+# 中文跑三档；英文只跑 150%（折行/挤压最容易出问题的一档，本会话两次改坏都在它）。
+# 100%/125% 的英文由实拍覆盖（审计附录 DW）。
+EN_SCALE = 150
+COMBOS = [(lang, s) for lang in ("zh", "en") for s in (SCALES if lang == "zh" else [EN_SCALE])]
 ENV = dict(os.environ, AETHER_FAKE_UTC="1", AETHER_SHOT_FIXTURE="1")
 
 
-def dump(page: int, scale: int) -> dict | None:
+def dump(page: int, scale: int, lang: str = "zh") -> dict | None:
+    extra = [] if lang == "zh" else ["--lang", lang]
     proc = subprocess.run(
         ["cargo", "run", "-q", "--offline", "--locked", "--bin", "aether-compositor", "--",
          "--shot", "1", "--settings", "--settings-page", str(page),
-         "--scale", str(scale), "--dump-layout"],
+         "--scale", str(scale), *extra, "--dump-layout"],
         cwd=ROOT, capture_output=True, text=True, env=ENV,
     )
     for line in proc.stdout.splitlines():
@@ -57,10 +62,11 @@ DESKTOP_CASES = [
 ]
 
 
-def dump_args(args: list[str], scale: int) -> dict | None:
+def dump_args(args: list[str], scale: int, lang: str = "zh") -> dict | None:
+    extra = [] if lang == "zh" else ["--lang", lang]
     proc = subprocess.run(
         ["cargo", "run", "-q", "--offline", "--locked", "--bin", "aether-compositor", "--",
-         *args, "--scale", str(scale), "--dump-layout"],
+         *args, "--scale", str(scale), *extra, "--dump-layout"],
         cwd=ROOT, capture_output=True, text=True, env=ENV,
     )
     for line in proc.stdout.splitlines():
@@ -72,9 +78,9 @@ def dump_args(args: list[str], scale: int) -> dict | None:
 def check_desktop() -> tuple[int, int, list[str]]:
     """窗口类界面：只查**横向越界**与重叠（纵向不查 —— 演示桌面本来就有折叠内容）。"""
     off, ov = 0, []
-    for scale in SCALES:
+    for lang, scale in COMBOS:
         for name, args in DESKTOP_CASES:
-            d = dump_args(args, scale)
+            d = dump_args(args, scale, lang)
             colors = blank_of_shot()
             if d is None:
                 continue
@@ -143,9 +149,9 @@ def blank_of_shot() -> int:
     return content_colors(bmp.read_bytes())
 
 
-def dump_with_blank(page: int, scale: int):
+def dump_with_blank(page: int, scale: int, lang: str = "zh"):
     """渲染一档，返回 (布局, 内容色数)。"""
-    return dump(page, scale), blank_of_shot()
+    return dump(page, scale, lang), blank_of_shot()
 
 
 def main() -> int:
@@ -153,9 +159,9 @@ def main() -> int:
     off_screen, off_width, overlaps, needs_scroll = [], [], [], []
     blanks: list[str] = []
     checked = 0
-    for scale in SCALES:
+    for lang, scale in COMBOS:
         for page in range(PAGE_COUNT):
-            d, colors = dump_with_blank(page, scale)
+            d, colors = dump_with_blank(page, scale, lang)
             if 0 <= colors <= BLANK_MAX_COLORS:
                 blanks.append(f"page-{page}@{scale}%（内容色 {colors}）")
             if d is None:
@@ -182,7 +188,7 @@ def main() -> int:
                         overlaps.append(
                             f"page-{page}@{scale}% {hits[i]['kind']} ∩ {hits[j]['kind']} = {a}px²")
 
-    print(f"检查：{checked} 个组合（{PAGE_COUNT} 页 × {SCALES} 档）")
+    print(f"检查：{checked} 个组合（{PAGE_COUNT} 页 × 中文 {len(SCALES)} 档 + 英文 {EN_SCALE}% 一档）")
     print(f"  ① 横向越出屏幕：{len(off_screen)}")
     for t in off_screen[:6]:
         print(f"    {t}")
