@@ -4423,7 +4423,7 @@ fn draw_settings_content(
                 let row = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
                 // 标题 = 键位，副标题 = 说明（两种语言都有，且有测试保证非空）
                 widgets::row(
-                    buf, w, h, row, sc.keys, Some(sc.desc_in(lang)),
+                    buf, w, h, row, sc.keys_in(lang), Some(sc.desc_in(lang)),
                     widgets::States::at(row, mouse), Some(tr),
                 );
                 ry += theme::size::px(theme::size::ROW_TALL);

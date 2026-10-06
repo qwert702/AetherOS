@@ -155,7 +155,12 @@ pub fn read() -> NetInfo {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        NetInfo { iface: None, dns: Vec::new(), note: "非 Linux 目标：无网络接口信息".to_string() }
+        NetInfo { iface: None, dns: Vec::new(), note: crate::i18n::pick(
+            crate::i18n::lang(),
+            "非 Linux 目标：无网络接口信息",
+            "Non-Linux target: no network interface info",
+        )
+        .to_string() }
     }
 }
 

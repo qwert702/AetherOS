@@ -31,6 +31,22 @@ pub struct Shortcut {
 }
 
 impl Shortcut {
+
+    /// 键位说明的**英文说法**。
+    ///
+    /// 只有那几条**中文里带括号注释**的需要翻译（其余是 `Alt+1…4`、`Enter` 这类
+    /// 本来就跨语言的键名，原样返回）。见附录 FR：英文实拍 + 运行时 CJK 报表抓到的。
+    pub fn keys_in(&self, lang: crate::i18n::Lang) -> &'static str {
+        if lang == crate::i18n::Lang::Zh {
+            return self.keys;
+        }
+        match self.keys {
+            "Alt+1…4（键位翻译）" => "Alt+1…4 (translated by the input layer)",
+            "Super（元键）" => "Super (Meta)",
+            "方向键 / Tab / Delete" => "Arrow keys / Tab / Delete",
+            other => other,
+        }
+    }
     pub fn desc_in(&self, lang: Lang) -> &'static str {
         pick(lang, self.desc, self.desc_en)
     }
