@@ -36,7 +36,11 @@ import re
 import sys
 
 ROOT = pathlib.Path(r'D:\CBN-HT\Desktop\AI编程\除了dsh以外的项目\系统\电脑系统\Aether')
-DRAW = ROOT / "aether-compositor/src/draw.rs"
+# ①②③④ 四类规则只扫这一个文件（历史上就是 draw.rs）。
+# `--file <路径>` 可以换成别的文件：既供对照脚本指向临时文件（不碰产品源码），
+# 也便于人工按文件审计（例如 widgets.rs 里的同类写法）。
+_arg = [a for a in sys.argv[1:] if not a.startswith('--')]
+DRAW = pathlib.Path(_arg[0]) if _arg else ROOT / "aether-compositor/src/draw.rs"
 text = DRAW.read_text(encoding='utf-8')
 cut = text.rfind('#[cfg(test)]')
 prod = text[:cut] if cut > 0 else text
@@ -47,7 +51,7 @@ table = {m.group(1): int(m.group(2))
 
 def main() -> int:
     strict = '--strict' in sys.argv
-    print(f"尺寸表：{len(table)} 个常量")
+    print(f"扫描文件：{DRAW.name}；尺寸表：{len(table)} 个常量")
 
     # ---- ① 纵向：ry += N（原有）----
     def prev_meaningful(i: int) -> str:
