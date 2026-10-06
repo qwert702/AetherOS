@@ -31,7 +31,7 @@ pub struct TextRenderer {
     /// 只读报表：当前允许的最大文字宽度（`None` = 不检查）。
     over_w: std::cell::Cell<Option<f32>>,
     /// 只读报表：超出 `over_w` 的文字（按出现顺序，去重后供走查打印）。
-    over_hits: std::cell::RefCell<Vec<String>>,
+    over_hits: std::cell::RefCell<Vec<(String, f32)>>,
 }
 
 /// 字形缓存键。字号在入口已 `round()`，这里再乘 100 定点化，避免拿 f32 当 key。
@@ -277,7 +277,7 @@ impl TextRenderer {
     }
 
     /// 取走已记录的超宽文字（调用方负责打印/清空）。
-    pub fn take_over_hits(&self) -> Vec<String> {
+    pub fn take_over_hits(&self) -> Vec<(String, f32)> {
         std::mem::take(&mut *self.over_hits.borrow_mut())
     }
 
@@ -332,10 +332,11 @@ impl TextRenderer {
     ) -> f32 {
         // 只读报表：这段文字是否超过当前允许宽度（不改变绘制结果）
         if let Some(max_w) = self.over_w.get() {
-            if !text.is_empty() && self.measure_with(text, px, bold) > max_w {
+            let tw = self.measure_with(text, px, bold);
+            if !text.is_empty() && tw > max_w {
                 let mut h = self.over_hits.borrow_mut();
-                if !h.iter().any(|x| x == text) {
-                    h.push(text.to_string());
+                if !h.iter().any(|x| x.0 == text) {
+                    h.push((text.to_string(), tw - max_w));
                 }
             }
         }

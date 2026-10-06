@@ -4438,8 +4438,8 @@ fn main() -> anyhow::Result<()> {
         // 只读走查报表：哪些文字超过内容区宽度（不改变绘制结果，见附录 DP）
         if report_overflow {
             if let Some(t) = tr.as_ref() {
-                for s in t.take_over_hits() {
-                    println!("OVERFLOW {s}");
+                for (s, over) in t.take_over_hits() {
+                    println!("OVERFLOW {over:.1}px {s}");
                 }
             }
         }

@@ -4616,9 +4616,9 @@ fn draw_settings_content(
             ry += theme::size::px(theme::size::GAP_TIGHT);
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "已装应用", "Installed apps"), Some(tr));
             ry += theme::size::px(theme::size::GROUP_GAP);
-            tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(tr, buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                     crate::i18n::pick(lang, "从宿主安装的程序显示在 Dock 上（数据来自 /var/apps）。", "Programs installed from the host show up in the Dock (data from /var/apps)."),
-                    font::CAPTION, color::text_dim(), 0.85);
+                    font::CAPTION, color::text_dim(), 0.85, (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,);
             ry += theme::size::px(theme::size::GAP_STD);
             draw_wrapped(tr, buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                     crate::i18n::pick(lang, "在设置里列出/卸载它们需要 IPC 能力（aetherd 代理），下一步接入。", "Listing/uninstalling them from Settings needs IPC capability (aetherd proxy); coming next."),
@@ -5072,14 +5072,14 @@ fn draw_settings_content(
                 crate::i18n::tr("改口令", "Change password"), Some(tr),
             );
             ry += theme::size::px(theme::size::GROUP_GAP);
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(tr, 
+                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                 crate::i18n::tr(
                     "旧口令先在本机校验（证明是你本人），新口令再交给 aetherd 写入",
                     "Your current password is checked locally first, then aetherd writes the new one",
                 ),
                 font::CAPTION, color::text_dim(), 0.75,
-            );
+            (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,);
             ry += theme::size::px(theme::size::HINT_GAP);
 
             // 三个框：标签一行、输入框一行。**显示的是圆点**（`PassField::display`）。
@@ -5149,10 +5149,21 @@ fn draw_settings_content(
                 tr,
                 r1,
                 crate::i18n::pick(lang, "记录通知历史", "Keep notification history"),
-                Some(crate::i18n::pick(lang, "关掉后不再记录（提示条本身照常显示，只是不再进历史）", "When off, nothing is recorded (toasts still show, they just stay out of history)")),
+                Some(crate::i18n::pick(lang, "关掉后不进历史", "Off: not in history")),
                 s.record_notifications,
                 SettingsHit::ToggleRecordNotifications,
                 hits,
+            );
+            // 全文另起一行：行内放不下（150% 下超出 228px，附录 FJ 判读出来的），
+            // 用页面已有的 ry 流水画在行之下（附录 DV 的手法）。
+            ry = r1.y + r1.h + theme::size::px(theme::size::GAP_TIGHT);
+            draw_wrapped(
+                tr, buf, w, h,
+                (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
+                &mut ry,
+                crate::i18n::pick(lang, "关掉后不再记录（提示条本身照常显示，只是不再进历史）", "When off, nothing is recorded (toasts still show, they just stay out of history)"),
+                font::CAPTION, color::text_dim(), 0.85,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
             );
             ry += theme::size::px(theme::size::GAP_HUGE);
             // 清空：**动作类**，由事件循环执行（绘制期不改状态）
