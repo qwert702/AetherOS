@@ -66,6 +66,14 @@ for _i in range(PAGE_COUNT):
         (f"page-{_i}-en", ["--shot", "1", "--settings", "--settings-page", str(_i), "--lang", "en"])
     )
 
+# 英文**窗口形态**（附录 DX 只覆盖了设置页）：Dock 标签 / 窗口标题 / 状态栏 / AI 栏
+# 都是英文文案，此前只有实拍覆盖。"settings" 与 page-0 重复，跳过（附录 FC）。
+for _name, _args in list(CASES):
+    # 只处理**固定形态**：此时列表里已经含 page-N-en，再包一层会得到 page-N-en-en
+    if _name.endswith("-en") or _name == "settings":
+        continue
+    CASES.append((f"{_name}-en", [*_args, "--lang", "en"]))
+
 # 内容区（去掉顶栏与左侧导航栏）——"不是空白页"的检查只看这里
 CONTENT_X0 = 260
 CONTENT_Y0 = 60
