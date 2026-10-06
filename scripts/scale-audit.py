@@ -45,8 +45,10 @@ text = DRAW.read_text(encoding='utf-8')
 cut = text.rfind('#[cfg(test)]')
 prod = text[:cut] if cut > 0 else text
 lines = prod.split('\n')
+# 尺寸常量定义在 draw.rs —— 扫别的文件时表**仍从这里取**，否则 ①② 会永远报 0（无意义）。
+TABLE_SRC = (ROOT / "aether-compositor/src/draw.rs").read_text(encoding='utf-8')
 table = {m.group(1): int(m.group(2))
-         for m in re.finditer(r'pub const ([A-Z_0-9]+): i32 = (\d+);', prod)}
+         for m in re.finditer(r'pub const ([A-Z_0-9]+): i32 = (\d+);', TABLE_SRC)}
 
 
 def main() -> int:

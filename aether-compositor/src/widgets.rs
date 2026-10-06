@@ -350,8 +350,8 @@ pub fn badge(
     let r = Rect {
         x,
         y,
-        w: tw as i32 + 14,
-        h: 18,
+        w: tw as i32 + crate::draw::theme::size::px(14),
+        h: crate::draw::theme::size::px(18),
     };
     rounded_rect(buf, w, h, r, 9.0, rgb, 0.16);
     rounded_outline(buf, w, h, r, 9.0, rgb, 0.40);
@@ -360,7 +360,7 @@ pub fn badge(
         w,
         h,
         (x + 7) as f32,
-        tr.vcenter(y as f32, 18.0, font::LABEL),
+        tr.vcenter(y as f32, crate::draw::theme::size::px(18) as f32, font::LABEL),
         text,
         font::LABEL,
         rgb,
