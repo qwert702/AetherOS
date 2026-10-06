@@ -125,6 +125,12 @@ def main() -> int:
             n = int(m.group(3))
             if n >= 20 and 'theme::size::px' not in line:
                 fixed_offsets.append((i + 1, m.group(0), n))
+        # ③ 补：**赋值形式** `变量 = 某矩形.y + N`（附录 FL 的 bug 就是这个形状：
+        # `ry = r1.y + 154 + r1.h;` —— 旧正则要求 `x:`/`y:` 冒号，看不到它）。
+        for m in re.finditer(r'\b([a-z_0-9]+)\s*=\s*[a-z_0-9]+\.([xy])\s*\+\s*(\d+)', line):
+            n = int(m.group(3))
+            if n >= 20 and 'theme::size::px' not in line:
+                fixed_offsets.append((i + 1, m.group(0), n))
 
     print()
     print(f"① 纵向「ry += N vs 缩放高度」：{len(vertical)} 处")

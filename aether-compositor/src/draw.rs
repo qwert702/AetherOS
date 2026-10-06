@@ -3564,7 +3564,7 @@ fn draw_settings_content(
     widgets::divider(buf, w, h, Rect { x: content.x + theme::size::px(theme::size::CONTENT_PAD), y: content.y + 54, w: (content.w - 48).max(0), h: 1 });
 
     let row_w = (content.w - 48).max(120);
-    let mut ry = content.y + 70;
+    let mut ry = content.y + theme::size::px(70);
 
     /// 一行「标题 + 副标题 + 右侧开关」。**只登记开关本身**：
     /// 整行与开关都登记会让一次点击命中两个目标（判定打架）。
@@ -6531,7 +6531,7 @@ impl Renderer {
 
         // 磁盘行
         self.installer_rows.clear();
-        let row_y0 = win.y + 78;
+        let row_y0 = win.y + theme::size::px(78);
         for (i, (dev, mb)) in inst.disks.iter().enumerate() {
             let r = Rect { x: win.x + theme::size::px(theme::size::INSET_SM), y: row_y0 + i as i32 * 50, w: win.w - 32, h: theme::size::px(theme::size::CTRL_H) };
             if inst.selected == i {
@@ -6736,7 +6736,7 @@ impl Renderer {
         fill_rect(buf, w, h, Rect { x: win.x + 1, y: win.y + theme::size::px(58), w: win.w - 2, h: 1 }, color::hairline(), 0.08);
 
         // 参数明文（逐项原样展示：确认的前提是看清对象）
-        let mut y = win.y + 74;
+        let mut y = win.y + theme::size::px(74);
         draw_text(tr, buf, w, h, (win.x + theme::size::px(theme::size::PAD_LG)) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::CAPTION),
             crate::i18n::pick(crate::i18n::lang(), "工具", "Tool"), font::CAPTION, color::text_faint(), 0.9);
         draw_text(tr, buf, w, h, (win.x + 76) as f32, tr.vcenter(y as f32, theme::size::px(20) as f32, font::BODY), c.tool, font::BODY, color::text_dim(), 0.95);
@@ -6749,7 +6749,7 @@ impl Renderer {
 
         // 后果说明（风险色）+ 警示三角（几何绘制，不依赖字体字形）
         y += 10;
-        let cx = win.x + 27;
+        let cx = win.x + theme::size::px(27);
         let cy = y + 10;
         for row in 0..9i32 {
             let half = row / 2;

@@ -29,6 +29,7 @@ TMP = ROOT / "aether-compositor/src/zz_scale_audit_selftest.rs"
 VIOLATION = """fn selftest_violations(other: Rect, base: i32, i: i32) {
     let r = Rect { x: other.x + 40, y: 0, w: 10, h: 10 };
     let y = base + i * 40;
+    let ry = other.y + 40;
 }
 """
 
@@ -50,7 +51,7 @@ try:
     print(f"② 已写临时违规文件 {TMP.name}")
     code1, out1 = run(str(TMP))
     named = TMP.name in out1
-    caught3 = "③ 「矩形.y/x + 裸数字」" in out1 and "：1 处" in out1
+    caught3 = "③ 「矩形.y/x + 裸数字」" in out1 and "：2 处" in out1
     print(f"   退出码 {code1}（应为 1）；点名文件：{named}；③ 计到 1 处：{caught3}")
     if not (code1 == 1 and named):
         print(out1[-800:])
