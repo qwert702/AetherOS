@@ -4509,7 +4509,7 @@ fn draw_settings_content(
                 ("DNS", dns),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
-                tr.draw(buf, w, h, (content.x + 110) as f32, ry as f32, &v, font::CAPTION, color::text_dim(), 0.9);
+                tr.draw(buf, w, h, (content.x + theme::size::px(110)) as f32, ry as f32, &v, font::CAPTION, color::text_dim(), 0.9);
                 ry += theme::size::px(theme::size::LINE_GAP);
             }
             ry += 10;
