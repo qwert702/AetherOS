@@ -20,10 +20,9 @@ import sys
 ROOT = pathlib.Path(__file__).parent.parent
 PAGE_COUNT = 19
 SCALES = [100, 125, 150]
-# 中文跑三档；英文只跑 150%（折行/挤压最容易出问题的一档，本会话两次改坏都在它）。
-# 100%/125% 的英文由实拍覆盖（审计附录 DW）。
-EN_SCALE = 150
-COMBOS = [(lang, s) for lang in ("zh", "en") for s in (SCALES if lang == "zh" else [EN_SCALE])]
+# 中英**都跑三档**。上一版英文只跑 150%（省时间），但"100%/125% 英文无机器覆盖"这条
+# 说明一直挂在附录里 —— 实测跑满三档只多约 80 秒，不值得留这个缺口（审计附录 DY）。
+COMBOS = [(lang, s) for lang in ("zh", "en") for s in SCALES]
 ENV = dict(os.environ, AETHER_FAKE_UTC="1", AETHER_SHOT_FIXTURE="1")
 
 
@@ -188,7 +187,7 @@ def main() -> int:
                         overlaps.append(
                             f"page-{page}@{scale}% {hits[i]['kind']} ∩ {hits[j]['kind']} = {a}px²")
 
-    print(f"检查：{checked} 个组合（{PAGE_COUNT} 页 × 中文 {len(SCALES)} 档 + 英文 {EN_SCALE}% 一档）")
+    print(f"检查：{checked} 个组合（{PAGE_COUNT} 页 × 中英各 {len(SCALES)} 档）")
     print(f"  ① 横向越出屏幕：{len(off_screen)}")
     for t in off_screen[:6]:
         print(f"    {t}")
