@@ -120,6 +120,9 @@ CONTENT_X0 = 260
 CONTENT_Y0 = 60
 # 实测：非空白档的内容色最少 782（desktop），阈值取 24 极保守，只抓「整档没画出来」
 BLANK_MAX_COLORS = 24
+# 判据 ⑧：同一窗口内相邻**文字带**的最小间隙（px）。<=0 表示两行文字压在一起。
+# 实测基线（外观页）：中文 150% 为 3px、英文 4px —— 取 1 留余量。
+TEXT_MIN_GAP = 1
 HDR = 54          # 24bpp BMP 头
 W, H = 1280, 760
 
@@ -148,9 +151,67 @@ def blank_of_shot() -> int:
     return content_colors(bmp.read_bytes())
 
 
+def text_min_gap(raw: bytes, win: dict) -> int:
+    """设置窗口**文字区**内相邻文字带的最小间隙（px）；<=0 = 两行文字压在一起。
+
+    * 背景色取文字区里**出现次数最多**的颜色（不假设深色/浅色主题）；
+    * x 范围避开行右侧的开关列（否则每行都有开关墨迹，永远只有一条带）。
+    """
+    if len(raw) != HDR + W * H * 3 or not win:
+        return -1
+    px = raw[HDR:]
+    x0 = win["x"] + int(win["w"] * 0.42)
+    x1 = win["x"] + win["w"] - 120
+    y0 = win["y"] + 60
+    y1 = win["y"] + win["h"] - 6
+
+    counts: dict = {}
+    for y in range(y0, y1, 2):
+        row = (H - 1 - y) * W
+        for x in range(x0, x1, 2):
+            i = (row + x) * 3
+            c = px[i:i + 3]
+            counts[c] = counts.get(c, 0) + 1
+    if not counts:
+        return -1
+    bg = max(counts.items(), key=lambda kv: kv[1])[0]
+
+    bands, cur = [], None
+    for y in range(y0, y1):
+        row = (H - 1 - y) * W
+        ink = 0
+        for x in range(x0, x1):
+            i = (row + x) * 3
+            if abs(px[i] - bg[0]) + abs(px[i + 1] - bg[1]) + abs(px[i + 2] - bg[2]) > 60:
+                ink += 1
+        if ink > 2:
+            cur = [y, y] if cur is None else [cur[0], y]
+        elif cur is not None:
+            bands.append(tuple(cur))
+            cur = None
+    if cur is not None:
+        bands.append(tuple(cur))
+    if len(bands) < 2:
+        return 9999          # 只有一条带：无从谈重叠
+    return min(bands[i + 1][0] - bands[i][1] for i in range(len(bands) - 1))
+
+
+def settings_win(d: dict | None) -> dict:
+    """从 layout dump 里取设置窗口矩形（中英标题都认）。"""
+    if not d:
+        return {}
+    for w in d.get("wins", []):
+        if w.get("title") in ("Settings", "设置"):
+            return w
+    return {}
+
+
 def dump_with_blank(page: int, scale: int, lang: str = "zh"):
-    """渲染一档，返回 (布局, 内容色数)。"""
-    return dump(page, scale, lang), blank_of_shot()
+    """渲染一档，返回 (布局, 内容色数, 文字带最小间隙)。"""
+    d = dump(page, scale, lang)
+    bmp = ROOT / "preview.bmp"
+    gap = text_min_gap(bmp.read_bytes(), settings_win(d)) if bmp.exists() else -1
+    return d, blank_of_shot(), gap
 
 
 def main() -> int:
@@ -158,11 +219,15 @@ def main() -> int:
     off_screen, off_width, overlaps, needs_scroll = [], [], [], []
     blanks: list[str] = []
     checked = 0
+    gaps_bad: list = []
     for lang, scale in COMBOS:
         for page in range(PAGE_COUNT):
-            d, colors = dump_with_blank(page, scale, lang)
+            d, colors, gap = dump_with_blank(page, scale, lang)
             if 0 <= colors <= BLANK_MAX_COLORS:
                 blanks.append(f"page-{page}@{scale}%（内容色 {colors}）")
+            # 判据 ⑧：同一窗口内两行文字压在一起（间隙 <= TEXT_MIN_GAP）
+            if 0 <= gap <= TEXT_MIN_GAP:
+                gaps_bad.append(f"page-{page}@{scale}%·{lang}（文字带最小间隙 {gap}px）")
             if d is None:
                 print(f"[SKIP] page-{page}@{scale}%：没拿到布局（渲染不出来？）")
                 return 0
@@ -207,17 +272,20 @@ def main() -> int:
     print(f"  ⑦ 空白档（内容色 <= {BLANK_MAX_COLORS}）：{len(blanks)}")
     for b in blanks[:6]:
         print(f"    {b}")
+    print(f"  ⑧ 文字压文字（相邻文字带间隙 <= {TEXT_MIN_GAP}px）：{len(gaps_bad)}")
+    for b in gaps_bad[:6]:
+        print(f"    {b}")
     print(f"  ⑥ 窗口类界面同组重叠（判红）：{d_ov}")
     for t3 in d_list[:6]:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    if strict and (off_screen or off_width or d_off or blanks or d_ov):
+    if strict and (off_screen or off_width or d_off or blanks or d_ov or gaps_bad):
         print("[FAIL] 有控件横向越界")
         return 1
     print("[ OK ] 没有横向越界（① ② ⑤ 都是 0）" if not (off_screen or off_width or d_off)
           else "[FAIL] 有横向越界")
-    return 0 if not (off_screen or off_width or d_off or blanks or d_ov) else 1
+    return 0 if not (off_screen or off_width or d_off or blanks or d_ov or gaps_bad) else 1
 
 
 if __name__ == "__main__":
