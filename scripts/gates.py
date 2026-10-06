@@ -116,6 +116,10 @@ def main() -> int:
         # 而不是静默报 0（附录 FD 记了这条：那个 0 不是证据）。
         steps.append(("i18n 完整性（英文位不得含中文）",
                       [PY, "scripts/i18n-check.py"]))
+        # 分析函数自检：证明判据**真的会响**（合成 BMP 喂给 ⑧ / overlap / content_colors）。
+        # 一个从不触发的判据等于没有判据 —— 同时**如实断言** ⑧ 的已知盲点。
+        steps.append(("布局分析函数自检（判据真的会响）",
+                      [PY, "scripts/layout-check-selftest.py"]))
         # 静态扫描「尺寸缩放而步长写死」—— 本会话修掉的 6 处都是这一类，
         # 而它们只在 125%/150% 下才暴露（100% 恰好不重叠）。这一步是瞬时的。
         steps.append(("缩放硬编码扫描（步长 vs 缩放高度）",

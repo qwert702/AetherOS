@@ -192,7 +192,12 @@ def text_min_gap(raw: bytes, win: dict) -> int:
     if cur is not None:
         bands.append(tuple(cur))
     if len(bands) < 2:
-        return 9999          # 只有一条带：无从谈重叠
+        # 只有一条带：无从谈重叠。
+        # **已知盲点**：两行文字**完全并在一起**时会被识别成一条带 → 本判据抓不到。
+        # 试过"带高异常"（某带 >= 中位带高的 2 倍）来补，但大标题带天然就是小提示带的
+        # 2 倍以上 —— 真实全量误报 45/114，等于废掉判据，故回退。
+        # 自检 scripts/layout-check-selftest.py 里断言了这个限制。
+        return 9999
     return min(bands[i + 1][0] - bands[i][1] for i in range(len(bands) - 1))
 
 
