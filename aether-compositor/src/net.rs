@@ -49,7 +49,7 @@ impl NetInfo {
     /// 一句话状态：**只说真值**（没有接口就说没有，不写"已连接"）。
     pub fn summary(&self) -> String {
         match &self.iface {
-            None => "未发现网络接口".to_string(),
+            None => crate::i18n::pick(crate::i18n::lang(), "未发现网络接口", "No network interface found").to_string(),
             Some(i) => {
                 if i.ipv4.is_empty() {
                     format!("{} · {}", i.name, if i.up { "链路已连接" } else { "链路断开" })
@@ -189,7 +189,12 @@ fn read_linux() -> NetInfo {
         Iface { name, mac, up, ipv4, gateway }
     });
     let note = if iface.is_none() {
-        "未发现网络接口（/sys/class/net 为空）".to_string()
+        crate::i18n::pick(
+                crate::i18n::lang(),
+                "未发现网络接口（/sys/class/net 为空）",
+                "No network interface (/sys/class/net is empty)",
+            )
+            .to_string()
     } else {
         String::new()
     };
