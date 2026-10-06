@@ -4668,17 +4668,37 @@ fn draw_settings_content(
                 )
             );
             let next_locale = if s.locale == 1 { 0 } else { 1 };
-            toggle_row(buf, w, h, mouse, tr, r_lang, lang_title, Some(&lang_hint),
+            toggle_row(buf, w, h, mouse, tr, r_lang, lang_title, Some(lang.label()),
                        s.locale == 1, SettingsHit::Locale(next_locale), hits);
             let _ = lang;
 
+            let hc_hint = crate::i18n::pick(lang, "把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交", "Raises text/background contrast above WCAG AA (4.5:1); orthogonal to the theme");
             toggle_row(buf, w, h, mouse, tr, r_hc, crate::i18n::pick(lang, "高对比度", "High contrast"),
-                       Some(crate::i18n::pick(lang, "把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交", "Raises text/background contrast above WCAG AA (4.5:1); orthogonal to the theme")),
+                       Some(crate::i18n::pick(lang, "WCAG AA 4.5:1", "WCAG AA 4.5:1")),
                        s.high_contrast, SettingsHit::ToggleContrast, hits);
             // 第一组四行是用 `r1.y + 偏移` 定位的 —— `ry` 必须**手动推到它们下面**，
             // 否则后面的「当前配色 / 壁纸 / 语言 / 息屏」几节会画在这四行身上。
             // （由 `scripts/layout-check.py` 的几何断言发现：两个不同控件重叠 26 像素。）
             ry = r1.y + 154 + r1.h;
+            // 长说明改用**下面单独一行**（行内放不下；改行高会动到那四行的固定偏移布局 ——
+            // 附录 DT 试过三次都改坏，所以这里不动布局，改用页面已有的 ry 流水）。
+            ry += theme::size::px(theme::size::GAP_TIGHT);
+            draw_wrapped(
+                tr, buf, w, h,
+                (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
+                &mut ry,
+                &lang_hint,
+                font::CAPTION, color::text_dim(), 0.85,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
+            );
+            draw_wrapped(
+                tr, buf, w, h,
+                (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
+                &mut ry,
+                hc_hint,
+                font::CAPTION, color::text_dim(), 0.85,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
+            );
             ry += theme::size::px(theme::size::GAP_HUGE);
             widgets::group_header(buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry, crate::i18n::pick(lang, "当前配色", "Current colors"), Some(tr));
             ry += theme::size::px(theme::size::GROUP_GAP);
@@ -4743,9 +4763,19 @@ fn draw_settings_content(
             // 性能 HUD（§5.10）：**默认关**。说明里写清"显示的是真实数字"，
             // 因为本项目对假数据零容忍 —— 用户有权知道这块面板值不值得信。
             let hud = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
+            let hud_hint = crate::i18n::pick(lang, "右下角显示真实帧时间与内存占用（排障用，默认关）", "Shows real frame time and memory in the bottom-right (for troubleshooting, off by default)");
             toggle_row(buf, w, h, mouse, tr, hud, crate::i18n::pick(lang, "性能 HUD", "Performance HUD"),
-                       Some(crate::i18n::pick(lang, "右下角显示真实帧时间与内存占用（排障用，默认关）", "Shows real frame time and memory in the bottom-right (for troubleshooting, off by default)")),
+                       Some(crate::i18n::pick(lang, "右下角 · 排障用", "Troubleshooting")),
                        s.perf_hud, SettingsHit::TogglePerfHud, hits);
+            ry = hud.y + hud.h + theme::size::px(theme::size::GAP_TIGHT);
+            draw_wrapped(
+                tr, buf, w, h,
+                (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
+                &mut ry,
+                hud_hint,
+                font::CAPTION, color::text_dim(), 0.85,
+                (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32,
+            );
             ry += theme::size::px(theme::size::GAP_HUGE);
             // 恢复默认（批次 L-1）：用户改坏了能回去。**真的重置**，不是只改显示。
             let reset = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
