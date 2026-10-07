@@ -414,6 +414,16 @@ impl Approvals {
 
 /// 128 位随机令牌（标准库随机哈希种子，无额外依赖）。
 pub(crate) fn random_token() -> String {
+        // 优先用**操作系统熵源**：`RandomState` 的文档明确说它不用于密码学用途，
+    // 而确认令牌是安全边界（批准一次 L2/L3 操作）—— 附录 GB 的审计发现。
+    use std::io::Read;
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let mut b = [0u8; 16];
+        if f.read_exact(&mut b).is_ok() {
+            return b.iter().map(|x| format!("{x:02x}")).collect();
+        }
+    }
+    eprintln!("[aetherd] 警告：/dev/urandom 不可用，确认令牌退回非密码学随机源");
     use std::hash::{BuildHasher, Hasher};
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -430,6 +440,17 @@ pub(crate) fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 确认令牌是32位十六进制且每次不同() {
+        // 附录 GB：令牌是安全边界（批准一次 L2/L3 操作）。
+        // 这里锁住两点：**格式不变**（32 个十六进制字符）与**每次不同**（不重复）。
+        let a = random_token();
+        let b = random_token();
+        assert_eq!(a.len(), 32, "令牌长度应为 32");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "令牌应只含十六进制字符");
+        assert_ne!(a, b, "两次签发的令牌不应相同");
+    }
 
     fn gate() -> Gate {
         Gate::for_test()
