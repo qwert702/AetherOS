@@ -37,6 +37,7 @@ CARGO_TOML = REPO_ROOT / "Cargo.toml"
 INDEX_MD = REPO_ROOT / "docs" / "代码索引（INDEX）-2026-09-11.md"
 README_MD = REPO_ROOT / "README.md"
 ROADMAP_MD = REPO_ROOT / "docs" / "路线图与已知缺口（ROADMAP）-2026-09-05.md"
+README_EN_MD = REPO_ROOT / "README.en.md"
 
 EXIT_OK = 0
 EXIT_GATE_FAILED = 1
@@ -49,6 +50,10 @@ DECL_INDEX: Pattern[str] = re.compile(
 # README.md 的合计行： 合计 20,949 行 Rust / 41 个源文件 / 7 个 crate（…）
 DECL_README: Pattern[str] = re.compile(
     r"合计\s*([\d,]+)\s*行 Rust\s*/\s*([\d,]+)\s*个源文件"
+)
+# README.en.md 的规模行： | **Scale** | 50,528 lines of Rust / 71 source files / 7 crates
+DECL_README_EN: Pattern[str] = re.compile(
+    r"\*\*Scale\*\*\s*\|\s*([\d,]+)\s+lines of Rust\s*/\s*([\d,]+)\s+source files"
 )
 # docs/路线图与已知缺口（ROADMAP）-2026-09-05.md 的规模行： 代码规模（2026-09-29 实测）：**20,949 行 / 41 个 .rs**（7 crate）
 DECL_ROADMAP: Pattern[str] = re.compile(
@@ -387,6 +392,7 @@ def gate(stats: Sequence[CrateStat]) -> int:
         ("代码索引（INDEX）-2026-09-11.md", INDEX_MD, DECL_INDEX),
         ("README.md", README_MD, DECL_README),
         ("docs/路线图与已知缺口（ROADMAP）-2026-09-05.md", ROADMAP_MD, DECL_ROADMAP),
+        ("README.en.md", README_EN_MD, DECL_README_EN),
     ):
         claimed = declared(path, pattern)
         if claimed is None:
