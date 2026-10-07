@@ -33,6 +33,17 @@ GATE_COUNT = ROOT / "docs" / "证据" / "gate-count.txt"
 
 
 def declared(text: str, pattern: str) -> int | None:
+    """读报告里声明的数字。
+
+    **要求恰好一处匹配**（附录 GK）：曾经有自动替换把表格行插到了文件开头，
+    于是"第一个匹配"永远是那条孤立的、真正那一行再也不会被更新 ——
+    而这里只读第一个匹配，**看不见**。多/少一处都判红。
+    """
+    _hits = re.findall(pattern, text)
+    if len(_hits) != 1:
+        problems.append(f"「{pattern}」在报告里出现 {len(_hits)} 次（应为 1 次）")
+        return None
+
     m = re.search(pattern, text)
     return int(m.group(1)) if m else None
 
