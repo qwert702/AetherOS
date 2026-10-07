@@ -28,6 +28,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).parent.parent
 REPORT = ROOT / "docs" / "报告" / "收尾报告（FINAL）-2026-10-04.md"
+README = ROOT / "README.md"
+# declared() 是模块级函数，不能碰 main() 的局部 problems（附录 GL）。
+PROBLEMS: list = []
 AUDIT = ROOT / "docs" / "报告" / "安全审计（SECURITY-AUDIT）-2026-10-02.md"
 GATE_COUNT = ROOT / "docs" / "证据" / "gate-count.txt"
 
@@ -41,7 +44,7 @@ def declared(text: str, pattern: str) -> int | None:
     """
     _hits = re.findall(pattern, text)
     if len(_hits) != 1:
-        problems.append(f"「{pattern}」在报告里出现 {len(_hits)} 次（应为 1 次）")
+        PROBLEMS.append(f"「{pattern}」出现 {len(_hits)} 次（应为 1 次）")
         return None
 
     m = re.search(pattern, text)
@@ -53,7 +56,7 @@ def main() -> int:
         print(f"[SKIP] 找不到 {REPORT.name}")
         return 0
     text = REPORT.read_text(encoding='utf-8')
-    problems: list[str] = []
+    problems: list[str] = list(PROBLEMS)
 
     # ① 测试数
     proc = subprocess.run(
@@ -77,6 +80,23 @@ def main() -> int:
             problems.append(f"门禁数：文档 {doc_gates}，本次运行 {real_gates}")
     else:
         print("② 门禁数：[SKIP] 没有 gate-count.txt（单独跑本脚本时会这样）")
+
+    # ③b README 的数字（最常被读的文件，此前没人管 —— 附录 GL）
+    if README.exists():
+        rtext = README.read_text(encoding='utf-8')
+        doc_readme_tests = declared(rtext, r"\| (\d+) 项单元测试全绿")
+        print(f"③b README 测试数：{doc_readme_tests} / 实测 {real_tests}")
+        if doc_readme_tests != real_tests:
+            problems.append(f"README 测试数：文档 {doc_readme_tests}，实测 {real_tests}")
+        doc_readme_files = declared(rtext, r"(\d+) 个源文件")
+        _stats = re.search(r"\*\*合计\*\* \| \*\*([\d,]+)\*\* \| \*\*(\d+)\*\*",
+                           subprocess.run([sys.executable, str(ROOT / "scripts/repo-stats.py")],
+                                          cwd=ROOT, capture_output=True, text=True,
+                                          encoding='utf-8').stdout)
+        real_files = int(_stats.group(2)) if _stats else None
+        print(f"③b README 源文件数：{doc_readme_files} / 实测 {real_files}")
+        if doc_readme_files != real_files:
+            problems.append(f"README 源文件数：文档 {doc_readme_files}，实测 {real_files}")
 
     # ③ 审计附录数
     real_apps = len(re.findall(r'^## 附录', AUDIT.read_text(encoding='utf-8'), re.M))
