@@ -7773,3 +7773,67 @@ for i in range(len(ts)):
 * 构建 0 错误 0 警告；`scale-audit.py --strict` → 五类全 0；
 * `shot-diff.py save` → 基线已重标定（文字与间距变化属有意改动）；
 * `gates.py` → 22 项全过。
+
+---
+
+## 附录 GG：判据 ⑪ 的 12 处**是同一个根因** —— 一处修好全部（2026-10-06 批次 GG-1）
+
+### GG.1 根因（`draw_wrapped` 的前进量）
+
+```rust
+let step = theme::size::px(20);
+let segs = tr.wrap(text, px, max_w, 3);
+for (i, seg) in segs.iter().enumerate() {
+    tr.draw(buf, w, h, x, (*ry + i as i32 * step) as f32, seg, px, rgb, alpha);
+}
+*ry += (segs.len() as i32 - 1) * step;   // ← 只前进到**最后一行的开头**
+```
+
+`ry` 的约定是"**下一个元素的 y**"（所以单行绘制之后调用方加 `LINE_GAP` 就是行距）。
+但折行版只前进到**最后一行的开头**，调用方再加一个 `GAP_TIGHT`（比行高小得多）
+→ **下一个元素压在最后一行上**。
+
+判据 ⑪ 报的 12 处**全是这一个根因**：
+
+* 页0：`对比度提到 WCAG AA` 压住上一条提示的续行；
+* 页16：`提示音` 压住 `在控制中心里打开`；
+* 语言行：那条值压住下面的对比度提示。
+
+**修法**（一行）：前进量补上**最后一行自身的高度**（用 `LINE_GAP`，与单行绘制后的行距同一常量）：
+
+```rust
+*ry += (segs.len() as i32 - 1) * step + theme::size::px(theme::size::LINE_GAP);
+```
+
+**结果**：⑪ **12 → 0**，接成**硬判 0**。
+
+### GG.2 ⚠️ 一条方法论：**先找共同根因，不要逐条修症状**
+
+上一批我按"页0/页16 各一条"去**逐条缩短字符串** —— 改了两条，⑪ **还是 12**。
+这次去看**画字的那个函数**，才发现 12 处是**一个** bug。
+
+> 判据报多处时，**先看它们是不是同一个根因**。逐条修症状会白改，而且改完还看不懂为什么没效。
+> 这与本会话的"**在唯一收窄点修，而不是逐个调用点打补丁**"是同一条。
+
+### GG.3 ⚠️ 顺带修掉我自己造成的回归
+
+上一批我把英文 `notification center opens from the control center (…).`
+替换成 `opens from the control center`，和前缀 `The ` 拼成了
+**"The opens from the control center"** —— **语法错误**。
+
+**本批改成 `Opens from the control center`。**
+
+教训：**替换一个字符串片段时，要看它和前后缀拼起来是什么**。
+（`i18n-check` 只能查"英文位有没有中文"，查不出语法；⑪ 也查不出。
+这类问题只能靠**替换后回读整句**来防 —— 本批就是这么发现的。）
+
+### GG.4 实拍复核
+
+页16 @150%·en：`Opens from the control center` 与下方 `Sounds` **间距正常**，
+折行说明 `When off, nothing is recorded (…)` 仍是两行且不压任何东西。
+
+### GG.5 验证
+
+* `layout-check.py --strict` → ① ⑤ ⑥ ⑦ ⑧ 全 0、⑨ = 0、⑩ = 0、**⑪ = 0（硬判）**、退出码 0；
+* 构建 0 错误 0 警告；`shot-diff.py save` → 基线已重标定；
+* `gates.py` → 22 项全过。

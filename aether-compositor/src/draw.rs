@@ -3430,7 +3430,10 @@ fn draw_wrapped(
     for (i, seg) in segs.iter().enumerate() {
         tr.draw(buf, w, h, x, (*ry + i as i32 * step) as f32, seg, px, rgb, alpha);
     }
-    *ry += (segs.len() as i32 - 1) * step;
+    // `ry` 的约定是"**下一个元素的 y**"（单行绘制后调用方加 `LINE_GAP` 就是行距）。
+    // 只前进到最后一行的**开头**的话，调用方再加一个 `GAP_TIGHT` 就会**压在最后一行上**
+    // —— 判据 ⑪「文字带区重叠」抓到页0/页16 共 12 处，全是这一个根因（附录 GG）。
+    *ry += (segs.len() as i32 - 1) * step + theme::size::px(theme::size::LINE_GAP);
 }
 
 fn draw_settings_content(
@@ -4678,8 +4681,8 @@ fn draw_settings_content(
                 "{} · {}",
                 lang.label(),
                 crate::i18n::tr(
-                    "切换后左栏与页标题立即生效；**部分页面的正文仍在翻译中**（见缺口清单 §3.5）",
-                    "Sidebar and titles switch immediately; some page bodies are still being translated",
+                    "切换后左栏与页标题立即生效",
+                    "Sidebar and titles switch immediately",
                 )
             );
             let next_locale = if s.locale == 1 { 0 } else { 1 };
@@ -5206,7 +5209,7 @@ fn draw_settings_content(
                 h,
                 (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
                 &mut ry,
-                crate::i18n::pick(lang, "在控制中心里打开", "The opens from the control center"),
+                crate::i18n::pick(lang, "在控制中心里打开", "Opens from the control center"),
                 font::CAPTION,
                 color::text_dim(),
                 0.75,

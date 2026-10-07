@@ -184,7 +184,6 @@ TEXT_MIN_GAP = 1
 OVERFLOW_SEEN: list = []
 # 判据 ⑪：两段文字带区重叠（精确；用渲染器登记的带区 —— 附录 GE / GF）。
 BAND_OVERLAPS: list = []
-BAND_MAX = 12  # 棘轮：附录 GF 实测值
 # 判据 ⑩：**英文模式下画出来的中文**（漏译信号，来源不限 —— 附录 FQ）。
 # 注意：里面含**夹具数据**（例如文件管理器里夹具建的「文档」「图片」目录名），
 # 所以用棘轮而不是判 0；"上升"才是新漏译的信号。
@@ -333,7 +332,7 @@ def main() -> int:
                             f"page-{page}@{scale}% {hits[i]['kind']} ∩ {hits[j]['kind']} = {a}px²")
 
     print(f"检查：{checked} 个组合（{PAGE_COUNT} 页 × 中英各 {len(SCALES)} 档）")
-    print(f"  ⑪ 两段文字带区重叠（>2px）：{len(BAND_OVERLAPS)}（棘轮上限 12）")
+    print(f"  ⑪ 两段文字带区重叠（>2px）：{len(BAND_OVERLAPS)}")
     for _b in BAND_OVERLAPS[:8]:
         print(f"    page-{_b[0]}@{_b[1]}%·{_b[2]}：{_b[3]!r} ∩ {_b[4]!r} = {_b[5]}x{_b[6]}px")
     print(f"  ① 横向越出屏幕：{len(off_screen)}")
@@ -376,7 +375,7 @@ def main() -> int:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX or bool(cjk_leaks) or len(BAND_OVERLAPS) > BAND_MAX
+    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX or bool(cjk_leaks) or bool(BAND_OVERLAPS)
     if strict and (off_screen or off_width or d_off or blanks or d_ov or gaps_bad or over_ratchet):
         print("[FAIL] 有控件横向越界")
         return 1
