@@ -4792,7 +4792,7 @@ fn draw_settings_content(
                 (crate::i18n::pick(lang, "层次", "Depth"), crate::i18n::pick(lang, "两层轻影 + 1px 描边", "two soft shadows + 1px outline")),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
-                tr.draw(buf, w, h, (content.x + 120) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                tr.draw(buf, w, h, (content.x + theme::size::px(120)) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
                 ry += theme::size::px(theme::size::LINE_GAP);
             }
         }
@@ -4921,7 +4921,7 @@ fn draw_settings_content(
             }
             tr.draw(
                 buf, w, h,
-                (content.x + 340) as f32,
+                (content.x + theme::size::px(340)) as f32,
                 (ry + 7) as f32,
                 &format!("{}%", s.mouse_speed_pct),
                 font::CAPTION, color::text_dim(), 0.85,
@@ -4937,7 +4937,7 @@ fn draw_settings_content(
                 ("Esc", crate::i18n::pick(lang, "关闭菜单或命令栏", "Close menu or command bar")),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
-                tr.draw(buf, w, h, (content.x + 190) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                tr.draw(buf, w, h, (content.x + theme::size::px(190)) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
                 ry += theme::size::px(theme::size::LINE_GAP);
             }
         }
@@ -4953,7 +4953,7 @@ fn draw_settings_content(
                 (crate::i18n::pick(lang, "权限闸门", "Permission gate"), crate::i18n::pick(lang, "危险动作需确认卡片", "Risky actions need a confirmation card")),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
-                tr.draw(buf, w, h, (content.x + 140) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                tr.draw(buf, w, h, (content.x + theme::size::px(140)) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
                 ry += theme::size::px(theme::size::LINE_GAP);
             }
             ry += 10;
@@ -4978,7 +4978,7 @@ fn draw_settings_content(
                 (crate::i18n::pick(lang, "设置文件", "Settings file"), crate::settings::SETTINGS_PATH),
             ] {
                 tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, k, font::CAPTION, color::text(), 0.9);
-                tr.draw(buf, w, h, (content.x + 130) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
+                tr.draw(buf, w, h, (content.x + theme::size::px(130)) as f32, ry as f32, v, font::CAPTION, color::text_dim(), 0.85);
                 ry += theme::size::px(theme::size::LINE_GAP);
             }
 
@@ -5058,7 +5058,7 @@ fn draw_settings_content(
                     );
                     let detail = format!("uid {} · {}", u.uid, u.shell);
                     tr.draw(
-                        buf, w, h, (content.x + 150) as f32, ry as f32,
+                        buf, w, h, (content.x + theme::size::px(150)) as f32, ry as f32,
                         &detail, font::CAPTION, color::text_dim(), 0.85,
                     );
                     ry += theme::size::px(theme::size::LINE_GAP);
@@ -6094,7 +6094,7 @@ impl Renderer {
     let aw = tr.measure_bold("A", font::GLYPH);
     tr.draw_bold(buf, w, h, av.x as f32 + (av.w as f32 - aw) / 2.0, tr.vcenter(av.y as f32, av.h as f32, font::GLYPH), "A", font::GLYPH, color::text(), 0.98);
 
-    let text_x = (bar.x + 58) as f32;
+    let text_x = (bar.x + theme::size::px(58)) as f32;
     let text_y = tr.vcenter(bar.y as f32, bar.h as f32, font::BODY);
     // 可见窗口按**光标**位置算，而不是"保证末尾可见" —— 2.4 支持中间编辑后，
     // 光标可能在任意位置，"末尾可见"对用户没有意义
@@ -6855,7 +6855,7 @@ fn draw_toast(buf: &mut [u32], w: usize, h: usize, msg: &str, age: f32, tr: Opti
     rounded_rect(buf, w, h, r, 20.0, color::surface_2(), alpha * 0.92);
     rounded_outline(buf, w, h, r, 20.0, color::hairline(), alpha * 0.15);
     fill_rect(buf, w, h, Rect { x: r.x + theme::size::px(theme::size::CONTROL_INSET), y: r.y + 17, w: 6, h: 6 }, color::accent(), alpha);
-    draw_text(tr, buf, w, h, (r.x + 34) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), msg, font::BODY, color::text(), alpha);
+    draw_text(tr, buf, w, h, (r.x + theme::size::px(34)) as f32, tr.vcenter(r.y as f32, r.h as f32, font::BODY), msg, font::BODY, color::text(), alpha);
 }
 
 // ---------------------------------------------------------------------------

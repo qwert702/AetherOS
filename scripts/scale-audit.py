@@ -131,6 +131,14 @@ def main() -> int:
             n = int(m.group(3))
             if n >= 20 and 'theme::size::px' not in line:
                 fixed_offsets.append((i + 1, m.group(0), n))
+        # ③ 再补：**任意位置**的 `某矩形.x/y + N`（附录 FP 的缺口：
+        # `(content.x + 110) as f32` 写在**函数实参**里，前两条正则都看不到）。
+        for m in re.finditer(r'([a-z_0-9]+)\.([xy])\s*\+\s*(\d+)', line):
+            n = int(m.group(3))
+            if n >= 20 and 'theme::size::px' not in line:
+                fixed_offsets.append((i + 1, m.group(0), n))
+    # 三条正则会有重叠 → 按 (行号, 匹配文本) 去重
+    fixed_offsets = sorted(set(fixed_offsets))
 
     print()
     print(f"① 纵向「ry += N vs 缩放高度」：{len(vertical)} 处")
