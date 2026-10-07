@@ -29,6 +29,7 @@ import sys
 ROOT = pathlib.Path(__file__).parent.parent
 REPORT = ROOT / "docs" / "报告" / "收尾报告（FINAL）-2026-10-04.md"
 README = ROOT / "README.md"
+README_EN = ROOT / "README.en.md"
 # declared() 是模块级函数，不能碰 main() 的局部 problems（附录 GL）。
 PROBLEMS: list = []
 AUDIT = ROOT / "docs" / "报告" / "安全审计（SECURITY-AUDIT）-2026-10-02.md"
@@ -97,6 +98,15 @@ def main() -> int:
         print(f"③b README 源文件数：{doc_readme_files} / 实测 {real_files}")
         if doc_readme_files != real_files:
             problems.append(f"README 源文件数：文档 {doc_readme_files}，实测 {real_files}")
+
+    # ③c 英文 README（中英成对，附录 GM）
+    if README_EN.exists():
+        etext = README_EN.read_text(encoding='utf-8')
+        _m = re.search(r"(\d+)\s+unit tests?\s+(?:all\s+)?(?:green|pass)", etext, re.I)
+        doc_en_tests = int(_m.group(1)) if _m else None
+        print(f"③c README.en 测试数：{doc_en_tests} / 实测 {real_tests}")
+        if doc_en_tests != real_tests:
+            problems.append(f"README.en 测试数：文档 {doc_en_tests}，实测 {real_tests}")
 
     # ③ 审计附录数
     real_apps = len(re.findall(r'^## 附录', AUDIT.read_text(encoding='utf-8'), re.M))
