@@ -34,18 +34,18 @@ def band_overlaps(d: dict) -> list:
     """
     ts = d.get("texts") or []
     # **只在同一窗口内比**：按 clip 分组。窗口之间本来就会互相盖住，那不是问题。
-    # **只在有明确窗口身份的组内比**：`set_clip` 目前只有设置窗口在调，
-    # 其余窗口（文件/终端/音乐）的带区 clip 为 null —— 它们本来就会互相盖住，
-    # 混在一起会产生大量假重叠（实测 303 段里 259 段是 null）。
+    # **按窗口 id 分组**：窗口之间本来就会互相盖住，跨窗口比会产生大量假重叠
+    # （第一版实测 1914 处）。
     #
-    # 窗口 id 已经能拿到（`texts[].win`，见附录 GH），但**按窗口分组还不够**：
-    # 浮层（AI 气泡、提示条、命令面板）**本来就该盖住别的文字**，
-    # 按窗口分完仍会报 108 处，绝大多数是气泡。要覆盖它们，判据得先**能识别浮层**。
+    # 两个前提（附录 GH / GI）：
+    #   1. 浮层（AI 气泡、命令面板、提示条）在窗口循环**之外**绘制 → `win` 为 null
+    #      → **跳过**。它们本来就该盖住别的文字；
+    #   2. 浮动窗口（置顶/被拖动）用**独立命名空间**（1000+i）→ 内部照查、跨窗口不比。
     by: dict = {}
     for e in ts:
-        if e.get("clip") is None:
+        if e.get("win") is None:
             continue
-        by.setdefault(str(e["clip"]), []).append(e)
+        by.setdefault(e["win"], []).append(e)
     out = []
     for group in by.values():
         for i in range(len(group)):

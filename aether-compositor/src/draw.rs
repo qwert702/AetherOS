@@ -2524,7 +2524,10 @@ impl Renderer {
         for (i, win) in desktop.wins.iter().enumerate() {
             // 让带区带上**窗口身份**（判据 ⑪ 用它分组，附录 GH）。
             if let Some(t) = tr {
-                t.set_win_id(Some(i as u32));
+                // 浮动窗口（置顶/被拖动）**本来就会盖住别的窗口**，给它独立命名空间：
+                // 它**内部**的重叠照查，跨窗口不比（附录 GI）。
+                let id = if win.floating { 1000 + i as u32 } else { i as u32 };
+                t.set_win_id(Some(id));
             }
             draw_window(
                 buf, w, h, win, i == desktop.active,
@@ -2557,6 +2560,11 @@ impl Renderer {
                 &mut self.sidebar_hits, &mut self.crumb_hits, &mut self.music_hits,
                 self.settings_page, &mut self.settings_hits,
             );
+        }
+        // 循环外的浮层（AI 气泡、命令面板、提示条）不该继承窗口身份 ——
+        // 它们**本来就该盖住**别的文字，判据按窗口分组时要跳过（附录 GI）。
+        if let Some(t) = tr {
+            t.set_win_id(None);
         }
         mark!("windows");
 
