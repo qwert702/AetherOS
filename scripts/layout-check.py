@@ -156,7 +156,6 @@ OVERFLOW_SEEN: list = []
 # 注意：里面含**夹具数据**（例如文件管理器里夹具建的「文档」「图片」目录名），
 # 所以用棘轮而不是判 0；"上升"才是新漏译的信号。
 CJK_SEEN: list = []
-CJK_MAX = 1596          # 首次运行后按实测填
 # 判据 ⑨ 的**棘轮**：当前实测值。超过就判红（防回归）；减少也允许（提示更新此数）。
 # 59 条**全在 125%/150%**（100% 是 0）—— 尚未逐条判读是"取整的 1–2px"还是"真被裁"。
 # 如实记：所以这里用棘轮，不假装它们已经解决（见审计附录 FH）。
@@ -322,7 +321,16 @@ def main() -> int:
     for b in gaps_bad[:6]:
         print(f"    {b}")
     print(f"  ⑨ 文字超宽（绘制调用超出可用宽度）：{len(OVERFLOW_SEEN)}（棘轮上限 {OVERFLOW_MAX}）")
-    print(f"  ⑩ 英文模式下的中文（含夹具数据）：{len(CJK_SEEN)}（棘轮上限 {CJK_MAX}）")
+    # 判据 ⑩：交集 = 背景噪声（每页都有的）；差集 = 该页自己的文字 → 必须为空
+    _en = [(pg, sc, tx) for (pg, sc, lg, tx) in CJK_SEEN if lg == "en"]
+    _by = {}
+    for _pg, _sc, _tx in _en:
+        _by.setdefault((_pg, _sc), set()).add(_tx)
+    _noise = set.intersection(*_by.values()) if _by else set()
+    cjk_leaks = sorted({tx for _pg, _sc, tx in _en if tx not in _noise})
+    print(f"  ⑩ 英文模式下**页面专属**的中文（已扣掉每页都有的噪声 {len(_noise)} 条）：{len(cjk_leaks)}")
+    for _x in cjk_leaks[:8]:
+        print(f"    {_x[:70]}")
     for _pg, _sc, _lg, _tx in OVERFLOW_SEEN[:6]:
         print(f"    page-{_pg}@{_sc}%·{_lg}：{_tx[:70]}")
     print(f"  ⑥ 窗口类界面同组重叠（判红）：{d_ov}")
@@ -330,7 +338,7 @@ def main() -> int:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX or len(CJK_SEEN) > CJK_MAX
+    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX or bool(cjk_leaks)
     if strict and (off_screen or off_width or d_off or blanks or d_ov or gaps_bad or over_ratchet):
         print("[FAIL] 有控件横向越界")
         return 1

@@ -342,7 +342,12 @@ impl TextRenderer {
     ) -> f32 {
         // 只读报表：这段文字是否超过当前允许宽度（不改变绘制结果）
         // 只读报表：英文模式下画出来的中文（漏译信号，来源不限 —— 附录 FQ）
-        if self.report_cjk.get() && text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+        // 只在**设置正文**渲染期间记（`over_w` 仅在那里被设置）——
+        // 这样自动排除背景窗口里的**数据**（文件名、曲目名等）。
+        if self.report_cjk.get()
+            && self.over_w.get().is_some()
+            && text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+        {
             let mut h = self.cjk_hits.borrow_mut();
             if !h.iter().any(|x| x == text) {
                 h.push(text.to_string());
