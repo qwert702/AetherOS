@@ -32,6 +32,12 @@ pub struct TextRenderer {
     over_w: std::cell::Cell<Option<f32>>,
     /// 只读报表：超出 `over_w` 的文字（按出现顺序，去重后供走查打印）。
     over_hits: std::cell::RefCell<Vec<(String, f32)>>,
+    /// 文字带区报表：每段文字的 (x0, y0, x1, y1, 文字)。
+    ///
+    /// 为什么需要它：判据 ⑧ 从**像素**推带区，两行完全叠在一起时会**合并成一个带**
+    /// 而看不见（附录 FL）。让渲染器自己登记，判据就能**精确**判重叠（附录 GE）。
+    report_bands: std::cell::Cell<bool>,
+    bands: std::cell::RefCell<Vec<(f32, f32, f32, f32, String)>>,
     report_cjk: std::cell::Cell<bool>,
     cjk_hits: std::cell::RefCell<Vec<String>>,
 }
@@ -287,6 +293,16 @@ impl TextRenderer {
         std::mem::take(&mut *self.cjk_hits.borrow_mut())
     }
 
+    /// 打开/关闭文字带区报表。
+    pub fn set_band_report(&self, on: bool) {
+        self.report_bands.set(on);
+    }
+
+    /// 取走并清空带区报表。
+    pub fn take_bands(&self) -> Vec<(f32, f32, f32, f32, String)> {
+        std::mem::take(&mut *self.bands.borrow_mut())
+    }
+
     pub fn take_over_hits(&self) -> Vec<(String, f32)> {
         std::mem::take(&mut *self.over_hits.borrow_mut())
     }
@@ -307,7 +323,7 @@ impl TextRenderer {
             .horizontal_line_metrics(40.0)
             .map(|m| m.ascent)
             .unwrap_or(32.0);
-        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None), over_w: std::cell::Cell::new(None), over_hits: std::cell::RefCell::new(Vec::new()), report_cjk: std::cell::Cell::new(false), cjk_hits: std::cell::RefCell::new(Vec::new()) })
+        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None), over_w: std::cell::Cell::new(None), over_hits: std::cell::RefCell::new(Vec::new()), report_cjk: std::cell::Cell::new(false), cjk_hits: std::cell::RefCell::new(Vec::new()), report_bands: std::cell::Cell::new(false), bands: std::cell::RefCell::new(Vec::new()) })
     }
 
     /// 取（并缓存）字形位图。命中时只做一次哈希查找，不再走字形解析与光栅化。
@@ -340,6 +356,16 @@ impl TextRenderer {
         alpha: f32,
         bold: bool,
     ) -> f32 {
+        // 只读报表：登记这段文字的**带区**（精确判重叠用，附录 GE）。
+        if self.report_bands.get() && !text.is_empty() {
+            let tw = self.measure_with(text, px, bold);
+            let lh = self
+                .regular
+                .horizontal_line_metrics(px)
+                .map(|m| m.ascent + m.descent.abs())
+                .unwrap_or(px * 1.4);
+            self.bands.borrow_mut().push((x, y, x + tw, y + lh, text.to_string()));
+        }
         // 只读报表：这段文字是否超过当前允许宽度（不改变绘制结果）
         // 只读报表：英文模式下画出来的中文（漏译信号，来源不限 —— 附录 FQ）
         // 只在**设置正文**渲染期间记（`over_w` 仅在那里被设置）——

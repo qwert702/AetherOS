@@ -4436,6 +4436,12 @@ fn main() -> anyhow::Result<()> {
         // 单帧输出必须先把壁纸补全（交互路径是分帧生成的）
         renderer.prepare_background(WIDTH, HEIGHT, 1.2);
         if report_cjk { if let Some(t) = tr.as_ref() { t.set_cjk_report(true); } }
+        // 判据 ⑧ 的精确版：让渲染器登记文字带区（附录 GE）
+        if args.iter().any(|a| a == "--dump-layout") {
+            if let Some(t) = tr.as_ref() {
+                t.set_band_report(true);
+            }
+        }
         renderer.render_frame(&mut buf, WIDTH, HEIGHT, 1.2, &desktop, &ui, tr.as_ref());
         // 只读走查报表：哪些文字超过内容区宽度（不改变绘制结果，见附录 DP）
         if report_overflow {
@@ -4459,6 +4465,15 @@ fn main() -> anyhow::Result<()> {
         // 缩放最容易出的问题是**溢出**，而那是纯几何问题 —— 用断言查比用人眼看可靠。
         if args.iter().any(|a| a == "--dump-layout") {
             let work = layout::work_area(WIDTH, HEIGHT);
+            let texts: Vec<serde_json::Value> = tr
+                .as_ref()
+                .map(|t| t.take_bands())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(x0, y0, x1, y1, s)| {
+                    serde_json::json!({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "text": s})
+                })
+                .collect();
             let hits: Vec<serde_json::Value> = renderer
                 .settings_hits
                 .iter()
@@ -4509,6 +4524,7 @@ fn main() -> anyhow::Result<()> {
                 "work": {"x": work.x, "y": work.y, "w": work.w, "h": work.h},
                 "wins": wins,
                 "hits": hits,
+                "texts": texts,
                 "widgets": widgets,
             });
             // 加个前缀，方便脚本从"preview.bmp written"之类输出里认出来
