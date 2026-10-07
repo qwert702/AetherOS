@@ -3668,7 +3668,7 @@ fn draw_settings_content(
                         crate::i18n::pick(
                             lang,
                             "暂无审计记录（本会话还没发生工具调用）。",
-                            "No audit records yet (no tool call has happened this session).",
+                            "No audit records yet this session.",
                         ),
                         font::CAPTION, color::text_dim(), 0.9);
                 ry += theme::size::px(theme::size::HINT_GAP);
@@ -4447,8 +4447,8 @@ fn draw_settings_content(
             tr.draw(
                 buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
                 crate::i18n::tr(
-                    crate::i18n::pick(lang, "以上每条都在源码里有落点（有测试逐条核对）", "Every entry above has a landing point in the source (checked one by one by tests)"),
-                    "Every entry above is verified against the source by a test",
+                    crate::i18n::pick(lang, "以上每条在源码里都有落点", "Every entry above is verified against the source"),
+                    "Every entry above is verified by a test",
                 ),
                 font::CAPTION, color::text_dim(), 0.8,
             );
@@ -4584,7 +4584,7 @@ fn draw_settings_content(
                 Some(crate::i18n::pick(
                     lang,
                     "断开后重新连接（经 aetherd 转交 init）",
-                    "Disconnect and reconnect (handed to init via aetherd)",
+                    "Disconnect and reconnect",
                 )),
                          widgets::States::at(act, mouse), Some(tr));
             hits.push((act, SettingsHit::RestartService("network")));
@@ -4646,7 +4646,7 @@ fn draw_settings_content(
             // 主题开关：**默认明亮（纯白）**，切换立即生效 —— 改全局 MODE 并重建背景缓存，
             // 由事件循环执行（绘制期不改状态）。
             let r1 = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::CTRL_H) };
-            toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "深色模式", "Dark mode"), Some(crate::i18n::pick(lang, "默认关闭（明亮/纯白）；切换立即生效", "Off by default (bright / pure white); takes effect immediately")), s.dark_mode, SettingsHit::ToggleDark, hits);
+            toggle_row(buf, w, h, mouse, tr, r1, crate::i18n::pick(lang, "深色模式", "Dark mode"), Some(crate::i18n::pick(lang, "默认关闭（明亮/纯白）", "Off by default (bright / pure white)")), s.dark_mode, SettingsHit::ToggleDark, hits);
             // §3.4 无障碍：高对比度。紧跟主题开关 —— 它是"看得清"这条线上的第二项。
             // 说明文字直接给出**可验证的依据**（WCAG AA），而不是"更清楚"这种主观话。
             let r_hc = Rect { x: r1.x, y: r1.y + theme::size::px(56), w: r1.w, h: r1.h };
@@ -4655,7 +4655,7 @@ fn draw_settings_content(
             // §3.4 字号：界面里"存了不用"的又一个 —— 本批接上（缩放做在文本渲染器里）
             let r_scale = Rect { x: r1.x, y: r1.y + theme::size::px(154), w: r1.w, h: r1.h };
             let scale_hint = crate::i18n::tr(
-                "只缩放文字；行高与边距仍是固定值（150% 会偏挤，见缺口清单 §3.4）",
+                "只缩放文字；行高与边距仍是固定值",
                 "Scales text only; row heights stay fixed (150% is tight)",
             );
             widgets::row(
@@ -4795,7 +4795,7 @@ fn draw_settings_content(
             // 恢复默认（批次 L-1）：用户改坏了能回去。**真的重置**，不是只改显示。
             let reset = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
             widgets::row(buf, w, h, reset, crate::i18n::pick(lang, "恢复默认外观", "Restore default appearance"),
-                         Some(crate::i18n::pick(lang, "主题/壁纸/时钟/输入等恢复出厂值（时区保留）", "Resets theme / wallpaper / clock / input to factory values (time zone kept)")),
+                         Some(crate::i18n::pick(lang, "主题/壁纸/时钟/输入等恢复出厂值", "Resets theme / wallpaper / clock / input")),
                          widgets::States::at(reset, mouse), Some(tr));
             hits.push((reset, SettingsHit::ResetDefaults));
             // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
@@ -4887,7 +4887,7 @@ fn draw_settings_content(
             widgets::row(
                 buf, w, h, r_pick,
                 &format!("{}：{}", crate::i18n::tr("待写入时区", "Time zone to write"), time.picked_name()),
-                Some(crate::i18n::tr("点击切换候选（UTC / 上海 / 东京 / 新加坡 / 伦敦 / 巴黎 / 纽约 / 洛杉矶）",
+                Some(crate::i18n::tr("点击切换候选（UTC / 上海 / 东京 / …）",
                                      "Click to cycle candidates")),
                 widgets::States::at(r_pick, mouse), Some(tr),
             );
@@ -4976,7 +4976,7 @@ fn draw_settings_content(
             ry += theme::size::px(28);
             // 第二个"能改系统"的动作（P4.4）：AI 卡住时把 aetherd 重启一次
             let ai_act = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
-            widgets::row(buf, w, h, ai_act, crate::i18n::pick(lang, "重启 AI 服务", "Restart AI service"), Some(crate::i18n::pick(lang, "aetherd 重启后由 init 拉起（会话会中断）", "init starts aetherd again after the restart (the session is interrupted)")),
+            widgets::row(buf, w, h, ai_act, crate::i18n::pick(lang, "重启 AI 服务", "Restart AI service"), Some(crate::i18n::pick(lang, "aetherd 重启后由 init 拉起", "init starts aetherd again after the restart")),
                          widgets::States::at(ai_act, mouse), Some(tr));
             hits.push((ai_act, SettingsHit::RestartService("aetherd")));
         }
@@ -5006,9 +5006,9 @@ fn draw_settings_content(
             tr.draw_bold(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, crate::i18n::pick(lang, "电源", "Power"), font::CAPTION, color::text(), 0.9);
             ry += theme::size::px(theme::size::HINT_GAP);
             for (label, hint, hit) in [
-                (crate::i18n::pick(lang, "关机", "Power off"), crate::i18n::pick(lang, "停止所有服务并断电（需确认）", "Stops all services and cuts power (needs confirmation)"), SettingsHit::Power(aether_ipc::PowerAction::PowerOff)),
+                (crate::i18n::pick(lang, "关机", "Power off"), crate::i18n::pick(lang, "停止所有服务并断电", "Stops all services and cuts power"), SettingsHit::Power(aether_ipc::PowerAction::PowerOff)),
                 (crate::i18n::pick(lang, "重启", "Reboot"), crate::i18n::pick(lang, "停止所有服务并重新引导（需确认）", "Stops all services and reboots (needs confirmation)"), SettingsHit::Power(aether_ipc::PowerAction::Reboot)),
-                (crate::i18n::pick(lang, "注销", "Log out"), crate::i18n::pick(lang, "重启桌面（窗口会关闭，由 aether-init 拉起）", "Restarts the desktop (windows close; aether-init starts it again)"), SettingsHit::Logout),
+                (crate::i18n::pick(lang, "注销", "Log out"), crate::i18n::pick(lang, "重启桌面（窗口会关闭）", "Restarts the desktop (windows close)"), SettingsHit::Logout),
             ] {
                 let act = Rect { x: content.x + theme::size::px(theme::size::CONTROL_INSET), y: ry, w: row_w + 12, h: theme::size::px(theme::size::ROW_H) };
                 widgets::row(buf, w, h, act, label, Some(hint), widgets::States::at(act, mouse), Some(tr));

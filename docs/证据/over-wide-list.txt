@@ -1,0 +1,19 @@
+116.9px	3	Resets theme / wallpaper / clock / input to factory values (time zone kept)
+100.9px	3	Open the command palette (apps / settings / files in the current folder)
+92.8px	3	Layout keys moved from bare digits to Alt combos (fixed 2026-09-29)
+88.8px	3	点击切换候选（UTC / 上海 / 东京 / 新加坡 / 伦敦 / 巴黎 / 纽约 / 洛杉矶）
+83.2px	3	The input layer tracks Meta; without it Super combos are impossible
+79.3px	3	只缩放文字；行高与边距仍是固定值（150% 会偏挤，见缺口清单 §3.4）
+77.6px	3	init starts aetherd again after the restart (the session is interrupted)
+59.4px	3	Switch virtual desktop (4 by default, up to 8; windows stay alive)
+52.9px	2	Restarts the desktop (windows close; aether-init starts it again)
+48.9px	2	Approve once in the permission card (L3 needs an exact echo)
+42.6px	2	No audit records yet (no tool call has happened this session).
+38.9px	2	布局快捷键在输入层从裸数字改为 Alt 组合（2026-09-29 修复）
+38.7px	2	Off by default (bright / pure white); takes effect immediately
+38.4px	2	Move the active window to desktop N (4 by default, up to 8)
+30.2px	1	切换虚拟桌面（默认 4 个、可增删到 8；切走的窗口不会关掉）
+15.7px	1	输入层跟踪 Meta 键 —— 没有它，Super 组合键不可能实现
+14.5px	1	Every entry above is verified against the source by a test
+4.7px	1	Stops all services and cuts power (needs confirmation)
+2.4px	1	Disconnect and reconnect (handed to init via aetherd)

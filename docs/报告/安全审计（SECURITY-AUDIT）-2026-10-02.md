@@ -7355,3 +7355,45 @@ crate::i18n::pick(lang, "高对比度", "High contrast")   →   pick(lang, "高
 * `layout-check.py --strict` → ① ⑤ ⑥ ⑦ ⑧ 全 0、⑩ = 0、**⑨ = 41（棘轮 41）**、退出码 0；
 * 构建 0 错误 0 警告；`shot-diff.py save` → 基线已重标定；
 * `gates.py` → 22 项全过。
+
+---
+
+## 附录 FX：还清 ⑨ 的 41 处超宽欠账（41 → 0）（2026-10-06 批次 FX-1）
+
+### FX.1 三步走
+
+1. **收集**：按 (页, 档, 语言) 全量跑 `--report-overflow` —— 41 条命中，
+   去重后是 **19 处唯一文字**（同一串在 3 档各报一次）；
+2. **缩短**：改 **29 条**字符串（**中英成对的都一起改** —— 附录 DV / FJ 的教训：
+   只改一边等于没改），每条都**断言**替换成功，失败就报出来，不静默跳过；
+3. **复验**：⑨ **41 → 0**，棘轮回到 **0**。
+
+### FX.2 缩短的原则
+
+**保留关键信息，去掉括注里的次要细节** —— 反正那些细节现在也是**被裁掉看不见**的。
+例：
+
+| 原文 | 改后 |
+|---|---|
+| `Switch virtual desktop (4 by default, up to 8; windows stay alive)` | `Switch virtual desktop (4 default, up to 8)` |
+| `Move the active window to desktop N (4 by default, up to 8)` | `Move the active window to desktop N` |
+| `Open the command palette (apps / settings / files in the current folder)` | `Open the command palette` |
+| `切换虚拟桌面（默认 4 个、可增删到 8；切走的窗口不会关掉）` | `切换虚拟桌面（默认 4 个、最多 8 个）` |
+
+### FX.3 实拍复验
+
+页3 @100%·en（**变化最大的一页**）：`Switch virtual desktop (4 default, up to 8)`、
+`Move the active window to desktop N`、`Open the command palette`
+—— **全部完整可见**，不再被裁。
+
+### FX.4 为什么这批值得做
+
+附录 FW 说明：这 41 处**不是误报**，它们在真实渲染里**确实被裁剪** ——
+也就是说，**用户此前看到的是被切掉一半的说明文字**。
+本批把 ⑨ 的棘轮从 41 收紧回 **0**，并把"⑨ 必须为 0"重新变成**硬判**。
+
+### FX.5 验证
+
+* `layout-check.py --strict` → ① ⑤ ⑥ ⑦ ⑧ 全 0、**⑨ = 0（棘轮 0）**、⑩ = 0、退出码 0；
+* 构建 0 错误 0 警告；`shot-diff.py save` → 基线已重标定（文字变化属有意改动）；
+* `gates.py` → 22 项全过。
