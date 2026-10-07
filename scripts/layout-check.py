@@ -18,7 +18,7 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).parent.parent
-PAGE_COUNT = 19
+PAGE_COUNT = 17  # 页 0..16（`settings.rs` 里 `title:` 共 17 条）。曾误写 19 → 后两页重复渲染，组合数虚高（附录 GA）
 SCALES = [100, 125, 150]
 # 中英**都跑三档**。上一版英文只跑 150%（省时间），但"100%/125% 英文无机器覆盖"这条
 # 说明一直挂在附录里 —— 实测跑满三档只多约 80 秒，不值得留这个缺口（审计附录 DY）。
