@@ -4470,9 +4470,9 @@ fn main() -> anyhow::Result<()> {
                 .map(|t| t.take_bands())
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(x0, y0, x1, y1, s, clip)| {
+                .map(|(x0, y0, x1, y1, s, win, clip)| {
                     let c = clip.map(|(cx0, cy0, _, _)| (cx0, cy0));
-                    serde_json::json!({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "text": s, "clip": c})
+                    serde_json::json!({"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "text": s, "win": win, "clip": c})
                 })
                 .collect();
             let hits: Vec<serde_json::Value> = renderer

@@ -39,7 +39,12 @@ pub struct TextRenderer {
     /// 为什么需要它：判据 ⑧ 从**像素**推带区，两行完全叠在一起时会**合并成一个带**
     /// 而看不见（附录 FL）。让渲染器自己登记，判据就能**精确**判重叠（附录 GE）。
     report_bands: std::cell::Cell<bool>,
-    bands: std::cell::RefCell<Vec<(f32, f32, f32, f32, String, Option<(i32, i32, i32, i32)>)>>,
+    /// 当前正在绘制的**窗口序号**（判据 ⑪ 用它分组，见附录 GH）。
+    win_id: std::cell::Cell<Option<u32>>,
+
+    bands: std::cell::RefCell<
+        Vec<(f32, f32, f32, f32, String, Option<u32>, Option<(i32, i32, i32, i32)>)>,
+    >,
     report_cjk: std::cell::Cell<bool>,
     cjk_hits: std::cell::RefCell<Vec<String>>,
 }
@@ -296,12 +301,19 @@ impl TextRenderer {
     }
 
     /// 打开/关闭文字带区报表。
+    /// 设置当前窗口序号（窗口绘制循环里每个窗口设一次）。
+    pub fn set_win_id(&self, id: Option<u32>) {
+        self.win_id.set(id);
+    }
+
     pub fn set_band_report(&self, on: bool) {
         self.report_bands.set(on);
     }
 
     /// 取走并清空带区报表。
-    pub fn take_bands(&self) -> Vec<(f32, f32, f32, f32, String, Option<(i32, i32, i32, i32)>)> {
+    pub fn take_bands(
+        &self,
+    ) -> Vec<(f32, f32, f32, f32, String, Option<u32>, Option<(i32, i32, i32, i32)>)> {
         std::mem::take(&mut *self.bands.borrow_mut())
     }
 
@@ -325,7 +337,7 @@ impl TextRenderer {
             .horizontal_line_metrics(40.0)
             .map(|m| m.ascent)
             .unwrap_or(32.0);
-        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None), over_w: std::cell::Cell::new(None), over_hits: std::cell::RefCell::new(Vec::new()), report_cjk: std::cell::Cell::new(false), cjk_hits: std::cell::RefCell::new(Vec::new()), report_bands: std::cell::Cell::new(false), bands: std::cell::RefCell::new(Vec::new()) })
+        Some(Self { regular, bold, mono, base_ascent, glyphs: RefCell::new(HashMap::new()), clip: std::cell::Cell::new(None), over_w: std::cell::Cell::new(None), over_hits: std::cell::RefCell::new(Vec::new()), report_cjk: std::cell::Cell::new(false), cjk_hits: std::cell::RefCell::new(Vec::new()), report_bands: std::cell::Cell::new(false), win_id: std::cell::Cell::new(None), bands: std::cell::RefCell::new(Vec::new()) })
     }
 
     /// 取（并缓存）字形位图。命中时只做一次哈希查找，不再走字形解析与光栅化。
@@ -368,7 +380,15 @@ impl TextRenderer {
                 .unwrap_or(px * 1.4);
             self.bands
             .borrow_mut()
-            .push((x, y, x + tw, y + lh, text.to_string(), self.clip.get()));
+            .push((
+                x,
+                y,
+                x + tw,
+                y + lh,
+                text.to_string(),
+                self.win_id.get(),
+                self.clip.get(),
+            ));
         }
         // 只读报表：这段文字是否超过当前允许宽度（不改变绘制结果）
         // 只读报表：英文模式下画出来的中文（漏译信号，来源不限 —— 附录 FQ）

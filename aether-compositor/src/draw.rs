@@ -2522,6 +2522,10 @@ impl Renderer {
         self.crumb_hits.clear();
         self.settings_hits.clear();
         for (i, win) in desktop.wins.iter().enumerate() {
+            // 让带区带上**窗口身份**（判据 ⑪ 用它分组，附录 GH）。
+            if let Some(t) = tr {
+                t.set_win_id(Some(i as u32));
+            }
             draw_window(
                 buf, w, h, win, i == desktop.active,
                 PageCtx {
