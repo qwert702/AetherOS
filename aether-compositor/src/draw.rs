@@ -3503,8 +3503,15 @@ fn draw_settings_content(
     // 正文裁剪到**窗口矩形**：折行/超长的行不该画到窗口外面去（附录 DI）。
     // 注意不能用 content —— 可滚动页面的 content 是完整内容高度，裁到它等于没裁。
     tr.set_clip(Some((r.x, r.y, r.x + r.w, r.y + r.h)));
-    // 只读报表：记录正文里哪些文字超过内容区宽度（不改变绘制）
-    tr.set_over_width(Some((r.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32));
+    // 只读报表：正文里哪些文字超过**实际可用宽度**（不改变绘制）。
+    // 可用宽度 = 从文字起点（`content.x + PAD`）到**窗口右沿**；
+    // 因为 `content.x = r.x + SIDEBAR_W`、`content.w = r.w - SIDEBAR_W`，
+    // 它就等于 `r.w - SIDEBAR_W - PAD`。
+    // 曾经用 `r.w - 2*PAD` —— 对**缩进绘制**（值列）会高估可用宽度，
+    // 于是判据 ⑨ 漏报（页9 那行被裁而 ⑨ 报 0，见附录 FW）。
+    tr.set_over_width(Some(
+        (r.w - SIDEBAR_W - theme::size::px(theme::size::CONTENT_PAD)) as f32,
+    ));
     let chrome = 12 + groups * 20 + groups.saturating_sub(1) * 10;
     let row_h = (((r.h - chrome).max(0)) / PAGES.len().max(1) as i32).clamp(20, 30);
     for (i, p) in PAGES.iter().enumerate() {
@@ -3551,6 +3558,14 @@ fn draw_settings_content(
 
     // ---- 右侧页面 ----
     let content = Rect { x: r.x + SIDEBAR_W, y: r.y, w: r.w - SIDEBAR_W, h: r.h };
+
+    // 只读报表：记录正文里哪些文字超过**实际可用宽度**（不改变绘制）。
+    // 可用宽度 = 从文字起点（`content.x + PAD`）到**窗口右沿**。
+    // 曾经用 `r.w - 2*PAD` —— 那对**缩进绘制**（如值列）会高估可用宽度，
+    // 于是判据 ⑨ 漏报（页9 那行被裁而 ⑨ 报 0，见附录 FW）。
+    tr.set_over_width(Some(
+        (r.x + r.w - content.x - theme::size::px(theme::size::CONTENT_PAD)) as f32,
+    ));
     // 大标题也要走 i18n：侧栏用的是 title_in(lang)，标题此前只取中文
     // —— 英文模式下同一屏里侧栏是 Appearance、标题却是「外观」（英文实拍发现，附录 DN）。
     // 注意 `title` 有**两个**用途：① 画大标题；② 下面的 `match` 用它**分发页面内容**。
@@ -3906,14 +3921,14 @@ fn draw_settings_content(
             // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
             // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
             ry += theme::size::px(theme::size::ROW_H_SM) + 4;
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(tr, 
+                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                 crate::i18n::tr(
                     "挂载是只读的（ro,nodev,nosuid,noexec）：能看里面的文件，不能往盘里写",
                     "Mounted read-only (ro,nodev,nosuid,noexec): browse files, no writes",
                 ),
                 font::CAPTION, color::text_dim(), 0.75,
-            );
+            (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32);
             ry += theme::size::px(theme::size::HINT_GAP);
 
             if !removables_loaded {
@@ -4576,13 +4591,13 @@ fn draw_settings_content(
             // 步长跟着按钮高度走：写死 50 的话 150% 下按钮变高、步长不变，两行会压住
             // （几何断言发现，附录 CM）。`px(CTRL_H) + 6` 在 100% 下与 50 完全等价。
             ry += theme::size::px(theme::size::CTRL_H) + 6;
-            tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(tr, buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                     crate::i18n::pick(
                     lang,
                     "配置项本身仍是只读；改动类操作一律经 aetherd 执行。",
                     "The config itself stays read-only; every change goes through aetherd.",
                 ),
-                    font::CAPTION, color::text_dim(), 0.75);
+                    font::CAPTION, color::text_dim(), 0.75, (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32);
             if !n.note.is_empty() {
                 ry += theme::size::px(theme::size::GAP_STD);
                 tr.draw(buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32, &n.note, font::CAPTION, color::text_dim(), 0.75);
@@ -5023,14 +5038,14 @@ fn draw_settings_content(
             // 步长跟着**缩放后的高度**走：写死的话 150% 下高度变大、步长不变，
             // 下一个元素会落在这一行里面（静态扫描 `scripts/scale-audit.py` 发现，附录 CO）。
             ry += theme::size::px(theme::size::ROW_H_SM) + 4;
-            tr.draw(
-                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, ry as f32,
+            draw_wrapped(tr, 
+                buf, w, h, (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32, &mut ry,
                 crate::i18n::tr(
                     "只列出人类账户（uid 1000–65533）；系统账户不在这里",
                     "Only human accounts (uid 1000–65533); system accounts are hidden",
                 ),
                 font::CAPTION, color::text_dim(), 0.75,
-            );
+            (content.w - theme::size::px(theme::size::CONTENT_PAD) * 2) as f32);
             ry += theme::size::px(theme::size::HINT_GAP);
 
             if !users_loaded {
