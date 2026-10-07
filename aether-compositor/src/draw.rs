@@ -4687,7 +4687,7 @@ fn draw_settings_content(
                        s.locale == 1, SettingsHit::Locale(next_locale), hits);
             let _ = lang;
 
-            let hc_hint = crate::i18n::pick(lang, "把正文与背景的对比度提到 WCAG AA（4.5:1）以上；与主题正交", "Raises text/background contrast above WCAG AA (4.5:1); orthogonal to the theme");
+            let hc_hint = crate::i18n::pick(lang, "对比度提到 WCAG AA 以上", "Raises contrast to WCAG AA");
             toggle_row(buf, w, h, mouse, tr, r_hc, crate::i18n::pick(lang, "高对比度", "High contrast"),
                        Some(crate::i18n::pick(lang, "WCAG AA 4.5:1", "WCAG AA 4.5:1")),
                        s.high_contrast, SettingsHit::ToggleContrast, hits);
@@ -4844,14 +4844,18 @@ fn draw_settings_content(
             let fwd = Rect { x: back.x + back.w + theme::size::px(theme::size::GAP_TIGHT), y: back.y, w: back.w, h: back.h };
             widgets::button(buf, w, h, back, "-1", widgets::BtnKind::Secondary, widgets::States::at(back, mouse), Some(tr));
             widgets::button(buf, w, h, fwd, "+1", widgets::BtnKind::Secondary, widgets::States::at(fwd, mouse), Some(tr));
-            tr.draw(buf, w, h, (content.x + 124) as f32, tr.vcenter(ry as f32, theme::size::px(42) as f32, font::CAPTION), crate::i18n::pick(lang, "时区（半小时制）", "Time zone (30-min steps)"), font::CAPTION, color::text_dim(), 0.9);
+            tr.draw(buf, w, h, (content.x + theme::size::px(124)) as f32, tr.vcenter(ry as f32, theme::size::px(42) as f32, font::CAPTION), crate::i18n::pick(lang, "时区（半小时制）", "Time zone (30-min steps)"), font::CAPTION, color::text_dim(), 0.9);
             hits.push((back, SettingsHit::TzShift(-30)));
             hits.push((fwd, SettingsHit::TzShift(30)));
 
             // ---- §3.3 对时与系统时区 ----
             // 这里要分清两件事，否则用户会以为"我已经改好了"：
             //   上面那行是**系统当前**时区，下面那行是**待写入**的候选名。
-            ry += theme::size::px(theme::size::GAP_TIGHT);
+            //
+            // 前进量必须覆盖**整个按钮行**（`y: ry + 6` 起、高约 `CTRL_H`）——
+            // 只前进一个 GAP_TIGHT 的话，组标题会落进按钮行里
+            // （判据 ⑪「文字带区重叠」抓到：`-1` 与「时间同步」压住，附录 GF）。
+            ry += theme::size::px(theme::size::CTRL_H) + 6 + theme::size::px(theme::size::GAP_TIGHT);
             widgets::group_header(
                 buf, w, h, content.x + theme::size::px(theme::size::CONTENT_PAD), ry,
                 crate::i18n::tr("时间同步", "Time sync"), Some(tr),
@@ -5202,7 +5206,7 @@ fn draw_settings_content(
                 h,
                 (content.x + theme::size::px(theme::size::CONTENT_PAD)) as f32,
                 &mut ry,
-                crate::i18n::pick(lang, "通知中心在控制中心里打开（点顶栏状态簇）。", "The notification center opens from the control center (click the status cluster in the top bar)."),
+                crate::i18n::pick(lang, "在控制中心里打开", "The opens from the control center"),
                 font::CAPTION,
                 color::text_dim(),
                 0.75,

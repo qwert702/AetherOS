@@ -34,10 +34,12 @@ pub struct TextRenderer {
     over_hits: std::cell::RefCell<Vec<(String, f32)>>,
     /// 文字带区报表：每段文字的 (x0, y0, x1, y1, 文字)。
     ///
+    /// 带区还带上**窗口身份**（当前 clip）—— 判据只在同一窗口内比（窗口之间本来就会互相盖住）。
+    ///
     /// 为什么需要它：判据 ⑧ 从**像素**推带区，两行完全叠在一起时会**合并成一个带**
     /// 而看不见（附录 FL）。让渲染器自己登记，判据就能**精确**判重叠（附录 GE）。
     report_bands: std::cell::Cell<bool>,
-    bands: std::cell::RefCell<Vec<(f32, f32, f32, f32, String)>>,
+    bands: std::cell::RefCell<Vec<(f32, f32, f32, f32, String, Option<(i32, i32, i32, i32)>)>>,
     report_cjk: std::cell::Cell<bool>,
     cjk_hits: std::cell::RefCell<Vec<String>>,
 }
@@ -299,7 +301,7 @@ impl TextRenderer {
     }
 
     /// 取走并清空带区报表。
-    pub fn take_bands(&self) -> Vec<(f32, f32, f32, f32, String)> {
+    pub fn take_bands(&self) -> Vec<(f32, f32, f32, f32, String, Option<(i32, i32, i32, i32)>)> {
         std::mem::take(&mut *self.bands.borrow_mut())
     }
 
@@ -364,7 +366,9 @@ impl TextRenderer {
                 .horizontal_line_metrics(px)
                 .map(|m| m.ascent + m.descent.abs())
                 .unwrap_or(px * 1.4);
-            self.bands.borrow_mut().push((x, y, x + tw, y + lh, text.to_string()));
+            self.bands
+            .borrow_mut()
+            .push((x, y, x + tw, y + lh, text.to_string(), self.clip.get()));
         }
         // 只读报表：这段文字是否超过当前允许宽度（不改变绘制结果）
         // 只读报表：英文模式下画出来的中文（漏译信号，来源不限 —— 附录 FQ）

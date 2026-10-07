@@ -26,6 +26,36 @@ COMBOS = [(lang, s) for lang in ("zh", "en") for s in SCALES]
 ENV = dict(os.environ, AETHER_FAKE_UTC="1", AETHER_SHOT_FIXTURE="1")
 
 
+def band_overlaps(d: dict) -> list:
+    """判据 ⑪：两段文字的**带区**在两个方向上都重叠超过 2px。
+
+    为什么需要它：判据 ⑧ 从**像素**推文字带，两行完全叠在一起时会合并成一个带而看不见
+    （附录 FL）。这里用渲染器自己登记的精确带区（附录 GE），不依赖任何启发式。
+    """
+    ts = d.get("texts") or []
+    # **只在同一窗口内比**：按 clip 分组。窗口之间本来就会互相盖住，那不是问题。
+    # **只在有明确窗口身份的组内比**：`set_clip` 目前只有设置窗口在调，
+    # 其余窗口（文件/终端/音乐）的带区 clip 为 null —— 它们本来就会互相盖住，
+    # 混在一起会产生大量假重叠（实测 303 段里 259 段是 null）。
+    # 设置窗口这一组正是附录 FL 那个 bug 的所在，也是判据 ⑧ 的盲区所在。
+    by: dict = {}
+    for e in ts:
+        if e.get("clip") is None:
+            continue
+        by.setdefault(str(e["clip"]), []).append(e)
+    out = []
+    for group in by.values():
+        for i in range(len(group)):
+            a = group[i]
+            for j in range(i + 1, len(group)):
+                b = group[j]
+                ox = min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"])
+                oy = min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"])
+                if ox > 2 and oy > 2:
+                    out.append((a["text"][:24], b["text"][:24], round(ox, 1), round(oy, 1)))
+    return out
+
+
 def dump(page: int, scale: int, lang: str = "zh") -> dict | None:
     """渲染一档并返回布局；**同时**把 `OVERFLOW` 行写进全局 OVERFLOW_SEEN。
 
@@ -152,6 +182,9 @@ BLANK_MAX_COLORS = 24
 TEXT_MIN_GAP = 1
 # 判据 ⑨：文字超宽（绘制调用超出可用宽度）的收集处，由 dump() 填充。
 OVERFLOW_SEEN: list = []
+# 判据 ⑪：两段文字带区重叠（精确；用渲染器登记的带区 —— 附录 GE / GF）。
+BAND_OVERLAPS: list = []
+BAND_MAX = 12  # 棘轮：附录 GF 实测值
 # 判据 ⑩：**英文模式下画出来的中文**（漏译信号，来源不限 —— 附录 FQ）。
 # 注意：里面含**夹具数据**（例如文件管理器里夹具建的「文档」「图片」目录名），
 # 所以用棘轮而不是判 0；"上升"才是新漏译的信号。
@@ -289,6 +322,8 @@ def main() -> int:
                 # **纵向**越界：设置正文可以滚动，内容比可视区高是正常的 → 只报告
                 if r["y"] < 0 or r["y"] + r["h"] > h:
                     needs_scroll.append(tag)
+            for _ov in band_overlaps(d):
+                BAND_OVERLAPS.append((page, scale, lang, *_ov))
             hits = d["hits"]
             for i in range(len(hits)):
                 for j in range(i + 1, len(hits)):
@@ -298,6 +333,9 @@ def main() -> int:
                             f"page-{page}@{scale}% {hits[i]['kind']} ∩ {hits[j]['kind']} = {a}px²")
 
     print(f"检查：{checked} 个组合（{PAGE_COUNT} 页 × 中英各 {len(SCALES)} 档）")
+    print(f"  ⑪ 两段文字带区重叠（>2px）：{len(BAND_OVERLAPS)}（棘轮上限 12）")
+    for _b in BAND_OVERLAPS[:8]:
+        print(f"    page-{_b[0]}@{_b[1]}%·{_b[2]}：{_b[3]!r} ∩ {_b[4]!r} = {_b[5]}x{_b[6]}px")
     print(f"  ① 横向越出屏幕：{len(off_screen)}")
     for t in off_screen[:6]:
         print(f"    {t}")
@@ -338,7 +376,7 @@ def main() -> int:
         print(f"    {t3}")
     off_screen = off_screen + [f"desktop x{d_off}"] * 0  # 保持原变量语义
 
-    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX or bool(cjk_leaks)
+    over_ratchet = len(OVERFLOW_SEEN) > OVERFLOW_MAX or bool(cjk_leaks) or len(BAND_OVERLAPS) > BAND_MAX
     if strict and (off_screen or off_width or d_off or blanks or d_ov or gaps_bad or over_ratchet):
         print("[FAIL] 有控件横向越界")
         return 1
