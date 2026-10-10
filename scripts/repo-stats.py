@@ -48,6 +48,11 @@ DECL_INDEX: Pattern[str] = re.compile(
     r"\|\s*\*\*合计\*\*\s*\|\s*\*\*([\d,]+)\*\*\s*\|\s*\*\*([\d,]+)\*\*"
 )
 # README.md 的合计行： 合计 20,949 行 Rust / 41 个源文件 / 7 个 crate（…）
+# 代码索引（INDEX）头部那句： 生成时间：… · 源码 **50,528 行**
+# （与合计行是**同一个事实的两种写法** —— 只盖一种就会漏，附录 GO）
+DECL_INDEX_HEAD: Pattern[str] = re.compile(
+    r"源码\s*\*\*([\d,]+)\s*行\s*/\s*([\d,]+)\s*文件\*\*"
+)
 DECL_README: Pattern[str] = re.compile(
     r"合计\s*([\d,]+)\s*行 Rust\s*/\s*([\d,]+)\s*个源文件"
 )
@@ -390,6 +395,7 @@ def gate(stats: Sequence[CrateStat]) -> int:
     ok = True
     for label, path, pattern in (
         ("代码索引（INDEX）-2026-09-11.md", INDEX_MD, DECL_INDEX),
+        ("代码索引（INDEX）-2026-09-11.md 头部行", INDEX_MD, DECL_INDEX_HEAD),
         ("README.md", README_MD, DECL_README),
         ("docs/路线图与已知缺口（ROADMAP）-2026-09-05.md", ROADMAP_MD, DECL_ROADMAP),
         ("README.en.md", README_EN_MD, DECL_README_EN),
