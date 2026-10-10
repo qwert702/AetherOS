@@ -45,6 +45,185 @@
 
 <section><div class="wrap">
   <div class="log">
+<p># 2026-10-03 ~ 2026-10-11 更新（补记）</p>
+<p>&gt;</p>
+<h2 id="">一、这段时间你能看到什么（九个能力从"没有"到"能用"）</h2>
+<table><tbody>
+  <tr><td>能力</td><td>之前</td><td>现在</td></tr>
+  <tr><td><strong>关机 / 重启 / 注销</strong></td><td>界面里关不了机，只能按电源键</td><td>控制中心与设置各三个入口；不可逆动作要打一遍动作名才执行</td></tr>
+  <tr><td><strong>声音</strong></td><td>完全没有音频栈</td><td>提示音（三种主题可试听）+ 控制中心真实音量滑块；<strong>没有声卡时如实写"无音频设备"，不画假滑块</strong></td></tr>
+  <tr><td><strong>登录 / 锁屏</strong></td><td>开机直接进桌面</td><td><code>Super+L</code> 锁屏 + 口令解锁（自研 SHA-512 crypt）+ 失败限流；设置里能改口令</td></tr>
+  <tr><td><strong>设置真的能改</strong></td><td>设置页基本只读</td><td>壁纸、恢复默认、DNS 可改；<strong>整体缩放 100% / 125% / 150%</strong> 可切</td></tr>
+  <tr><td><strong>通知中心</strong></td><td>只有 toast，错过就没了</td><td>有界历史（50 条）+ 未读计数 + 连续重复合并；设置里可关记录 / 清空</td></tr>
+  <tr><td><strong>对时与时区</strong></td><td>时钟只是本地偏移</td><td>SNTP 对时；时区写入 <code>/etc/localtime</code> 与 <code>/etc/timezone</code></td></tr>
+  <tr><td><strong>系统更新</strong></td><td>装好之后无法升级</td><td><strong>文件级</strong>离线更新包：哈希校验 + 白名单 + 拒降级 + 暂存，由 PID 1 在启动服务前应用</td></tr>
+  <tr><td><strong>权限策略</strong></td><td>权限模型很强，但用户改不了</td><td>设置里逐工具四态（每次询问 / 允许 / 禁止），真的接进闸门判定并留审计</td></tr>
+  <tr><td><strong>桌面交互</strong></td><td>—</td><td>Aero Snap、虚拟桌面（默认 4，可增删到 8）、<code>Ctrl+K</code> 真搜索命令面板、<code>Ctrl+Z</code> 撤销 AI 动作、配置快照回滚、应用商店装/卸、首启四步向导、快捷键总览、性能 HUD</td></tr>
+</tbody></table>
+<p><strong>还有几条"看不见但你会依赖"的</strong>：自动 e2e 运行器（<code>--e2e</code>，无界面也能跑）、</p>
+<p>性能门禁（P50/P99/最差 + 阈值退出码）、一键诊断包（<code>aether-ops --bundle</code>）、</p>
+<p>蓝牙/打印/可移动设备的<strong>只读如实报告</strong>。</p>
+<h2 id="10-03-s-1-s-7">二、10-03：功能线大面积落地 + 安全审计 S-1~S-7</h2>
+<p><strong>功能</strong>（59 次提交）</p>
+<ul>
+  <li>电源操作界面（控制中心 + 设置各三入口）—— <code>92cd621</code>、<code>2f97936</code>、<code>763b270</code></li>
+  <li>声音后端（ALSA 打包 + 提示音 + 音量读取）<code>b8830c5</code>；声音界面（真实滑块 + 无设备如实显示）<code>4bc1482</code></li>
+  <li>设置真的能改：壁纸可换 + 恢复默认 <code>c180623</code></li>
+  <li>§3.6 空闲息屏 <code>a247f46</code>；§5.10 性能 HUD <code>4009720</code>；§5.7 一键诊断包 <code>96149d8</code></li>
+  <li>§3.2 通知中心四批 <code>6d6de26</code> · <code>67a1112</code> · <code>25f2c1c</code> · <code>b8f8374</code></li>
+  <li>§5.1 AI 撤销 <code>fbbb8e4</code>；§5.2 审计导出 <code>287e8b9</code>；§4.1 自动 e2e <code>ec0abc3</code></li>
+  <li>§2.4 DNS 写入（后端 <code>F-1</code>、共享校验器 <code>G-1</code>、界面接线 <code>H-1</code>）</li>
+  <li>§2.3 锁屏线：自研 SHA-512 crypt（用<strong>独立实现</strong>验证）<code>939d032</code> → 认证策略层 <code>290d416</code> → <code>Super+L</code> 锁屏 + 吞键守卫 <code>f94aef4</code></li>
+  <li>§3.4 高对比（WCAG 客观验证）<code>92637c4</code>；§3.5 语言可切换 <code>796dad6</code></li>
+  <li>§5.9 快捷键总览 <code>dd9b259</code>；§5.5 命令面板 <code>87b64d7</code> · <code>80465ca</code></li>
+  <li>§5.3 权限策略编辑器三批 <code>5c942b3</code> · <code>520094c</code> · <code>157c7aa</code> + 界面 <code>9396ab4</code></li>
+  <li>§5.4 虚拟桌面 <code>853c986</code>；§5.8 首启向导 <code>60c0c16</code>；§5.11 应用商店 <code>666d6e2</code></li>
+  <li>§3.3 SNTP 对时 + 时区写入 <code>c673224</code> · <code>09879d4</code></li>
+  <li>技术债：13 个参数收敛成 <code>PageCtx</code> <code>bf24cda</code>；卸载入口 + 修一个"测试与生产语义不一致"的坑 <code>26708f3</code></li>
+  <li>§5.12 提示音主题 <code>e5e12d7</code>；§4.2 性能门禁（含纠正一个不该照抄的阈值）<code>e60e219</code>；§4.3 硬件清单 <code>70917ff</code></li>
+</ul>
+<p><strong>安全审计 S-1 ~ S-7</strong>（对着审计报告逐条处置，每条都要"回滚即变红"的测试）</p>
+<table><tbody>
+  <tr><td>处置</td><td>提交</td></tr>
+  <tr><td><code>fsck</code> 的 fail-open 收窄为"只有工具确实缺失"</td><td><code>230f01d</code></td></tr>
+  <tr><td>aetherd 侧补对端身份校验，判据统一到一处</td><td><code>d5ae35e</code></td></tr>
+  <tr><td>给 H-6 的<strong>时机</strong>加一条回滚即变红的测试</td><td><code>d1f97dd</code></td></tr>
+  <tr><td>分区身份绑定到所在磁盘的 MBR 随机签名</td><td><code>0ac2ab3</code></td></tr>
+  <tr><td>给 H-4 的符号链接防护加"回滚即变红"的测试</td><td><code>3d91e3d</code></td></tr>
+  <tr><td>粘贴回退路径与括号粘贴逃逸的不变量测试</td><td><code>7ffc360</code></td></tr>
+</tbody></table>
+<p><strong>顺带</strong>：<code>docs/</code> 全部文件改成「中文名（英文名）-日期」、图片移出 <code>docs/</code> → <code>assets/</code>（<code>f673b48</code>…<code>99d6428</code>）。</p>
+<h2 id="10-04-i18n">三、10-04：三个高危修复 + i18n 全面铺开 + 缩放地基</h2>
+<p><strong>这一天最该被记住的是三个"等于没有防护"的高危：</strong></p>
+<table><tbody>
+  <tr><td>问题</td><td>为什么严重</td><td>提交</td></tr>
+  <tr><td><strong>锁屏拦不住键盘输入</strong></td><td>守卫顺序错了 —— 锁屏之后照样能把字打进 AI 指令条</td><td><code>df47549</code></td></tr>
+  <tr><td><strong><code>passwd -l</code> 后回车即解锁</strong></td><td>被锁定的账户反而<strong>更容易</strong>进 —— 锁屏的最坏形态</td><td><code>14f77de</code></td></tr>
+  <tr><td><strong>一次伪造 NTP 回复就能改系统时钟</strong></td><td>时间被任意操纵，会连带影响审计时间线</td><td><code>1676414</code></td></tr>
+</tbody></table>
+<p>还有：回收站"删了但谁都能看" <code>f3d21e7</code>；<strong>我自己的新代码里的权限降级</strong>（自审抓到）<code>e9bfa61</code>。</p>
+<p><strong>更新机制三批</strong>：aetherd 侧核心（哈希校验 + 白名单 + 拒降级 + 暂存）<code>5ca7e7e</code> →</p>
+<p>PID 1 在启动服务前应用 <code>ea1811f</code> → 设置页「系统更新」<code>e03d215</code>。</p>
+<p><strong>外设与显示</strong>：可移动设备只读挂载 <code>102be8a</code> + 界面入口 <code>481365e</code>；</p>
+<p>多显示器<strong>如实报告</strong>（不假装支持）<code>9a928d4</code>；蓝牙/打印只读检测 <code>28e2dc5</code>。</p>
+<p><strong>i18n 大批</strong>（约 30 批，<code>AX-1</code> ~ <code>BU-1</code>）：审计页 → 设置页网络 → 五个页面 → 窗口类界面</p>
+<p>→ 通知正文 → 音频状态 → aetherd 拒绝/协议层 → 工具权限/关于/快捷键 → 16 个设置页全双语</p>
+<p>→ llm 通道错误 → modelcfg 中性化 + 全库终扫。</p>
+<p><strong>一个关键定案</strong>：审计日志的 <code>level</code>/<code>verdict</code> <strong>存结构化 token，显示层取词</strong>，</p>
+<p>兼容旧日志（<code>a94eb91</code>）。</p>
+<p><strong>整体缩放</strong>（§2.4 的地基，四批）：布局尺寸表 239 处接入 <code>bde0386</code> →</p>
+<p>间距阶梯 + 不变量测试（累计 286 处）<code>9062210</code> → 控件高度与内边距（累计 323 处）<code>ef6424b</code></p>
+<p>→ 逐像素验证。<strong>关键前提</strong>：先让 <code>--shot</code> 可复现 —— 修掉"渲染不是输入的纯函数"这个真 bug <code>1d35421</code>。</p>
+<p><strong>e2e 三批</strong>：注入脚本格式 <code>6e626f2</code> → 键盘注入接进<strong>既有</strong>脚本 <code>d9ac56d</code> →</p>
+<p>坐标点击跑通（用<strong>真实二进制</strong>调试）<code>112bad9</code>。</p>
+<p><strong>账户</strong>：后端列出账户 + 改口令 <code>3ed55b6</code> → 口令策略移到 <code>aether-ipc</code>（两侧共用一份）<code>75f9694</code></p>
+<p>→ 界面（列表 + 遮显口令框）<code>609fe38</code>。</p>
+<p><strong>整体审计三遍</strong>（附录 T / U / V）：访问控制 26/26 合规、注入面干净、一处低危；</p>
+<p>数据流与边界条件未发现新问题；第 3 遍做了<strong>复现式取证</strong>并新增一条永久不变量。</p>
+<p>另有一次性能门禁飘红的<strong>同条件 A/B 对照</strong>，证明是宿主负载不是回归 <code>a485d90</code>。</p>
+<p><strong>收尾报告第 2 / 3 / 4 版</strong>：<code>7b2618b</code> · <code>672398d</code> · <code>8b65ca9</code>，</p>
+<p>以及一次文案核对 —— 报告里 <strong>5 处数字失实/自相矛盾</strong>，并清掉 3 个改名前的旧副本 <code>0ef4324</code>。</p>
+<h2 id="10-05-150">四、10-05：150% 实拍线（缩放"能不能真的用"）</h2>
+<p>主题是<strong>逐个界面看 150% 到底什么样</strong>，然后按发现修：</p>
+<ul>
+  <li>音乐列表在 150% 下重叠 <code>41de708</code>；终端字距的根因与<strong>一次可证明失败的尝试</strong> <code>abe9f4c</code></li>
+  <li>静态扫描加第 ⑤ 类（行内文字排版）<code>a080f57</code>；给音乐列表加命中区向量 <code>34db4da</code></li>
+  <li>控制中心 150% 溢出 <code>30e4be1</code> → <strong>滚轮滚动</strong> <code>1de62a6</code> → 滚动后的<strong>裁剪缺口</strong>（两次可证明无效，第三次才对）<code>fd6e4ed</code></li>
+  <li><strong>把"只报告"的重叠逐条查清：14 → 0</strong>，并把判据 ⑥ 升级为判红 <code>3b4fbb3</code></li>
+  <li>把「150% 逐界面实拍」变成<strong>可复查的清单</strong> <code>d7fc7d6</code></li>
+  <li>长句横穿窗口修好（并如实记录我在这条路上翻的<strong>四次车</strong>）<code>edd67be</code></li>
+  <li>跨帧状态专项审计 + 把「裁剪配对」变成判据 <code>0168efc</code></li>
+  <li>把纵向裁剪升级为<strong>矩形裁剪</strong> —— 一处管住所有文字外溢 <code>6e88ce5</code></li>
+  <li>§2.4 台账更新到真实状态 + 报告加「方法学」一节 <code>e138f73</code></li>
+  <li>一处<strong>设计问题</strong>（最大化窗口能透出桌面图标）—— 如实记录，<strong>没有擅自改</strong> <code>0c7bae9</code></li>
+</ul>
+<p><strong>两处诚实的记录</strong>：<code>41de708</code> 注明"一处我自己搞错的判断"；<code>fd6e4ed</code> 留着两次失败的原因。</p>
+<h2 id="10-06-8-9-10">五、10-06：英文轴 + 判据 8/9/10 + 像素基线扩档</h2>
+<ul>
+  <li><strong>开一条从没查过的轴 —— 英文界面实拍</strong> <code>69a5e4d</code>，逐项修完（窗口标题/Dock/侧栏/终端/音乐）<code>4f39180</code></li>
+  <li>英文轴覆盖到设置页（<strong>又踩了一次自己刚识别出的陷阱</strong>）<code>28bedae</code></li>
+  <li><strong>把自动折行实现出来，然后否掉它</strong> <code>87e4097</code> —— 实现过、评估过、不采用，理由留档</li>
+  <li>把「哪几行超宽」变成<strong>可复现的清单</strong> <code>cbf880a</code>；修完剩余超宽 <code>0f349f3</code> · <code>76c7d37</code></li>
+  <li><strong>判据 ⑧「文字压文字」</strong>：把"只能靠眼睛"变成判据 <code>525c70b</code></li>
+  <li><strong>判据自检</strong>：给判据写自检时发现 ⑧ 有一个<strong>真盲点</strong>（20 → 21 项）<code>85ccaae</code></li>
+  <li><strong>判据 ⑨ 文字超宽</strong>接上，并修掉「渲染失败静默通过」的洞 <code>44c34a6</code></li>
+  <li><strong>判据 ⑩ 英文位不得含中文</strong>做成门禁 <code>b182cd4</code>；第一次实战就抓到 4 处源码扫描看不见的漏译 <code>0c8f2f6</code></li>
+  <li>像素基线加<strong>英文窗口形态</strong>（48 → 57 档）<code>177a257</code>；加<strong>英文设置页</strong>（29 → 48 档）<code>607901c</code></li>
+  <li>几何 + 空白检查<strong>扩到英文</strong>（此前英文路径零机器覆盖）<code>274da17</code>；英文也补到中英各三档 <code>ec4259e</code></li>
+  <li>运行时 CJK 报表做成（根因：打印块嵌在别人的 <code>if</code> 里）<code>cbfeff4</code></li>
+  <li><strong>一次撤回</strong>：附录 DZ 号称"标题被切"—— 实测<strong>根本没被切，是我看错了</strong> <code>6721f2a</code></li>
+  <li><strong>一次整块回退</strong>：同一块代码连翻三次车，整块退回并如实记录（工作区 0 改动）<code>41548fa</code></li>
+</ul>
+<h2 id="10-07">六、10-07：判据收紧 + 把"数字没人管"变成门禁</h2>
+<ul>
+  <li>判据 ⑩ 从<strong>棘轮</strong>改成<strong>精确硬判 0</strong> <code>18fab7c</code>；并给它做正向对照（注入一处中文，它判红）<code>d31daf4</code></li>
+  <li><strong>判据 ⑨ 的宽度模型是错的 —— 它藏住了 54 处真实超宽</strong> <code>c05e61e</code>；还清 41 处欠账（41 → 0）<code>2d9ef7b</code></li>
+  <li>规则再扩一档：任意位置的「矩形.x/y + 裸数字」<code>f756bde</code>；重测扫描范围（结论不变，理由更精确）<code>00b9e63</code></li>
+  <li><strong>判据 ⑪「两段文字带区重叠」</strong>接上 —— 判据 ⑧ 的盲点有了替代 <code>5646cc7</code>；</li>
+</ul>
+<p>  12 处是同一个根因，一处修好全部 <code>d879446</code>；覆盖所有窗口（108 → 0）<code>0e2bde9</code></p>
+<ul>
+  <li>判据 ⑪ 的正向对照 —— 注入它为之而生的那个 bug，它判红了 <code>2fb3c13</code></li>
+  <li><strong>README 的数字没人管</strong>（444 → 750）：把门禁扩到 README <code>fe41f89</code></li>
+  <li><strong>英文 README 的规模差了 20,370 行</strong>，把它加进门禁 <code>8127619</code></li>
+  <li>系统扫查过期数值，又抓到 4 个文件 <code>e06182a</code>；收尾报告被"自我延续的孤立行"污染</li>
+</ul>
+<p>  → 给数字判据加「<strong>恰好一处</strong>」<code>4db9b17</code></p>
+<ul>
+  <li>按 AGENTS.md 禁止清单机械合规扫查（结论：无需改动）<code>55416a0</code></li>
+  <li><strong>页数虚高</strong>：实际 17 页，「114 个组合」应为 102 <code>47f1fad</code></li>
+  <li><strong>整体审计第 1~3 遍</strong>（权限与确认流程 / 数据流与信任边界 / 文件与路径）：</li>
+</ul>
+<p>  第 1 遍加固了<strong>确认令牌的随机源</strong> <code>194258a</code>，第 2、3 遍未发现新问题 <code>970c539</code> · <code>3e681db</code></p>
+<h2 id="10-10">七、10-10：把"发布事实"和"基线"也纳入门禁</h2>
+<ul>
+  <li>扫已发布站点，<strong>INDEX 头部那句被门禁漏掉</strong> <code>f857b7c</code></li>
+  <li>把「同一个事实的<strong>全部写法</strong>」纳入门禁 <code>26138f3</code></li>
+  <li>把<strong>发布事实</strong>纳入门禁（ISO 体积 / 下载链接形态）<code>d93fbba</code></li>
+  <li><strong>干净重建抓到 musl 3 条告警，而门禁一直是绿的</strong> —— 换成"能编译 + 0 告警"<code>c3e83d8</code></li>
+  <li>同步脚本的「<strong>假收敛</strong>」：它只问一个判据 <code>fbf0bab</code>；修好"默默不生效的同步" <code>e6f43b1</code></li>
+  <li>收口前的<strong>完整取证</strong>（一次跑完所有判据）<code>6378300</code></li>
+  <li><strong>platform 审计：安装器根本没进镜像</strong> + 一处少换行 <code>6977b65</code></li>
+  <li>给判据 ① ② ⑤ ⑥ ⑦ <strong>补正向对照</strong> —— 它们此前一次都没做过 <code>24ac102</code></li>
+  <li><strong>归档走查图漂了 79%，而没有任何东西在比对它</strong> <code>c9ebe01</code></li>
+  <li><strong>把「基线必须有人比对」变成门禁</strong>（含"有人引用 ≠ 有人在比对"）<code>8e885bf</code></li>
+</ul>
+<h2 id="10-11-windows">八、10-11：无界集合 + 目录上限 + Windows 告警入门禁</h2>
+<ul>
+  <li><strong>整体审计第 9 遍：无界增长的集合</strong> —— 修 <code>aether-ops</code> 日志告警无节流 <code>6054b59</code></li>
+  <li>给 <code>/var/diag</code> 加<strong>目录上限</strong>（200 个文件，超了按最旧删）；把「<strong>Windows 0 告警</strong>」也纳入门禁 <code>fd0a0b9</code></li>
+  <li><strong>纠正一条我自己定的规则</strong>："第三处就该提取"<strong>这条规则本身是错的</strong> ——</li>
+</ul>
+<p>  提取要按<strong>形态</strong>触发，而且要先算<strong>会碰到什么</strong>（<code>/var/diag</code> 三处轮转逻辑据此<strong>决定不提取</strong>）<code>9eeea5c</code></p>
+<h2 id="2026-10-11">九、验证（截至 2026-10-11）</h2>
+<table><tbody>
+  <tr><td>项</td><td>结果</td></tr>
+  <tr><td>测试</td><td><strong>761 项全绿</strong>（0 失败）</td></tr>
+  <tr><td>门禁</td><td><strong>25 项全过</strong></td></tr>
+  <tr><td>Windows 构建</td><td><strong>0 告警</strong></td></tr>
+  <tr><td>musl 目标</td><td><strong>6/7 crate 能编译 + 0 告警</strong>（<code>aetherd</code> 因 <code>ring</code> 需 musl-gcc，不在检查范围）</td></tr>
+  <tr><td>判据</td><td>① ② ⑤ ⑥ ⑦ ⑧ ⑨ ⑩ ⑪ <strong>全部有正向对照</strong>，且<strong>全部 = 0</strong></td></tr>
+  <tr><td>像素回归</td><td><strong>57 档</strong> <code>--shot</code> 逐字节一致</td></tr>
+  <tr><td>归档走查图</td><td><strong>20 张</strong>逐像素一致</td></tr>
+  <tr><td>审计附录</td><td><strong>153 篇</strong></td></tr>
+  <tr><td>ISO</td><td>约 <strong>38.5 MB</strong></td></tr>
+</tbody></table>
+<h2 id="9">十、已知问题与未完成（完整表在台账 §9）</h2>
+<p><strong>必须说清楚的三条口径</strong>：</p>
+<p>1. <strong>实机验证一项都没做</strong> —— 本机是 Windows，<strong>无 PID 1、无 ALSA、无显示/输入设备</strong>。</p>
+<p>   所有"能跑"的结论都建立在"编译 + 单测 + 无界面运行器 + 像素回归"上，</p>
+<p>   <strong>不等于</strong>真机上能用。清单见台账 §9 的 #32、#33。</p>
+<p>2. <strong>ISO 未重构建</strong>：<code>isohybrid</code> 与 MBR 自检<strong>代码已补</strong>，但<strong>没有重新构建并装机验证过</strong></p>
+<p>   —— 所以 v0.1.0 那版"不能 dd 到磁盘引导"的更正<strong>仍然有效</strong>，不能因为代码补了就当作已修好。</p>
+<p>3. <strong>依赖的已知 CVE 无法核对</strong>（离线环境）。</p>
+<p><strong>待办里最该先处理的一条</strong>（2026-10-11 新发现，登记在台账 §9.3）：</p>
+<p><code>aether-compositor/src/widgets.rs:22</code> 的 <code>#![allow(dead_code)]</code> 挂着一条<strong>已经到期的承诺</strong></p>
+<p>（"P3 完成后必须删掉这一行"），而 P3 <strong>已经完成</strong>。</p>
+<p>实测删掉它会产生 <strong>10 条告警</strong>：其中 <code>WHEEL_LINES</code>、<code>scroll_apply</code> 是 <strong>Linux 专属调用点</strong></p>
+<p>（Windows 上误报），另外 <code>slider</code>/<code>slider_value_at</code>/<code>badge</code>/<code>scrollbar</code>/<code>HitTable</code>/<code>States::Danger</code></p>
+<p><strong>在生产代码里确实没有调用点</strong>（只被自己的测试引用）。</p>
+<p>所以"删掉 allow"这个动作<strong>现在还不能执行</strong>，需要先决定这 5 个原语是接调用点、删除、还是保留待用；</p>
+<p>同时把注释从<strong>空头承诺</strong>改成<strong>当前仍成立的理由</strong>。</p>
 <p># 2026-10-02 更新</p>
 <h2 id="">一、三页一览</h2>
 <table><tbody>
