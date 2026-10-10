@@ -42,7 +42,7 @@ fi
 
 echo "==> [1/3] musl 静态编译 Aether 组件"
 rustup target add x86_64-unknown-linux-musl
-COMPONENTS=(aether-init aetherd aether-ops aether-compositor)
+COMPONENTS=(aether-init aetherd aether-ops aether-compositor aether-install)
 for c in "${COMPONENTS[@]}"; do
     # --locked：按仓库里的 Cargo.lock 精确构建。不加的话 cargo 会顺手升级依赖，
     # 于是"同一个提交"在不同时间构建出的镜像可以不同（2026-10-02 审计 M-9）。

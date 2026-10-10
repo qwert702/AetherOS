@@ -147,6 +147,11 @@ def main() -> int:
             print("⚠ 跳过 musl 检查：未安装 x86_64-unknown-linux-musl（rustup target add 后可查）"
                   " —— 这一步**没有**被执行，别当成已通过")
 
+    # ISO 组件门禁（2026-10-06 加，附录 GV）：仓库里的二进制 crate 必须进镜像。
+    # 加它的原因：aether-install 曾在仓库里却不在 build-iso.sh 的 COMPONENTS 里，
+    # 而**没有任何判据在看这件事**（sh -n 查不出来，它不是语法错误）。
+    steps.append(("ISO 组件门禁（二进制 crate 都在镜像里）",
+                  [PY, "scripts/iso-components-check.py"]))
     steps.append(("文档规模门禁（三层 + 集合相等）",
                   [PY, "scripts/repo-stats.py", "--check"]))
     steps.append(("站点门禁（页面/发布事实/脚本哈希）",

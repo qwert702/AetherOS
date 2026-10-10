@@ -22,7 +22,8 @@ for p in "$TARGET/bin/busybox" "$TARGET/usr/bin/busybox"; do
     fi
 done
 
-echo "==> post-build: 写入系统指纹（不再是 Buildroot 默认值）"printf 'aether\n' > "$TARGET/etc/hostname"
+echo "==> post-build: 写入系统指纹（不再是 Buildroot 默认值）"
+printf 'aether\n' > "$TARGET/etc/hostname"
 cat > "$TARGET/etc/os-release" <<'EOF'
 NAME="AetherOS"
 ID=aetheros
