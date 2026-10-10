@@ -601,6 +601,7 @@ pub enum FormProblem {
     Policy(aether_ipc::PasswordProblem),
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))] // 仅走查路径（--shot / --dump-layout）使用
 impl FormProblem {
     pub fn code(self) -> &'static str {
         match self {

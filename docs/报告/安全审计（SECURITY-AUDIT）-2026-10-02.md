@@ -8401,3 +8401,148 @@ for _label, _path, _pat, _expect in (
   站点四个页面无 `releases/latest` 且含 tag 链接；退出码 0；
 * 对照一（体积写错 `39.0 MB`）→ 退出码 1；对照二（改成 `releases/latest`）→ 退出码 1；
 * `gates.py` → 22 项全过。
+
+---
+
+## 附录 GR：干净重建抓到 **musl 下 3 条告警**；而门禁**一直是绿的**（2026-10-06 批次 GR-1）
+
+### GR.1 起点：按 README 的建议做一次干净重建
+
+README 的"关于 0 告警的重要限定"（附录 CB.2）写着：
+
+> cargo **只对重新编译的 crate 重新报告告警**，所以增量构建下的"0 告警"
+> **不等于**全量重建也没有告警。……**结论：验收时应周期性 `cargo clean` 一次。**
+
+本会话一直增量构建，于是本批做了 `cargo clean -p aether-compositor` + 全量重建：
+
+```
+② 全量重建（统计告警）
+   退出码 0 · 告警 0 条 · 错误 0 条
+```
+
+**Windows 侧确实 0 告警** ✅ —— 但接着逐 crate 查 musl：
+
+```
+aether-compositor    退出码 0 · 告警 3 · 错误 0
+```
+
+### GR.2 3 条告警是什么
+
+1. `methods set_cjk_report, take_cjk_hits, set_band_report, take_bands, take_over_hits are never used`
+   （`text.rs:295`）—— **本会话为判据 ⑩ / ⑪ 加的那批报表方法**；
+2. `method code is never used`（`settings.rs:605`，`FormProblem::code`）—— **既有**的一处。
+
+两者都是**只在 `--shot` / `--dump-layout` 走查路径被调用**，而那条路径在 Linux 目标下被 `cfg` 掉。
+
+### GR.3 ⚠️ 而门禁**一直是绿的** —— 这才是真问题
+
+`gates.py` 的 musl 步骤原来跑的是：
+
+```python
+["cargo", "check", "--target", "x86_64-unknown-linux-musl", "--all-targets", "-p", ...]
+```
+
+**只看退出码**。而 **cargo 有告警也返回 0** —— 所以这一步验证的是"**能否编译**"，
+而 README 声称的是"**musl 侧 6/7 crate 0 警告**" ✗。
+
+**这正是本会话第 10 条**："**一个从不触发的判据等于没有判据**"。
+它绿了很久，而声称早已不成立（其中一条还是我自己引入的）。
+
+### GR.4 修法
+
+1. **告警本身**：给那 5 个方法 + `impl FormProblem` 加
+   `#[cfg_attr(target_os = "linux", allow(dead_code))]` ——
+   **照代码库既有先例**（`text.rs` 的 `dump_metrics` 就是这么写的，注释"仅 --fonttest 走查使用"）。
+   修后：musl `aether-compositor` **0 告警**、Windows 全量 **0 告警**、6 个 crate 逐个 **0 告警**。
+2. **门禁**：新增 `scripts/musl-warn-check.py` —— 逐个 crate 跑 musl check，
+   **统计 `warning:` 行**（排除 `ring@` 构建脚本噪声），有告警就非零退出；
+   用它**替换**原来那一步（**门禁数仍是 22**，自述表同步更新）。
+
+**正向对照**（按第 21 条：先断言注入生效、并从盘上读回来确认）：
+往 `impl TextRenderer` 里注入 `fn dead_probe_for_control() {}` → 退出码 **1**，
+报 `[FAIL] aether-compositor: 1 条告警`；回退 → 与原文**逐字节一致**、退出码 **0**。
+
+### GR.5 一条方法论（第 22 条）
+
+> **"能编译"与"没有告警"是两件事，要分开判。**
+> 编译器把告警当**非致命**，所以任何"只看退出码"的检查都**只覆盖了前者**。
+
+这与第 10 条（判据要会响）互为表里：那条讲"判据要能失败"，
+这条讲"**别把两种不同的事实混在一个退出码里**"。
+
+### GR.6 验证
+
+* `cargo clean -p aether-compositor` + 全量重建 → **0 告警 0 错误**；
+* `scripts/musl-warn-check.py` → 6 个 crate 全部 **0 告警**、退出码 0；
+* 注入死函数 → 退出码 1；回退 → 退出码 0；
+* `gates.py` → 22 项全过。
+
+---
+
+## 附录 GS：同步脚本的"只认中文措辞"缺口 —— **同一个事实有两个消费方**（2026-10-06 批次 GS-1）
+
+### GS.1 怎么发现的
+
+附录 GR 修完 musl 告警后，门禁**红了** —— 因为我加的 `cfg_attr` 行让**行数变了**
+（50,528 → 50,534），而文档没跟。这是**门禁正常发挥作用**。
+
+于是跑 `sync-doc-numbers.py` 收敛，它却说：
+
+```
+第 1 轮无改动，停止
+仍有 1 条未同步：
+  [FAIL] README.en.md: 声明 50,528 行 / 71 文件，实测 50,534 行 / 71 文件
+```
+
+### GS.2 根因：替换模式**只有中文**
+
+`sync-doc-numbers.py` 靠**解析 `repo-stats.py --check` 的 FAIL 消息**来定位"哪份文档写错了"，
+但它的**替换模式只有 7 条，全是中文**：
+
+```python
+(f"{ol} 行 / {of} 文件", ...),
+(f"{ol} 行 / {of} 个源文件", ...),
+(f"{ol} 行 / {of} 个 .rs", ...),
+(f"{ol} 行 Rust / {of} 个源文件", ...),
+(f"{ol} 行 Rust / {of} 个源文件 /", ...),
+(f"| **合计** | **{ol}** | **{of}** | |", ...),
+(f"| **合计** | **{ol}** | **{of}** |", ...),
+```
+
+英文那句 `50,528 lines of Rust / 71 source files` **没人认领** ——
+于是它**每轮都改不动**，收敛循环**永远差一条**。
+
+### GS.3 ⚠️ 这是附录 GN 的**同一处疏漏**
+
+附录 GN 我把 `README.en.md` 加进了 `repo-stats.py --check`（**检查方**），
+**但没有加进 `sync-doc-numbers.py`（同步方）**。
+
+> **教训（第 23 条）：同一个事实有**多个消费方**（检查、同步、生成……），
+> 只改一处不够 —— 要顺着"谁在读这个事实"数一遍。**
+
+这与第 20 条（判据要按事实组织）配套：
+第 20 条讲**判据内部**要把各处写法列全；
+这条讲**判据之外**还有别的消费者，也要一起改。
+
+**修法**：给同步脚本补一条英文模式：
+
+```python
+# 英文措辞（附录 GR：README.en.md 那句原来没人认领，收敛循环永远差一条）
+(f"{ol} lines of Rust / {of} source files", f"{nl} lines of Rust / {nf} source files"),
+```
+
+修后：
+
+```
+总量 README.en.md: 50,528/71 → 50,534/71
+第 2 轮无改动，停止
+已收敛：共改动 1 处，`repo-stats.py --check` 全部通过 ✓
+```
+
+### GS.4 验证
+
+* `sync-doc-numbers.py` → 已收敛、`repo-stats --check` 全部通过；
+* `repo-stats --check` → INDEX（合计 + 头部行）/ README.md / ROADMAP / README.en.md
+  全部 **50,534 行 / 71 文件**；逐 crate、逐文件、测试分布表全过；退出码 0；
+* 站点已刷新（`rust_lines=50,534`）；
+* `gates.py` → 22 项全过。

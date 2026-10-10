@@ -292,10 +292,12 @@ impl TextRenderer {
     }
 
     /// 取走已记录的超宽文字（调用方负责打印/清空）。
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅走查路径（--shot / --dump-layout）使用
     pub fn set_cjk_report(&self, on: bool) {
         self.report_cjk.set(on);
     }
 
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅走查路径（--shot / --dump-layout）使用
     pub fn take_cjk_hits(&self) -> Vec<String> {
         std::mem::take(&mut *self.cjk_hits.borrow_mut())
     }
@@ -306,17 +308,20 @@ impl TextRenderer {
         self.win_id.set(id);
     }
 
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅走查路径（--shot / --dump-layout）使用
     pub fn set_band_report(&self, on: bool) {
         self.report_bands.set(on);
     }
 
     /// 取走并清空带区报表。
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅走查路径（--shot / --dump-layout）使用
     pub fn take_bands(
         &self,
     ) -> Vec<(f32, f32, f32, f32, String, Option<u32>, Option<(i32, i32, i32, i32)>)> {
         std::mem::take(&mut *self.bands.borrow_mut())
     }
 
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // 仅走查路径（--shot / --dump-layout）使用
     pub fn take_over_hits(&self) -> Vec<(String, f32)> {
         std::mem::take(&mut *self.over_hits.borrow_mut())
     }

@@ -8,7 +8,7 @@
 | 检查 | 覆盖什么 | 不覆盖什么 |
 |---|---|---|
 | `cargo test` | 逻辑与回归 | Windows 上会跳过所有 `#[cfg(unix)]` / `cfg(linux)` 用例 |
-| `cargo check --target ...-musl` | Linux 目标**能否编译** | 跑不了（交叉编译产物在本机执行不了） |
+| `scripts/musl-warn-check.py` | Linux 目标**能否编译 + 6 个 crate 是否 0 告警**（原来只查能否编译 —— 而 cargo 有告警也返回 0，附录 GR） | 跑不了（交叉编译产物在本机执行不了） |
 | `repo-stats.py --check` | 文档数字与代码是否同步（三层，含集合相等） | 站点与发布事实 |
 | `gen-site.py --check` | 站点页面 / 发布事实 / 下载脚本哈希是否需要 `--refresh` | 代码本身 |
 | `mkapp.py --selftest` | 打包器的纯函数边界（路径穿越等） | 真实打包流程 |
@@ -136,12 +136,12 @@ def main() -> int:
         installed = subprocess.run(["rustup", "target", "list", "--installed"],
                                    capture_output=True, text=True).stdout
         if "x86_64-unknown-linux-musl" in installed:
+            # 这一步**同时查"能编译"与"0 告警"**（附录 GR）：
+            # 原来只跑 cargo check，而 cargo **有告警也返回 0** ——
+            # 于是 README 声称的"musl 侧 6/7 crate 0 警告"没有任何东西在看。
             steps.append((
-                "cargo check --target musl（6/7 crate）",
-                ["cargo", "check", *offline, "--locked", "--target", "x86_64-unknown-linux-musl",
-                 "--all-targets", "-p", "aether-compositor", "-p", "aether-init",
-                 "-p", "aether-ops", "-p", "aether-install", "-p", "aether-ipc",
-                 "-p", "aether-shell"],
+                "musl 目标（6/7 crate：能编译 + 0 告警）",
+                [PY, "scripts/musl-warn-check.py"],
             ))
         else:
             print("⚠ 跳过 musl 检查：未安装 x86_64-unknown-linux-musl（rustup target add 后可查）"

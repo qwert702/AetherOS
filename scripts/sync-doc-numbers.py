@@ -77,6 +77,8 @@ def sync_once(dry: bool) -> int:
             (f"{ol} 行 / {of} 个 .rs", f"{nl} 行 / {nf} 个 .rs"),
             (f"{ol} 行 Rust / {of} 个源文件", f"{nl} 行 Rust / {nf} 个源文件"),
             (f"{ol} 行 Rust / {of} 个源文件 /", f"{nl} 行 Rust / {nf} 个源文件 /"),
+            # 英文措辞（附录 GR：README.en.md 那句原来没人认领，收敛循环永远差一条）
+            (f"{ol} lines of Rust / {of} source files", f"{nl} lines of Rust / {nf} source files"),
             (f"| **合计** | **{ol}** | **{of}** | |", f"| **合计** | **{nl}** | **{nf}** | |"),
             (f"| **合计** | **{ol}** | **{of}** |", f"| **合计** | **{nl}** | **{nf}** |"),
         ]:
