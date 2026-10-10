@@ -152,6 +152,11 @@ def main() -> int:
     # 而**没有任何判据在看这件事**（sh -n 查不出来，它不是语法错误）。
     steps.append(("ISO 组件门禁（二进制 crate 都在镜像里）",
                   [PY, "scripts/iso-components-check.py"]))
+    # 归档走查图门禁（2026-10-06 加，附录 GY）：assets/ui-archive/ 那批图
+    # README 与站点都声称"逐像素回归"，但**没有任何东西在跑这个比对** ——
+    # 本批一跑，desktop-clean 已漂 79.5%。基线躺着不动 ≠ 基线被核对。
+    steps.append(("归档走查图门禁（逐像素 vs assets/ui-archive/）",
+                  [PY, "scripts/archive-ui-shots.py", "--check"]))
     steps.append(("文档规模门禁（三层 + 集合相等）",
                   [PY, "scripts/repo-stats.py", "--check"]))
     steps.append(("站点门禁（页面/发布事实/脚本哈希）",
