@@ -32,6 +32,26 @@ const INTERVAL_SECS: u64 = 15;
 /// 同一单元两次自修复重启之间的冷却轮数（20 轮 × 15s = 5min）。
 #[cfg(target_os = "linux")]
 const COOLDOWN_ROUNDS: u64 = 20;
+/// 同一单元的**日志告警报告**两次之间至少隔多少轮（20 轮 × 15s = 5min）。
+///
+/// 为什么需要（2026-10-06 审计 HA）：`logwatch.scan_dir` 返回**自上次扫描以来的
+/// 新增异常行**，原来**每一行**都出一份报告 —— 而报告写到 `/var/diag`（**持久化分区**）。
+/// 一个持续打异常日志的服务会每 15 秒写 N 个文件，`/var` 会被慢慢填满。
+/// 同文件里"内存压力"那段早就用了"只在状态翻转时出一次"的模式，日志告警这一路漏了。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // 仅 Linux 构建会调用（附录 HA）
+const LOG_ALERT_COOLDOWN_ROUNDS: u64 = 20;
+
+/// 该不该为这个单元出日志告警报告（**纯函数**，便于单测）。
+///
+/// `last_round` 是上次为**同一个单元**出报告的轮次；`None` 表示还没出过。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // 仅 Linux 构建会调用（附录 HA）
+fn log_alert_due(last_round: Option<u64>, round: u64) -> bool {
+    match last_round {
+        None => true,
+        Some(last) => round.saturating_sub(last) >= LOG_ALERT_COOLDOWN_ROUNDS,
+    }
+}
+
 /// 诊断报告目录（有持久化分区时随 /var 落盘保留）。
 #[cfg(target_os = "linux")]
 const DIAG_DIR: &str = "/var/diag";
@@ -134,6 +154,8 @@ fn run() -> anyhow::Result<()> {
     let mut attempts: HashMap<String, (u64, u64)> = HashMap::new();
     let mut logwatch = monitor::LogWatch::new();
     let mut prev_pressure = false;
+    // 每个单元上次出"日志告警报告"的轮次（附录 HA 的节流）。
+    let mut log_alert_last: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut round: u64 = 0;
     loop {
         round += 1;
@@ -151,10 +173,15 @@ fn run() -> anyhow::Result<()> {
         // 日志监听：增量扫描各服务日志，异常行即时告警 + 诊断报告
         for (unit, line) in logwatch.scan_dir(monitor::LOG_DIR, "ops") {
             println!("aether-ops: 📢 {unit} 日志异常: {line}");
-            emit_report(
-                diagnose::Incident::LogAlert { unit: unit.clone(), line },
-                &services, &metrics, "", &unit,
-            );
+            // 节流（附录 HA）：同一单元 5 分钟内只出一份报告 ——
+            // 否则"每一行异常"都会写一个文件到 /var/diag。
+            if log_alert_due(log_alert_last.get(&unit).copied(), round) {
+                emit_report(
+                    diagnose::Incident::LogAlert { unit: unit.clone(), line },
+                    &services, &metrics, "", &unit,
+                );
+                log_alert_last.insert(unit.clone(), round);
+            }
         }
 
         // 内存压力：只在状态翻转时出一次诊断报告（避免每轮刷屏）
@@ -207,5 +234,31 @@ fn run() -> anyhow::Result<()> {
             );
         }
         std::thread::sleep(Duration::from_secs(INTERVAL_SECS));
+    }
+}
+
+#[cfg(test)]
+mod log_alert_tests {
+    use super::{log_alert_due, LOG_ALERT_COOLDOWN_ROUNDS};
+
+    #[test]
+    fn 首次一定出报告() {
+        assert!(log_alert_due(None, 1));
+    }
+
+    #[test]
+    fn 冷却期内不出() {
+        assert!(!log_alert_due(Some(10), 10));
+        assert!(!log_alert_due(Some(10), 10 + LOG_ALERT_COOLDOWN_ROUNDS - 1));
+    }
+
+    #[test]
+    fn 冷却期满出() {
+        assert!(log_alert_due(Some(10), 10 + LOG_ALERT_COOLDOWN_ROUNDS));
+    }
+
+    #[test]
+    fn 轮次倒退也不_panic_且不误放行() {
+        assert!(!log_alert_due(Some(100), 5));
     }
 }

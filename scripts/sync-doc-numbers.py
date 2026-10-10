@@ -238,6 +238,33 @@ def sync_once(dry: bool) -> int:
             changed += 1
             print(f"  数字 {rep.name}: 测试/门禁/附录 已按实测修正")
 
+    # ---- 7) README 中英两份的测试数（附录 HA：GW 那条的又一次）----
+    # doc-numbers-check 的 ③b/③c 检查它们，但同步方原来不认 ——
+    # "检查会红而同步修不了"，正是 GW 记下的死循环形状。
+    # 守卫挂在 **③b / ③c** 上（"离事实最近的那一行"），不是 ① 行 ——
+    # ① 行说的是收尾报告（第 6 节已修对），拿它当守卫会让 README 的偏差被跳过。
+    for name, line_pat, pats in (
+        ("README.md", r"③b README 测试数：文档 ([\d,]+) / 实测 ([\d,]+)",
+         [r"\*\*([\d,]+) 项单元测试全绿\*\*", r"([\d,]+) 项单元测试全绿",
+          r"Windows ([\d,]+) 项全绿"]),
+        ("README.en.md", r"③c README.en 测试数：文档 ([\d,]+) / 实测 ([\d,]+)",
+         [r"([\d,]+) unit tests green", r"Beyond the ([\d,]+) unit tests"]),
+    ):
+        m7 = re.search(line_pat, dn)
+        if m7 and m7.group(1) != m7.group(2):
+            real7 = m7.group(2)
+            doc = find_doc(name)
+            if doc is None:
+                continue
+            s2 = before2 = read(doc)
+            for pat in pats:
+                if any(v != real7 for v in re.findall(pat, s2)):
+                    s2 = re.sub(pat, lambda m: m.group(0).replace(m.group(1), real7), s2)
+            if s2 != before2:
+                write(doc, s2, dry)
+                changed += 1
+                print(f"  数字 {doc.name}: 测试数 → {real7}")
+
     return changed
 
 
