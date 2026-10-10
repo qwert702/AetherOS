@@ -206,19 +206,33 @@ def sync_once(dry: bool) -> int:
     rep = find_doc("收尾报告（FINAL）-2026-10-04.md")
     if rep is not None:
         s = before = read(rep)
+        # **逐写法**比较，而不是被一个"汇总数字"驱动（附录 GW）。
+        # 原来的守卫是 `if 组1 != 组2`，而 ② 行只看报告里**那张表的行** ——
+        # 于是同一事实的其它写法（自引用行、验收命令注释）在它眼里根本不存在。
         for line_pat, old_pat, new_tpl in (
             (r"① 测试数：文档 ([\d,]+) / 实测 ([\d,]+)", r"\*\*([\d,]+) 项全绿\*\*", "**{n} 项全绿**"),
             (r"② 门禁数：文档 ([\d,]+) / 本次运行 ([\d,]+)", r"\*\*([\d,]+) 项全过\*\*", "**{n} 项全过**"),
             (r"③ 审计附录：文档 ([\d,]+) / 实测 ([\d,]+)", r"\| 审计附录 \| (\d+) 篇 \|", "| 审计附录 | {n} 篇 |"),
-            # 第四种写法：验收命令注释 `# 22 项门禁（含测试、musl、…）`
-            # （附录 GV：检查方认得它、同步方不认得 → 检查会红而同步修不了，死循环）
+            # 同一事实的其它写法：自引用行与验收命令注释
+            # 自引用行 `「X 项测试 / Y 项门禁」`：Y 是**门禁数**，
+            # 所以这里必须用 ② 的模式取实测值（用 ① 会把测试数写进门禁位）。
+            (r"② 门禁数：文档 ([\d,]+) / 本次运行 ([\d,]+)",
+             r"「(\d+) 项测试 / (\d+) 项门禁」", None),
             (r"② 门禁数：文档 ([\d,]+) / 本次运行 ([\d,]+)", r"# (\d+) 项门禁（含", "# {n} 项门禁（含"),
         ):
             m = re.search(line_pat, dn)
             if not m:
                 continue
-            if m.group(1) != m.group(2):
-                s = re.sub(old_pat, new_tpl.format(n=m.group(2)), s, count=1)
+            real = m.group(2)
+            if old_pat == r"「(\d+) 项测试 / (\d+) 项门禁」":
+                # 自引用行：两段都要等于实测值
+                real_t = re.search(r"① 测试数：文档 ([\d,]+) / 实测 ([\d,]+)", dn)
+                if real_t:
+                    s = re.sub(old_pat, f"「{real_t.group(2)} 项测试 / {real} 项门禁」", s)
+                continue
+            # 逐写法：文档里现有的值 != 实测值就改（全部出现处）
+            if any(v != real for v in re.findall(old_pat, s)):
+                s = re.sub(old_pat, new_tpl.format(n=real), s)
         if s != before:
             write(rep, s, dry)
             changed += 1
