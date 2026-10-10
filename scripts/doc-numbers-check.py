@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import pathlib
+import json
 import re
 import subprocess
 import sys
@@ -30,6 +31,7 @@ ROOT = pathlib.Path(__file__).parent.parent
 REPORT = ROOT / "docs" / "报告" / "收尾报告（FINAL）-2026-10-04.md"
 README = ROOT / "README.md"
 README_EN = ROOT / "README.en.md"
+SITE = ROOT / "site"
 # declared() 是模块级函数，不能碰 main() 的局部 problems（附录 GL）。
 PROBLEMS: list = []
 AUDIT = ROOT / "docs" / "报告" / "安全审计（SECURITY-AUDIT）-2026-10-02.md"
@@ -127,6 +129,31 @@ def main() -> int:
         print(f"③d {_label}：{_vals} / 期望 {_expect}")
         if len(_vals) != 1 or _vals[0] != _expect:
             problems.append(f"{_label}：文档 {_vals}，期望 {_expect}")
+
+    # ③e **发布事实**（附录 GQ）：ISO 体积与下载链接形态。
+    # 权威来源 = site/release.json（gen-site.py 称"已发布产物的权威事实"）。
+    _rel_path = ROOT / "site" / "release.json"
+    if _rel_path.exists():
+        _rel = json.loads(_rel_path.read_text(encoding="utf-8"))
+        _size, _tag = _rel.get("iso_size"), _rel.get("tag")
+        for _label, _path in (("README.md", README), ("README.en.md", README_EN),
+                              ("site/index.html", SITE / "index.html"),
+                              ("site/en/index.html", SITE / "en" / "index.html"),
+                              ("site/download.html", SITE / "download.html"),
+                              ("site/en/download.html", SITE / "en" / "download.html")):
+            if not _path.exists():
+                continue
+            _txt = _path.read_text(encoding="utf-8")
+            if _label.startswith("README"):
+                _found = re.findall(r"ISO[^\n]{0,12}?(\d+\.\d+ MB)", _txt)
+                print(f"③e {_label} ISO 体积：{_found} / 期望 ['{_size}']")
+                if _found != [_size, _size]:
+                    problems.append(f"{_label} ISO 体积：文档 {_found}，期望 ['{_size}', '{_size}']")
+            # 链接形态：prerelease 下 /releases/latest 会 404
+            if re.search(r"releases/latest", _txt):
+                problems.append(f"{_label} 用了 /releases/latest（prerelease 会 404）")
+            if f"releases/tag/{_tag}" not in _txt and f"releases/download/{_tag}/" not in _txt:
+                problems.append(f"{_label} 没有指向 releases/{_tag} 的链接")
 
     # ③ 审计附录数
     real_apps = len(re.findall(r'^## 附录', AUDIT.read_text(encoding='utf-8'), re.M))
