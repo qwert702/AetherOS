@@ -121,6 +121,48 @@ DESKTOP_CASES = [
 ]
 
 
+# ---- 判据 ① ② ⑤ ⑥ ⑦ 的**纯谓词**（附录 GX）----
+# 抽出来是为了能单独喂数据做正向对照：原来它们内联在 main() / check_desktop() 里，
+# 没法证明"会响"。抽取是**纯重构**，调用点语义不变。
+
+
+def hit_overflow(r: dict, w: int, win: dict | None) -> str | None:
+    """判据 ① / ②：一个命中矩形横向越界。返回 'screen' / 'settings' / None。
+
+    两者**互斥**（与 main() 里的 if/elif 一致）：先判屏幕，再判设置窗口。
+    """
+    if r["x"] < 0 or r["x"] + r["w"] > w:
+        return "screen"
+    if win and (r["x"] < win["x"] or r["x"] + r["w"] > win["x"] + win["w"]):
+        return "settings"
+    return None
+
+
+def widget_off_screen(r: dict, w: int) -> bool:
+    """判据 ⑤：窗口类界面的控件横向越界。"""
+    return r["x"] < 0 or r["x"] + r["w"] > w
+
+
+def same_group_overlap(a: dict, b: dict) -> bool:
+    """判据 ⑥：两个控件的重叠**该不该判红**。
+
+    三个条件缺一不可：① 同一组（跨组是"浮层盖窗口"，正常）；
+    ② 窗口三键还要求**同一个窗口**（堆叠布局下多窗口共用区域，按钮本来就重合）。
+    """
+    if a["group"] != b["group"]:
+        return False
+    ka, kb = a["kind"], b["kind"]
+    if ka.startswith("win") and kb.startswith("win"):
+        if ka.split("-")[0] != kb.split("-")[0]:
+            return False
+    return True
+
+
+def is_blank(colors: int) -> bool:
+    """判据 ⑦：内容色 <= 阈值 = 这一档整档没画出来（不是"内容少"，是"没画"）。"""
+    return 0 <= colors <= BLANK_MAX_COLORS
+
+
 def dump_args(args: list[str], scale: int, lang: str = "zh") -> dict | None:
     extra = [] if lang == "zh" else ["--lang", lang]
     proc = subprocess.run(
@@ -143,12 +185,12 @@ def check_desktop() -> tuple[int, int, list[str]]:
             colors = blank_of_shot()
             if d is None:
                 continue
-            if 0 <= colors <= BLANK_MAX_COLORS:
+            if is_blank(colors):
                 blanks.append(f"{name}@{scale}%（内容色 {colors}）")
             w = d["w"]
             ws = d.get("widgets", [])
             for r in ws:
-                if r["x"] < 0 or r["x"] + r["w"] > w:
+                if widget_off_screen(r, w):
                     off += 1
                     print(f"    [越界] {name}@{scale}% {r['group']}/{r['kind']} "
                           f"({r['x']},{r['y']},{r['w']}x{r['h']})")
@@ -160,17 +202,10 @@ def check_desktop() -> tuple[int, int, list[str]]:
                     a = overlap(vis[i], vis[j])
                     if a <= 0:
                         continue
-                    # 同一组内的重叠才算问题（跨组本来就是「浮层盖在窗口上」）
-                    if vis[i]["group"] != vis[j]["group"]:
+                    if not same_group_overlap(vis[i], vis[j]):
                         continue
-                    # 窗口三键再限定**同一个窗口**：堆叠布局下多个窗口共用区域，
-                    # 它们的按钮位置本来就重合（`layout4` 实测 106 处，全部是这个原因）。
-                    ki, kj = vis[i]["kind"], vis[j]["kind"]
-                    if ki.startswith("win") and kj.startswith("win"):
-                        if ki.split("-")[0] != kj.split("-")[0]:
-                            continue
                     ov.append(f"{name}@{scale}% {vis[i]['group']}: "
-                              f"{ki} ∩ {kj} = {a}px²")
+                              f"{vis[i]['kind']} ∩ {vis[j]['kind']} = {a}px²")
     return off, len(ov), ov
 
 
@@ -300,7 +335,7 @@ def main() -> int:
     for lang, scale in COMBOS:
         for page in range(PAGE_COUNT):
             d, colors, gap = dump_with_blank(page, scale, lang)
-            if 0 <= colors <= BLANK_MAX_COLORS:
+            if is_blank(colors):
                 blanks.append(f"page-{page}@{scale}%（内容色 {colors}）")
             # 判据 ⑨：文字超宽（单独一次渲染，见 overflow_of 的注释）
             OVERFLOW_SEEN.extend(overflow_of(page, scale, lang))
@@ -317,9 +352,10 @@ def main() -> int:
             for r in d["hits"]:
                 tag = f"page-{page}@{scale}% {r['kind']} ({r['x']},{r['y']},{r['w']}x{r['h']})"
                 # **横向**越界：任何情况下都不该发生（判红）
-                if r["x"] < 0 or r["x"] + r["w"] > w:
+                _of = hit_overflow(r, w, win)
+                if _of == "screen":
                     off_screen.append(tag)
-                elif win and (r["x"] < win["x"] or r["x"] + r["w"] > win["x"] + win["w"]):
+                elif _of == "settings":
                     off_width.append(tag)
                 # **纵向**越界：设置正文可以滚动，内容比可视区高是正常的 → 只报告
                 if r["y"] < 0 or r["y"] + r["h"] > h:

@@ -90,9 +90,55 @@ check("content_colors 全背景", lc.content_colors(raw), lambda g: g == 1, "1")
 raw = make_bmp([(200, 210), (300, 310), (400, 410)], WIN)
 check("content_colors 有内容", lc.content_colors(raw), lambda g: g == 2, "2（背景 + 文字）")
 
+# ---- ⑥ 判据 ① ② ⑤ ⑥ ⑦ 的纯谓词（附录 GX）----
+# 这五条此前**一次正向对照都没做过**（逻辑内联在 main/check_desktop 里）。
+# 现在抽成纯谓词，可以单独喂数据 —— 断言一律用"等于期望"（第 30 条）。
+WIN2 = {"x": 300, "y": 60, "w": 500, "h": 400}
+
+
+def hit(x, w=10):
+    return {"x": x, "y": 100, "w": w, "h": 10}
+
+
+check("① 左越出屏幕", lc.hit_overflow(hit(-5), lc.W, WIN2), lambda g: g == "screen", '"screen"')
+check("① 右越出屏幕", lc.hit_overflow(hit(lc.W - 5), lc.W, WIN2), lambda g: g == "screen", '"screen"')
+check("② 越出设置窗口（右）", lc.hit_overflow(hit(WIN2["x"] + WIN2["w"] - 5), lc.W, WIN2),
+      lambda g: g == "settings", '"settings"')
+check("② 越出设置窗口（左）", lc.hit_overflow(hit(WIN2["x"] - 5), lc.W, WIN2),
+      lambda g: g == "settings", '"settings"')
+check("①/② 完全在内（不响）", lc.hit_overflow(hit(400), lc.W, WIN2),
+      lambda g: g is None, "None")
+# 贴屏幕右边界：x+w == w，① **不算**越界；但它落在设置窗口之外，所以 ② 会响。
+# （第一版我期望 None，错了 —— 谓词是对的，是我的期望漏了"② 也检查"。）
+check("① 贴屏幕右边界 → ① 不响、② 响", lc.hit_overflow(hit(lc.W - 10), lc.W, WIN2),
+      lambda g: g == "settings", '"settings"（① 不越界，② 越界）')
+check("① 屏幕内且设置窗口内 → 都不响",
+      lc.hit_overflow(hit(WIN2["x"] + 50), lc.W, WIN2), lambda g: g is None, "None")
+
+check("⑤ 控件左越界", lc.widget_off_screen(hit(-1), lc.W), lambda g: g is True, "True")
+check("⑤ 控件右越界", lc.widget_off_screen(hit(lc.W - 5), lc.W), lambda g: g is True, "True")
+check("⑤ 控件在内（不响）", lc.widget_off_screen(hit(400), lc.W), lambda g: g is False, "False")
+
+# 真实格式是 `win<N>-…`：`split("-")[0]` 取的是 `win<N>`。
+# （第一版我写成 `win-a-close`，它的 `[0]` 也是 "win"，于是被判成同一个窗口 —— 期望错了。）
+w_a = {"group": "dock", "kind": "win1-close"}
+w_b = {"group": "dock", "kind": "win2-close"}
+w_c = {"group": "other", "kind": "win1-close"}
+w_d = {"group": "dock", "kind": "panel-row"}
+check("⑥ 同组同窗口 → 判红", lc.same_group_overlap(w_a, dict(w_a)), lambda g: g is True, "True")
+check("⑥ 同组不同窗口 → 不判红", lc.same_group_overlap(w_a, w_b), lambda g: g is False, "False")
+check("⑥ 跨组 → 不判红", lc.same_group_overlap(w_a, w_c), lambda g: g is False, "False")
+check("⑥ 同组、只有一个是窗口三键 → 判红", lc.same_group_overlap(w_a, w_d),
+      lambda g: g is True, "True")
+
+check("⑦ 内容色 = 阈值（判空白）", lc.is_blank(lc.BLANK_MAX_COLORS), lambda g: g is True, "True")
+check("⑦ 内容色 = 阈值+1（不判）", lc.is_blank(lc.BLANK_MAX_COLORS + 1), lambda g: g is False, "False")
+check("⑦ 内容色 = 782（实测最小值，不判）", lc.is_blank(782), lambda g: g is False, "False")
+check("⑦ 内容色 = -1（取值失败，不判）", lc.is_blank(-1), lambda g: g is False, "False")
+
 print()
 if ok:
-    print("[ OK ] 分析函数自检全部通过 —— 判据 ⑧ 会真的响（不是从不触发的判据）")
+    print("[ OK ] 分析函数自检全部通过 —— 判据 ⑧ 与 ① ② ⑤ ⑥ ⑦ 都会真的响")
     sys.exit(0)
 print("[FAIL] 有自检不通过")
 sys.exit(1)
