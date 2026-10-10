@@ -326,6 +326,37 @@ mod diag_prune_tests {
     }
 
     #[test]
+    fn prune_diag_dir_真的把目录删到上限() {
+        // 集成测试：真的建目录、真的删（照 logtee.rs 的临时目录模式）。
+        // 文件名用零填充的递增序号：同一秒内 mtime 会相同，
+        // 而 files_to_prune 在时间相同时按**文件名**兜底 —— 所以保留的是序号最大的那些。
+        let dir = std::env::temp_dir().join(format!("aether-diag-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..(MAX_DIAG_FILES + 5) {
+            std::fs::write(dir.join(format!("{i:06}.txt")), b"x").unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), MAX_DIAG_FILES + 5);
+
+        super::prune_diag_dir(dir.to_str().unwrap());
+
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left.len(), MAX_DIAG_FILES, "应删到上限");
+        assert!(left.contains(&format!("{:06}.txt", MAX_DIAG_FILES + 4)));
+        assert!(!left.contains(&"000000.txt".to_string()), "最旧的应被删掉");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_diag_dir_目录不存在时跳过() {
+        // 读目录失败必须**跳过**，不能 panic（宁可不删也不乱删）
+        super::prune_diag_dir("/definitely/not/a/real/dir/for-aether-tests");
+    }
+
+    #[test]
     fn 空目录不_panic() {
         assert_eq!(files_to_prune(Vec::new(), 10), Vec::<String>::new());
         assert_eq!(files_to_prune(Vec::new(), 0), Vec::<String>::new());

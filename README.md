@@ -9,8 +9,8 @@
 
 | | |
 |---|---|
-| **规模** | 合计 50,682 行 Rust / 71 个源文件 / 7 个 crate（2026-10-02 实测） |
-| **验证** | 759 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **规模** | 合计 50,726 行 Rust / 71 个源文件 / 7 个 crate（2026-10-02 实测） |
+| **验证** | 761 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 38.5 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](assets/ui-archive/host-ui-light-desktop.png)
@@ -205,9 +205,9 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
 | `aether-compositor/` | 32,055 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
-| `aetherd/` | 12,505 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
+| `aetherd/` | 12,518 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
 | `aether-init/` | 3,035 | PID 1 与服务管理 | M3 |
-| `aether-ops/` | 995 | AI 运维与自修复 | M5 |
+| `aether-ops/` | 1,026 | AI 运维与自修复 | M5 |
 | `aether-install/` | 926 | 磁盘安装器 | M6 |
 | `aether-ipc/` | 1,155 | 全系统 IPC 协议 | M0 |
 | `aether-shell/` | 11 | 占位骨架 | M2 |
@@ -257,7 +257,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 759 项全绿（2026-10-02 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
+| 单元测试 | Windows 761 项全绿（2026-10-02 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
 | 编译警告 | Windows 侧 0 条；musl 侧 0 条但**只覆盖 6/7 crate**（`aetherd` 受 ring 交叉编译限制查不了，见上） |
 | 视觉回归 | **57 档 `--shot` 逐字节比对**（基线 `docs/证据/shot-baseline.json`），当前 57/57 零差异 |
 | 代码审查 | 四轮全量 / 增量审查，问题全部修复（未修项归零）；结论总集见 [`docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md`](docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md) |
