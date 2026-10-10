@@ -1,10 +1,10 @@
 {
   "version": "v0.1.0",
-  "rust_lines": "50,587",
+  "rust_lines": "50,682",
   "rust_files": "71",
-  "rust_lines_num": 50587,
+  "rust_lines_num": 50682,
   "crates": 7,
-  "tests": "754",
+  "tests": "759",
   "iso_bytes": 40327168,
   "iso_size": "38.5 MB",
   "iso_sha256": "7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb",
@@ -14,5 +14,5 @@
   "shots": "19",
   "repo": "github.com/qwert702/AetherOS",
   "site": "aether.cbnac.com",
-  "generated": "2026-10-10"
+  "generated": "2026-10-11"
 }

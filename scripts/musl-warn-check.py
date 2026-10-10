@@ -63,6 +63,27 @@ def main() -> int:
         print(f"\nmusl 告警门禁未通过：{bad}/{len(CRATES)} 个 crate 有问题")
         return 1
     print(f"\nmusl 告警门禁通过：{len(CRATES)} 个 crate 全部 0 告警")
+
+    # ---- 宿主目标（Windows）也要查告警（附录 HB）----
+    # 门禁里本来就有 cargo build，但它**只看退出码** —— 而 cargo 有告警也返回 0。
+    # 所以"Windows 侧 0 告警"这个声称此前也没有东西在看（与附录 GR 的 musl 情况同形）。
+    host = subprocess.run(
+        ["cargo", "build", "--workspace", "--all-targets", "--offline", "--locked"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    out = host.stdout + host.stderr
+    hw = [line for line in out.splitlines()
+          if line.startswith("warning") and "generated" not in line]
+    if host.returncode != 0:
+        print(f"\n[FAIL] 宿主目标构建失败（退出码 {host.returncode}）")
+        return 1
+    if hw:
+        print(f"\n[FAIL] 宿主目标（Windows）有 {len(hw)} 条告警：")
+        for line in hw[:8]:
+            print(f"        {line[:100]}")
+        print("宿主目标告警门禁未通过")
+        return 1
+    print("宿主目标（Windows）告警门禁通过：0 告警")
     return 0
 
 

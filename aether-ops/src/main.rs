@@ -52,6 +52,58 @@ fn log_alert_due(last_round: Option<u64>, round: u64) -> bool {
     }
 }
 
+/// 诊断报告目录最多保留多少个文件。
+///
+/// 为什么需要（2026-10-06 审计 HB）：`/var/diag` 是**持久化分区**上的目录，
+/// 每份报告几 KB。附录 HA 已经给"写报告"加了速率节流（同一单元 5 分钟一份），
+/// 但**目录本身没有上限** —— 服务多、故障多的时候仍会慢慢堆。
+/// 200 份 ≈ 几 MB，足够回看，又不会撑满分区。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // 仅 Linux 构建会调用（附录 HB）
+const MAX_DIAG_FILES: usize = 200;
+
+/// 该删哪些文件，才能把目录压到上限以内（**纯函数**，便于单测）。
+///
+/// 入参是 `(文件名, 修改时间秒)`；返回要删的文件名（最旧的先删）。
+/// 只保留最新的 `max` 个；不超过上限时返回空。
+/// 时间相同时按文件名兜底排序，保证**同一份输入永远得到同一份输出**（确定性）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // 仅 Linux 构建会调用（附录 HB）
+fn files_to_prune(mut entries: Vec<(String, u64)>, max: usize) -> Vec<String> {
+    if entries.len() <= max {
+        return Vec::new();
+    }
+    entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let drop_n = entries.len() - max;
+    entries.drain(..drop_n).map(|(name, _)| name).collect()
+}
+
+/// 按上限清理 `/var/diag`。
+///
+/// 读目录失败、或读不到修改时间时**跳过**（不阻断本次报告写入）——
+/// 与 `perm.rs::rotate_if_needed` 的取舍一致：轮转失败不该让主流程失败。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // 仅 Linux 构建会调用（附录 HB）
+fn prune_diag_dir(dir: &str) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let entries: Vec<(String, u64)> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let ts = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            (name, ts)
+        })
+        .collect();
+    for name in files_to_prune(entries, MAX_DIAG_FILES) {
+        let _ = std::fs::remove_file(std::path::Path::new(dir).join(name));
+    }
+}
+
 /// 诊断报告目录（有持久化分区时随 /var 落盘保留）。
 #[cfg(target_os = "linux")]
 const DIAG_DIR: &str = "/var/diag";
@@ -98,6 +150,8 @@ fn emit_report(
         Ok(_) => println!("aether-ops: 诊断报告已保存 {path}"),
         Err(e) => println!("aether-ops: 诊断报告落盘失败（{e}）"),
     }
+    // 目录上限（附录 HB）：不设上限的话，故障多的机器会慢慢堆满 /var。
+    prune_diag_dir(DIAG_DIR);
 }
 
 fn main() {
@@ -234,6 +288,47 @@ fn run() -> anyhow::Result<()> {
             );
         }
         std::thread::sleep(Duration::from_secs(INTERVAL_SECS));
+    }
+}
+
+#[cfg(test)]
+mod diag_prune_tests {
+    use super::{files_to_prune, MAX_DIAG_FILES};
+
+    fn e(name: &str, ts: u64) -> (String, u64) {
+        (name.to_string(), ts)
+    }
+
+    #[test]
+    fn 不超过上限时什么都不删() {
+        let v = vec![e("a", 1), e("b", 2), e("c", 3)];
+        assert_eq!(files_to_prune(v, MAX_DIAG_FILES), Vec::<String>::new());
+    }
+
+    #[test]
+    fn 刚好等于上限时什么都不删() {
+        let v: Vec<_> = (0..10).map(|i| e(&format!("f{i}"), i)).collect();
+        assert_eq!(files_to_prune(v, 10), Vec::<String>::new());
+    }
+
+    #[test]
+    fn 超过上限时删最旧的_保留最新的() {
+        let v: Vec<_> = (0..15).map(|i| e(&format!("f{i}"), i)).collect();
+        assert_eq!(files_to_prune(v, 10), vec!["f0", "f1", "f2", "f3", "f4"]);
+    }
+
+    #[test]
+    fn 时间相同时按文件名兜底_结果确定() {
+        let a = vec![e("b", 7), e("a", 7), e("c", 7)];
+        let b = vec![e("c", 7), e("b", 7), e("a", 7)];
+        assert_eq!(files_to_prune(a, 1), files_to_prune(b, 1));
+        assert_eq!(files_to_prune(vec![e("b", 7), e("a", 7), e("c", 7)], 1), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn 空目录不_panic() {
+        assert_eq!(files_to_prune(Vec::new(), 10), Vec::<String>::new());
+        assert_eq!(files_to_prune(Vec::new(), 0), Vec::<String>::new());
     }
 }
 
