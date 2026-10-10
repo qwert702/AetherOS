@@ -35,10 +35,18 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def run_check() -> str:
-    return subprocess.run(
-        [sys.executable, "scripts/repo-stats.py", "--check"],
-        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
-    ).stdout
+    """跑**两个**检查（附录 GT）：规模（repo-stats）+ 数字（doc-numbers-check）。
+
+    原来只跑前者，而后者管的是测试数 / 门禁数 / 附录数 ——
+    于是这三类错了，同步脚本照样宣布"已收敛"（实测注入 749/21/142 后一个都没修）。
+    """
+    parts = []
+    for script, *args in (("repo-stats.py", "--check"), ("doc-numbers-check.py",)):
+        parts.append(subprocess.run(
+            [sys.executable, f"scripts/{script}", *args],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        ).stdout)
+    return "\n".join(parts)
 
 
 def find_doc(name: str) -> Path | None:
@@ -190,6 +198,29 @@ def sync_once(dry: bool) -> int:
                     w += int(parts[2])
                     a += int(parts[3])
 
+    # ---- 6) 测试数 / 门禁数 / 附录数（附录 GT）----
+    # 这三类此前**既不同步、也不检查**：run_check() 只跑 repo-stats --check（只管规模），
+    # 于是"已收敛"是假声明 —— 实测注入 749/21/142 后它一个都没修，还说收敛。
+    dn = subprocess.run([sys.executable, str(ROOT / "scripts" / "doc-numbers-check.py")],
+                        cwd=ROOT, capture_output=True, text=True, encoding="utf-8").stdout
+    rep = find_doc("收尾报告（FINAL）-2026-10-04.md")
+    if rep is not None:
+        s = before = read(rep)
+        for line_pat, old_pat, new_tpl in (
+            (r"① 测试数：文档 ([\d,]+) / 实测 ([\d,]+)", r"\*\*([\d,]+) 项全绿\*\*", "**{n} 项全绿**"),
+            (r"② 门禁数：文档 ([\d,]+) / 本次运行 ([\d,]+)", r"\*\*([\d,]+) 项全过\*\*", "**{n} 项全过**"),
+            (r"③ 审计附录：文档 ([\d,]+) / 实测 ([\d,]+)", r"\| 审计附录 \| (\d+) 篇 \|", "| 审计附录 | {n} 篇 |"),
+        ):
+            m = re.search(line_pat, dn)
+            if not m:
+                continue
+            if m.group(1) != m.group(2):
+                s = re.sub(old_pat, new_tpl.format(n=m.group(2)), s, count=1)
+        if s != before:
+            write(rep, s, dry)
+            changed += 1
+            print(f"  数字 {rep.name}: 测试/门禁/附录 已按实测修正")
+
     return changed
 
 
@@ -211,7 +242,7 @@ def main() -> int:
         for l in bad[:8]:
             print("  " + l.strip()[:150])
         return 1
-    print(f"已收敛：共改动 {total} 处，`repo-stats.py --check` 全部通过 ✓")
+    print(f"已收敛：共改动 {total} 处，规模 + 数字两个门禁全部通过 ✓")
     return 0
 
 
