@@ -108,6 +108,26 @@ def main() -> int:
         if doc_en_tests != real_tests:
             problems.append(f"README.en 测试数：文档 {doc_en_tests}，实测 {real_tests}")
 
+    # ③d **同一事实的全部写法**（附录 GP）：门禁只认一种写法的话，
+    # 第二种写法就会静默漂移（INDEX 头部行就是这么漏的，附录 GO）。
+    for _label, _path, _pat, _expect in (
+        ("README.md Windows 行", README, r"Windows (\d+) 项全绿", real_tests),
+        ("README.en Beyond 行", README_EN, r"Beyond the (\d+) unit tests", real_tests),
+        ("收尾报告 自引用行", REPORT, r"「(\d+) 项测试 / (\d+) 项门禁」", (real_tests, real_gates)),
+        ("收尾报告 验收命令注释", REPORT, r"# (\d+) 项门禁（含", real_gates),
+    ):
+        if not _path.exists():
+            continue
+        _txt = _path.read_text(encoding='utf-8')
+        _hits = re.findall(_pat, _txt)
+        _vals = []
+        for _h in _hits:
+            _vals.append(tuple(int(x.replace(",", "")) for x in _h) if isinstance(_h, tuple)
+                         else int(_h.replace(",", "")))
+        print(f"③d {_label}：{_vals} / 期望 {_expect}")
+        if len(_vals) != 1 or _vals[0] != _expect:
+            problems.append(f"{_label}：文档 {_vals}，期望 {_expect}")
+
     # ③ 审计附录数
     real_apps = len(re.findall(r'^## 附录', AUDIT.read_text(encoding='utf-8'), re.M))
     doc_apps = declared(text, r'\| 审计附录 \| (\d+) 篇 \|')
