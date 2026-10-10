@@ -157,6 +157,10 @@ def main() -> int:
     # 本批一跑，desktop-clean 已漂 79.5%。基线躺着不动 ≠ 基线被核对。
     steps.append(("归档走查图门禁（逐像素 vs assets/ui-archive/）",
                   [PY, "scripts/archive-ui-shots.py", "--check"]))
+    # 基线门禁（2026-10-06 加，附录 GZ）：仓库里的"基线"必须有人比对，
+    # 而且那个比对必须在门禁里 —— assets/ui-archive 漂了 79% 才被发现，就是这个原因。
+    steps.append(("基线门禁（每份基线都有门禁内的比对）",
+                  [PY, "scripts/baseline-wired-check.py"]))
     steps.append(("文档规模门禁（三层 + 集合相等）",
                   [PY, "scripts/repo-stats.py", "--check"]))
     steps.append(("站点门禁（页面/发布事实/脚本哈希）",
