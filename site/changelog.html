@@ -45,6 +45,67 @@
 
 <section><div class="wrap">
   <div class="log">
+<p># 2026-10-14：装机验证 + 依赖 CVE 收口 + 审计文档纠偏</p>
+<h2 id="33">一、装机验证（台账 #33 后半段）—— <strong>四项判据全过</strong></h2>
+<p>此前 ISO 重建好了、isohybrid 也验证了，但<strong>没有人真的装过一次机</strong>。今天做了：</p>
+<table><tbody>
+  <tr><td>步</td><td>判据</td><td>实测</td></tr>
+  <tr><td>① 起 ISO</td><td>系统起来、五服务 ✓</td><td><code>巡检#1 … 服务=aetherd=✓ compositor=✓ getty=✓ network=✓ ops=✓</code></td></tr>
+  <tr><td>② 安装器</td><td>目标盘出现分区、持久化分区建好</td><td><code>sda: sda1 sda2</code> + <code>EXT4-fs (sda2): mounted … / unmounting …</code></td></tr>
+  <tr><td>③ 从盘引导</td><td><strong>拔掉光驱</strong>也能独立引导</td><td><code>[aether-init] 持久化分区已挂载: /dev/sda2 -&gt; /var（nodev,nosuid,errors=remount-ro）</code></td></tr>
+  <tr><td>④ 持久化</td><td>重启后 <code>/var</code> 的写入仍在</td><td>探针 <code>probe-1014</code> 重启后仍在盘上；<code>/var/boot.log</code> 记录 <strong>第 1 次 → 第 2 次</strong> 递增</td></tr>
+</tbody></table>
+<p>证据：<a href="../docs/证据/装机验证（INSTALL-VERIFY）-2026-10-14.md">装机验证（INSTALL-VERIFY）-2026-10-14.md</a></p>
+<p><strong>在哪做的、以及为什么不是构建机</strong>（如实记）：</p>
+<p>* 构建机内的 QEMU 是<strong>三层嵌套</strong>（Hyper-V → VirtualBox → QEMU）。QEMU 一起来，</p>
+<p>  guest 的 sshd 就饿到<strong>无法完成认证</strong>（paramiko 与 OpenSSH 都报</p>
+<p>  <code>Connection timed out during banner exchange</code>）；把构建机 2 vCPU 加到 4 vCPU 也没救。</p>
+<p>* 于是改在<strong>宿主上的 VirtualBox（headless）</strong>做：按键注入可用、<strong>串口落盘</strong>（全部观测都是文本）、</p>
+<p>  启动只要 10 秒。复现命令写进了证据文件。</p>
+<p>* 顺带得到一条自动化经验：<strong>注入的按键会被合成器（evdev 直读）与 tty1 的 getty 同时看到</strong> ——</p>
+<p>  安装命令既进了 AI 指令条、也进了 root shell。所以"AI 栏有没有收到"不能当按键送达的判据。</p>
+<p><strong>没覆盖的</strong>（别当全绿）：真机（#32）仍要物理机；安装器的交互式路径与 <code>--wipe</code> 破坏性路径本次没走。</p>
+<h2 id="cve-49-1">二、依赖 CVE 核对（台账 #49）—— <strong>发现 1 条真漏洞并修掉</strong></h2>
+<p><strong>"离线环境无法核对"这句只对构建机成立</strong>：这台开发机 <code>crates.io</code> 可达、RustSec advisory-db 能拉。</p>
+<table><tbody>
+  <tr><td>项</td><td>结果</td></tr>
+  <tr><td>扫描规模</td><td>1310 条公告 · 154 个依赖</td></tr>
+  <tr><td>漏洞</td><td><strong><code>rustls 0.23.43</code> · RUSTSEC-2026-0285</strong>（TLS 1.3 握手跨加密层级，medium 5.3）</td></tr>
+  <tr><td>处置</td><td><code>cargo update -p rustls</code> → <strong>0.23.46</strong> + <code>cargo fetch --locked</code>（否则 <code>--offline</code> 构建会报"要发 HTTP 请求"）</td></tr>
+  <tr><td>复验</td><td><code>cargo audit</code> → <strong>0 vulnerabilities</strong>；<code>cargo build/test --offline --locked</code> → <strong>768 项全绿</strong></td></tr>
+  <tr><td>残留</td><td>2 条 <strong>unmaintained</strong> 警告（<code>instant</code>、<code>ttf-parser</code>）<strong>已评估并接受</strong>；<strong>故意不写进 ignore 名单</strong>，让每次审计都能重新看到</td></tr>
+</tbody></table>
+<p><strong>两条踩过的坑</strong>：① <code>cargo install cargo-audit</code> 在本机<strong>必然失败</strong>（没有 MSVC Build Tools、</p>
+<p>mingw 又缺 <code>libgcc_eh</code>，仓库靠 <code>rust-lld</code> 才能编译自己）→ 改用官方<strong>预编译</strong>包；</p>
+<p>② 本机代理对 GitHub 是<strong>抖动</strong>的（同一条下载出现过 <code>schannel: handshake failed</code>、</p>
+<p>也出现过"HTTP 200 但只下了 587 KB"）→ <strong>下载后必须比大小</strong>，别信状态码。</p>
+<p>证据：<a href="../docs/证据/依赖CVE（CVE-AUDIT）-2026-10-14.md">依赖CVE（CVE-AUDIT）-2026-10-14.md</a> + 原始 JSON。</p>
+<h2 id="">三、安全审计文档纠偏：<strong>同一事实两张表互相矛盾</strong></h2>
+<p>审计报告里有两张状态表：前面那张"汇总表"停在轮次 B，后面那张"按轮次表"是最新的。</p>
+<p><strong>H-5 与 M-4…M-9 在汇总表里还写着 ❌ 未修，而代码与轮次表都已是 ✅</strong>（M-6/M-7 我逐行核对了代码：</p>
+<p><code>aether-ops/src/monitor.rs:245-269</code> 已按字节读 + 有损解码；<code>aether-install/src/main.rs:129/:153</code></p>
+<p>已有 <code>canonicalize_disk</code> + <code>same_device</code> 含回归测试）。</p>
+<p>处置：逐条对齐汇总表、加一条"<strong>本表是快照，权威状态以轮次表为准</strong>"的警示、并更新 H-6</p>
+<p>（产物已重建并验证、尚未上传）。这正是本项目反复吃过的亏 —— <strong>同一事实两处记录、一处过期</strong>。</p>
+<h2 id="github">四、提交与推送（此前 GitHub 落后两周）</h2>
+<p>* <code>a75dd9c</code> 批次 HI-1：通知正文双语全量收口 + ISO 构建链 4 处缺陷 + 3 条新门禁（38 文件 / +3249 −394）</p>
+<p>* <code>1c223e3</code> 批次 HI-2：站点发布事实与门禁证据对齐（<code>generated</code> 跟随最近提交日期 + <code>gate-count</code> 记全量 33）</p>
+<p>* <strong>顺带发现</strong>：本地比 <code>origin/main</code> 领先 <strong>233 个提交</strong> —— 远端最后一次是 <strong>2026-10-02</strong>，</p>
+<p>  也就是说<strong>两周的提交一个都没推上去</strong>（"GitHub 记录不对"的真正原因）。</p>
+<p>* <strong>推送踩坑</strong>：本机 git 走代理 <code>127.0.0.1:7897</code>，第一次握手被中断</p>
+<p>  （<code>schannel: server closed abruptly</code>），直连又是不通的 —— <strong>原样重试一次就成功</strong>。</p>
+<h2 id="">五、本日新增/变更的脚本</h2>
+<p>* <code>scripts/vm-install-verify.sh</code>（新）：构建机内<strong>一键跑完</strong>装机验证四步并输出</p>
+<p>  <code>install-verify.log</code>（含 <code>RESULT=PASS/FAIL</code> 与逐条判据）。<strong>本次没用上它</strong>（构建机不可用），</p>
+<p>  但它是"构建机可用时"的正规路径，判据阈值与手册 §4 一一对应。</p>
+<p>* 判据仍是 <strong>33 项</strong>全绿；测试 <strong>768 项</strong>；规模 51,138 行 / 71 文件。</p>
+<h2 id="">六、仍未做（明确列出来）</h2>
+<p>1. <strong>发布</strong>：新 ISO（41.0 MB / <code>sha256=162b19a7…</code>）<strong>未上传 Release</strong>，<code>site/release.json</code></p>
+<p>   仍指旧资产（38.5 MB / 2026-09-29）。顺序见《镜像重建手册》§5（先上传、再算<strong>资产</strong>哈希、再改 release.json）。</p>
+<p>2. <strong>真机验收（#32）</strong>：45 项要走物理机（U 盘 dd、装盘、断电、ALSA、真实键鼠）。</p>
+<p>3. <strong>#46 mono 字体子集化</strong>：今天在 guest 里<strong>现场复现</strong>了缺字体</p>
+<p>   （<code>无可用字体，尝试过 […NotoSansMonoCJKsc-Regular.otf…]</code>），构建侧那一步还没做。</p>
+<p>4. <strong>M-13 多行粘贴实测</strong>：需要在一个带终端的 guest 里真粘一次（本次的测试 VM 没开终端）。</p>
 <p># 2026-10-03 ~ 2026-10-11 更新（补记）</p>
 <p>&gt;</p>
 <h2 id="">一、这段时间你能看到什么（九个能力从"没有"到"能用"）</h2>
@@ -219,9 +280,11 @@
 <p>   &gt; <code>offset 510 = 55aa</code>（isohybrid 生效）+ VMware 启动进桌面。<strong>装机验证与发布仍未做</strong>，</p>
 <p>   &gt; 所以"v0.1.0 那版不能 dd"这句<strong>对已发布的旧资产依然成立</strong>（新产物尚未上传）。</p>
 <p>3. <strong>依赖的已知 CVE 无法核对</strong>（离线环境）。</p>
-<p>   &gt; <strong>2026-10-14 更正</strong>：这句只对<strong>构建机</strong>成立 —— 这台开发机（Windows 宿主）</p>
-<p>   &gt; <strong>crates.io:443 可达</strong>（已实测），所以台账 #49 的 CVE 核对是可以做的，</p>
-<p>   &gt; 不该继续记成"环境阻塞"。（本批尚未跑：先提交，随后单独做。）</p>
+<p>   &gt; <strong>2026-10-14 已做</strong>：这句只对<strong>构建机</strong>成立 —— 这台开发机（Windows 宿主）</p>
+<p>   &gt; <strong>crates.io:443 可达</strong>（已实测），所以台账 #49 的核对是可以做的，不该记成"环境阻塞"。</p>
+<p>   &gt; 实跑结果：<strong>1 条真漏洞</strong>（<code>rustls 0.23.43</code> · RUSTSEC-2026-0285 · medium）→ 升级到</p>
+<p>   &gt; <strong>0.23.46</strong> 修掉，复验 0 漏洞；另 2 条 unmaintained 警告已评估接受。</p>
+<p>   &gt; 见 <a href="../docs/证据/依赖CVE（CVE-AUDIT）-2026-10-14.md"><code>依赖CVE（CVE-AUDIT）-2026-10-14.md</code></a>。</p>
 <p><strong>待办里最该先处理的一条</strong>（2026-10-11 新发现，登记在台账 §9.3）：</p>
 <p><code>aether-compositor/src/widgets.rs:22</code> 的 <code>#![allow(dead_code)]</code> 挂着一条<strong>已经到期的承诺</strong></p>
 <p>（"P3 完成后必须删掉这一行"），而 P3 <strong>已经完成</strong>。</p>
