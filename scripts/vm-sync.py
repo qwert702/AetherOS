@@ -38,10 +38,12 @@ from __future__ import annotations
 import argparse
 import os
 import posixpath
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import vm  # noqa: E402
+# 注意：`import vm` 推迟到 `main()` 里 —— 它要 paramiko，而 `--selftest` 只验纯函数，
+# 没装 paramiko 的 Python（比如 dsh 内置运行时）也应该能跑这条自检。
 
 REMOTE_ROOT = "/home/aether"
 
@@ -50,10 +52,48 @@ TEXT_EXT = {".rs", ".toml", ".sh", ".py", ".md", ".cfg", ".conf", ".txt",
             ".html", ".in", ".mk", ".json", ".c", ".h", ".ps1", ".yml", ".yaml"}
 TEXT_NAMES = {"init", "Cargo.lock", "Cargo.toml"}
 
-#: 需要恢复可执行位的路径（overlay 里的启动脚本）。
-EXECUTABLE = ["platform/overlay/init"]
+#: `git` 不可用时的兜底名单（至少要保证 ISO 构建能跑起来的那几个）。
+EXECUTABLE = [
+    "platform/overlay/init",
+    "platform/br2-external/board/aether/post-build.sh",
+    "platform/build-iso.sh",
+]
+
+
+def executable_from_git(root: str) -> list[str]:
+    """从 git 索引的 mode 位取出"该有 `+x`"的文件清单。
+
+    为什么必须这么做（2026-10-11 实测事故）：SFTP **不保留可执行位**，而 Windows
+    工作树本身也不带这个信息。第一版只写了 `platform/overlay/init` 一个白名单路径，
+    结果 `platform/br2-external/board/aether/post-build.sh` 上传后丢了 `+x`，
+    Buildroot 一路跑到 `target-finalize` 才报：
+
+        /bin/bash: …/post-build.sh: Permission denied
+        make[1]: *** [Makefile:752: target-finalize] Error 126
+
+    —— 失败点离原因（同步）很远，白花了一轮构建。git 索引是 Windows 上
+    **唯一可靠**的 mode 来源（`core.filemode` 不跟踪本地 chmod，但仓库里
+    提交过的 100755 位一直在）。
+    """
+    try:
+        out = subprocess.run(["git", "ls-files", "--stage"], cwd=root,
+                             capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"  警告：读 git 索引失败（{exc}），退回内置名单")
+        return []
+    if out.returncode != 0:
+        print("  警告：这不是 git 工作树，退回内置名单")
+        return []
+    files: list[str] = []
+    for line in out.stdout.splitlines():
+        meta, _, path = line.partition("\t")
+        if path and meta.split(" ", 1)[0] == "100755":
+            files.append(normalize(path))
+    return files
 
 #: 永不覆盖：Buildroot 构建树与产物（几十分钟的编译成果）。
+#: **注意这里必须按"路径段"比较**（见 `skipped()`）：写成纯前缀会让
+#: `platform/build-iso.sh` 也被当成 `platform/build` 的子路径一起跳过。
 SKIP_PREFIX = ("platform/build", "platform/output")
 
 
@@ -66,7 +106,15 @@ def skipped(rel: str) -> bool:
     first = r.split("/")[0]
     if first in (".git", "target", ".temp", "__pycache__", "node_modules"):
         return True
-    return r.startswith(SKIP_PREFIX)
+    # 按**路径段**判前缀，不是字符串前缀。2026-10-11 实测事故：`r.startswith(...)`
+    # 让 `platform/build-iso.sh` 命中了 `platform/build` → 构建机上的 `build-iso.sh`
+    # 一直是 **2026-09-30 的旧版**，里面**没有** isohybrid + MBR 自检那一段
+    # （那是 2026-10-02 审计 H-6 才加的）。后果有两个，都很隐蔽：
+    #   1. 日志里根本没有 "isohybrid" 这一行，而构建**照样报 PASS**；
+    #   2. 产出的 ISO 前 512 字节全零、无 `0x55AA` —— 只能光盘引导，
+    #      `aether-install` 却要求"M6 源镜像带 MBR 签名"，等于把装机堵死，
+    #      而台账 #33 的验收里恰恰写着"MBR 签名自检"。
+    return any(r == p or r.startswith(p + "/") for p in SKIP_PREFIX)
 
 
 def is_text(rel: str) -> bool:
@@ -74,10 +122,55 @@ def is_text(rel: str) -> bool:
     return os.path.splitext(base)[1].lower() in TEXT_EXT or base in TEXT_NAMES
 
 
+def selftest() -> int:
+    """自检：跳过规则只能跳**真正的构建树**（含正向对照）。
+
+    2026-10-11 的真实事故：`r.startswith(("platform/build", "platform/output"))`
+    按**字符串前缀**判断，于是 `platform/build-iso.sh` 被当成 `platform/build` 的
+    子路径一起跳过 —— 构建机上的 `build-iso.sh` 一直是 2026-09-30 的旧版，
+    里面**没有** isohybrid + MBR 自检（2026-10-02 审计 H-6 才加的）。
+    后果是"构建报 PASS，但产出的 ISO 前 512 字节全零、无 `0x55AA`"，
+    把 `aether-install` 的装机前提堵死，而没有任何判据会响。
+    """
+    cases = [
+        # (相对路径, 是否应当被跳过)
+        ("platform/build-iso.sh", False),          # ← 事故本体：脚本必须同步
+        ("platform/build", True),
+        ("platform/build/buildroot-2024.02.1/x", True),
+        ("platform/build/output/images/rootfs.iso9660", True),
+        ("platform/output/host/bin/isohybrid", True),
+        ("platform/br2-external/board/aether/post-build.sh", False),
+        ("platform/overlay/init", False),
+        (".git/config", True),
+        ("target/debug/aether-compositor.exe", True),
+        ("scripts/vm-sync.py", False),
+    ]
+    failed = 0
+    for rel, want in cases:
+        got = skipped(rel)
+        mark = "OK  " if got == want else "FAIL"
+        if got != want:
+            failed += 1
+        print(f"  [{mark}] {rel}: 期望{'跳过' if want else '同步'}，"
+              f"实得{'跳过' if got else '同步'}")
+    if failed:
+        print(f"[FAIL] 自检不通过：{failed} 个用例与期望不符")
+        return 1
+    print(f"[ OK ] 自检通过（{len(cases)} 个用例，含"
+          f"「脚本不该被跳过」这条正向对照）")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="同步本地工作树到构建机（SFTP + LF 归一化）。")
     ap.add_argument("--only", nargs="*", help="只同步这些顶层目录/文件")
+    ap.add_argument("--selftest", action="store_true", help="只验跳过规则（不需要 paramiko）")
     args = ap.parse_args(argv)
+    if args.selftest:
+        return selftest()
+
+    import vm  # 延迟导入：见文件上方注释（paramiko 只在真正同步时才需要）
+
     root = os.getcwd()
 
     c = vm.client()
@@ -122,14 +215,20 @@ def main(argv: list[str]) -> int:
             sftp.putfo(__import__("io").BytesIO(data), remote)
             count += 1
             total += len(data)
-    for rel in EXECUTABLE:
+    # 可执行位：优先用 git 索引（覆盖全部 45 个脚本），读不到才退回内置名单。
+    exe = executable_from_git(root) or list(EXECUTABLE)
+    source = "git 索引" if exe is not EXECUTABLE else "内置名单"
+    fixed = 0
+    for rel in exe:
         try:
             sftp.chmod(posixpath.join(REMOTE_ROOT, rel), 0o755)
+            fixed += 1
         except IOError as e:
             print("  警告：无法设置可执行位 %s: %s" % (rel, e))
     sftp.close()
     c.close()
     print("已同步 %d 个文件（%.1f MB），其中 %d 个做了 CRLF→LF" % (count, total / 1048576, converted))
+    print("已按 %s 恢复 %d 个文件的可执行位" % (source, fixed))
     print("提醒：**不要在构建机上跑 git reset --hard**（见本文件头注释）")
     return 0
 

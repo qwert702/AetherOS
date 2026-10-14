@@ -18,3 +18,19 @@ ureq = { version = "2", features = ["json"] }
 # 选 ring 是因为它**本来就在依赖树里**（ureq→rustls→ring），直接依赖不引入新代码；
 # 而且自己实现 SHA-256 属于"不要手搓密码学"的禁忌区。
 ring = "0.17"
+
+# 平台层对时（`timesync.rs` 里 `#[cfg(unix)]` 的 `apply_offset_platform`）要直接调
+# `clock_gettime` / `clock_settime` / `adjtime`，所以必须依赖 libc —— 与其它 crate
+# （aether-compositor / aether-init / aether-install / aether-ipc）的写法保持一致。
+#
+# 为什么这个缺口能藏到 2026-10-11 才被发现（**首次真正重建 ISO 时才炸**）：
+#   1. Windows 上 `cfg(unix)` 整段不参与编译 → 本地永远编译不到这几行；
+#   2. 项目的 musl 检查（`scripts/musl-warn-check.py`）**特意跳过 aetherd**
+#      （ring 需要 musl-gcc 交叉编译），于是这条路径也没人走；
+#   3. SNTP 对时是 2026-10-03 才加的（`c673224`），而最后一次成功的 ISO 构建是
+#      2026-09-29 → **ISO 从 10-03 起就再也构建不出来**，直到今天重建才暴露
+#      （台账 #33「ISO 未重构建」的真正后果）。
+# 教训：`cfg(unix)` / `cfg(target_os = ...)` 这类平台分支必须在**该平台**上有一次
+# 真实编译，否则它只是"看起来存在"的代码。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

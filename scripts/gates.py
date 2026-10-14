@@ -112,10 +112,22 @@ def main() -> int:
         steps.append(("布局几何（越界 / 重叠）",
                       [PY, "scripts/layout-check.py", "--strict"]))
         # i18n 完整性：`pick`/`tr` 的**英文位**不得含中文（漏译信号）。
-        # 脚本**断言扫描覆盖面**（实测 270 个调用，阈值 200）—— 解析器一坏就报错，
+        # 脚本**断言扫描覆盖面**（实测 379 个调用，阈值 250）—— 解析器一坏就报错，
         # 而不是静默报 0（附录 FD 记了这条：那个 0 不是证据）。
+        # 2026-10-11（§3.5 遗留项 #43）：覆盖范围扩到 `toast_msg*` / `ToastMsg::new`
+        # —— 通知正文也有英文位了。
         steps.append(("i18n 完整性（英文位不得含中文）",
                       [PY, "scripts/i18n-check.py"]))
+        # 判据自检：往合成源码片段里注入"英文位写中文"必须判红（含 `*_EN` 常量那条）。
+        # 加它的直接原因：自检第一次跑就抓到 `*_EN` 正则只认两段以上的名字（静默漏检）。
+        steps.append(("i18n 判据自检（正向对照真的会响）",
+                      [PY, "scripts/i18n-check.py", "--selftest"]))
+        # 通知正文双语覆盖（§3.5 遗留项 #43）：每个 `push_toast` 的正文必须是
+        # `ToastMsg` 表达式或外部来源；裸标识符算通过（类型即保证，编译器是那条硬保证）。
+        steps.append(("通知正文双语覆盖（push_toast 全部结构化）",
+                      [PY, "scripts/toast-i18n-audit.py", "--check"]))
+        steps.append(("通知正文审计器自检（逐条比对分类）",
+                      [PY, "scripts/toast-i18n-audit.py", "--selftest"]))
         # 分析函数自检：证明判据**真的会响**（合成 BMP 喂给 ⑧ / overlap / content_colors）。
         # 一个从不触发的判据等于没有判据 —— 同时**如实断言** ⑧ 的已知盲点。
         steps.append(("布局分析函数自检（判据真的会响）",
@@ -190,12 +202,39 @@ def main() -> int:
     # 所以同一次运行内自洽：改了门禁步骤数 → 这一步当场红，逼着改文档。
     steps.append(("文档数字一致性（测试 / 门禁 / 附录）",
                   [PY, "scripts/doc-numbers-check.py"]))
+    # 台账（功能缺口清单 §9.1）的类别数：**表头自称"由脚本统计"**，
+    # 而 2026-10-11 复核发现仓库里根本没有那个脚本 —— 这一条把它变成真的。
+    steps.append(("台账类别数（§9.1 与表内实际一致）",
+                  [PY, "scripts/ledger-count-check.py"]))
+    steps.append(("台账门禁判定逻辑自检",
+                  [PY, "scripts/ledger-count-check.py", "--selftest"]))
+    # **依赖声明检查**（2026-10-11 真实事故，台账 #53）：`aetherd` 的 SNTP 对时用了
+    # `libc::clock_settime` 却没声明 libc —— Windows 上那段在 `#[cfg(unix)]` 里不编译，
+    # musl 检查又特意跳过 aetherd，两条判据同时漏掉，结果 **ISO 从 10-03 起就构建不出来**。
+    # 这一步是**纯静态**的：不看平台、不管能不能编译，用到就必须声明。
+    steps.append(("依赖声明检查（用到就必须声明）",
+                  [PY, "scripts/crate-dep-check.py", "--check"]))
+    steps.append(("依赖声明判据自检（正向对照真的会响）",
+                  [PY, "scripts/crate-dep-check.py", "--selftest"]))
+    # **同步工具的跳过规则**（2026-10-11 真实事故）：`vm-sync.py` 原先按**字符串前缀**
+    # 跳 `platform/build*`，于是 `platform/build-iso.sh` 从未被上传 —— 构建机一直用
+    # 2026-09-30 的旧脚本（没有 isohybrid + MBR 自检），构建**照样报 PASS**，
+    # 而产出的 ISO 前 512 字节全零、无 `0x55AA`，装机的 M6 前提被静默堵死。
+    # 这条自检不需要 paramiko（纯函数），所以能进日常门禁。
+    steps.append(("同步工具跳过规则自检（脚本不该被跳过）",
+                  [PY, "scripts/vm-sync.py", "--selftest"]))
     steps.append(("Python 语法检查", [PY, "-m", "py_compile", *[
         str(p.relative_to(ROOT)) for p in sorted((ROOT / "scripts").glob("*.py"))
     ]]))
 
-    # 把本次运行的步骤数落盘（**跑之前**写，见上一步的说明）
-    (ROOT / "docs" / "证据" / "gate-count.txt").write_text(f"{len(steps)}\n", encoding="utf-8")
+    # 把本次运行的步骤数与**模式**落盘（跑之前写，见上一步的说明）。
+    # 第二行的 `fast` / `full` 是给文档数字判据看的：`--fast` 只跑子集，
+    # 与文档里声明的"全量步数"本来就不可比 —— 不标记的话这一步**必然判红**
+    # （2026-10-11 实测：`gates.py --fast` 退出码 1，红的是文档数字而不是代码）。
+    mode = "fast" if args.fast else "full"
+    (ROOT / "docs" / "证据" / "gate-count.txt").write_text(
+        f"{len(steps)}\n{mode}\n", encoding="utf-8"
+    )
 
     failed: list[str] = []
     for name, cmd in steps:

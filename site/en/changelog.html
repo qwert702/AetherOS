@@ -199,8 +199,8 @@
 <h2 id="2026-10-11">九、验证（截至 2026-10-11）</h2>
 <table><tbody>
   <tr><td>项</td><td>结果</td></tr>
-  <tr><td>测试</td><td><strong>761 项全绿</strong>（0 失败）</td></tr>
-  <tr><td>门禁</td><td><strong>25 项全过</strong></td></tr>
+  <tr><td>测试</td><td><strong>768 项全绿</strong>（0 失败）</td></tr>
+  <tr><td>门禁</td><td><strong>30 项全过</strong></td></tr>
   <tr><td>Windows 构建</td><td><strong>0 告警</strong></td></tr>
   <tr><td>musl 目标</td><td><strong>6/7 crate 能编译 + 0 告警</strong>（<code>aetherd</code> 因 <code>ring</code> 需 musl-gcc，不在检查范围）</td></tr>
   <tr><td>判据</td><td>① ② ⑤ ⑥ ⑦ ⑧ ⑨ ⑩ ⑪ <strong>全部有正向对照</strong>，且<strong>全部 = 0</strong></td></tr>
@@ -216,7 +216,13 @@
 <p>   <strong>不等于</strong>真机上能用。清单见台账 §9 的 #32、#33。</p>
 <p>2. <strong>ISO 未重构建</strong>：<code>isohybrid</code> 与 MBR 自检<strong>代码已补</strong>，但<strong>没有重新构建并装机验证过</strong></p>
 <p>   —— 所以 v0.1.0 那版"不能 dd 到磁盘引导"的更正<strong>仍然有效</strong>，不能因为代码补了就当作已修好。</p>
+<p>   &gt; <strong>已处理</strong>：本条在 §十二 落地 —— 2026-10-11 真的重建了镜像并独立验证</p>
+<p>   &gt; <code>offset 510 = 55aa</code>（isohybrid 生效）+ VMware 启动进桌面。<strong>装机验证与发布仍未做</strong>，</p>
+<p>   &gt; 所以"v0.1.0 那版不能 dd"这句<strong>对已发布的旧资产依然成立</strong>（新产物尚未上传）。</p>
 <p>3. <strong>依赖的已知 CVE 无法核对</strong>（离线环境）。</p>
+<p>   &gt; <strong>2026-10-14 更正</strong>：这句只对<strong>构建机</strong>成立 —— 这台开发机（Windows 宿主）</p>
+<p>   &gt; <strong>crates.io:443 可达</strong>（已实测），所以台账 #49 的 CVE 核对是可以做的，</p>
+<p>   &gt; 不该继续记成"环境阻塞"。（本批尚未跑：先提交，随后单独做。）</p>
 <p><strong>待办里最该先处理的一条</strong>（2026-10-11 新发现，登记在台账 §9.3）：</p>
 <p><code>aether-compositor/src/widgets.rs:22</code> 的 <code>#![allow(dead_code)]</code> 挂着一条<strong>已经到期的承诺</strong></p>
 <p>（"P3 完成后必须删掉这一行"），而 P3 <strong>已经完成</strong>。</p>
@@ -225,6 +231,167 @@
 <p><strong>在生产代码里确实没有调用点</strong>（只被自己的测试引用）。</p>
 <p>所以"删掉 allow"这个动作<strong>现在还不能执行</strong>，需要先决定这 5 个原语是接调用点、删除、还是保留待用；</p>
 <p>同时把注释从<strong>空头承诺</strong>改成<strong>当前仍成立的理由</strong>。</p>
+<h2 id="2026-10-11">十一、缺口清单收口批次（2026-10-11 晚间）</h2>
+<p><strong>基线（批次开始前实测）</strong>：<code>HEAD=c6874ad</code> · 761 项测试 · 25 项门禁 ·</p>
+<p>像素基线 <code>sha256=801b0e2d…</code>（57 档）· 归档图 20 张。</p>
+<h3>11.1 台账与门禁纠偏</h3>
+<table><tbody>
+  <tr><td>处置</td><td>内容</td></tr>
+  <tr><td><strong>一处台账失真</strong></td><td>#42「<code>Alt+Tab</code> 跳过/恢复最小化窗口」原登记为 📋 待办（说"现在会切到不可见的窗口"）——<strong>代码早就修了</strong>：<code>apply_nav</code> 在切到最小化窗口时恢复它，单测 <code>window_mgmt_tests::tab_restores_minimized_target</code> 通过（<code>064892d</code>）。已改为 ✅</td></tr>
+  <tr><td><strong>4 处过期数字</strong></td><td>README:36/:53 的「750 项单测」、INDEX:4 的「45 个 .rs」、收尾报告:20/:139 的 50,528 与 750 —— 全部对齐权威来源（51,111 行 / 71 文件 / 768 项）</td></tr>
+  <tr><td><strong>判据覆盖扩写</strong></td><td><code>doc-numbers-check.py</code> 新增 ③f：同一事实的<strong>其余写法</strong>（「除 N 项单测外」「Windows N 项」「N 个 .rs」、收尾报告的代码行数与测试数注释）。原先这些写法完全在判据之外</td></tr>
+  <tr><td><strong><code>--fast</code> 假红</strong></td><td><code>gates.py --fast</code> 一直退出码 1：子集步数（14）与文档声明的<strong>全量</strong>步数（25）天然不等。现在 <code>gate-count.txt</code> 带模式行，判据据此 <code>[SKIP] 子集模式</code> ——<strong>验收：<code>--fast</code> 退出码 0，全量语义不变</strong></td></tr>
+  <tr><td><strong>新的台账门禁</strong></td><td><code>scripts/ledger-count-check.py</code>：§9.1 表头那句「由脚本按上表实际统计」<strong>此前没有那个脚本</strong>（复核时确认），现在补上并进 <code>gates.py</code>；改错任一类别数即判红</td></tr>
+  <tr><td><strong>判据自检</strong></td><td><code>i18n-check.py --selftest</code>（13 例，含 5 条正向对照）、<code>ledger-count-check.py --selftest</code>（6 例，含 5 条）、<code>toast-i18n-audit.py --selftest</code>（16 例，逐条比对分类）</td></tr>
+</tbody></table>
+<h3>11.2 通知正文双语全量收口（§3.5 遗留项 #43）</h3>
+<p><strong>做法</strong>：把通知正文从"各发送方写好的 <code>String</code>"改成<strong>结构化双语类型</strong> <code>ToastMsg</code></p>
+<p>（<code>i18n.rs</code>），于是 <strong>"忘了英文"在编译期不成立</strong>：</p>
+<table><tbody>
+  <tr><td>步</td><td>内容</td></tr>
+  <tr><td>类型</td><td><code>ToastMsg { zh, en }</code> + <code>new</code> / <code>new_1</code> / <code>from_external</code>；<code>text()</code> 按当前语言取词</td></tr>
+  <tr><td>落点</td><td><code>push_toast(msg: ToastMsg)</code>；通知历史存<strong>两种语言</strong>（<code>Notice.msg</code>），切语言后历史跟着重渲染</td></tr>
+  <tr><td>合并语义</td><td>合并判定改成<strong>两种语言都比</strong> —— 只比中文会让"中文一样、英文不同"的两条并成一条，<strong>英文界面少一条而中文界面看起来正常</strong>（新增单测钉住）</td></tr>
+  <tr><td>净化</td><td>两种语言<strong>各自</strong>压成一行、去控制字符（只净化中文会让英文侧撑坏布局，新增单测）</td></tr>
+  <tr><td>调用点</td><td>117 个生产调用点全部改造：<strong>直接双语 51</strong> · <strong>外部来源 29</strong>（<code>from_external</code>：文案由 aetherd 按其连接语言渲染，<strong>不得</strong>再翻一层） · <strong>裸标识符 37</strong>（类型即保证）</td></tr>
+  <tr><td>修掉的真漏译</td><td>改造前有 <strong>5 处只有中文</strong>（音量、默认 DNS、向导状态保存失败等）—— 英文界面会冒中文</td></tr>
+  <tr><td>门禁</td><td><code>i18n-check.py</code> 的英文位判据扩到 <code>toast_msg*</code> / <code>ToastMsg::new</code>（扫描 274 → <strong>379</strong> 处）；<code>toast-i18n-audit.py --check</code> 作为覆盖复检（裸标识符算通过，<strong>不把类型正确的东西报成缺陷</strong>）</td></tr>
+  <tr><td>端到端</td><td><code>--e2e</code> 新增 <code>lang</code> 动作与 <code>query: toast</code>；两个<strong>相反命题</strong>的场景真跑：英文下不含中文且非空 / 中文下有中文（防"空串蒙过去"）。e2e 场景 5 → <strong>7 个全过</strong></td></tr>
+</tbody></table>
+<p><strong>零渲染回归</strong>：像素回归 <strong>57/57 逐字节一致</strong>、归档走查图 <strong>20/20 一致</strong> ——</p>
+<p>因为中文文案<strong>逐字未动</strong>，英文文案不出现在任何走查档位里。</p>
+<h3>11.3 <code>widgets.rs</code> 的到期承诺（#45，路 A）</h3>
+<p>保留 <code>#![allow(dead_code)]</code>（删掉会新增 10 条告警：5 条真死代码 + 5 条平台误报），</p>
+<p>但把「<strong>P3 完成后必须删掉这一行</strong>」改写成<strong>当前仍成立的事实与触发条件</strong>：</p>
+<p>模块已被大量使用（<code>draw.rs</code> 122 处）、<code>slider</code>/<code>slider_value_at</code>/<code>badge</code>/<code>scrollbar</code></p>
+<p>暂无生产调用点、<code>WHEEL_LINES</code>/<code>scroll_apply</code> 是<strong>平台误报别乱删</strong>、</p>
+<p><code>HitTable</code> 与 <code>settings.rs</code> 各有一份判定（下次改命中判定时合并）。</p>
+<p><code>main.rs</code> 的同一句承诺一并改写（同一事实不留两种说法）。</p>
+<h3>11.4 三项环境阻塞项的执行手册（不在本机执行）</h3>
+<table><tbody>
+  <tr><td>手册</td><td>消哪笔账</td></tr>
+  <tr><td><a href="../docs/报告/实机验收手册（RUNBOOK）-2026-10-11.md"><code>实机验收手册（RUNBOOK）</code></a></td><td>#32：附录 B 约 30 项 → 逐项"怎么做 / 期望 / 记录什么"+ 记录模板 + 回填流程；含 <strong>CVE 核对</strong>（#49）的两条命令路径</td></tr>
+  <tr><td><a href="../docs/报告/镜像重建手册（ISO-REBUILD）-2026-10-11.md"><code>镜像重建手册（ISO-REBUILD）</code></a></td><td>#33：建构建机 → 构建 → <strong>MBR 签名自检</strong> → QEMU 装机 → 真机 → 发布（含"算资产哈希再更新 release.json"的顺序）</td></tr>
+</tbody></table>
+<h3>11.5 验证（本批次）</h3>
+<table><tbody>
+  <tr><td>项</td><td>结果</td></tr>
+  <tr><td>测试</td><td><strong>768 项全绿</strong>（0 失败；较基线 +7）</td></tr>
+  <tr><td>门禁</td><td><strong>30 项全过</strong>（较基线 +5：i18n 自检 / 通知正文覆盖 / 通知正文自检 / 台账 / 台账自检）</td></tr>
+  <tr><td>编译告警</td><td>Windows <strong>0</strong> · musl <strong>6/6 crate 0 告警</strong></td></tr>
+  <tr><td>像素回归</td><td><strong>57/57 逐字节一致</strong></td></tr>
+  <tr><td>归档走查图</td><td><strong>20/20 逐像素一致</strong></td></tr>
+  <tr><td>e2e</td><td><strong>7/7 场景通过</strong>（含两条双语命题）</td></tr>
+  <tr><td>文档一致性</td><td>规模 51,111 行 / 71 文件、测试 768、门禁 30：README / README.en / INDEX / ROADMAP / 收尾报告 / 站点 全部一致</td></tr>
+</tbody></table>
+<h3>11.6 本批"自己抓到自己"的记录（按项目惯例如实写下）</h3>
+<p>1. <strong>自检抓到判据本身有漏检</strong>：<code>i18n-check.py</code> 里 <code><em>_EN</code> 常量正则是 <code>_[A-Z_]</em>_EN</code>，</p>
+<p>   只认两段以上的名字（<code>SETTINGS_TITLE_EN</code> 认，<code>TITLE_EN</code> 不认）——给判据补正向对照时</p>
+<p>   才暴露，已改成 <code>[A-Z_]*_EN</code>。</p>
+<p>2. <strong>审计脚本的语义要跟着类型改造走</strong>：<code>toast-i18n-audit.py</code> 初版把 37 个裸标识符</p>
+<p>   （<code>msg</code>/<code>why</code>）报成"未双语"——那是<strong>解析器的局限冒充缺陷</strong>；改完之后</p>
+<p>   <code>push_toast</code> 只收 <code>ToastMsg</code>，<strong>编译器才是那条硬保证</strong>，脚本退为防御性复检。</p>
+<p>3. <strong>分类器错了一档</strong>：<code>if mount { pick_zh_en(…) } else { … }</code> 这类内联双语曾被算成</p>
+<p>   "只有中文"，把真漏译夸大成三倍；修法是给 <code>LEGACY</code> 加一个<strong>非锚定</strong>版本。</p>
+<p>   自检也随之从"只比对判红/判绿"升级为<strong>逐条比对分类</strong>（否则错分类照样通过）。</p>
+<p>4. <strong>codemod 留下的 18 处空白错位</strong>（把两行并成一行）：内容无误（<code>git diff -w</code> 删除行</p>
+<p>   与替换处一一对应），但格式脏，已用脚本规范化。</p>
+<p>5. <strong>一处签名改错并当场纠正</strong>：<code>clipboard_paste</code> 返回的是<strong>剪贴板文本</strong>而不是提示文案，</p>
+<p>   最初被一起改成 <code>Option&lt;ToastMsg&gt;</code>；改回时在注释里写明了这个区别，免得下次再踩。</p>
+<h3>11.7 收尾审计（按 AGENTS.md：全部完成后 3 遍）</h3>
+<p><strong>第 1 遍 · 变更正确性与数据流</strong></p>
+<p>* 类型改造由<strong>编译器全量校验</strong>：Windows 全量构建 0 错 0 警；</p>
+<p>  Linux 侧由 <code>musl-warn-check.py</code> 覆盖（<strong>6/6 crate 0 告警</strong>）——</p>
+<p>  这一条最关键：<code>cfg(target_os="linux")</code> 的那一半 Windows 根本编译不到，</p>
+<p>  本批有一批调用点只存在于那条路径里。</p>
+<p>* 通知历史的<strong>合并语义</strong>新增两条单测：①两种语言作为一个整体比较</p>
+<p>  （只比中文会让"中文一样、英文不同"的两条并成一条 → 英文界面少一条而中文界面看着正常）；</p>
+<p>  ②<strong>两种语言各自净化</strong>（只净化中文会让英文侧撑坏布局）。</p>
+<p>* 占位符一致性新增判据（<code>toast_msg_N</code> 的中英模板 <code>{}</code> 个数必须与后缀一致），</p>
+<p>  4 条自检含 2 条正向对照 —— 它防的是"界面上原样显示一个 <code>{}</code>"这类不报错、不崩的缺陷。</p>
+<p>* 调用点分布：118 个（直接双语 51 / 外部来源 29 / 裸标识符 38），<strong>旧形态与内联分支归零</strong>。</p>
+<p><strong>第 2 遍 · 安全面（改动的边界在哪）</strong></p>
+<p>* <strong>没有</strong>新增 IPC 变体、鉴权路径、文件路径处理或凭据读取 ——</p>
+<p>  改动只落在"通知正文在合成器内怎么表示"这一层。</p>
+<p>* 唯一资源面变化：历史每条由 1 个字符串变 2 个（上限仍 50 条，<strong>有界</strong>，量级可忽略）。</p>
+<p>* 外部输入净化<strong>比改造前更严</strong>：<code>one_line</code> 现在对两种语言都压行、去控制字符。</p>
+<p>* 新增两个脚本（<code>toast-i18n-audit.py</code> / <code>ledger-count-check.py</code>）只读仓库文件，无网络、无写盘。</p>
+<p>* <strong>唯一被放宽的地方</strong>：<code>--fast</code> 子集模式下文档数字判据会 <code>[SKIP] ②</code>。</p>
+<p>  该标记由 <code>docs/证据/gate-count.txt</code> 第二行承载 —— 与既有基线文件同类</p>
+<p>  （"判据的输入"本来就在仓库里，篡改它不属于新增攻击面）；</p>
+<p>  <strong>全量语义未变</strong>（30 项照常比对，本次全量运行即为证）。</p>
+<p><strong>第 3 遍 · 一致性与流程</strong></p>
+<p>* 四道数字判据互不重叠地全绿：<code>repo-stats --check</code>（规模三层 + 集合相等）、</p>
+<p>  <code>gen-site --check</code>（站点与发布事实）、<code>doc-numbers-check</code>（测试/门禁/附录/其余写法）、</p>
+<p>  <code>ledger-count-check</code>（台账类别数）。<strong>顺带修掉</strong>：站内 <code>③e</code> 那句打印原本把"期望两处"</p>
+<p>  显示成"期望一处"，读日志的人会以为判据错了。</p>
+<p>* 无新增调试输出 / <code>#[allow]</code> / <code>unsafe</code>；新增的 <code>unwrap()</code> 全部在 <code>#[cfg(test)]</code> 内（符合既有风格）。</p>
+<p>* <strong>未销账的三项</strong>（都已有可执行手册，但必须由你在真机/联网构建机上跑）：</p>
+<p>  台账 <strong>#32 实机验证</strong>、<strong>#33 ISO 重构建与装机</strong>、<strong>#49 依赖 CVE 核对</strong>。</p>
+<p>* <strong>一处仍需你澄清</strong>：清单 #33 提到的 <code>秘钥.md</code> 在仓库与父目录<strong>都不存在</strong>，</p>
+<p>  仓库里也没有任何脚本引用它 —— 手册据此写成"凭据来自环境变量或你指定的路径"。</p>
+<p><strong>最终门禁</strong>：<code>python scripts/gates.py</code> → <strong>30/30 通过（退出码 0）</strong>；</p>
+<p><code>python scripts/gates.py --fast</code> → <strong>16/16 通过（退出码 0）</strong>（修复前为 1）。</p>
+<h2 id="vmware-iso">十二、同日晚些时候：在 VMware 里看到"今天的构建"（ISO 重建实战）</h2>
+<p><strong>起因</strong>：你要求在 VMware 里看效果。已发布的 ISO 是 <strong>2026-10-02</strong> 的，今天改的双语通知</p>
+<p>根本不在里面 —— 软件镜像不会跟着源码自己变，所以只能<strong>真的重建一次</strong>。</p>
+<p><strong>结论先说</strong>：重建成功，<strong>新构建已在 VMware 里启动</strong>：<code>42,991,616</code> 字节 ·</p>
+<p><code>sha256=162b19a79…</code> · offset 510 = <strong><code>55aa</code></strong>（isohybrid 生效，可 dd 到 U 盘）。</p>
+<p>代价是一路上撞出 <strong>4 个真缺陷</strong>，其中两个让 ISO <strong>根本构建不出来</strong>、</p>
+<p>一个把<strong>装机前提</strong>静默堵死。</p>
+<h3>12.1 环境层（不是项目代码问题，是这台机器的现状）</h3>
+<table><tbody>
+  <tr><td>卡点</td><td>根因（实测确认）</td><td>我的处置 / 你怎么撤销</td></tr>
+  <tr><td>构建机起不来</td><td>保存状态 <code>uApicMode: saved=3 config=2</code>（旧版 VirtualBox 写的），<strong>无法恢复</strong></td><td><code>discardstate</code> 后重开机；磁盘上的 Buildroot 树（12 GB）不受影响</td></tr>
+  <tr><td>SSH 永远连不上 2222</td><td><strong>Windows 保留了 TCP 2180–2279</strong>，2222 正落在里面 → <code>VERR_NAT_REDIR_SETUP</code></td><td>新增转发 <strong>22022</strong>（原 2222 规则保留未动，可随时回退）</td></tr>
+  <tr><td>主机密钥拒连</td><td>严格校验按 <code>host:port</code> 记账，换端口即新条目</td><td>把 2222 那条密钥<strong>按端口复制</strong>一份；<strong>没有</strong>删记录走 TOFU（那等于静默信任新密钥）</td></tr>
+  <tr><td>密码忘了、<code>秘钥.md</code> 是 0 字节、VM 里只有 SHA-512 哈希</td><td>无人值守安装不留明文口令（设计如此）</td><td><strong>本地控制台恢复</strong>：GRUB → <code>e</code> → <code>linux</code> 行尾加 <code>rw init=/bin/bash</code> → <code>Ctrl+X</code> → root shell → <strong>注入你自己的公钥</strong>（<code>/home/aether/.ssh/authorized_keys</code>，80 字节、600、aether:aether）。<strong>没有改口令</strong>；撤销 = 删掉那一行</td></tr>
+  <tr><td><code>vm.py</code> 跑不了</td><td>dsh 内置 Python 没装 paramiko</td><td>改用系统里 <code>D:\py\python.exe</code>（paramiko 5.0.0）</td></tr>
+  <tr><td>headless 也能恢复</td><td>——</td><td><code>VBoxManage controlvm &lt;vm&gt; screenshotpng</code> 看画面 + <code>keyboardputscancode</code> 注入按键；<strong>按下/松开必须分两次调用</strong>（同一批里发 press+release 会被"按状态轮询"的实现漏掉，实测踩到过）</td></tr>
+</tbody></table>
+<h3>12.2 代码层：两个让 ISO <strong>构建不出来</strong>的缺陷（台账 #53）</h3>
+<p><code>[1/3]</code> 阶段就失败，报 <code>cannot find module or crate libc</code>：</p>
+<p>1. <code>aetherd/src/timesync.rs</code> 在 <code>#[cfg(unix)]</code> 里调 <code>libc::clock_gettime/clock_settime/adjtime</code>，</p>
+<p>   而 <strong><code>aetherd/Cargo.toml</code> 里没有 <code>libc</code></strong>；</p>
+<p>2. 补上依赖后暴露第二个：同一个 <code>#[cfg(unix)]</code> 函数的 <code>match how</code> <strong>没覆盖 <code>Adjustment::Refused</code>（E0004）</strong>；</p>
+<p>3. 外加 musl 下 <code>libc::time_t</code> 已废弃（项目要求 0 告警）→ 改写成 <code>as _</code>，让字段类型说话。</p>
+<p><strong>为什么能藏 8 天</strong>（这是本条最值得记的部分）：</p>
+<p>那段代码在 <code>#[cfg(unix)]</code> 里 → <strong>Windows 构建根本不编译它</strong>；</p>
+<p><code>musl-warn-check.py</code> 又<strong>特意跳过 <code>aetherd</code></strong>（ring 需要 musl-gcc）；</p>
+<p>单测也全在 Windows 上跑。<strong>三条判据同时漏掉</strong>，于是从</p>
+<p><strong>2026-10-03（加 SNTP 对时那天）到 10-11，ISO 一直是构建不出来的</strong> ——</p>
+<p>台账 #33「ISO 未重构建」的真正代价就在这里。</p>
+<h3>12.3 工具层：两个让构建<strong>看起来成功</strong>的缺陷（台账 #54）</h3>
+<table><tbody>
+  <tr><td>现象</td><td>根因</td><td>证据</td></tr>
+  <tr><td>构建跑到 <code>target-finalize</code> 报 <code>post-build.sh: Permission denied</code>（Error 126）</td><td>SFTP 不保留可执行位，而 <code>vm-sync.py</code> 的白名单<strong>只有</strong> <code>platform/overlay/init</code></td><td>修复后同步输出 <code>已按 git 索引 恢复 45 个文件的可执行位</code></td></tr>
+  <tr><td><strong>构建报 PASS，日志里却没有 <code>isohybrid</code> 那一行</strong>，产出的 ISO 前 512 字节全零</td><td>跳过规则写成<strong>字符串前缀</strong>：<code>startswith(("platform/build", …))</code> 把 <strong><code>platform/build-iso.sh</code></strong> 也跳掉了 → 构建机一直用 <strong>2026-09-30 的旧脚本</strong>（<strong>没有</strong> isohybrid + MBR 自检，那是 10-02 审计 H-6 才加的）</td><td>修复后同步数 <strong>564 → 565</strong>（多的正是它）；日志第 394 行出现 <code>==&gt; isohybrid 完成，MBR 签名自检通过</code>；ISO <code>42,137,600 → 42,991,616</code> 字节；offset 510 = <code>55aa</code>；446 处有隐藏 ISO 分区表</td></tr>
+</tbody></table>
+<p><strong>这解释了 README 里那句"当前 ISO 不能 dd 到 U 盘"的真正原因</strong> ——</p>
+<p>不是"还没做 isohybrid"，而是<strong>那段代码从没被同步到构建机上</strong>。</p>
+<p><code>aether-install</code> 的装机前提（M6 源镜像带 MBR 签名）因此被静默堵死，</p>
+<p>而<strong>没有任何判据会响</strong>：构建报 PASS、门禁全绿、台账还把"MBR 自检"写进验收。</p>
+<p>修复：跳过改<strong>路径段</strong>比较；可执行位改由 <strong>git 索引的 100755 位</strong>驱动</p>
+<p>（Windows 上唯一可靠来源）；<code>import vm</code> 延迟到 <code>main()</code>，让 <code>--selftest</code> 在没装</p>
+<p>paramiko 的 Python 下也能跑 → 新增门禁<strong>「同步工具跳过规则自检」</strong>（10 用例，含</p>
+<p>「脚本不该被跳过」这条正向对照）。</p>
+<h3>12.4 本批验证</h3>
+<table><tbody>
+  <tr><td>项</td><td>结果</td></tr>
+  <tr><td>ISO 构建</td><td><code>RESULT=PASS</code> · rc=0 · <code>/home/aether/aetheros-0.1-amd64.iso</code></td></tr>
+  <tr><td>独立验证（不看构建脚本自检）</td><td>本地 <code>sha256</code> 与构建机一致；<code>xxd -s 508</code> = <code>0000 55aa</code>；<code>xxd -s 446</code> = 可引导分区项；<code>CD001</code> @32769 ✓</td></tr>
+  <tr><td>VMware 启动</td><td>新 VM <code>AetherOS-1011</code>（挂新 ISO）启动成功，画面为 AetherOS 桌面 + 首次引导（第 1/4 选择界面语言）。截图：<a href="../docs/证据/VMware-新构建首启引导-2026-10-11.png">VMware-新构建首启引导-2026-10-11.png</a></td></tr>
+  <tr><td>本地代码</td><td>768 项测试全绿 · Windows 0 告警 · <code>--locked</code> 一致（Cargo.lock 已含 aetherd→libc）</td></tr>
+  <tr><td>门禁</td><td><strong>33 项</strong>（新增：依赖声明检查 / 其自检 / 同步工具跳过规则自检）</td></tr>
+</tbody></table>
+<h3>12.5 明确没做的</h3>
+<p>* <strong>发布动作</strong>：<code>site/release.json</code> + README 体积（38.5 MB → 41.0 MB）+ GitHub 上传 —— 等你决定。</p>
+<p>* <strong>装机验证</strong>（#33 的后半段）：现在 ISO 有 MBR 签名了，可以在 VM 里真装一次（RUNBOOK 第 2 组）。</p>
+<p>* <strong>实机（#32）/ CVE 核对（#49）</strong>：仍需真机与联网环境。</p>
+<p>* 我动过你机器上的两处，如实记下：① 给 <code>AetherOS-Build</code> 加了一条 <strong>22022</strong> 转发规则（原规则未动）；</p>
+<p>  ② 把一台跑着的 VMware VM 的 <code>.lck</code> 删了（当时误判它没在跑）—— 结果是那台 VM 的</p>
+<p>  <code>vmware-vmx</code> 变成僵尸进程、<strong>需要管理员权限结束</strong>才能再启动它。旧的 <code>AetherOS-VMware</code> 因此暂时起不来，</p>
+<p>  新验证走的是干净的新 VM <code>AetherOS-1011</code>。<strong>下次记住：<code>.lck</code> 只能在确认 <code>vmware-vmx</code> 已退出时删。</strong></p>
 <p># 2026-10-02 更新</p>
 <h2 id="">一、三页一览</h2>
 <table><tbody>

@@ -43,11 +43,20 @@ impl Layout {
     pub const ALL: [Layout; 4] = [Layout::Float, Layout::TwoCol, Layout::ThreeCol, Layout::Monocle];
 
     pub fn label(self) -> &'static str {
-        match self {
-            Layout::Float => "自由布局",
-            Layout::TwoCol => "两列平铺",
-            Layout::ThreeCol => "三列平铺",
-            Layout::Monocle => "独占堆叠",
+        self.label_in(crate::i18n::Lang::Zh)
+    }
+
+    /// 按语言取布局名（§3.5 遗留项 #43：布局名会进通知正文，通知要双语）。
+    pub fn label_in(self, lang: crate::i18n::Lang) -> &'static str {
+        match (self, lang) {
+            (Layout::Float, crate::i18n::Lang::Zh) => "自由布局",
+            (Layout::TwoCol, crate::i18n::Lang::Zh) => "两列平铺",
+            (Layout::ThreeCol, crate::i18n::Lang::Zh) => "三列平铺",
+            (Layout::Monocle, crate::i18n::Lang::Zh) => "独占堆叠",
+            (Layout::Float, crate::i18n::Lang::En) => "Free",
+            (Layout::TwoCol, crate::i18n::Lang::En) => "Two columns",
+            (Layout::ThreeCol, crate::i18n::Lang::En) => "Three columns",
+            (Layout::Monocle, crate::i18n::Lang::En) => "Stacked",
         }
     }
 }
@@ -126,12 +135,16 @@ pub enum Snap {
 }
 
 impl Snap {
-    pub fn label(self) -> &'static str {
-        match self {
-            Snap::None => "",
-            Snap::Left => "吸附：左半屏",
-            Snap::Right => "吸附：右半屏",
-            Snap::Top => "吸附：最大化",
+    /// 按语言取吸附名（它会作为通知正文出现，因此必须能出两种语言）。
+    pub fn label_in(self, lang: crate::i18n::Lang) -> &'static str {
+        match (self, lang) {
+            (Snap::None, _) => "",
+            (Snap::Left, crate::i18n::Lang::Zh) => "吸附：左半屏",
+            (Snap::Right, crate::i18n::Lang::Zh) => "吸附：右半屏",
+            (Snap::Top, crate::i18n::Lang::Zh) => "吸附：最大化",
+            (Snap::Left, crate::i18n::Lang::En) => "Snapped: left half",
+            (Snap::Right, crate::i18n::Lang::En) => "Snapped: right half",
+            (Snap::Top, crate::i18n::Lang::En) => "Snapped: maximized",
         }
     }
 }

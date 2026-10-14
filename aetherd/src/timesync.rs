@@ -473,7 +473,10 @@ fn apply_offset_platform(offset_ms: i64, how: Adjustment) -> Result<(), String> 
                 let total_ns = ts.tv_sec as i128 * 1_000_000_000 + ts.tv_nsec as i128
                     + offset_ms as i128 * 1_000_000;
                 let mut next = libc::timespec {
-                    tv_sec: (total_ns.div_euclid(1_000_000_000)) as libc::time_t,
+                    // 用 `as _` 让字段自身的类型说话：写 `libc::time_t` 会触发
+                    // musl 目标下的 deprecated 警告（libc 该别名在 musl 1.2 起改 64 位，
+                    // 上游要求别再直接用这个名字），而写死 `i64` 又会把 32 位平台写死。
+                    tv_sec: (total_ns.div_euclid(1_000_000_000)) as _,
                     tv_nsec: (total_ns.rem_euclid(1_000_000_000)) as i64,
                 };
                 if libc::clock_settime(libc::CLOCK_REALTIME, &next) != 0 {
@@ -500,6 +503,12 @@ fn apply_offset_platform(offset_ms: i64, how: Adjustment) -> Result<(), String> 
                 Ok(())
             }
             Adjustment::None => Ok(()),
+            // `None`（已在阈值内）与 `Refused`（偏移不合理、被拒绝）都有一个共同语义：
+            // **一个字节都不碰时钟**。调用方 `apply_offset` 已经在前面把两者拦掉了，
+            // 正常路径下走不到这里；但穷尽匹配必须写出来 —— 而且语义上它就该是"什么都不做"，
+            // 不是伪造成"调整成功"，也不是伪装成"出错"（`Refused` 的文档特意强调：
+            // 那是"我不接受这个偏移"，不是"调整失败"）。
+            Adjustment::Refused => Ok(()),
         }
     }
 }

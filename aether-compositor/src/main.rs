@@ -32,8 +32,10 @@ mod vt;
 
 /// 控件原语（P1）：按钮/开关/滑杆/分段/列表行/滚动条/徽标 + 共享命中表。
 ///
-/// 2026-09-29 新增。设置中心（P3）接入前，大部分控件还没有调用点，
-/// 因此模块内暂时允许 dead_code —— **P3 完成后必须移除那条 allow**。
+/// 2026-09-29 新增，P3（设置中心）接入了一部分。**当前事实、以及"为什么还保留
+/// dead_code"的理由写在 `widgets.rs` 的模块头注释里**（那里是唯一真相，
+/// 免得同一件事在两处各说一套）：已被大量使用，但滑杆/徽标/滚动条还没有生产调用点，
+/// 且 `WHEEL_LINES`/`scroll_apply` 会在 Windows 上误报"未使用"。
 mod widgets;
 
 /// 用户设置的持久化与声明（P3 设置中心）：`/var/lib/aether/settings.json`。
@@ -61,6 +63,8 @@ mod wayland;
 use aether_ipc::{Request, Response};
 use draw::{Desktop, Rect, Win};
 use draw::theme::metric;
+// 通知正文的结构化双语类型（§3.5 遗留项 #43）：见 `toast_msg` 助手的说明
+use i18n::ToastMsg;
 #[cfg(target_os = "linux")]
 use draw::{InstallerPhase, InstallerUi};
 #[cfg(not(target_os = "linux"))]
@@ -373,7 +377,7 @@ fn run_fbdev() -> anyhow::Result<()> {
     // 输入、绘制、命中测试都只遍历那个向量，所以别的空间的窗口既画不出来也点不到，
     // 不存在「忘了过滤」这种漏洞（详见 `spaces` 模块的注释）。
     let mut spaces: spaces::Spaces<draw::Win> = spaces::Spaces::new();
-    let mut toast: Option<(String, Instant)> = None;
+    let mut toast: Option<(ToastMsg, Instant)> = None;
     let mut ai_input = String::new();
     // 2.4：输入光标 —— 支持在中间插入/删除，不再只能追加（打错一个字要全删重来）
     let mut ai_cursor = textview::TextCursor::default();
@@ -548,7 +552,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     if snap_zone != layout::Snap::None {
                         if let Some(win) = desktop.wins.get_mut(i) {
                             win.target = Some(layout::rect(snap_zone, layout::work_area(w, h)));
-                            push_toast(&mut toast, &mut renderer.notifs, snap_zone.label().to_string(), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg_lang(|l| snap_zone.label_in(l).to_string()), notifications::Kind::Info);
                         }
                     }
                 }
@@ -611,14 +615,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    pick_zh_en_1("已移到桌面 {}", "Moved to desktop {}", i + 1),
+                                        toast_msg_1("已移到桌面 {}", "Moved to desktop {}", i + 1),
                                     notifications::Kind::Info,
                                 );
                             } else {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    pick_zh_en("没有可移动的窗口", "No window to move"),
+                                        toast_msg("没有可移动的窗口", "No window to move"),
                                     notifications::Kind::Info,
                                 );
                             }
@@ -636,21 +640,21 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    if crate::i18n::is_en() {
-                                        format!(
-                                            "Desktop {}/{} · {} windows",
-                                            spaces.current() + 1,
-                                            spaces.count(),
-                                            spaces.len_of(spaces.current(), desktop.wins.len()),
-                                        )
-                                    } else {
+                                    // 两种语言各写一次（`ToastMsg::new` 不做翻译，只把两份都留着）
+                                    ToastMsg::new(
                                         format!(
                                             "桌面 {}/{} · {} 个窗口",
                                             spaces.current() + 1,
                                             spaces.count(),
                                             spaces.len_of(spaces.current(), desktop.wins.len()),
-                                        )
-                                    },
+                                        ),
+                                        format!(
+                                            "Desktop {}/{} · {} windows",
+                                            spaces.current() + 1,
+                                            spaces.count(),
+                                            spaces.len_of(spaces.current(), desktop.wins.len()),
+                                        ),
+                                    ),
                                     notifications::Kind::Info,
                                 );
                             }
@@ -666,7 +670,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 这里特判的代价小得多，且行为可预期。
                     if c == '\0' {
                         ime.toggle();
-                        push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { pick_zh_en("中文输入：开", "Chinese IME: on") } else { pick_zh_en("中文输入：关", "Chinese IME: off") }.to_string(), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { toast_msg("中文输入：开", "Chinese IME: on") } else { toast_msg("中文输入：关", "Chinese IME: off") }, notifications::Kind::Info);
                     } else if let Some((req, echo)) = confirm.as_mut() {
                         // 确认弹窗独占键盘：L3 的回显输入写进弹窗而不是指令条
                         if req.echo_required.is_some() {
@@ -760,7 +764,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         // 且"用户拒绝过"不会留下任何痕迹。
                         tty_log(&format!("权限确认被拒绝: {}", req.tool));
                         cancel_confirm(&req.token);
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Err);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Err);
                     } else if installer.open && !installer.running {
                         installer.open = false;
                     }
@@ -871,7 +875,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"),
+                                    toast_msg("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"),
                                 notifications::Kind::Err,
                             );
                         }
@@ -938,7 +942,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 push_toast(
                     &mut toast,
                     &mut renderer.notifs,
-                    message,
+                    ToastMsg::from_external(message),
                     if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
                 );
             }
@@ -959,7 +963,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     } else {
                         notifications::Kind::Err
                     };
-                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                    push_toast(&mut toast, &mut renderer.notifs, ToastMsg::from_external(message), kind);
                     // 挂载状态变了 → **重新扫一次**（列表如实反映磁盘，而不是本地猜）
                     if ok {
                         fetch_removables(ai_tx.clone());
@@ -980,14 +984,19 @@ fn run_fbdev() -> anyhow::Result<()> {
                     } else {
                         notifications::Kind::Err
                     };
-                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                    push_toast(&mut toast, &mut renderer.notifs, ToastMsg::from_external(message), kind);
                 }
                 AiEvent::SnapshotsLoaded(items) => {
                     renderer.snapshots.on_list(items);
                 }
                 AiEvent::SnapshotDone { ok, message, notes } => {
                     if ok {
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Ok,
+                    );
                         // 回滚的逐文件说明：只说"已回滚"信息太少，用户想知道到底换了哪些文件
                         if !notes.is_empty() {
                             let brief: String = notes
@@ -999,12 +1008,10 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                if crate::i18n::is_en() {
-                    // 两个占位符：助手只换第一个，这里必须按语言各写一次
-                    format!("{brief} ({} items)", notes.len())
-                } else {
-                    format!("{brief}（共 {} 项）", notes.len())
-                },
+                                ToastMsg::new(
+                                    format!("{brief}（共 {} 项）", notes.len()),
+                                    format!("{brief} ({} items)", notes.len()),
+                                ),
                                 notifications::Kind::Info,
                             );
                         }
@@ -1012,7 +1019,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                         fetch_snapshots(ai_tx.clone());
                     } else {
                         renderer.snapshots.on_failure(message.clone());
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Err,
+                    );
                     }
                 }
                 AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix } => {
@@ -1020,17 +1032,32 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 AiEvent::TimeSynced { ok, message } => {
                     if ok {
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Ok,
+                    );
                         // 对完时再取一次状态：「上次偏移」那一行才会显示刚刚这次的结果
                         fetch_time_status(ai_tx.clone());
                     } else {
                         renderer.time.on_failure(message.clone());
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Err,
+                    );
                     }
                 }
                 AiEvent::TimezoneSet { ok, message } => {
                     if ok {
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Ok,
+                    );
                         // 写成功后重取状态：界面上的「系统时区」要跟着变成新名字
                         fetch_time_status(ai_tx.clone());
                         // 写成功后重取状态：界面上的「系统时区」要跟着变成新名字
@@ -1038,7 +1065,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                         // 不做「再取一次」（那要连 aetherd，而预览模式刻意不依赖 IPC/显示环境）
                     } else {
                         renderer.time.on_failure(message.clone());
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Err,
+                    );
                     }
                 }
                 AiEvent::PolicyLoaded(entries) => {
@@ -1051,7 +1083,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            message,
+                            ToastMsg::from_external(message),
                             notifications::Kind::Ok,
                         );
                     } else {
@@ -1059,14 +1091,20 @@ fn run_fbdev() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            message,
+                            ToastMsg::from_external(message),
                             notifications::Kind::Err,
                         );
                     }
                 }
                 AiEvent::PolicyFailed(why) => {
                     renderer.policy.set_error(why.clone());
-                    push_toast(&mut toast, &mut renderer.notifs, why, notifications::Kind::Err);
+                    push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        // 策略失败原因来自 aetherd（已按其连接语言渲染）
+                        ToastMsg::from_external(why),
+                        notifications::Kind::Err,
+                    );
                 }
                 AiEvent::DnsSaved { ok, message } => {
                     // 回执落到输入框的反馈行：**成功才退出编辑态**，失败留在编辑态
@@ -1078,7 +1116,8 @@ fn run_fbdev() -> anyhow::Result<()> {
                     push_toast(
                         &mut toast,
                         &mut renderer.notifs,
-                        format!("DNS：{msg}"),
+                        // DNS 回执来自 aetherd（已按其连接语言渲染）
+                        ToastMsg::from_external(format!("DNS：{msg}")),
                         if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
                     );
                 }
@@ -1104,7 +1143,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args, &mut undo) {
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("Aether 执行 · {}", "Aether ran · {}", msg), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("Aether 执行 · {}", "Aether ran · {}", msg.text()), notifications::Kind::Info);
                     }
                 }
                 AiEvent::Confirm(req) => {
@@ -1145,14 +1184,21 @@ fn run_fbdev() -> anyhow::Result<()> {
                             // 电源没有对话气泡可挂：只进 toast。
                             // 文案要说清"受理 ≠ 已关机"——真正断电时进程已经没了。
                             let mark = if ok { "✓" } else { "✗" };
-                            push_toast(&mut toast, &mut renderer.notifs, format!("{mark} {last}"), notifications::Kind::Info);
+                            push_toast(
+                                &mut toast,
+                                &mut renderer.notifs,
+                                // 回执文本来自 aetherd（已按其连接语言渲染）
+                                ToastMsg::from_external(format!("{mark} {last}")),
+                                notifications::Kind::Info,
+                            );
                         }
                         ConfirmOrigin::Store => {
                             let mark = if ok { "✓" } else { "✗" };
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                format!("{mark} {last}"),
+                                // 回执文本来自 aetherd（已按其连接语言渲染）
+                                ToastMsg::from_external(format!("{mark} {last}")),
                                 if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
                             );
                             if ok {
@@ -1169,7 +1215,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 电源的结果已经在上面用 toast 说清楚了；再加一句"已执行 · …"
                     // 会让人误以为"已经关机完成"（而实际只是受理）
                     if ok && origin != ConfirmOrigin::Power {
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已执行 · {}", "Executed · {}", last.chars().take(24).collect::<String>()), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("已执行 · {}", "Executed · {}", last.chars().take(24).collect::<String>()), notifications::Kind::Info);
                     }
                 }
             }
@@ -1194,13 +1240,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                         }
                     }
                     Some(draw::ConfirmButton::Allow) => {
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"), notifications::Kind::Info);
                     }
                     Some(draw::ConfirmButton::Deny) => {
                         if let Some((req, _)) = confirm.take() {
                             tty_log(&format!("权限确认被拒绝: {}", req.tool));
                             cancel_confirm(&req.token);
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Info);
                         }
                     }
                     None => {}
@@ -1251,26 +1297,25 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                if crate::i18n::is_en() {
-                                    format!(
-                                        "Added a desktop ({} total) · Super+{} switches to it",
-                                        spaces.count(),
-                                        idx + 1
-                                    )
-                                } else {
+                                ToastMsg::new(
                                     format!(
                                         "已新增桌面（共 {} 个）· Super+{} 可切过去",
                                         spaces.count(),
                                         idx + 1
-                                    )
-                                },
+                                    ),
+                                    format!(
+                                        "Added a desktop ({} total) · Super+{} switches to it",
+                                        spaces.count(),
+                                        idx + 1
+                                    ),
+                                ),
                                 notifications::Kind::Info,
                             );
                         }
                         None => push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            pick_zh_en_1("桌面数量已达上限（{}）", "Desktop limit reached ({})", spaces::Spaces::<draw::Win>::MAX),
+                                toast_msg_1("桌面数量已达上限（{}）", "Desktop limit reached ({})", spaces::Spaces::<draw::Win>::MAX),
                             notifications::Kind::Info,
                         ),
                     },
@@ -1284,16 +1329,16 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en_1("已移除桌面（还剩 {} 个）", "Removed a desktop ({} left)", spaces.count()),
+                                    toast_msg_1("已移除桌面（还剩 {} 个）", "Removed a desktop ({} left)", spaces.count()),
                                 notifications::Kind::Info,
                             );
                         } else {
                             // **删不掉必须说明原因**（只说"失败"等于让用户猜）：
                             // 最常见的是"当前桌面里还有窗口"——那会连带丢掉终端会话
                             let why = if spaces.count() <= 1 {
-                                pick_zh_en("至少要保留一个桌面", "At least one desktop must remain")
+                                toast_msg("至少要保留一个桌面", "At least one desktop must remain")
                             } else {
-                                pick_zh_en(
+                                toast_msg(
                                     "当前桌面里还有窗口：先用 Super+Shift+数字 把它们移走，或关掉它们",
                                     "This desktop still has windows: move them with Super+Shift+number first, or close them",
                                 )
@@ -1351,7 +1396,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // 走 aetherd（ServiceControl）转 init，合成器不直接碰系统。
                     if let settings::SettingsHit::RestartService(unit) = hit {
                         control_service(ai_tx.clone(), unit, aether_ipc::ServiceAction::Restart);
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("正在重启服务 {}…", "Restarting service {}…", unit), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("正在重启服务 {}…", "Restarting service {}…", unit), notifications::Kind::Info);
                     }
                     // 电源入口（批次 J-2）：与 AI 触发的工具调用走**同一条**路径
                     // （system_power 工具 → 确认卡片 → aetherd → PID 1），不新造通道。
@@ -1360,7 +1405,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         settings::SettingsHit::Power(action) => {
                             let a = action.as_str();
                             spawn_power_tool(action, &ai_tx);
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("请在确认卡片里输入 {} 以确认", "Type {} in the confirmation card to confirm", a), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("请在确认卡片里输入 {} 以确认", "Type {} in the confirmation card to confirm", a), notifications::Kind::Info);
                         }
                         settings::SettingsHit::Logout => {
                             apply_ui_intent(UiIntent::Logout, &ai_tx, &mut toast, &mut renderer, &mut audio);
@@ -1382,11 +1427,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §5.6：创建快照
                     if let settings::SettingsHit::CreateSnapshot = hit {
                         if renderer.snapshots.is_pending() {
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
                         } else {
                             renderer.snapshots.mark_pending();
                             create_snapshot(ai_tx.clone());
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("正在创建配置快照…", "Creating a config snapshot…"), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg("正在创建配置快照…", "Creating a config snapshot…"), notifications::Kind::Info);
                         }
                     }
                     // §3.7「可移动设备」页：进入时扫一次
@@ -1413,7 +1458,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en("上一次操作还没结束，请稍候", "The previous action is still running, please wait"),
+                                    toast_msg("上一次操作还没结束，请稍候", "The previous action is still running, please wait"),
                                 notifications::Kind::Info,
                             );
                         } else if let Some(d) = renderer.removables.get(i).cloned() {
@@ -1425,13 +1470,9 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 &mut toast,
                                 &mut renderer.notifs,
                                 if mount {
-                                    pick_zh_en_1(
-                                        "正在只读挂载 {}…",
-                                        "Mounting read-only {}…",
-                                        &d.dev,
-                                    )
+                                    toast_msg_1("正在只读挂载 {}…", "Mounting read-only {}…", &d.dev)
                                 } else {
-                                    pick_zh_en_1("正在卸载 {}…", "Unmounting {}…", &d.dev)
+                                    toast_msg_1("正在卸载 {}…", "Unmounting {}…", &d.dev)
                                 },
                                 notifications::Kind::Info,
                             );
@@ -1472,7 +1513,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en("上一次暂存还没结束，请稍候", "The previous staging is still running, please wait"),
+                                    toast_msg("上一次暂存还没结束，请稍候", "The previous staging is still running, please wait"),
                                 notifications::Kind::Info,
                             );
                         } else if let Some(name) = renderer.update.packages().get(i).cloned() {
@@ -1481,7 +1522,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en_1("正在校验并暂存 {}…", "Verifying and staging {}…", name),
+                                    toast_msg_1("正在校验并暂存 {}…", "Verifying and staging {}…", name),
                                 notifications::Kind::Info,
                             );
                         }
@@ -1498,7 +1539,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                     push_toast(
                                         &mut toast,
                                         &mut renderer.notifs,
-                                        pick_zh_en_1("正在回滚到 {}…", "Rolling back to {}…", confirmed),
+                                            toast_msg_1("正在回滚到 {}…", "Rolling back to {}…", confirmed),
                                         notifications::Kind::Info,
                                     );
                                 }
@@ -1512,7 +1553,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §5.6：取消待确认的回滚（两步确认必须能退出来）
                     if let settings::SettingsHit::CancelRestore = hit {
                         renderer.snapshots.cancel_confirm();
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("已取消回滚", "Rollback cancelled"), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg("已取消回滚", "Rollback cancelled"), notifications::Kind::Info);
                     }
                     // §3.3「时钟与时区」页：进入该页时取一次状态（否则显示不出系统时区与上次偏移）。
                     if let settings::SettingsHit::Page(i) = hit {
@@ -1528,11 +1569,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §3.3：立即对时
                     if let settings::SettingsHit::SyncTimeNow = hit {
                         if renderer.time.pending {
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
                         } else {
                             renderer.time.mark_pending();
                             sync_time_now(ai_tx.clone());
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("正在对时…", "Syncing time…"), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg("正在对时…", "Syncing time…"), notifications::Kind::Info);
                         }
                     }
                     // §3.3：切换待写入的时区名（纯本地状态，不发 IPC）
@@ -1542,12 +1583,12 @@ fn run_fbdev() -> anyhow::Result<()> {
                     // §3.3：把时区写进系统
                     if let settings::SettingsHit::SetTimezoneNow = hit {
                         if renderer.time.pending {
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg("上一步还没完成，请稍候", "The previous step is still running, please wait"), notifications::Kind::Info);
                         } else {
                             let name = renderer.time.picked_name().to_string();
                             renderer.time.mark_pending();
                             write_timezone(ai_tx.clone(), name.clone());
-                            push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("正在写入系统时区：{}", "Writing system time zone: {}", name), notifications::Kind::Info);
+                            push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("正在写入系统时区：{}", "Writing system time zone: {}", name), notifications::Kind::Info);
                         }
                     }
                     // §5.12：提示音主题切换 —— **切换即试听**（否则"可换"是看不见的：
@@ -1603,7 +1644,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            pick_zh_en("已重新扫描商店目录", "Rescanned the store folder"),
+                                toast_msg("已重新扫描商店目录", "Rescanned the store folder"),
                             notifications::Kind::Info,
                         );
                     }
@@ -1617,7 +1658,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    pick_zh_en_1("正在请求卸载：{}", "Requesting uninstall: {}", id),
+                                        toast_msg_1("正在请求卸载：{}", "Requesting uninstall: {}", id),
                                     notifications::Kind::Info,
                                 );
                                 std::thread::spawn(move || {
@@ -1639,7 +1680,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             None => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en("这一项已经不在已装列表里（可能刚被卸载）", "This item is no longer installed (maybe just removed)"),
+                                    toast_msg("这一项已经不在已装列表里（可能刚被卸载）", "This item is no longer installed (maybe just removed)"),
                                 notifications::Kind::Info,
                             ),
                         }
@@ -1657,7 +1698,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                                     &mut renderer.notifs,
                                     // 注意：助手按值收参数，所以这里要 `clone()` —— 直接把 `items()[i].name`
                         // 传进去会**移动**它（只能在 Linux 上编译时才暴露，musl 检查抓到过）
-                        pick_zh_en_1(
+                        toast_msg_1(
                             "正在请求安装：{}",
                             "Requesting install: {}",
                             renderer.store.items()[i].name.clone(),
@@ -1684,7 +1725,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                             _ => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en("这一项已安装（或不可安装）", "This item is already installed (or cannot be installed)"),
+                                    toast_msg("这一项已安装（或不可安装）", "This item is already installed (or cannot be installed)"),
                                 notifications::Kind::Info,
                             ),
                         }
@@ -1700,14 +1741,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                                 push_toast(
                                     &mut toast,
                                     &mut renderer.notifs,
-                                    pick_zh_en_1("正在保存 {}…", "Saving {}…", tool),
+                                        toast_msg_1("正在保存 {}…", "Saving {}…", tool),
                                     notifications::Kind::Info,
                                 );
                             }
                             None => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en("正在保存上一项，请稍候", "Saving the previous item, please wait"),
+                                    toast_msg("正在保存上一项，请稍候", "Saving the previous item, please wait"),
                                 notifications::Kind::Info,
                             ),
                         }
@@ -1718,7 +1759,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            pick_zh_en("正在读取权限策略…", "Reading the permission policy…"),
+                                toast_msg("正在读取权限策略…", "Reading the permission policy…"),
                             notifications::Kind::Info,
                         );
                     }
@@ -1749,13 +1790,13 @@ fn run_fbdev() -> anyhow::Result<()> {
                             Ok(path) => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en_1("审计日志已导出：{}", "Audit log exported: {}", path),
+                                    toast_msg_1("审计日志已导出：{}", "Audit log exported: {}", path),
                                 notifications::Kind::Ok,
                             ),
                             Err(e) => push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                pick_zh_en_1("导出失败：{}", "Export failed: {}", e),
+                                    toast_msg_1("导出失败：{}", "Export failed: {}", e),
                                 notifications::Kind::Err,
                             ),
                         }
@@ -1770,7 +1811,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                         // 于是用户点完"清空"看到的仍是 1 条 —— 看起来像没生效。
                         // 统一走 push_toast 是为了"不漏记"，而这里正是**唯一**一个
                         // 不该被记的动作；例外写在这里，并有测试钉住历史确实是空的。
-                        toast = Some((format!("已清空 {had} 条通知"), Instant::now()));
+                        toast = Some((toast_msg_1("已清空 {} 条通知", "Cleared {} notifications", had), Instant::now()));
                     }
 
                     // 主题类改动要立刻作用到全局 MODE（并重建背景缓存），不能等重启
@@ -1804,11 +1845,11 @@ fn run_fbdev() -> anyhow::Result<()> {
                         let hc = renderer.settings.high_contrast;
                         apply_theme(&mut renderer, dark, hc);
                         renderer.bg_dirty = true;
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("外观已恢复默认", "Appearance restored to defaults"), notifications::Kind::Ok);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg("外观已恢复默认", "Appearance restored to defaults"), notifications::Kind::Ok);
                     }
                     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
                         // 写不进去要让用户知道（只读盘/没挂 /var），不能静默失败
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("设置未能写入磁盘：{}", "Settings could not be written to disk: {}", e), notifications::Kind::Err);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("设置未能写入磁盘：{}", "Settings could not be written to disk: {}", e), notifications::Kind::Err);
                     }
                 }
             } else if focused_terminal(&desktop) && mouse_down {
@@ -1938,7 +1979,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 .copied()
             {
                 if let Some((label, path)) = desktop.sidebar.get(i).cloned() {
-                    if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                    if let Some(msg) = navigate_to(&mut desktop, &path, &label, &label) {
                         push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
@@ -1949,7 +1990,7 @@ fn run_fbdev() -> anyhow::Result<()> {
                 .cloned()
             {
                 let label = draw::path_leaf(&path);
-                if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                if let Some(msg) = navigate_to(&mut desktop, &path, &label, &label) {
                     push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                 }
             } else if renderer.file_up.contains(mouse.0, mouse.1) {
@@ -2042,7 +2083,7 @@ fn run_fbdev() -> anyhow::Result<()> {
         });
         let ui = draw::UiState {
             snap: snap_preview,
-            toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
+            toast: toast_now.as_ref().map(|(m, a)| (m.text(), *a)),
             ai_input: &ai_input,
             ai_cursor: ai_cursor.pos(),
             ime: &ime,
@@ -2288,7 +2329,7 @@ fn dispatch_approved(req: ConfirmRequest, tx: &mpsc::Sender<AiEvent>) {
 ///
 /// 不复用 `apply_nav`：那里拿不到 `ai_tx`，而删除必须走 IPC（不能本地直接删 ——
 /// 那会绕开闸门与审计）。
-fn request_delete(desktop: &Desktop, tx: &mpsc::Sender<AiEvent>) -> Option<String> {
+fn request_delete(desktop: &Desktop, tx: &mpsc::Sender<AiEvent>) -> Option<ToastMsg> {
     let i = desktop.selected?;
     let e = desktop.entries.get(i)?;
     let path = draw::join_path(&desktop.cwd, &e.name);
@@ -2304,7 +2345,7 @@ fn request_delete(desktop: &Desktop, tx: &mpsc::Sender<AiEvent>) -> Option<Strin
             });
         }
     });
-    Some(format!("请求删除「{name}」…"))
+    Some(ToastMsg::new(format!("请求删除「{name}」…"), format!("Requesting deletion of \"{name}\"…")))
 }
 
 /// AI 事件（后台线程 → 渲染主循环）。
@@ -2397,7 +2438,7 @@ fn fetch_users(tx: mpsc::Sender<AiEvent>) {
 /// 先证明"你是这个人"，再让 aetherd 写新口令。
 fn submit_password(
     renderer: &mut draw::Renderer,
-    toast: &mut Option<(String, Instant)>,
+    toast: &mut Option<(ToastMsg, Instant)>,
     tx: mpsc::Sender<AiEvent>,
 ) {
     if renderer.pass_form.pending {
@@ -2405,19 +2446,18 @@ fn submit_password(
     }
     // ① 本地表单校验（纯函数，规则与服务端共用同一份）
     if let Err(problem) = renderer.pass_form.check() {
-        let msg = form_problem_text(crate::i18n::lang(), problem);
-        renderer.pass_form.feedback = Some(msg.clone());
+        let msg = toast_msg_lang(|l| form_problem_text(l, problem));
+        renderer.pass_form.feedback = Some(msg.text().to_string());
         push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
         return;
     }
     // ② 目标账户：单用户模型下就是第一个人类账户
     let Some(user) = renderer.users.first().map(|u| u.name.clone()) else {
-        let msg = pick_zh_en(
+        let msg = toast_msg(
             "还没读到账户列表，请先点「重新读取」",
             "The account list is not loaded yet; click Reload first",
-        )
-        .to_string();
-        renderer.pass_form.feedback = Some(msg.clone());
+        );
+        renderer.pass_form.feedback = Some(msg.text().to_string());
         push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
         return;
     };
@@ -2433,29 +2473,32 @@ fn submit_password(
     match crate::auth::decide(&entry, &old, &mut lockout, now) {
         crate::auth::Decision::Allow | crate::auth::Decision::AllowWithReason(_) => {}
         crate::auth::Decision::Deny(why) => {
-            let msg = pick_zh_en_1("旧口令不对：{}", "current password rejected: {}", why);
-            renderer.pass_form.feedback = Some(msg.clone());
+            let msg = toast_msg_1("旧口令不对：{}", "current password rejected: {}", why);
+            renderer.pass_form.feedback = Some(msg.text().to_string());
             push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
             return;
         }
         crate::auth::Decision::Wait(secs) => {
-            let msg = pick_zh_en_1("尝试过于频繁，请等 {} 秒", "too many attempts, wait {}s", secs);
-            renderer.pass_form.feedback = Some(msg.clone());
+            let msg = toast_msg_1("尝试过于频繁，请等 {} 秒", "too many attempts, wait {}s", secs);
+            renderer.pass_form.feedback = Some(msg.text().to_string());
             push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
             return;
         }
     }
     // ④ 交给 aetherd 写（新口令只在这条**已注册的 UI 通道**上传输）
     renderer.pass_form.pending = true;
-    renderer.pass_form.feedback = Some(pick_zh_en("正在提交…", "Submitting…").to_string());
+    renderer.pass_form.feedback = Some(crate::i18n::tr("正在提交…", "Submitting…").to_string());
     let new_password = renderer.pass_form.new.text.clone();
     let en = crate::i18n::is_en();
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (user, new_password, en, tx);
         renderer.pass_form.pending = false;
-        let msg = pick_zh_en("改口令需要 aetherd（本平台不连它）", "Changing a password needs aetherd (not connected on this platform)").to_string();
-        renderer.pass_form.feedback = Some(msg.clone());
+        let msg = toast_msg(
+            "改口令需要 aetherd（本平台不连它）",
+            "Changing a password needs aetherd (not connected on this platform)",
+        );
+        renderer.pass_form.feedback = Some(msg.text().to_string());
         push_toast(toast, &mut renderer.notifs, msg, notifications::Kind::Err);
         return;
     }
@@ -2866,7 +2909,10 @@ fn run_e2e_script(
     let mut inj_renderer = draw::Renderer::new(WIDTH, HEIGHT);
     let inj_tr = text::TextRenderer::load();
     let mut inj_buf = vec![0u32; WIDTH * HEIGHT];
-    let mut inj_toast: Option<(String, Instant)> = None;
+    let mut inj_toast: Option<(ToastMsg, Instant)> = None;
+    // 通知历史也要有一份：`push_toast` 是"显示 + 记历史"的同一个入口，
+    // 少一半就不是真实路径了（§4.1 的原则：注入要打在真实函数上）。
+    let mut inj_notifs = notifications::Notifications::new();
     // `probe()` 是真实的构造入口（会去问一次 mixer；拿不到就如实标未检测）
     let mut inj_audio = audio::Audio::probe();
     for (idx, raw) in script.lines().enumerate() {
@@ -2898,6 +2944,12 @@ fn run_e2e_script(
                     // §4.1：注入之后要**断得准**，所以把注入产生的结果也做成可查询状态
                     "ai_input" => emit("query", true, &inj_input, &mut out),
                     "space" => emit("query", true, &spaces.current().to_string(), &mut out),
+                    // §3.5 遗留项 #43：通知正文现在存的是**结构化双语**，
+                    // 所以"当前这条提示用哪种语言、有没有漏译"可以被脚本断言。
+                    "toast" => {
+                        let t = inj_toast.as_ref().map(|(m, _)| m.text().to_string());
+                        emit("query", true, t.as_deref().unwrap_or(""), &mut out)
+                    }
                     // §4.1：点击的效果要能断言
                     "dark" => emit(
                         "query",
@@ -3045,11 +3097,28 @@ fn run_e2e_script(
                 }
             }
             "undo" => match undo_last(desktop, undo) {
-                Some(msg) => emit("undo", true, &msg, &mut out),
+                Some(msg) => emit("undo", true, msg.text(), &mut out),
                 None => emit("undo", false, "没有可撤销的动作", &mut out),
             },
+            // §3.5 遗留项 #43：脚本内切语言（**不是 CLI 顺序问题**：
+            // `--e2e` 在 main 里提前 return，`--lang` 那种走查参数够不着这里）。
+            "lang" => {
+                let want = args.get("lang").and_then(|v| v.as_str()).unwrap_or("zh");
+                let l = if want.eq_ignore_ascii_case("en") {
+                    crate::i18n::Lang::En
+                } else {
+                    crate::i18n::Lang::Zh
+                };
+                crate::i18n::set_lang(l);
+                emit("lang", true, if l == crate::i18n::Lang::En { "en" } else { "zh" }, &mut out);
+            }
             _ => match apply_action(desktop, &action, &args, undo) {
-                Some(msg) => emit(&action, true, &msg, &mut out),
+                Some(msg) => {
+                    // 真实产出的通知正文同时进 toast 槽与历史 —— `query: toast`
+                    // 断言的因此是**主循环同一个 `push_toast`** 的结果。
+                    push_toast(&mut inj_toast, &mut inj_notifs, msg.clone(), notifications::Kind::Info);
+                    emit(&action, true, msg.text(), &mut out)
+                }
                 None => emit(
                     &action,
                     false,
@@ -3233,7 +3302,7 @@ impl UndoStack {
 }
 
 /// 执行一次撤销。返回给用户的说明；`None` = 没有可撤销的动作。
-fn undo_last(desktop: &mut Desktop, stack: &mut UndoStack) -> Option<String> {
+fn undo_last(desktop: &mut Desktop, stack: &mut UndoStack) -> Option<ToastMsg> {
     match stack.pop()? {
         UndoStep::Layout { prev, floating } => {
             desktop.layout = prev;
@@ -3245,14 +3314,14 @@ fn undo_last(desktop: &mut Desktop, stack: &mut UndoStack) -> Option<String> {
             }
             // 撤销后重新平铺：否则窗口还停在"改布局之后"的位置上，看起来没撤干净
             snap_now(desktop, prev);
-            Some(format!("已撤销：布局回到 {}", prev.label()))
+            Some(ToastMsg::new(format!("已撤销：布局回到 {}", prev.label_in(crate::i18n::Lang::Zh)), format!("Undone: layout back to {}", prev.label_in(crate::i18n::Lang::En))))
         }
         UndoStep::OpenedWindow(idx) => {
             if idx < desktop.wins.len() {
                 close_window(desktop, idx);
-                Some("已撤销：关掉刚打开的窗口".into())
+                Some(toast_msg("已撤销：关掉刚打开的窗口", "Undone: closed the window that was just opened"))
             } else {
-                Some("已撤销：那个窗口已经不在了".into())
+                Some(toast_msg("已撤销：那个窗口已经不在了", "Undone: that window is no longer there"))
             }
         }
         UndoStep::ClosedWindow { at, title } => {
@@ -3265,7 +3334,10 @@ fn undo_last(desktop: &mut Desktop, stack: &mut UndoStack) -> Option<String> {
                 .map(|w| w.title == title)
                 .unwrap_or(false);
             if !matches {
-                return Some("这一步无法撤销：该窗口已被更晚的关闭顶掉".into());
+                return Some(toast_msg(
+                "这一步无法撤销：该窗口已被更晚的关闭顶掉",
+                "Cannot undo: that window was pushed out by a later close",
+            ));
             }
             let w = stack.closed.pop().expect("刚判断过非空");
             let at = at.min(desktop.wins.len());
@@ -3273,7 +3345,7 @@ fn undo_last(desktop: &mut Desktop, stack: &mut UndoStack) -> Option<String> {
             // 插在中间会让原来的活动窗口下标失效 —— 与关窗同一处理
             desktop.active = at;
             snap_now(desktop, desktop.layout);
-            Some(format!("已撤销：重新打开「{title}」（会话仍在）"))
+            Some(ToastMsg::new(format!("已撤销：重新打开「{title}」（会话仍在）"), format!("Undone: reopened \"{title}\" (session intact)")))
         }
     }
 }
@@ -3284,7 +3356,7 @@ fn apply_action(
     name: &str,
     args: &serde_json::Value,
     undo: &mut UndoStack,
-) -> Option<String> {
+) -> Option<ToastMsg> {
     // 每个分支在**改动之前**记逆操作（改完再记，记到的就是新状态）
     match name {
         "layout_set" => {
@@ -3304,7 +3376,7 @@ fn apply_action(
                 w.floating = false;
                 w.target = None;
             }
-            Some(format!("布局：{}", lay.label()))
+            Some(ToastMsg::new(format!("布局：{}", lay.label_in(crate::i18n::Lang::Zh)), format!("Layout: {}", lay.label_in(crate::i18n::Lang::En))))
         }
         "open_app" => {
             let app = args.get("app").and_then(|v| v.as_str())?;
@@ -3317,7 +3389,7 @@ fn apply_action(
             if msg.is_none() && desktop.wins.len() > before {
                 undo.push(UndoStep::OpenedWindow(desktop.wins.len() - 1));
             }
-            Some(msg.unwrap_or_else(|| format!("已打开「{app}」")))
+            Some(msg.unwrap_or_else(|| ToastMsg::new(format!("已打开「{app}」"), format!("Opened \"{app}\""))))
         }
         "close_active" => {
             // 关窗**不可撤销**（窗口含活的终端会话，存不下来）——记标记，如实告知
@@ -3336,7 +3408,7 @@ fn apply_action(
                     None => None,
                 }
             } else {
-                Some("至少保留一个窗口".into())
+                Some(toast_msg("至少保留一个窗口", "At least one window must remain"))
             }
         }
         _ => None,
@@ -3487,16 +3559,16 @@ fn open_notifications(
     desktop: &mut Desktop,
     notifs: &mut notifications::Notifications,
     tz_min: i32,
-) -> Option<String> {
+) -> Option<ToastMsg> {
     let lines: Vec<String> = notifs
         .iter()
         .map(|n| {
             // 时间用用户当前时区显示（与顶栏同一份设置，不另算一套）
             let at = crate::text::clock_fmt(n.at, tz_min, true, false);
             let body = if n.repeat > 1 {
-                format!("{}（×{}）", n.text, n.repeat)
+                format!("{}（×{}）", n.msg.text(), n.repeat)
             } else {
-                n.text.clone()
+                n.msg.text().to_string()
             };
             format!("{} {} {}", at, n.kind.mark(), body)
         })
@@ -3552,7 +3624,7 @@ fn open_notifications(
         return None;
     }
     if desktop.wins.len() >= 8 {
-        return Some("窗口数量已达上限（8）".into());
+        return Some(toast_msg("窗口数量已达上限（8）", "Window limit reached (8)"));
     }
     desktop.wins.push(draw::Win {
         rect: Rect { x: 300, y: 120, w: 560, h: 420 },
@@ -3605,16 +3677,17 @@ fn export_audit() -> Result<String, String> {
 ///
 /// `kind` 由调用点给：历史里失败必须与成功**可区分**（标记 + 颜色），
 /// 而"这条是不是失败"只有产生点知道，不该在这里猜文本。
-/// 取一条**按当前语言**的提示（§3.5）。
-///
-/// 为什么要这个助手：同一条提示（例如「上一步还没完成，请稍候」）在四处各写了一份，
-/// 改语言时必然漏掉其中一处。有了它，调用点写成 `pick_zh_en(zh, en)` ——
-/// **"这条话必须有两种语言"在代码里是可见的**，而不是靠记忆。
-fn pick_zh_en(zh: &'static str, en: &'static str) -> String {
-    crate::i18n::pick(crate::i18n::lang(), zh, en).to_string()
+fn push_toast(
+    toast: &mut Option<(ToastMsg, Instant)>,
+    notifs: &mut notifications::Notifications,
+    msg: ToastMsg,
+    kind: notifications::Kind,
+) {
+    notifs.push(msg.clone(), kind, crate::text::now_utc_secs());
+    *toast = Some((msg, Instant::now()));
 }
 
-/// 同 [`pick_zh_en`]，但**带一个占位符**（模板里写 `{}`）。
+/// 同 `crate::i18n::tr`，但**带一个占位符**（模板里写 `{}`）。
 ///
 /// **注意：参数是按值收的** —— 传 `String` 字段会把字段移动走。
 /// 若后面还要用它（或它来自 `&[T]` 切片），调用点要 `clone()`。
@@ -3627,15 +3700,31 @@ fn pick_zh_en_1(zh: &'static str, en: &'static str, arg: impl std::fmt::Display)
     crate::i18n::pick(crate::i18n::lang(), zh, en).replacen("{}", &arg.to_string(), 1)
 }
 
-fn push_toast(
-    toast: &mut Option<(String, Instant)>,
-    notifs: &mut notifications::Notifications,
-    msg: impl Into<String>,
-    kind: notifications::Kind,
-) {
-    let msg = msg.into();
-    notifs.push(&msg, kind, crate::text::now_utc_secs());
-    *toast = Some((msg, Instant::now()));
+/// 通知正文的构造助手（FEATURE-GAPS §3.5 遗留项 #43）。
+///
+/// 存在的理由与上面的 `pick_zh_en*` 一样（两种语言并排写在调用点上），
+/// 区别是**返回结构化类型** `ToastMsg`：通知要被记进历史、还可能中途切语言，
+/// 所以不能当场渲染成 `String`。
+///
+/// 为什么不直接把 `push_toast` 的参数写成 `impl Into<String>` 了事：
+/// 那样"忘了英文"在编译期仍然看不见 —— 实测 117 个调用点里就有 5 处只有中文。
+fn toast_msg(zh: &'static str, en: &'static str) -> ToastMsg {
+    ToastMsg::new(zh, en)
+}
+
+/// 一个占位符。见 [`toast_msg`]。
+fn toast_msg_1(zh: &'static str, en: &'static str, a: impl std::fmt::Display) -> ToastMsg {
+    ToastMsg::new_1(zh, en, a)
+}
+
+/// 由"按语言生成文案"的函数造一条双语正文（`f` 被调用两次：中、英）。
+///
+/// 本仓库有一批「`fn xxx_text(lang, …) -> String`」形态的文案函数
+/// （`form_problem_text`、`dns_error_text`、`preview_error_text` …），
+/// 它们只认一种语言。用它就能把这些函数的产出**一次凑齐两种语言**，
+/// 而不必在每个调用点把中文文案抄第二遍。
+fn toast_msg_lang(f: impl Fn(crate::i18n::Lang) -> String) -> ToastMsg {
+    ToastMsg::new(f(crate::i18n::Lang::Zh), f(crate::i18n::Lang::En))
 }
 
 /// 一个输入事件该交给谁 —— **守卫顺序的唯一真相**（§4.1）。
@@ -3700,7 +3789,7 @@ pub fn key_route(
 fn apply_ui_intent(
     intent: UiIntent,
     ai_tx: &mpsc::Sender<AiEvent>,
-    toast: &mut Option<(String, Instant)>,
+    toast: &mut Option<(ToastMsg, Instant)>,
     renderer: &mut draw::Renderer,
     audio: &mut audio::Audio,
 ) {
@@ -3714,10 +3803,25 @@ fn apply_ui_intent(
         }
         UiIntent::Power(action) => {
             let a = action.as_str();
-            let label = if action == aether_ipc::PowerAction::PowerOff { "关机" } else { "重启" };
+            // label 同时给日志与通知用：日志是中文（串口/本机诊断），通知要双语
+            let (label, label_en) = if action == aether_ipc::PowerAction::PowerOff {
+                ("关机", "Shut down")
+            } else {
+                ("重启", "Restart")
+            };
             // 关掉控制中心：确认卡片要盖在最上层，面板留着会挡住它（也会让人以为没反应）
             renderer.control_open = false;
-            push_toast(toast, &mut renderer.notifs, format!("{label}：请在确认卡片里输入 {a} 以确认"), notifications::Kind::Info);
+            // 中英的**占位内容不同**（动作名各用各的语言），所以这里不能用 `toast_msg_2`
+            // 的"同一批参数填两个模板" —— 直接构造两条完整文案。
+            push_toast(
+                toast,
+                &mut renderer.notifs,
+                ToastMsg::new(
+                    format!("{label}：请在确认卡片里输入 {a} 以确认"),
+                    format!("{label_en}: type {a} in the confirmation card to confirm"),
+                ),
+                notifications::Kind::Info,
+            );
             tty_log(&format!("控制中心电源入口 → {label}（等待确认卡片）"));
             spawn_power_tool(action, ai_tx);
         }
@@ -3725,10 +3829,21 @@ fn apply_ui_intent(
             // 写真实 mixer；**失败必须如实提示**（不假装"音量已调"）
             match audio.set_volume(pct) {
                 Ok(()) => {
-                    push_toast(toast, &mut renderer.notifs, format!("音量 {}%", audio.volume_pct()), notifications::Kind::Ok);
+                    push_toast(
+                        toast,
+                        &mut renderer.notifs,
+                        toast_msg_1("音量 {}%", "Volume {}%", audio.volume_pct()),
+                        notifications::Kind::Ok,
+                    );
                 }
                 Err(e) => {
-                    push_toast(toast, &mut renderer.notifs, format!("音量未改变：{e}"), notifications::Kind::Err);
+                    push_toast(
+                        toast,
+                        &mut renderer.notifs,
+                        // 错误文本来自 alsa 子进程（外部），两种语言同一份
+                        ToastMsg::from_external(format!("音量未改变：{e}")),
+                        notifications::Kind::Err,
+                    );
                 }
             }
         }
@@ -3883,7 +3998,7 @@ fn is_minimized(win: &Win) -> bool {
 }
 
 /// 最小化：移出屏外 + 脱离平铺（`floating`），并记住原矩形以便恢复。
-fn minimize_window(desktop: &mut Desktop, idx: usize) -> Option<String> {
+fn minimize_window(desktop: &mut Desktop, idx: usize) -> Option<ToastMsg> {
     let win = desktop.wins.get_mut(idx)?;
     if is_minimized(win) {
         return None;
@@ -3892,7 +4007,7 @@ fn minimize_window(desktop: &mut Desktop, idx: usize) -> Option<String> {
     win.rect = Rect { x: MINIMIZED_X, y: win.rect.y, w: win.rect.w, h: win.rect.h };
     win.target = None;
     win.floating = true; // 脱离平铺，否则下一帧布局又把它拉回屏幕
-    Some(format!("{} 已最小化（点 Dock 图标恢复）", win.title))
+    Some(ToastMsg::new(format!("{} 已最小化（点 Dock 图标恢复）", win.title), format!("\"{}\" minimized (click its Dock icon to restore)", win.title)))
 }
 
 /// 若窗口已最小化则恢复（Dock 图标点击走这里）。返回 `true` = 确实恢复了。
@@ -3913,12 +4028,12 @@ fn restore_if_minimized(desktop: &mut Desktop, idx: usize) -> bool {
     true
 }
 
-fn open_app(desktop: &mut Desktop, icon: usize) -> Option<String> {
+fn open_app(desktop: &mut Desktop, icon: usize) -> Option<ToastMsg> {
     if icon >= APP_TITLES.len() {
-        return Some("未知应用".into());
+        return Some(toast_msg("未知应用", "Unknown app"));
     }
     if desktop.wins.len() >= 8 {
-        return Some("窗口数量已达上限（8）".into());
+        return Some(toast_msg("窗口数量已达上限（8）", "Window limit reached (8)"));
     }
     let idx = desktop.wins.len();
     // 2026-09-29 P3：**设置有了专门内容**（设置中心），不再复用文件管理器的纸面；
@@ -4019,9 +4134,9 @@ fn load_installed_apps(root: &std::path::Path) -> Vec<(String, String)> {
 /// 没有 Wayland 客户端支持，别的程序也没法往这块 framebuffer 上画。
 /// 所以"启动应用"＝"开个终端把它跑起来"，这也正好复用已经审过的 PTY 通路
 /// （而不是新开一条"让合成器 fork 任意程序"的路径 —— 那会是个新的逃逸面）。
-fn open_installed_app(desktop: &mut Desktop, id: &str, name: &str) -> Option<String> {
+fn open_installed_app(desktop: &mut Desktop, id: &str, name: &str) -> Option<ToastMsg> {
     if desktop.wins.len() >= 8 {
-        return Some("窗口数量已达上限（8）".into());
+        return Some(toast_msg("窗口数量已达上限（8）", "Window limit reached (8)"));
     }
     let idx = desktop.wins.len();
     let mut term = term::Terminal::spawn(80, 24, None);
@@ -4040,7 +4155,7 @@ fn open_installed_app(desktop: &mut Desktop, id: &str, name: &str) -> Option<Str
         wayland: None,
     });
     desktop.active = desktop.wins.len() - 1;
-    Some(format!("启动应用：{name}"))
+    Some(ToastMsg::new(format!("启动应用：{name}"), format!("Launching app: {name}")))
 }
 
 /// 每 ~3 秒重扫一次已装应用。
@@ -4095,23 +4210,26 @@ fn dock_action<'a>(
 }
 
 /// 返回上级目录。已在根目录或读不到时返回提示。
-fn go_up(desktop: &mut Desktop) -> Option<String> {
+fn go_up(desktop: &mut Desktop) -> Option<ToastMsg> {
     let up = draw::parent_of(&desktop.cwd);
     if up == desktop.cwd {
-        return Some("已在最上层目录".into());
+        return Some(toast_msg("已在最上层目录", "Already at the top level"));
     }
-    navigate_to(desktop, &up, "上级目录")
+    navigate_to(desktop, &up, "上级目录", "Parent folder")
 }
 
 /// 导航到指定目录（侧栏、面包屑、上级都走这一条路径）。
 ///
 /// 只有一处实现，才不会出现"从侧栏进去没重置选中项、从面包屑进去重置了"这类差异。
-fn navigate_to(desktop: &mut Desktop, path: &str, label: &str) -> Option<String> {
+fn navigate_to(desktop: &mut Desktop, path: &str, label_zh: &str, label_en: &str) -> Option<ToastMsg> {
     let (entries, err) = draw::read_dir_entries(path);
     if let Some(e) = err {
         // 保留原目录与旧条目：导航失败不该把用户丢到一个读不了的目录里
-        desktop.dir_error = Some(format!("无法打开「{label}」：{e}"));
-        return Some(format!("无法打开「{label}」"));
+        desktop.dir_error = Some(format!("无法打开「{label_zh}」：{e}"));
+        return Some(ToastMsg::new(
+            format!("无法打开「{label_zh}」"),
+            format!("Cannot open \"{label_en}\""),
+        ));
     }
     desktop.cwd = path.to_string();
     desktop.entries = entries;
@@ -4159,7 +4277,7 @@ fn sync_files_title(desktop: &mut Desktop) {
 /// 打开文件管理器里选中的条目：目录则进入，文件则开预览窗口。
 ///
 /// 返回 `Some(msg)` 表示需要提示用户（进不去 / 打不开），`None` 表示静默成功。
-fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
+fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<ToastMsg> {
     let ent = desktop.entries.get(idx).cloned()?;
     if ent.is_dir {
         let next = draw::join_path(&desktop.cwd, &ent.name);
@@ -4167,7 +4285,10 @@ fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
         if let Some(e) = err {
             // 进不去就留在原地并说明原因，而不是进一个空目录让人猜
             desktop.dir_error = Some(format!("无法进入 {}：{e}", ent.name));
-            return Some(format!("无法进入「{}」", ent.name));
+            return Some(ToastMsg::new(
+                format!("无法进入「{}」", ent.name),
+                format!("Cannot enter \"{}\"", ent.name),
+            ));
         }
         desktop.cwd = next;
         desktop.entries = entries;
@@ -4177,7 +4298,7 @@ fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
         None
     } else {
         if desktop.wins.len() >= 8 {
-            return Some("窗口数量已达上限（8）".into());
+            return Some(toast_msg("窗口数量已达上限（8）", "Window limit reached (8)"));
         }
         let path = draw::join_path(&desktop.cwd, &ent.name);
         let data = draw::read_preview(&path);
@@ -4196,7 +4317,7 @@ fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
         desktop.wins.push(win);
         desktop.active = desktop.wins.len() - 1;
         if failed {
-            Some(format!("「{}」无法以文本预览", ent.name))
+            Some(ToastMsg::new(format!("「{}」无法以文本预览", ent.name), format!("\"{}\" cannot be previewed as text", ent.name)))
         } else {
             None
         }
@@ -4204,11 +4325,11 @@ fn open_entry(desktop: &mut Desktop, idx: usize) -> Option<String> {
 }
 
 /// 执行菜单项；返回 (toast, reply-bubble) 反馈。
-fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<String>, Option<String>) {
+fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<ToastMsg>, Option<String>) {
     match (menu, item) {
         (0, 0) => {
             let msg = open_app(desktop, 0);
-            (msg.or(Some("已新建窗口".into())), None)
+            (msg.or(Some(toast_msg("已新建窗口", "New window created"))), None)
         }
         (0, 1) => {
             if desktop.wins.len() > 1 {
@@ -4218,11 +4339,11 @@ fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<Str
                 // 它跑的是 e2e 动作，没有 Ctrl+Z 可用。
                 (close_window(desktop, idx).map(|(_, m, _)| m), None)
             } else {
-                (Some("至少保留一个窗口".into()), None)
+                (Some(toast_msg("至少保留一个窗口", "At least one window must remain")), None)
             }
         }
-        (0, 2) => (Some("预览版请用 Esc 退出".into()), None),
-        (1, _) => (Some("编辑操作将在应用内生效（M2）".into()), None),
+        (0, 2) => (Some(toast_msg("预览版请用 Esc 退出", "Preview build: press Esc to quit")), None),
+        (1, _) => (Some(toast_msg("编辑操作将在应用内生效（M2）", "Editing takes effect in-app (M2)")), None),
         (2, 0) => (set_layout(desktop, Layout::TwoCol), None),
         (2, 1) => (set_layout(desktop, Layout::ThreeCol), None),
         (2, 2) => (set_layout(desktop, Layout::Monocle), None),
@@ -4723,7 +4844,7 @@ fn preview_main() -> anyhow::Result<()> {
     // 缩放中的窗口：(索引, 边, 按下时的原始矩形)
     let mut resize: Option<(usize, Edge, draw::Rect)> = None;
     let mut snap_zone = layout::Snap::None;
-    let mut toast: Option<(String, Instant)> = None;
+    let mut toast: Option<(ToastMsg, Instant)> = None;
     let mut ai_input = String::new();
     // 2.4：输入光标 —— 支持在中间插入/删除，不再只能追加（打错一个字要全删重来）
     let mut ai_cursor = textview::TextCursor::default();
@@ -4824,7 +4945,7 @@ fn preview_main() -> anyhow::Result<()> {
             // Ctrl+Space 切中英输入（与真机路径的 NUL 特判对应）
             if ctrl && *k == minifb::Key::Space {
                 ime.toggle();
-                push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { pick_zh_en("中文输入：开", "Chinese IME: on") } else { pick_zh_en("中文输入：关", "Chinese IME: off") }.to_string(), notifications::Kind::Err);
+                push_toast(&mut toast, &mut renderer.notifs, if ime.enabled() { toast_msg("中文输入：开", "Chinese IME: on") } else { toast_msg("中文输入：关", "Chinese IME: off") }, notifications::Kind::Err);
                 continue;
             }
             // Ctrl 组合键：Ctrl+W 关窗、Ctrl+Shift+C/V 复制粘贴
@@ -4923,7 +5044,7 @@ fn preview_main() -> anyhow::Result<()> {
                 push_toast(
                     &mut toast,
                     &mut renderer.notifs,
-                    message,
+                    ToastMsg::from_external(message),
                     if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
                 );
             }
@@ -4944,7 +5065,7 @@ fn preview_main() -> anyhow::Result<()> {
                     } else {
                         notifications::Kind::Err
                     };
-                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                    push_toast(&mut toast, &mut renderer.notifs, ToastMsg::from_external(message), kind);
                     // 这一处（另一个循环）没有 IPC 发送端：只落地状态，不触发重新扫描
                 }
                 AiEvent::DisplaysLoaded { driven_index, outputs } => {
@@ -4962,14 +5083,19 @@ fn preview_main() -> anyhow::Result<()> {
                     } else {
                         notifications::Kind::Err
                     };
-                    push_toast(&mut toast, &mut renderer.notifs, message, kind);
+                    push_toast(&mut toast, &mut renderer.notifs, ToastMsg::from_external(message), kind);
                 }
                 AiEvent::SnapshotsLoaded(items) => {
                     renderer.snapshots.on_list(items);
                 }
                 AiEvent::SnapshotDone { ok, message, notes } => {
                     if ok {
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Ok,
+                    );
                         // 回滚的逐文件说明：只说"已回滚"信息太少，用户想知道到底换了哪些文件
                         if !notes.is_empty() {
                             let brief: String = notes
@@ -4981,12 +5107,10 @@ fn preview_main() -> anyhow::Result<()> {
                             push_toast(
                                 &mut toast,
                                 &mut renderer.notifs,
-                                if crate::i18n::is_en() {
-                    // 两个占位符：助手只换第一个，这里必须按语言各写一次
-                    format!("{brief} ({} items)", notes.len())
-                } else {
-                    format!("{brief}（共 {} 项）", notes.len())
-                },
+                                ToastMsg::new(
+                                    format!("{brief}（共 {} 项）", notes.len()),
+                                    format!("{brief} ({} items)", notes.len()),
+                                ),
                                 notifications::Kind::Info,
                             );
                         }
@@ -4994,7 +5118,12 @@ fn preview_main() -> anyhow::Result<()> {
                         // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，不做「再取一次」
                     } else {
                         renderer.snapshots.on_failure(message.clone());
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Err,
+                    );
                     }
                 }
                 AiEvent::TimeStatus { timezone, last_offset_ms, last_sync_unix } => {
@@ -5002,24 +5131,44 @@ fn preview_main() -> anyhow::Result<()> {
                 }
                 AiEvent::TimeSynced { ok, message } => {
                     if ok {
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Ok,
+                    );
                         // 对完时再取一次状态：「上次偏移」那一行才会显示刚刚这次的结果
                         // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，
                         // 不做「再取一次」（那要连 aetherd，而预览模式刻意不依赖 IPC/显示环境）
                     } else {
                         renderer.time.on_failure(message.clone());
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Err,
+                    );
                     }
                 }
                 AiEvent::TimezoneSet { ok, message } => {
                     if ok {
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Ok);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Ok,
+                    );
                         // 写成功后重取状态：界面上的「系统时区」要跟着变成新名字
                         // 预览循环（--preview）没有 IPC 发送端：这里只落地状态，
                         // 不做「再取一次」（那要连 aetherd，而预览模式刻意不依赖 IPC/显示环境）
                     } else {
                         renderer.time.on_failure(message.clone());
-                        push_toast(&mut toast, &mut renderer.notifs, message, notifications::Kind::Err);
+                        push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        ToastMsg::from_external(message),
+                        notifications::Kind::Err,
+                    );
                     }
                 }
                 AiEvent::PolicyLoaded(entries) => {
@@ -5032,7 +5181,7 @@ fn preview_main() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            message,
+                            ToastMsg::from_external(message),
                             notifications::Kind::Ok,
                         );
                     } else {
@@ -5040,14 +5189,20 @@ fn preview_main() -> anyhow::Result<()> {
                         push_toast(
                             &mut toast,
                             &mut renderer.notifs,
-                            message,
+                            ToastMsg::from_external(message),
                             notifications::Kind::Err,
                         );
                     }
                 }
                 AiEvent::PolicyFailed(why) => {
                     renderer.policy.set_error(why.clone());
-                    push_toast(&mut toast, &mut renderer.notifs, why, notifications::Kind::Err);
+                    push_toast(
+                        &mut toast,
+                        &mut renderer.notifs,
+                        // 策略失败原因来自 aetherd（已按其连接语言渲染）
+                        ToastMsg::from_external(why),
+                        notifications::Kind::Err,
+                    );
                 }
                 AiEvent::DnsSaved { ok, message } => {
                     // 回执落到输入框的反馈行：**成功才退出编辑态**，失败留在编辑态
@@ -5059,7 +5214,8 @@ fn preview_main() -> anyhow::Result<()> {
                     push_toast(
                         &mut toast,
                         &mut renderer.notifs,
-                        format!("DNS：{msg}"),
+                        // DNS 回执来自 aetherd（已按其连接语言渲染）
+                        ToastMsg::from_external(format!("DNS：{msg}")),
                         if ok { notifications::Kind::Ok } else { notifications::Kind::Err },
                     );
                 }
@@ -5078,7 +5234,7 @@ fn preview_main() -> anyhow::Result<()> {
                 }
                 AiEvent::Action(name, args) => {
                     if let Some(msg) = apply_action(&mut desktop, &name, &args, &mut undo) {
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("Aether 执行 · {}", "Aether ran · {}", msg), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("Aether 执行 · {}", "Aether ran · {}", msg.text()), notifications::Kind::Info);
                     }
                 }
                 AiEvent::Confirm(req) => {
@@ -5110,13 +5266,13 @@ fn preview_main() -> anyhow::Result<()> {
                     }
                 }
                 Some(draw::ConfirmButton::Allow) => {
-                    push_toast(&mut toast, &mut renderer.notifs, pick_zh_en("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"), notifications::Kind::Info);
+                    push_toast(&mut toast, &mut renderer.notifs, toast_msg("回显不匹配：请原样输入目标名", "Echo mismatch: type the target name exactly"), notifications::Kind::Info);
                 }
                 Some(draw::ConfirmButton::Deny) => {
                     if let Some((req, _)) = confirm.take() {
                         // 拒绝要回传服务端（撤销令牌 + 留痕），不能只关本地弹窗
                         cancel_confirm(&req.token);
-                        push_toast(&mut toast, &mut renderer.notifs, pick_zh_en_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_1("已拒绝「{}」", "Denied 「{}」", req.tool), notifications::Kind::Info);
                     }
                 }
                 None => {}
@@ -5265,7 +5421,7 @@ fn preview_main() -> anyhow::Result<()> {
             {
                 // 侧栏"位置"：接真实目录
                 if let Some((label, path)) = desktop.sidebar.get(i).cloned() {
-                    if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                    if let Some(msg) = navigate_to(&mut desktop, &path, &label, &label) {
                         push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                     }
                 }
@@ -5278,7 +5434,7 @@ fn preview_main() -> anyhow::Result<()> {
             {
                 // 面包屑：点哪一段就跳到哪一级
                 let label = draw::path_leaf(&path);
-                if let Some(msg) = navigate_to(&mut desktop, &path, &label) {
+                if let Some(msg) = navigate_to(&mut desktop, &path, &label, &label) {
                     push_toast(&mut toast, &mut renderer.notifs, msg, notifications::Kind::Info);
                 }
             }
@@ -5322,7 +5478,7 @@ fn preview_main() -> anyhow::Result<()> {
                 if snap_zone != layout::Snap::None {
                     if let Some(win) = desktop.wins.get_mut(i) {
                         win.target = Some(layout::rect(snap_zone, layout::work_area(WIDTH, HEIGHT)));
-                        push_toast(&mut toast, &mut renderer.notifs, snap_zone.label().to_string(), notifications::Kind::Info);
+                        push_toast(&mut toast, &mut renderer.notifs, toast_msg_lang(|l| snap_zone.label_in(l).to_string()), notifications::Kind::Info);
                     }
                 }
                 snap_zone = layout::Snap::None;
@@ -5380,7 +5536,7 @@ fn preview_main() -> anyhow::Result<()> {
         });
         let ui = UiState {
             snap: snap_preview,
-            toast: toast_now.as_ref().map(|(m, a)| (m.as_str(), *a)),
+            toast: toast_now.as_ref().map(|(m, a)| (m.text(), *a)),
             ai_input: &ai_input,
             ai_cursor: ai_cursor.pos(),
             ime: &ime,
@@ -5717,7 +5873,7 @@ fn feed_terminal(desktop: &mut Desktop, key: term::TermKey, ime: &mut ime::Ime) 
 }
 
 /// 切换布局（键盘路径）；返回 toast 文案。
-fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
+fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<ToastMsg> {
     if lay == desktop.layout {
         return None;
     }
@@ -5726,7 +5882,7 @@ fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
         w.floating = false;
         w.target = None;
     }
-    Some(format!("布局：{}", lay.label()))
+    Some(ToastMsg::new(format!("布局：{}", lay.label_in(crate::i18n::Lang::Zh)), format!("Layout: {}", lay.label_in(crate::i18n::Lang::En))))
 }
 
 // ---------------------------------------------------------------------------
@@ -5738,7 +5894,7 @@ fn set_layout(desktop: &mut Desktop, lay: Layout) -> Option<String> {
 ///
 /// **必须同时修正 `active`**：窗口数组被移除后旧索引会越界。调用方还负责清 `drag`——
 /// 拖拽中关掉被拖的窗口正是 P2-3 那类 panic 的来源。
-fn close_window(desktop: &mut Desktop, idx: usize) -> Option<(usize, String, draw::Win)> {
+fn close_window(desktop: &mut Desktop, idx: usize) -> Option<(usize, ToastMsg, draw::Win)> {
     if idx >= desktop.wins.len() {
         return None;
     }
@@ -5755,22 +5911,22 @@ fn close_window(desktop: &mut Desktop, idx: usize) -> Option<(usize, String, dra
         }
         desktop.active = desktop.active.min(desktop.wins.len() - 1);
     }
-    Some((idx, format!("已关闭「{title}」"), win))
+    Some((idx, ToastMsg::new(format!("已关闭「{title}」"), format!("Closed \"{title}\"")), win))
 }
 
 /// 最大化 / 恢复。用 `restore` 记住原矩形，再点一次回到原位。
-fn toggle_zoom(desktop: &mut Desktop, idx: usize, work: draw::Rect) -> Option<String> {
+fn toggle_zoom(desktop: &mut Desktop, idx: usize, work: draw::Rect) -> Option<ToastMsg> {
     let win = desktop.wins.get_mut(idx)?;
     match win.restore.take() {
         Some(prev) => {
             win.target = Some(prev);
-            Some(format!("已恢复「{}」", win.title))
+            Some(ToastMsg::new(format!("已恢复「{}」", win.title), format!("Restored \"{}\"", win.title)))
         }
         None => {
             win.restore = Some(win.rect);
             win.floating = true; // 脱离平铺，否则下一帧会被布局覆盖回去
             win.target = Some(work);
-            Some(format!("已最大化「{}」", win.title))
+            Some(ToastMsg::new(format!("已最大化「{}」", win.title), format!("Maximized \"{}\"", win.title)))
         }
     }
 }
@@ -5903,7 +6059,7 @@ fn dispatch_nav(
     ai_cursor: &mut textview::TextCursor,
     ime: &mut ime::Ime,
     tx: &mpsc::Sender<AiEvent>,
-) -> Option<String> {
+) -> Option<ToastMsg> {
     // IME 正在拼字时，上下键选候选 —— 优先于列表导航与预览滚动
     if ime.composing() {
         match nav {
@@ -5987,7 +6143,7 @@ fn dispatch_nav(
 ///
 /// `Delete` 不在这里处理 —— 它要么归文本光标（指令条非空），要么走
 /// `request_delete`（L2 确认链路）。见 `dispatch_nav`。
-fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
+fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<ToastMsg> {
     use input::NavKey::*;
     if key == Tab {
         if desktop.wins.len() < 2 {
@@ -6004,7 +6160,10 @@ fn apply_nav(desktop: &mut Desktop, key: input::NavKey) -> Option<String> {
             restore_if_minimized(desktop, idx);
         }
         // 用 get 而不是直接索引：默认桌面现在**没有窗口**，索引会越界 panic
-        return Some(format!("焦点：{}", desktop.wins.get(desktop.active)?.title));
+        return Some(ToastMsg::new(
+            format!("焦点：{}", desktop.wins.get(desktop.active)?.title),
+            format!("Focus: {}", desktop.wins.get(desktop.active)?.title),
+        ));
     }
     if key == Delete {
         return None;
@@ -6131,7 +6290,7 @@ fn run_palette_target(
     desktop: &mut Desktop,
     renderer: &mut draw::Renderer,
     target: crate::palette::Target,
-    toast: &mut Option<(String, std::time::Instant)>,
+    toast: &mut Option<(ToastMsg, std::time::Instant)>,
 ) {
     use crate::palette::Target;
     match target {
@@ -6634,7 +6793,7 @@ fn sync_clipboard_to_daemon(text: String) {
 
 /// 复制到剪贴板。目标是终端就复制可见内容，是文件管理器就复制选中项路径。
 /// 返回 toast 文案。
-fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
+fn clipboard_copy(desktop: &mut Desktop) -> Option<ToastMsg> {
     // 终端优先：它的"内容"就是屏幕
     if let Some(t) = desktop.wins.get(desktop.active).and_then(|w| w.term.as_ref()) {
         // 有拖选复制选区，没有则退化为整屏（两条路都不让 Ctrl+Shift+C 落空）
@@ -6642,7 +6801,8 @@ fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
         let trimmed = text.trim_end().to_string();
         let lines = trimmed.lines().count();
         let explicit = t.sel.is_some();
-        let what = if explicit { "选区" } else { "终端内容" };
+        // 两种语言的"复制了什么"要各写一份 —— 不能把中文的「选区」拼进英文句子
+        let (what_zh, what_en) = if explicit { ("选区", "selection") } else { ("终端内容", "terminal contents") };
         desktop.clipboard = trimmed;
         // 只有**显式拖选**的内容才同步给 aetherd。
         //
@@ -6653,14 +6813,20 @@ fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
         if explicit {
             sync_clipboard_to_daemon(desktop.clipboard.clone());
         }
-        return Some(format!("已复制{what}（{lines} 行）"));
+        return Some(ToastMsg::new(
+            format!("已复制{what_zh}（{lines} 行）"),
+            format!("Copied {what_en} ({lines} lines)"),
+        ));
     }
     // 文件管理器：复制选中项的完整路径（比复制文件名有用得多）
     if let Some(i) = desktop.selected {
         if let Some(e) = desktop.entries.get(i) {
             desktop.clipboard = draw::join_path(&desktop.cwd, &e.name);
             sync_clipboard_to_daemon(desktop.clipboard.clone());
-            return Some(format!("已复制路径「{}」", e.name));
+            return Some(ToastMsg::new(
+                format!("已复制路径「{}」", e.name),
+                format!("Copied path \"{}\"", e.name),
+            ));
         }
     }
     None
@@ -6668,6 +6834,9 @@ fn clipboard_copy(desktop: &mut Desktop) -> Option<String> {
 
 /// 粘贴。目标是终端就直接送进 PTY（返回 None 表示已消费）；
 /// 否则把文本交回调用方插入输入框。
+///
+/// 返回的是**剪贴板文本本身**（不是提示文案）—— 类型上必须与
+/// `clipboard_copy` 的 `Option<ToastMsg>` 区分开，否则这里会被误当成"已双语"。
 fn clipboard_paste(desktop: &mut Desktop) -> Option<String> {
     if desktop.clipboard.is_empty() {
         return None;
@@ -6734,7 +6903,7 @@ fn apply_setup_action(
     act: setup::Action,
     renderer: &mut draw::Renderer,
     ai_tx: &mpsc::Sender<AiEvent>,
-    toast: &mut Option<(String, Instant)>,
+    toast: &mut Option<(ToastMsg, Instant)>,
 ) -> bool {
     let mut mark_done = false;
     match act {
@@ -6791,7 +6960,7 @@ fn apply_setup_action(
             push_toast(
                 toast,
                 &mut renderer.notifs,
-                "正在写入默认 DNS…".to_string(),
+                toast_msg("正在写入默认 DNS…", "Writing the default DNS…"),
                 notifications::Kind::Info,
             );
         }
@@ -6802,14 +6971,17 @@ fn apply_setup_action(
 /// 把"向导已完成"落盘。**失败要大声说出来** ——
 /// 否则下次开机又弹一遍，而用户不知道为什么。
 #[cfg(target_os = "linux")]
-fn save_setup_done(renderer: &mut draw::Renderer, toast: &mut Option<(String, Instant)>) {
+fn save_setup_done(renderer: &mut draw::Renderer, toast: &mut Option<(ToastMsg, Instant)>) {
     renderer.settings.setup_done = true;
     if let Err(e) = renderer.settings.save(settings::SETTINGS_PATH) {
         eprintln!("[aether-compositor] 保存向导完成状态失败：{e}");
         push_toast(
             toast,
             &mut renderer.notifs,
-            format!("向导状态保存失败：{e}"),
+            ToastMsg::new(
+                format!("向导状态保存失败：{e}"),
+                format!("Failed to save wizard state: {e}"),
+            ),
             notifications::Kind::Err,
         );
     }
@@ -6823,11 +6995,11 @@ enum CtrlOutcome {
     /// 什么也没做
     Nothing,
     /// 做了一件事，只是一句提示
-    Message(String),
+    Message(ToastMsg),
     /// **关掉了一个窗口** —— 调用方要把 `win` 收进"最近关闭"托盘
     Closed {
         at: usize,
-        message: String,
+        message: ToastMsg,
         win: Box<draw::Win>,
     },
 }
@@ -6844,7 +7016,7 @@ fn apply_ctrl(desktop: &mut Desktop, c: char, shift: bool) -> CtrlOutcome {
             let one_line: String = t.replace(['\r', '\n'], " ");
             let n = one_line.chars().count();
             desktop.clipboard = one_line;
-                CtrlOutcome::Message(format!("已粘贴 {n} 个字符"))
+                CtrlOutcome::Message(toast_msg_1("已粘贴 {} 个字符", "Pasted {} characters", n))
             })
             .unwrap_or(CtrlOutcome::Nothing),
         // **唯一**调用 `close_window` 的地方（有源码探针守着）——
@@ -7203,7 +7375,11 @@ mod desktop_icon_tests {
         let mut d = demo_desktop();
         let before = d.wins[1].rect;
         let msg = minimize_window(&mut d, 1).expect("最小化应返回提示文案");
-        assert!(msg.contains("最小化"), "提示要说明发生了什么：{msg}");
+        assert!(
+            msg.for_lang(crate::i18n::Lang::Zh).contains("最小化"),
+            "提示要说明发生了什么：{}",
+            msg.text()
+        );
         assert!(is_minimized(&d.wins[1]), "最小化后必须在屏外");
         assert!(d.wins[1].floating, "最小化必须脱离平铺，否则下一帧布局又把它拉回屏幕");
         assert!(d.wins[1].target.is_none());
@@ -7581,7 +7757,7 @@ mod window_mgmt_tests {
         d.selected = Some(3);
         d.scroll = 2;
         let tmp = std::env::temp_dir();
-        let msg = navigate_to(&mut d, &tmp.to_string_lossy(), "测试目录");
+        let msg = navigate_to(&mut d, &tmp.to_string_lossy(), "测试目录", "Test folder");
         assert!(msg.is_none(), "系统临时目录应可读：{msg:?}");
         assert_eq!(d.selected, None, "换目录后选中项必须重置");
         assert_eq!(d.scroll, 0, "换目录后滚动位置必须重置");
@@ -7591,7 +7767,7 @@ mod window_mgmt_tests {
     fn navigate_failure_keeps_current_dir() {
         let mut d = files_desk(3);
         let before = d.cwd.clone();
-        let msg = navigate_to(&mut d, "__aether_absent_dir__", "不存在的目录");
+        let msg = navigate_to(&mut d, "__aether_absent_dir__", "不存在的目录", "Missing folder");
         assert!(msg.is_some(), "失败要有反馈");
         assert_eq!(d.cwd, before, "导航失败不应把用户丢到读不了的目录");
         assert!(d.dir_error.is_some(), "失败原因要能显示在界面上");
@@ -7602,7 +7778,7 @@ mod window_mgmt_tests {
         let mut d = files_desk(3);
         d.selected = Some(1);
         let msg = clipboard_copy(&mut d).expect("应有复制反馈");
-        assert!(msg.contains("路径"), "{}", msg);
+        assert!(msg.for_lang(crate::i18n::Lang::Zh).contains("路径"), "{}", msg.text());
         // 复制的是**完整路径**，不是文件名 —— 粘贴出去才有用
         assert_eq!(d.clipboard, draw::join_path("/tmp", "e1"));
     }
@@ -7615,7 +7791,7 @@ mod window_mgmt_tests {
     fn clipboard_copies_terminal_visible_content() {
         let mut d = term_desk();
         let msg = clipboard_copy(&mut d).expect("终端应可复制");
-        assert!(msg.contains("行"), "{}", msg);
+        assert!(msg.for_lang(crate::i18n::Lang::Zh).contains("行"), "{}", msg.text());
         assert!(d.clipboard.contains("aether@localhost"), "应包含演示会话内容");
         assert!(
             !d.clipboard.contains("\u{0}"),
@@ -7843,8 +8019,8 @@ mod wayland_sync_tests {
         assert!(off.contains("记录已关闭"), "关闭记录时的空文案应说明原因：{off}");
 
         // 记两条（类别不同 → 不会合并），再打开
-        n.push("网络已连接", notifications::Kind::Ok, 3600);
-        n.push("写盘失败", notifications::Kind::Err, 3660);
+        n.push(ToastMsg::new("网络已连接", "Network connected"), notifications::Kind::Ok, 3600);
+        n.push(ToastMsg::new("写盘失败", "Disk write failed"), notifications::Kind::Err, 3660);
         assert_eq!(n.unread(), 2);
         assert!(open_notifications(&mut d, &mut n, 480).is_none());
         assert_eq!(d.wins.len(), wins_before + 1, "已有通知窗口时应就地刷新，不叠第二个");
@@ -7922,7 +8098,11 @@ mod wayland_sync_tests {
             floats_before,
             "撤销应还原每个窗口的浮动标志"
         );
-        assert!(msg.contains("布局"), "提示应说明撤了什么：{msg}");
+        assert!(
+            msg.for_lang(crate::i18n::Lang::Zh).contains("布局"),
+            "提示应说明撤了什么：{}",
+            msg.text()
+        );
         // 栈已空 → 再撤销没有可做的
         assert!(undo_last(&mut d, &mut u).is_none(), "空栈应返回 None");
     }
@@ -7939,7 +8119,11 @@ mod wayland_sync_tests {
         assert_eq!(u.len(), 1);
         let msg = undo_last(&mut d, &mut u).expect("应有可撤销的动作");
         assert_eq!(d.wins.len(), n0, "撤销应关掉刚打开的窗口");
-        assert!(msg.contains("关掉"), "提示应说明撤了什么：{msg}");
+        assert!(
+            msg.for_lang(crate::i18n::Lang::Zh).contains("关掉"),
+            "提示应说明撤了什么：{}",
+            msg.text()
+        );
     }
 
     /// §5.1：**关窗不可撤销**，而且不能"跳过它去撤销更早的动作"。
@@ -7966,7 +8150,11 @@ mod wayland_sync_tests {
 
         // 第一次撤销：把窗口放回来，**布局保持不变**
         let msg = undo_last(&mut d, &mut u).expect("应消费掉这一步");
-        assert!(msg.contains("重新打开"), "应告知窗口被放回来了：{msg}");
+        assert!(
+            msg.for_lang(crate::i18n::Lang::Zh).contains("重新打开"),
+            "应告知窗口被放回来了：{}",
+            msg.text()
+        );
         assert_eq!(d.wins.len(), wins_before, "窗口应当回来了");
         assert!(
             u.closed.is_empty(),
@@ -7979,7 +8167,7 @@ mod wayland_sync_tests {
         );
         // 第二次撤销才是布局
         let msg2 = undo_last(&mut d, &mut u).expect("布局那步仍应可撤销");
-        assert!(msg2.contains("布局"));
+        assert!(msg2.for_lang(crate::i18n::Lang::Zh).contains("布局"));
     }
 
     /// §5.1：栈**有界**（无界栈会随运行时长无限增长）。

@@ -35,6 +35,8 @@ SITE = ROOT / "site"
 # declared() 是模块级函数，不能碰 main() 的局部 problems（附录 GL）。
 PROBLEMS: list = []
 AUDIT = ROOT / "docs" / "报告" / "安全审计（SECURITY-AUDIT）-2026-10-02.md"
+#: 代码索引（头部那句与逐 crate 表都是规模事实的另一种写法，2026-10-11 纳入 ③f）
+INDEX = ROOT / "docs" / "代码索引（INDEX）-2026-09-11.md"
 GATE_COUNT = ROOT / "docs" / "证据" / "gate-count.txt"
 
 
@@ -74,13 +76,35 @@ def main() -> int:
     elif doc_tests != real_tests:
         problems.append(f"测试数：文档 {doc_tests}，实测 {real_tests}")
 
+    # 规模数：repo-stats 是**权威口径**，只跑一次，③b 与 ③f 共用
+    _stats_out = subprocess.run([sys.executable, str(ROOT / "scripts/repo-stats.py")],
+                                cwd=ROOT, capture_output=True, text=True,
+                                encoding='utf-8').stdout
+    _m_stats = re.search(r"\*\*合计\*\* \| \*\*([\d,]+)\*\* \| \*\*(\d+)\*\*", _stats_out)
+    real_lines = int(_m_stats.group(1).replace(",", "")) if _m_stats else None
+    real_files = int(_m_stats.group(2)) if _m_stats else None
+
     # ② 门禁数
     doc_gates = declared(text, r'\| 门禁 \| \*\*(\d+) 项全过\*\*')
+    subset = False
+    real_gates = None
     if GATE_COUNT.exists():
-        real_gates = declared(GATE_COUNT.read_text(encoding='utf-8'), r'(\d+)')
-        print(f"② 门禁数：文档 {doc_gates} / 本次运行 {real_gates}")
-        if real_gates and doc_gates != real_gates:
+        # `utf-8-sig`：这份文件由 `gates.py` 写（无 BOM），但**人手工编辑时很容易带上 BOM** ——
+        # 带上之后 `"30".isdigit()` 会因为开头那个 \ufeff 变成 False，判据退化成"期望 None"，
+        # 报出来的错误看不懂。读的时候顺手把 BOM 吃掉（2026-10-11 实测踩到过）。
+        raw = GATE_COUNT.read_text(encoding='utf-8-sig').split()
+        real_gates = int(raw[0]) if raw and raw[0].isdigit() else None
+        # 第二行是模式（`full` / `fast`）。`--fast` 只跑秒级子集，
+        # 拿它的步数去比文档里的**全量**步数必然不相等 —— 那不是缺陷，是窗口取错了
+        # （2026-10-11：`gates.py --fast` 一直是红的，红的就是这一条）。
+        subset = len(raw) > 1 and raw[1] == "fast"
+        if subset:
+            print(f"② 门禁数：[SKIP] 子集模式（--fast 本次 {real_gates} 步，"
+                  f"与文档声明的全量步数不可比）")
+        elif real_gates and doc_gates != real_gates:
             problems.append(f"门禁数：文档 {doc_gates}，本次运行 {real_gates}")
+        else:
+            print(f"② 门禁数：文档 {doc_gates} / 本次运行 {real_gates}")
     else:
         print("② 门禁数：[SKIP] 没有 gate-count.txt（单独跑本脚本时会这样）")
 
@@ -92,11 +116,6 @@ def main() -> int:
         if doc_readme_tests != real_tests:
             problems.append(f"README 测试数：文档 {doc_readme_tests}，实测 {real_tests}")
         doc_readme_files = declared(rtext, r"(\d+) 个源文件")
-        _stats = re.search(r"\*\*合计\*\* \| \*\*([\d,]+)\*\* \| \*\*(\d+)\*\*",
-                           subprocess.run([sys.executable, str(ROOT / "scripts/repo-stats.py")],
-                                          cwd=ROOT, capture_output=True, text=True,
-                                          encoding='utf-8').stdout)
-        real_files = int(_stats.group(2)) if _stats else None
         print(f"③b README 源文件数：{doc_readme_files} / 实测 {real_files}")
         if doc_readme_files != real_files:
             problems.append(f"README 源文件数：文档 {doc_readme_files}，实测 {real_files}")
@@ -118,6 +137,11 @@ def main() -> int:
         ("收尾报告 自引用行", REPORT, r"「(\d+) 项测试 / (\d+) 项门禁」", (real_tests, real_gates)),
         ("收尾报告 验收命令注释", REPORT, r"# (\d+) 项门禁（含", real_gates),
     ):
+        if subset and _label.startswith("收尾报告"):
+            # 子集模式下"门禁数"这个事实压根没法得出（本次没跑全量），
+            # 硬比只会得到一个假红 —— 明确跳过并说明，而不是让它去误报。
+            print(f"③d {_label}：[SKIP] 子集模式（本次运行不含全量门禁数）")
+            continue
         if not _path.exists():
             continue
         _txt = _path.read_text(encoding='utf-8')
@@ -146,7 +170,9 @@ def main() -> int:
             _txt = _path.read_text(encoding="utf-8")
             if _label.startswith("README"):
                 _found = re.findall(r"ISO[^\n]{0,12}?(\d+\.\d+ MB)", _txt)
-                print(f"③e {_label} ISO 体积：{_found} / 期望 ['{_size}']")
+                # 打印的"期望"要与**实际判据**一致（README 里本来就有两处体积，
+                # 早先这句打印写成一个，读日志的人会以为它错了 —— 实测就被误导过一次）
+                print(f"③e {_label} ISO 体积：{_found} / 期望 ['{_size}', '{_size}']")
                 if _found != [_size, _size]:
                     problems.append(f"{_label} ISO 体积：文档 {_found}，期望 ['{_size}', '{_size}']")
             # 链接形态：prerelease 下 /releases/latest 会 404
@@ -161,6 +187,38 @@ def main() -> int:
     print(f"③ 审计附录：文档 {doc_apps} / 实测 {real_apps}")
     if doc_apps != real_apps:
         problems.append(f"审计附录：文档 {doc_apps}，实测 {real_apps}")
+
+    # ③f **同一事实的其余写法**（2026-10-11 补，台账 #51）。
+    # 加它的原因：③b/③c/③d 只认几种固定写法，于是同一份文件里的**第二种写法**
+    # 可以一直漂 —— 实测就漂着 4 处（README 两处「750 项」、INDEX「45 个 .rs」、
+    # 收尾报告的代码行数与测试数注释），而门禁一直是绿的。
+    if README.exists():
+        _rtext = README.read_text(encoding='utf-8')
+        for _pat, _what in ((r"除 (\d+) 项单测外", "README「除 N 项单测外」"),
+                            (r"Windows (\d+) 项", "README「Windows N 项」")):
+            for _m2 in re.finditer(_pat, _rtext):
+                _v = int(_m2.group(1))
+                print(f"③f {_what}：{_v} / 实测 {real_tests}")
+                if _v != real_tests:
+                    problems.append(f"{_what}：文档 {_v}，实测 {real_tests}")
+    if INDEX.exists():
+        _itext = INDEX.read_text(encoding='utf-8')
+        _hits = [int(h) for h in re.findall(r"(\d+) 个 \.rs", _itext)]
+        print(f"③f INDEX「N 个 .rs」：{_hits} / 实测 {real_files}")
+        for _v in _hits:
+            if real_files is not None and _v != real_files:
+                problems.append(f"INDEX「N 个 .rs」：文档 {_v}，实测 {real_files}")
+    if REPORT.exists():
+        _ft = REPORT.read_text(encoding='utf-8')
+        for _pat, _what, _real in (
+            (r"\| Rust 代码行数 \| \*\*([\d,]+)\*\*", "收尾报告 代码行数", real_lines),
+            (r"#\s*(\d+) 项\s*$", "收尾报告 测试数注释", real_tests),
+        ):
+            _hits = [int(h.replace(",", "")) for h in re.findall(_pat, _ft, re.M)]
+            print(f"③f {_what}：{_hits} / 实测 {_real}")
+            for _v in _hits:
+                if _real is not None and _v != _real:
+                    problems.append(f"{_what}：文档 {_v}，实测 {_real}")
 
     if problems:
         print()

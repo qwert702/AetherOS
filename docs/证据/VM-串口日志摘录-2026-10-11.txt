@@ -1,0 +1,60 @@
+﻿aether-compositor: 已渲染 3800 帧
+aether-compositor: 已渲染 3900 帧
+aether-compositor: 已渲染 4000 帧
+aether-compositor: 已渲染 4100 帧
+aether-compositor: 已渲染 4200 帧
+aether-compositor: 已渲染 4300 帧
+aether-compositor: 已渲染 4400 帧
+aether-compositor: 已渲染 4500 帧
+aether-compositor: 已渲染 4600 帧
+aether-compositor: 已渲染 4700 帧
+aether-compositor: 已渲染 4800 帧
+aether-compositor: 已渲染 4900 帧
+aether-ops: 巡检#13 up=184s mem=182/1977MB 服务=aetherd=✓ compositor=✓ getty=✓ network=✓ ops=✓
+aether-compositor: 已渲染 5000 帧
+aether-compositor: 已渲染 5100 帧
+aether-compositor: 已渲染 5200 帧
+aether-compositor: 已渲染 5300 帧
+aether-compositor: 已渲染 5400 帧
+aether-compositor: 已渲染 5500 帧
+aether-compositor: 已渲染 5600 帧
+aether-compositor: 已渲染 5700 帧
+aether-compositor: 已渲染 5800 帧
+aether-compositor: 已渲染 5900 帧
+aether-compositor: 已渲染 6000 帧
+aether-compositor: 已渲染 6100 帧
+aether-compositor: 已渲染 6200 帧
+aether-compositor: 已渲染 6300 帧
+aether-compositor: AI 查询「kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkhi」连接 aetherd…
+aether-compositor: AI 查询已连接，发送请求（超时 15s）
+[aetherd] UI 通道已注册
+[aetherd] 本地模型不可达（http://127.0.0.1:11434/v1）
+[aetherd] 通道: Local · 模型: qwen2.5:7b
+[aetherd] ERROR LLM 请求失败（http://127.0.0.1:11434/v1/qwen2.5:7b）: LLM 请求失败: http://127.0.0.1:11434/v1/chat/completions
+aether-compositor: AI 查询完成，回复 128 字
+aether-compositor: AI 回复: ⚠ AI 通道不可用: LLM 请求失败: http://127.0.0.1:11434/v1/chat/completions（未检测到可用模型：在终端运行 `aetherd config 
+aether-compositor: 已渲染 6400 帧
+login[68]: invalid password for 'UNKNOWN' on 'tty1'
+
+aether-compositor: 已渲染 6500 帧
+aether-ops: 📢 aetherd 日志异常: [aetherd] ERROR LLM 请求失败（http://127.0.0.1:11434/v1/qwen2.5:7b）: LLM 请求失败: http://127.0.0.1:11434/v1/chat/completions
+aether-ops: === AetherOS 诊断报告 ===
+aether-ops: 诊断报告已保存 /var/diag/1791685619-aetherd.txt
+aether-ops: 巡检#17 up=244s mem=182/1977MB 服务=aetherd=✓ compositor=✓ getty=✓ network=✓ ops=✓
+aether-compositor: 已渲染 6600 帧
+aether-compositor: 已渲染 6700 帧
+aether-compositor: 已渲染 6800 帧
+aether-compositor: 已渲染 6900 帧
+aether-compositor: 已渲染 7000 帧
+aether-compositor: 已渲染 7100 帧
+aether-compositor: 已渲染 7200 帧
+aether-compositor: 已渲染 7300 帧
+aether-compositor: 已渲染 7400 帧
+aether-compositor: 已渲染 7500 帧
+aether-compositor: 已渲染 7600 帧
+aether-compositor: 已渲染 7700 帧
+aether-compositor: 已渲染 7800 帧
+aether-compositor: 已渲染 7900 帧
+[aether-init] getty 退出 (code=0, restarts=0)
+[aether-init] getty 已重启 (第 1 次)
+aether-compositor: 已渲染 8000 帧

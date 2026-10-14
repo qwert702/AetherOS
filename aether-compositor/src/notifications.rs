@@ -17,6 +17,8 @@
 
 use std::collections::VecDeque;
 
+use crate::i18n::{Lang, ToastMsg};
+
 /// 历史上限。50 条足够回看"刚才提示了什么"，又不会让内存随运行时长无界增长 ——
 /// **有界**是硬要求：一个跑几个月的桌面不该因为通知越攒越多而变慢。
 pub const MAX_NOTICES: usize = 50;
@@ -52,8 +54,10 @@ impl Kind {
 /// 一条通知。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Notice {
-    /// 文本（已去掉换行：历史是一行一条）
-    pub text: String,
+    /// 正文（**结构化双语**，见 `i18n::ToastMsg`）：两种语言都留着，
+    /// 取词发生在显示层 —— 于是"切语言后历史条目跟着变"是免费的，
+    /// 而不是把切换前记下的那条永远留在旧语言里。
+    pub msg: ToastMsg,
     pub kind: Kind,
     /// 发生时间（Unix 秒；由调用方给，便于单测）。
     /// 用 i64 是因为仓库里的时钟辅助函数（`text::now_utc_secs`）就是 i64 ——
@@ -88,21 +92,27 @@ impl Notifications {
     /// 记录一条通知。
     ///
     /// 三条规则（都有单测）：
-    /// 1. **同一文本 + 同一类别**且距上一条不超过 `MERGE_WINDOW_SECS` → 合并（次数 +1、
-    ///    时间刷新），**不**额外增加未读（用户还没看到，一条未读就够了）。
+    /// 1. **同一正文（两种语言都相同）+ 同一类别**且距上一条不超过 `MERGE_WINDOW_SECS`
+    ///    → 合并（次数 +1、时间刷新），**不**额外增加未读（用户还没看到，一条未读就够了）。
     /// 2. 超出上限 → 淘汰最旧的一条。
-    /// 3. 文本先做净化：多行压成一行、去掉首尾空白 —— 历史是一行一条，
-    ///    带换行的文本会把布局撑坏。
-    pub fn push(&mut self, text: &str, kind: Kind, now_secs: i64) {
+    /// 3. 两种语言的正文**各自**做净化：多行压成一行、去掉首尾空白 ——
+    ///    历史是一行一条，带换行的文本会把布局撑坏。
+    pub fn push(&mut self, msg: ToastMsg, kind: Kind, now_secs: i64) {
         if !self.enabled {
             return; // 用户关了记录：历史不增长（toast 照常显示，由调用方负责）
         }
-        let clean = one_line(text);
-        if clean.is_empty() {
-            return; // 空消息不该占一条历史
+        // 两种语言都要净化 —— 漏掉一种，切到那个语言时布局就被撑坏
+        let clean = ToastMsg::new(
+            one_line(msg.for_lang(Lang::Zh)),
+            one_line(msg.for_lang(Lang::En)),
+        );
+        // 两种语言都空才算空消息。只空一种说明调用点写错了，但**不该因此丢掉整条** ——
+        // 另一种语言还是有效内容（丢了会让"关了记录"和"没记上"看起来一样）。
+        if clean.for_lang(Lang::Zh).is_empty() && clean.for_lang(Lang::En).is_empty() {
+            return;
         }
         if let Some(last) = self.items.front_mut() {
-            if last.text == clean
+            if last.msg == clean
                 && last.kind == kind
                 && now_secs.saturating_sub(last.at) <= MERGE_WINDOW_SECS
             {
@@ -111,7 +121,7 @@ impl Notifications {
                 return;
             }
         }
-        self.items.push_front(Notice { text: clean, kind, at: now_secs, repeat: 1 });
+        self.items.push_front(Notice { msg: clean, kind, at: now_secs, repeat: 1 });
         self.unread = self.unread.saturating_add(1);
         while self.items.len() > MAX_NOTICES {
             self.items.pop_back();
@@ -186,25 +196,37 @@ fn one_line(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 测试内的便捷构造：中英同文。
+    /// 这批用例验的是**容量 / 合并 / 净化**，不是翻译 —— 翻译由 `i18n` 的单测与
+    /// `toast-i18n-audit.py` 负责，不在这里重复。
+    fn push_both(n: &mut Notifications, t: &str, kind: Kind, at: i64) {
+        n.push(ToastMsg::new(t, t), kind, at);
+    }
+
+    /// 取当前存下的中文正文（多数断言关心的是"内容对不对"）。
+    fn zh_of(n: &Notifications, idx: usize) -> String {
+        n.iter().nth(idx).unwrap().msg.for_lang(Lang::Zh).to_string()
+    }
+
     #[test]
     fn history_is_bounded_and_drops_oldest() {
         let mut n = Notifications::new();
         for i in 0..(MAX_NOTICES + 10) {
-            n.push(&format!("第 {i} 条"), Kind::Info, i as i64 * 100);
+            push_both(&mut n, &format!("第 {i} 条"), Kind::Info, i as i64 * 100);
         }
         assert_eq!(n.len(), MAX_NOTICES, "上限必须生效（内存有界）");
         // 最新的在最前，最旧的已被淘汰
-        assert_eq!(n.iter().next().unwrap().text, format!("第 {} 条", MAX_NOTICES + 9));
-        let oldest = n.iter().last().unwrap().text.clone();
+        assert_eq!(zh_of(&n, 0), format!("第 {} 条", MAX_NOTICES + 9));
+        let oldest = zh_of(&n, n.len() - 1);
         assert_eq!(oldest, format!("第 {} 条", 10), "最旧的 10 条应被淘汰");
     }
 
     #[test]
     fn consecutive_duplicates_merge_within_window() {
         let mut n = Notifications::new();
-        n.push("网络不可达", Kind::Err, 100);
-        n.push("网络不可达", Kind::Err, 101); // 窗口内 → 合并
-        n.push("网络不可达", Kind::Err, 103); // 边界（恰好 3 秒）→ 仍合并
+        push_both(&mut n, "网络不可达", Kind::Err, 100);
+        push_both(&mut n, "网络不可达", Kind::Err, 101); // 窗口内 → 合并
+        push_both(&mut n, "网络不可达", Kind::Err, 103); // 边界（恰好 3 秒）→ 仍合并
         assert_eq!(n.len(), 1, "窗口内的重复应合并成一条");
         let only = n.iter().next().unwrap();
         assert_eq!(only.repeat, 3, "合并次数应累加");
@@ -216,8 +238,8 @@ mod tests {
     #[test]
     fn duplicates_outside_window_are_separate() {
         let mut n = Notifications::new();
-        n.push("网络不可达", Kind::Err, 100);
-        n.push("网络不可达", Kind::Err, 104); // 超过 3 秒 → 不合并
+        push_both(&mut n, "网络不可达", Kind::Err, 100);
+        push_both(&mut n, "网络不可达", Kind::Err, 104); // 超过 3 秒 → 不合并
         assert_eq!(n.len(), 2);
         assert_eq!(n.unread(), 2);
     }
@@ -225,43 +247,82 @@ mod tests {
     #[test]
     fn different_kind_or_text_never_merges() {
         let mut n = Notifications::new();
-        n.push("同一句话", Kind::Ok, 100);
-        n.push("同一句话", Kind::Err, 100); // 类别不同
-        n.push("另一句话", Kind::Err, 100); // 文本不同
+        push_both(&mut n, "同一句话", Kind::Ok, 100);
+        push_both(&mut n, "同一句话", Kind::Err, 100); // 类别不同
+        push_both(&mut n, "另一句话", Kind::Err, 100); // 文本不同
+        assert_eq!(n.len(), 3);
+    }
+
+    /// 合并判定要**两种语言都比**。
+    ///
+    /// 只比中文的话，"中文一样、英文不同"的两条会被并成一条 ——
+    /// 于是**英文界面少一条通知，而中文界面看起来完全正常**（最难发现的那种错）。
+    #[test]
+    fn merge_requires_both_languages_to_match() {
+        let mut n = Notifications::new();
+        n.push(ToastMsg::new("已保存", "Saved"), Kind::Info, 100);
+        // 中文一样、英文不同 → **不是同一条**（合并会让英文界面少一条）
+        n.push(ToastMsg::new("已保存", "Stored"), Kind::Info, 100);
+        assert_eq!(n.len(), 2, "英文不同就不该合并");
+        // 两种语言都一样 → 合并
+        n.push(ToastMsg::new("已保存", "Stored"), Kind::Info, 100);
+        assert_eq!(n.len(), 2, "完全相同的两条应合并成一条");
+        assert_eq!(n.iter().next().unwrap().repeat, 2, "合并次数应累加");
+        // 中文不同 → 中文界面看得见差别，必须分开
+        n.push(ToastMsg::new("已保存。", "Stored"), Kind::Info, 100);
         assert_eq!(n.len(), 3);
     }
 
     #[test]
     fn empty_or_whitespace_messages_are_ignored() {
         let mut n = Notifications::new();
-        n.push("", Kind::Info, 0);
-        n.push("   ", Kind::Info, 0);
-        n.push("\n\t ", Kind::Info, 0);
+        push_both(&mut n, "", Kind::Info, 0);
+        push_both(&mut n, "   ", Kind::Info, 0);
+        push_both(&mut n, "\n\t ", Kind::Info, 0);
         assert!(n.is_empty(), "空消息不该占历史");
         assert_eq!(n.unread(), 0);
+    }
+
+    /// 只空一种语言**不该**丢掉整条：另一种语言仍是有效内容。
+    #[test]
+    fn one_language_empty_still_records() {
+        let mut n = Notifications::new();
+        n.push(ToastMsg::new("", "Only English"), Kind::Info, 0);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n.iter().next().unwrap().msg.for_lang(Lang::En), "Only English");
     }
 
     #[test]
     fn multiline_and_control_chars_are_flattened() {
         let mut n = Notifications::new();
         // 外部来源的文本可能带换行/ESC（IPC 错误信息），必须压成一行
-        n.push("第一行\n第二行\t带制表\x1b[31m与 ESC", Kind::Err, 0);
-        let t = &n.iter().next().unwrap().text;
+        push_both(&mut n, "第一行\n第二行\t带制表\x1b[31m与 ESC", Kind::Err, 0);
+        let t = n.iter().next().unwrap().msg.for_lang(Lang::Zh).to_string();
         assert!(!t.contains('\n'), "不能含换行：{t:?}");
         assert!(!t.contains('\x1b'), "不能含 ESC：{t:?}");
         assert!(!t.contains('\t'), "不能含制表：{t:?}");
         assert!(t.starts_with("第一行 第二行"), "应压成一行：{t:?}");
         // 连续空格压成一个，且不留首尾空白
         let mut m = Notifications::new();
-        m.push("  多   空格  ", Kind::Info, 0);
-        assert_eq!(m.iter().next().unwrap().text, "多 空格");
+        m.push(ToastMsg::new("  多   空格  ", "  many   spaces  "), Kind::Info, 0);
+        assert_eq!(m.iter().next().unwrap().msg.for_lang(Lang::Zh), "多 空格");
+        assert_eq!(m.iter().next().unwrap().msg.for_lang(Lang::En), "many spaces");
+    }
+
+    /// **两种语言都要净化**：只净化中文的话，切到英文时布局就被换行撑坏。
+    #[test]
+    fn sanitization_covers_both_languages() {
+        let mut n = Notifications::new();
+        n.push(ToastMsg::new("中文正常", "line1\nline2"), Kind::Err, 0);
+        let en = n.iter().next().unwrap().msg.for_lang(Lang::En).to_string();
+        assert!(!en.contains('\n'), "英文正文也必须压成一行：{en:?}");
     }
 
     #[test]
     fn mark_read_keeps_history() {
         let mut n = Notifications::new();
-        n.push("a", Kind::Info, 0);
-        n.push("b", Kind::Info, 1);
+        push_both(&mut n, "a", Kind::Info, 0);
+        push_both(&mut n, "b", Kind::Info, 1);
         assert_eq!(n.unread(), 2);
         n.mark_all_read();
         assert_eq!(n.unread(), 0);
@@ -284,18 +345,18 @@ mod tests {
         let mut n = Notifications::new();
         assert!(n.enabled(), "默认应记录（用户没关就不该悄悄不记）");
         n.set_enabled(false);
-        n.push("关掉后不该进历史", Kind::Info, 0);
+        push_both(&mut n, "关掉后不该进历史", Kind::Info, 0);
         assert!(n.is_empty(), "关闭记录后历史不该增长");
         assert_eq!(n.unread(), 0);
         n.set_enabled(true);
-        n.push("打开后应进历史", Kind::Info, 1);
+        push_both(&mut n, "打开后应进历史", Kind::Info, 1);
         assert_eq!(n.len(), 1);
         // 清空：内容与未读都要归零
         n.clear();
         assert!(n.is_empty());
         assert_eq!(n.unread(), 0, "清空后未读必须归零");
         // 清空后仍可继续记录
-        n.push("清空后还能记", Kind::Ok, 2);
+        push_both(&mut n, "清空后还能记", Kind::Ok, 2);
         assert_eq!(n.len(), 1);
     }
 

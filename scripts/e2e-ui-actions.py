@@ -15,6 +15,12 @@ FEATURE-GAPS §4.1 的原文："现在每个功能都要人工点一次"。
 截图走查（`archive-ui-shots.py`）管**画面**；本脚本管**行为**。
 两者都要：画面对了不等于点得动，点得动不等于画得对。
 
+## §3.5 遗留项 #43：通知正文的双语在这里被真跑一遍
+
+`query: toast` 报的是**主循环同一个 `push_toast`** 写进 toast 槽的当前提示，
+配 `lang` 动作就能断言"英文下不含中文、中文下有中文" ——
+不是读源码猜的，是让二进制自己产一条出来看。
+
 ## 诚实边界
 
 * 覆盖的是**不依赖真实显示与硬件**的那一半（布局/开窗/撤销/查询）。
@@ -31,11 +37,15 @@ FEATURE-GAPS §4.1 的原文："现在每个功能都要人工点一次"。
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+#: 判据"英文位不得含中文"用的 CJK 范围（与 `i18n-check.py` 同一口径）。
+CJK = re.compile(r'[\u4e00-\u9fff]')
 
 # ---------------------------------------------------------------------------
 # 场景定义：script 是喂给 `--e2e` 的动作脚本；expect 是逐条断言。
@@ -115,6 +125,34 @@ SCENARIOS: list[dict] = [
             {"ok": True},
         ],
     },
+    # §3.5 遗留项 #43：通知正文的结构化双语，用真二进制断言两条相反的命题。
+    # **只查一边是不够的**：只断言"英文下没有中文"的话，空提示也会通过。
+    {
+        "name": "通知正文在英文下不含中文（且真的非空）",
+        "script": [
+            '{"action":"lang","args":{"lang":"en"}}',
+            '{"action":"layout_set","args":{"layout":"monocle"}}',
+            '{"action":"query","args":{"what":"toast"}}',
+        ],
+        "expect": [
+            {"ok": True, "equals": "en"},
+            {"ok": True},
+            {"ok": True, "non_empty": True, "no_cjk": True},
+        ],
+    },
+    {
+        "name": "同一动作在中文下产出中文（证明上面不是空串蒙过去的）",
+        "script": [
+            '{"action":"lang","args":{"lang":"zh"}}',
+            '{"action":"layout_set","args":{"layout":"float"}}',
+            '{"action":"query","args":{"what":"toast"}}',
+        ],
+        "expect": [
+            {"ok": True, "equals": "zh"},
+            {"ok": True},
+            {"ok": True, "non_empty": True, "has_cjk": True},
+        ],
+    },
 ]
 
 
@@ -155,6 +193,14 @@ def check_scenario(rows: list[dict], expect: list[dict]) -> list[str]:
             fails.append(f"{where} result 应包含 {exp['contains']!r}，实际 {res!r}")
         if "equals" in exp and res != exp["equals"]:
             fails.append(f"{where} result 期望 {exp['equals']!r}，实际 {res!r}")
+        # 语种断言（§3.5 遗留项 #43）：三类，缺一不可 ——
+        # `non_empty` 防止"空串也算没有中文"，`no_cjk`/`has_cjk` 是两条相反的命题。
+        if exp.get("non_empty") and (not isinstance(res, str) or not res.strip()):
+            fails.append(f"{where} result 不能为空，实际 {res!r}")
+        if exp.get("no_cjk") and isinstance(res, str) and CJK.search(res):
+            fails.append(f"{where} 英文下不该出现中文，实际 {res!r}")
+        if exp.get("has_cjk") and isinstance(res, str) and not CJK.search(res):
+            fails.append(f"{where} 中文下应当出现中文，实际 {res!r}")
         # 跨行比较：窗口数之类的"前后关系"断言（比硬编数字稳）
         if "greater_than_line" in exp:
             ref = exp["greater_than_line"]
@@ -220,6 +266,22 @@ def selftest() -> int:
          [{"ok": True}, {"ok": True, "greater_than_line": 0}], 1),
         ("跨行相等", [{"line": 1, "ok": True, "result": "2"}, {"line": 2, "ok": True, "result": "2"}],
          [{"ok": True}, {"ok": True, "equals_line": 0}], 0),
+        # 语种断言的正向对照（§3.5 遗留项 #43）：每一条都必须能判红
+        ("英文下真的没中文 → 通过",
+         [{"line": 1, "ok": True, "result": "Layout: Stacked"}],
+         [{"ok": True, "non_empty": True, "no_cjk": True}], 0),
+        ("英文下混进中文 → 判红",
+         [{"line": 1, "ok": True, "result": "布局：独占堆叠"}],
+         [{"ok": True, "non_empty": True, "no_cjk": True}], 1),
+        ("空串蒙不过去 → 判红",
+         [{"line": 1, "ok": True, "result": ""}],
+         [{"ok": True, "non_empty": True, "no_cjk": True}], 1),
+        ("中文下有中文 → 通过",
+         [{"line": 1, "ok": True, "result": "布局：自由布局"}],
+         [{"ok": True, "non_empty": True, "has_cjk": True}], 0),
+        ("中文下却是英文 → 判红",
+         [{"line": 1, "ok": True, "result": "Layout: Free"}],
+         [{"ok": True, "non_empty": True, "has_cjk": True}], 1),
     ]
     bad = 0
     for name, rows, expect, want in cases:
