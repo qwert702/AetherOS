@@ -99,7 +99,13 @@
 <p>* <code>scripts/vm-install-verify.sh</code>（新）：构建机内<strong>一键跑完</strong>装机验证四步并输出</p>
 <p>  <code>install-verify.log</code>（含 <code>RESULT=PASS/FAIL</code> 与逐条判据）。<strong>本次没用上它</strong>（构建机不可用），</p>
 <p>  但它是"构建机可用时"的正规路径，判据阈值与手册 §4 一一对应。</p>
-<p>* 判据仍是 <strong>33 项</strong>全绿；测试 <strong>768 项</strong>；规模 51,138 行 / 71 文件。</p>
+<p>* <code>scripts/mkfont.py</code>（改）：加产<strong>等宽字体</strong> <code>NotoSansMonoCJKsc-Regular.otf</code></p>
+<p>  （台账 #46）。原先只产正文两个字重，而 <code>text.rs:99</code> 的等宽候选表里那三个名字</p>
+<p>  <strong>一个都不存在</strong> → 终端一直回退成非等宽。字符集<strong>故意只要 ASCII + 制表符</strong>：</p>
+<p>  <code>text.rs:358</code> 是 <code>mono &amp;&amp; has_glyph(ch)</code>，缺字形会<strong>逐字回退</strong>到正文字体，</p>
+<p>  所以塞汉字纯属浪费 ISO 体积；缺源字体只警告、不阻塞构建。</p>
+<p>  新增 <code>--selftest</code>（命名契约 + 字符集逻辑，<strong>不需要 fontTools/源字体</strong>）并进门禁。</p>
+<p>* 判据 <strong>33 → 34 项</strong>全绿；测试 <strong>768 项</strong>；规模 51,138 行 / 71 文件。</p>
 <h2 id="">六、仍未做（明确列出来）</h2>
 <p>1. <strong>发布</strong>：新 ISO（41.0 MB / <code>sha256=162b19a7…</code>）<strong>未上传 Release</strong>，<code>site/release.json</code></p>
 <p>   仍指旧资产（38.5 MB / 2026-09-29）。顺序见《镜像重建手册》§5（先上传、再算<strong>资产</strong>哈希、再改 release.json）。</p>

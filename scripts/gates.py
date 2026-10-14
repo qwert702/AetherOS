@@ -223,6 +223,12 @@ def main() -> int:
     # 这条自检不需要 paramiko（纯函数），所以能进日常门禁。
     steps.append(("同步工具跳过规则自检（脚本不该被跳过）",
                   [PY, "scripts/vm-sync.py", "--selftest"]))
+    # **字体产物命名契约**（台账 #46）：`mkfont.py` 只在构建机上跑，而构建机常常不可用
+    # （本会话就撞上过）。产物名一旦与 `text.rs:99` 的候选表写岔，**构建会成功、
+    # 字体却永远加载不到** —— ISO 里看不出来（终端只是悄悄回退成非等宽）。
+    # 这条自检是纯逻辑的：不需要 fontTools、不需要源字体。
+    steps.append(("字体产物命名契约自检（构建机不可用也能跑）",
+                  [PY, "scripts/mkfont.py", "--selftest"]))
     steps.append(("Python 语法检查", [PY, "-m", "py_compile", *[
         str(p.relative_to(ROOT)) for p in sorted((ROOT / "scripts").glob("*.py"))
     ]]))

@@ -41,6 +41,22 @@ WEIGHTS = [("Regular", "Regular"), ("Bold", "Bold")]
 #: 产物前缀（text.rs 的候选表按这个名字找）。
 PREFIX = "NotoSansSC"
 
+#: 等宽字体（终端用）的源与产物名 —— **产物名必须与 `text.rs:99` 的候选表逐字一致**：
+#:   "/usr/share/fonts/truetype/aether/NotoSansMonoCJKsc-Regular.otf"
+#: 此前构建只产出上面两个字重的正文字体，候选表里的等宽项一个都不存在 →
+#: 终端只能回退到正文字体（非等宽）。台账 #46 记的就是这件事。
+MONO_SRC = "NotoSansMonoCJKsc-Regular.otf"
+MONO_OUT = "NotoSansMonoCJKsc-Regular.otf"
+
+#: 等宽字体只要 ASCII + 终端常用制表/符号 —— **故意不带 CJK**：
+#: `text.rs:358` 的判定是 `mono && self.mono.has_glyph(ch)`，**缺字形会逐字回退**到
+#: 正文字体，所以给等宽字体塞 6763 个汉字纯属浪费 ISO 体积（汉字仍由正文字体渲染，
+#: 只是不保证等宽对齐 —— 这是取舍，不是遗漏）。
+MONO_CHARSET = (
+    "".join(chr(c) for c in range(0x20, 0x7F))
+    + "─│┌┐└┘├┤┬┴┼━┃█▉▊▋▌▍▎▏░▒▓✓✗←→↑↓·…±×÷≈≠≤≥°§"
+)
+
 #: 除汉字外要带上的符号：CJK 标点、箭头、勾叉、几何、常用数学/单位。
 EXTRA_SYMBOLS = "、。「」『』〈〉《》【】〔〕—…·※←→↑↓✓✗●○■□▲▼★☆±×÷≈≠≤≥°§¶†‡‰′″℃℉№"
 
@@ -87,13 +103,15 @@ def find_sc_face(ttc_path: str) -> int:
     return 2
 
 
-def subset_one(ttc_path: str, face: int, text_file: str, out_path: str) -> None:
-    """调 fontTools.subset 的命令行入口（走 API 而不是 PATH，避免 pyftsubset 不在 PATH）。"""
+def subset_one(ttc_path: str, face: int | None, text_file: str, out_path: str) -> None:
+    """调 fontTools.subset 的命令行入口（走 API 而不是 PATH，避免 pyftsubset 不在 PATH）。
+
+    `face=None` 表示源是**单体字体**（如等宽那份 OTF）—— 这时不能传 `--font-number`。
+    """
     from fontTools import subset
 
     argv = [
         ttc_path,
-        f"--font-number={face}",
         f"--text-file={text_file}",
         f"--output-file={out_path}",
         "--layout-features=*",
@@ -101,16 +119,66 @@ def subset_one(ttc_path: str, face: int, text_file: str, out_path: str) -> None:
         "--name-IDs=*",
         "--drop-tables+=DSIG",
     ]
+    if face is not None:
+        argv.insert(1, f"--font-number={face}")
     subset.main(argv)
 
 
+def selftest() -> int:
+    """自检：**不需要 fontTools、不需要源字体** —— 只验纯逻辑与命名契约。
+
+    为什么要有它：`mkfont.py` 只在构建机上跑，而构建机常常不可用（本会话就撞上过）。
+    命名契约（产物名 == `text.rs` 候选表里的名字）一旦写错，**构建会成功、字体却永远加载不到**，
+    这种失败方式在 ISO 里看不出来 —— 所以把契约钉成自检，本机就能跑。
+    """
+    failed = 0
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        nonlocal failed
+        print(f"  [{'OK  ' if ok else 'FAIL'}] {name}{('：' + detail) if detail else ''}")
+        if not ok:
+            failed += 1
+
+    cs = build_charset("gb2312")
+    check("gb2312 字符集含 ASCII 全量", all(chr(c) in cs for c in range(0x20, 0x7F)))
+    check("gb2312 字符集含常用符号", all(s in cs for s in "「」—…·←→✓✗±×÷≈≠≤≥℃"))
+    check("gb2312 字符集规模合理（>6000 汉字）",
+          sum(1 for c in cs if "\u4e00" <= c <= "\u9fff") > 6000,
+          f"{sum(1 for c in cs if chr(0x4e00) <= c <= chr(0x9fff))} 个汉字")
+    l1 = build_charset("gb2312-l1")
+    check("gb2312-l1 比 gb2312 小", len(l1) < len(cs), f"{len(l1)} < {len(cs)}")
+
+    check("等宽产物名与 text.rs 候选表一致",
+          MONO_OUT == "NotoSansMonoCJKsc-Regular.otf", MONO_OUT)
+    check("等宽字符集含 ASCII", all(chr(c) in MONO_CHARSET for c in range(0x20, 0x7F)))
+    check("等宽字符集含制表符", all(s in MONO_CHARSET for s in "─│┌┐└┘├┤┼█░▒▓"))
+    check("等宽字符集**故意**不含汉字（靠逐字回退）",
+          not any("\u4e00" <= c <= "\u9fff" for c in MONO_CHARSET))
+    check("等宽字符集比正文小一个量级",
+          len(MONO_CHARSET) * 20 < len(cs), f"{len(MONO_CHARSET)} vs {len(cs)}")
+
+    if failed:
+        print(f"[FAIL] 自检不通过：{failed} 项")
+        return 1
+    print("[ OK ] 自检通过（9 项：字符集逻辑 + 命名契约）")
+    return 0
+
+
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description="生成 AetherOS UI 字体子集（Noto Sans CJK SC）。")
-    ap.add_argument("--out", required=True, help="输出目录（会被建出来）")
+    ap = argparse.ArgumentParser(description="生成 AetherOS UI 字体子集（Noto Sans CJK SC + 等宽）。")
+    ap.add_argument("--out", help="输出目录（会被建出来）")
     ap.add_argument("--src-dir", default=DEFAULT_SRC_DIR, help=f"Noto CJK 目录（默认 {DEFAULT_SRC_DIR}）")
     ap.add_argument("--charset", default="gb2312", choices=["gb2312", "gb2312-l1"],
                     help="字符集范围（默认 gb2312 全量）")
+    ap.add_argument("--selftest", action="store_true",
+                    help="只验纯逻辑与命名契约（不需要 fontTools、不需要源字体）")
     args = ap.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
+    if not args.out:
+        print("[mkfont] 缺少 --out（只有 --selftest 可以不传）", file=sys.stderr)
+        return 2
 
     try:
         import fontTools  # noqa: F401
@@ -153,8 +221,36 @@ def main(argv: list[str]) -> int:
         print(f"[mkfont] {os.path.basename(out)}  {size // 1024} KB  "
               f"字形 {font['maxp'].numGlyphs}  可映射字符 {len(font.getBestCmap())}  轮廓 {outline}")
 
+    # —— 等宽字体（台账 #46）：产物名与 `text.rs:99` 的候选表一致 ——
+    # **缺源只警告、不阻塞构建**：正文两个字重才是必需的（没有它们会退回 wqy 伪粗体），
+    # 等宽缺失只是"终端回退成非等宽"，属于质量降级而不是构建失败。
+    mono_size = 0
+    mono_src = os.path.join(args.src_dir, MONO_SRC)
+    if not os.path.isfile(mono_src):
+        print(f"[mkfont] 跳过等宽字体：缺源 {mono_src}"
+              f"（apt-get install fonts-noto-cjk-extra；终端会逐字回退到正文字体）",
+              file=sys.stderr)
+    else:
+        mono_text = os.path.join(args.out, ".charset-mono.txt")
+        try:
+            with open(mono_text, "w", encoding="utf-8") as f:
+                f.write(MONO_CHARSET)
+            mono_out = os.path.join(args.out, MONO_OUT)
+            # OTF 是单体字体 → face=None（不能传 --font-number）
+            subset_one(mono_src, None, mono_text, mono_out)
+            mono_size = os.path.getsize(mono_out)
+            print(f"[mkfont] {MONO_OUT}  {mono_size // 1024} KB  "
+                  f"（ASCII + 制表/符号 {len(MONO_CHARSET)} 字；汉字靠逐字回退）")
+        except Exception as e:  # 等宽失败不影响正文，故只报告
+            print(f"[mkfont] 等宽子集失败（不阻塞构建）：{e}", file=sys.stderr)
+        finally:
+            if os.path.exists(mono_text):
+                os.remove(mono_text)
+
     os.remove(text_file)
-    print(f"[mkfont] 完成：2 个字重合计 {total / 1048576:.2f} MB → {args.out}")
+    print(f"[mkfont] 完成：正文 2 个字重合计 {total / 1048576:.2f} MB"
+          + (f" + 等宽 {mono_size / 1024:.0f} KB" if mono_size else "（等宽未生成）")
+          + f" → {args.out}")
     return 0
 
 
