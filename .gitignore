@@ -37,3 +37,6 @@ site/404.html
 site/assets/img/
 # 逐界面实拍的工作产物（29 档 × N 档缩放，体积大；清单提交，图片不提交）
 docs/证据/_scale/
+
+# 主机密钥记录的所有变体（例如 host-only 直连用的 .vm_known_hosts.hostonly）
+scripts/.vm_known_hosts*
