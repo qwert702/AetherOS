@@ -145,6 +145,9 @@ bash scripts/inspect-persist.sh
 | SSH 永远连不上 2222 | **Windows 保留了 TCP 2180–2279**（`netsh int ipv4 show excludedportrange protocol=tcp`），2222 落在里面 → VirtualBox 报 `VERR_NAT_REDIR_SETUP` | 加一条转发 `ssh22022,tcp,,22022,,22`，用 `AETHER_VM_PORT=22022`；**不要**去动系统保留段 |
 | `[vm.py] … not found in known_hosts` | 严格主机密钥校验按 `host:port` 记账，换端口就是新条目 | 把原 2222 那条按端口复制一份（**不要**直接删记录走 TOFU：那是"静默信任新密钥"） |
 | 密码丢了（`秘钥.md` 是 0 字节，VM 里只有口令哈希） | 无人值守安装只留下 SHA-512 哈希，不可逆 | **本地控制台恢复**：GRUB 菜单按 `e` → `linux` 行尾加 `rw init=/bin/bash` → `Ctrl+X` → root shell → 注入自己的公钥（`authorized_keys`）。headless VM 也能做：`VBoxManage controlvm <vm> screenshotpng` 看画面、`keyboardputscancode` 注入按键 |
+| **`savestate` 恢复后 SSH 再也不通** | 恢复的会话里 guest 的 sshd 不工作（TCP 能连、读不到 banner：`Connection timed out during banner exchange`） | **别用 savestate/resume**，一律冷启动（实测冷启动 20–45 秒就通）；卡死时 `poweroff` 再 `startvm` |
+| **构建机内跑 QEMU 后 sshd 饿死** | 三层嵌套虚拟化（Hyper-V → VirtualBox → QEMU）：QEMU 一起来 guest 的 CPU 被吃满，sshd 无法完成认证（paramiko/OpenSSH 都超时）。加到 4 vCPU 也没救 | **装机验证不要在构建机内做** —— 改在**宿主 VirtualBox（headless）**：按键注入可用 + 串口落盘（观测全是文本）+ 启动 10 秒。步骤见 `docs/证据/装机验证（INSTALL-VERIFY）-2026-10-14.md`；构建机可用时也可跑 `scripts/vm-install-verify.sh`（一键四步） |
+| 注入的按键"一半没生效" | 合成器（evdev 直读）与 tty1 的 getty **共用同一个键盘**，两个消费者都收 | 判据不要依赖"AI 栏有没有收到"；要读 guest 里的文件就 `… > /dev/console`（串口是唯一的文本出口） |
 
 > **为什么选"注入公钥"而不是"改口令"**：不动原有凭据、可直接撤销
 > （删掉 `/home/aether/.ssh/authorized_keys` 里那一行即可），而且
