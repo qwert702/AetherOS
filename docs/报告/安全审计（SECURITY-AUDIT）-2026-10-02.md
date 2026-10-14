@@ -605,7 +605,7 @@ exit=0
 | M-10 nginx 安全头静默失效 | ✅ 已修 | `365bc26` | `deploy/security-headers.conf` 片段 + 每层 include；`deploy-site.py` 部署后**回读真实响应**校验（**第三遍审计发现这个自检只告警不失败，已改成不达标即 `sys.exit(1)`**） |
 | M-11 ISO 无校验 | ✅ 已修 | `365bc26` + `dfbc90f` | 下载脚本内置哈希；**并发现站点公布的哈希与实际下载不符**（见下）；第三遍审计又加了"脚本哈希 == release.json"的门禁 |
 | M-12 `summary()` 非 ASCII panic | ✅ 已修 | `99971ea` | 改按字符取末 4 位；新增多字节用例 |
-| M-13 终端粘贴即执行 | ⚠️ **代码已修，待真机确认** | 轮次 B + G | 控制字符剥离 + 跟踪 DECSET 2004 的括号粘贴**都已实现**；镜像已加 bash（**注意：`BR2_PACKAGE_BASH` 需同时开 `BR2_PACKAGE_BUSYBOX_SHOW_OTHERS`，否则 kconfig 会丢掉它** —— 已补）且 compositor 优先选它。busybox 的 2004 支持**未实机验证** |
+| M-13 终端粘贴即执行 | ⚠️ **前置已在 guest 实测，端到端待 GUI 会话** | 轮次 B + G | 控制字符剥离 + DECSET 2004 括号粘贴**都已实现**；镜像已加 bash（**`BR2_PACKAGE_BASH` 需同时开 `BR2_PACKAGE_BUSYBOX_SHOW_OTHERS`** —— 已补）且 `pty.rs:29` **优先 `/bin/bash`**。**2026-10-14 在 guest 里实测**：`/bin/bash` = 973,008 字节、`bash 5.2.21`；`/bin/sh -> busybox`（回退路径）。bash ≥4.4 的 readline **默认发 2004** ⇒ 终端走括号粘贴。**仍未做**：一次真实的 GUI 多行粘贴（需要终端窗口 + 宿主剪贴板共享；机制本身有 5 条单测，含注入防护） |
 | M-14 VT 参数无上限 | ✅ 已修 | `f5e0e97` | `MAX_CSI_PARAMS = 32` |
 | M-15 宽字符越界 panic | ✅ 已修 | `f5e0e97` | `cells.get_mut(idx + 1)` |
 | M-16 PTY 继承合成器环境 | ✅ 已修 | `f5e0e97` | `env_clear()` + 显式白名单 |
