@@ -105,13 +105,27 @@
 <p>  所以塞汉字纯属浪费 ISO 体积；缺源字体只警告、不阻塞构建。</p>
 <p>  新增 <code>--selftest</code>（命名契约 + 字符集逻辑，<strong>不需要 fontTools/源字体</strong>）并进门禁。</p>
 <p>* 判据 <strong>33 → 34 项</strong>全绿；测试 <strong>768 项</strong>；规模 51,138 行 / 71 文件。</p>
-<h2 id="">六、仍未做（明确列出来）</h2>
-<p>1. <strong>发布</strong>：新 ISO（41.0 MB / <code>sha256=162b19a7…</code>）<strong>未上传 Release</strong>，<code>site/release.json</code></p>
+<h2 id="46">六、等宽字体收口（台账 #46）—— <strong>做完并实测到底</strong>（跨午夜完成，记在这里）</h2>
+<p><code>text.rs:99</code> 的等宽候选表第一项 <code>NotoSansMonoCJKsc-Regular.otf</code>，构建期<strong>从来没产出过</strong> →</p>
+<p>终端一直悄悄回退成非等宽。这次四层做完：</p>
+<p>1. <code>scripts/mkfont.py</code> 加产等宽字体，<strong>字符集只要 ASCII + 制表符</strong>（136 字 / <strong>47 KB</strong>）——</p>
+<p>   因为 <code>text.rs:358</code> 是 <code>mono &amp;&amp; has_glyph(ch)</code>，缺字形会<strong>逐字回退</strong>，塞汉字是浪费 ISO 体积；</p>
+<p>   源字体缺失<strong>只警告不阻塞构建</strong>；新增 <code>--selftest</code>（9 项，不需要 fontTools）并进门禁（<strong>34 项</strong>）。</p>
+<p>2. 构建机上真跑：<code>[mkfont] 完成：正文 2 个字重合计 5.69 MB + 等宽 47 KB</code>。</p>
+<p>3. <strong>重构建 ISO</strong>：<code>RESULT=PASS</code> · <code>42,991,616</code> 字节 · <code>sha256=eea68da9…</code> · <code>55aa</code>（isohybrid 仍在）。</p>
+<p>4. <strong>guest 串口实测</strong>：<code>字体已加载 …/NotoSansMonoCJKsc-Regular.otf</code> ✓ 且<strong>"无可用字体"彻底消失</strong> ✓。</p>
+<p>过程中踩到一个真陷阱（已写进手册）：<strong>改了 <code>Cargo.lock</code> 之后构建机的离线缓存不够用</strong> ——</p>
+<p>CVE 修复把 <code>rustls</code> 提到 0.23.46，而构建机只有 0.23.43、host-only 又没外网 →</p>
+<p><code>Could not resolve host: index.crates.io</code>。修法：从宿主 SFTP <strong>crate + 索引缓存</strong>（<strong>只传 crate 不够</strong>）。</p>
+<p>反面教训：我原想用"在 ISO 字节里 grep 字体名"来验证，得到 0 次；但拿<strong>已知在镜像里</strong>的</p>
+<p><code>NotoSansSC-Regular.otf</code> 做对照<strong>也是 0 次</strong> —— rootfs 是压缩的，这条判据本身不成立。</p>
+<p><strong>没有对照组的"通过/不通过"都是噪声。</strong></p>
+<h2 id="">七、仍未做（明确列出来）</h2>
+<p>1. <strong>发布</strong>：最新 ISO（41.0 MB · <code>sha256=eea68da9…</code>）<strong>未上传 Release</strong>，<code>site/release.json</code></p>
 <p>   仍指旧资产（38.5 MB / 2026-09-29）。顺序见《镜像重建手册》§5（先上传、再算<strong>资产</strong>哈希、再改 release.json）。</p>
 <p>2. <strong>真机验收（#32）</strong>：45 项要走物理机（U 盘 dd、装盘、断电、ALSA、真实键鼠）。</p>
-<p>3. <strong>#46 mono 字体子集化</strong>：今天在 guest 里<strong>现场复现</strong>了缺字体</p>
-<p>   （<code>无可用字体，尝试过 […NotoSansMonoCJKsc-Regular.otf…]</code>），构建侧那一步还没做。</p>
-<p>4. <strong>M-13 多行粘贴实测</strong>：需要在一个带终端的 guest 里真粘一次（本次的测试 VM 没开终端）。</p>
+<p>3. <strong>M-13 端到端多行粘贴</strong>：前置已在 guest 实测（<code>/bin/bash</code> 5.2.21 + <code>pty.rs:29</code> 优先 bash ⇒ 括号粘贴生效），</p>
+<p>   但<strong>真在 GUI 里粘一次</strong>还没做（需要终端窗口 + 宿主剪贴板共享）。</p>
 <p># 2026-10-03 ~ 2026-10-11 更新（补记）</p>
 <p>&gt;</p>
 <h2 id="">一、这段时间你能看到什么（九个能力从"没有"到"能用"）</h2>
