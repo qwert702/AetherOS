@@ -148,6 +148,8 @@ bash scripts/inspect-persist.sh
 | **`savestate` 恢复后 SSH 再也不通** | 恢复的会话里 guest 的 sshd 不工作（TCP 能连、读不到 banner：`Connection timed out during banner exchange`） | **别用 savestate/resume**，一律冷启动（实测冷启动 20–45 秒就通）；卡死时 `poweroff` 再 `startvm` |
 | **构建机内跑 QEMU 后 sshd 饿死** | 三层嵌套虚拟化（Hyper-V → VirtualBox → QEMU）：QEMU 一起来 guest 的 CPU 被吃满，sshd 无法完成认证（paramiko/OpenSSH 都超时）。加到 4 vCPU 也没救 | **装机验证不要在构建机内做** —— 改在**宿主 VirtualBox（headless）**：按键注入可用 + 串口落盘（观测全是文本）+ 启动 10 秒。步骤见 `docs/证据/装机验证（INSTALL-VERIFY）-2026-10-14.md`；构建机可用时也可跑 `scripts/vm-install-verify.sh`（一键四步） |
 | 注入的按键"一半没生效" | 合成器（evdev 直读）与 tty1 的 getty **共用同一个键盘**，两个消费者都收 | 判据不要依赖"AI 栏有没有收到"；要读 guest 里的文件就 `… > /dev/console`（串口是唯一的文本出口） |
+| **SSH 能连上、却卡在 `banner exchange`，重启也没用** | **VirtualBox NAT 的数据通路卡死**（不是 guest 坏了）。2026-10-14 实测确证：把构建盘挂到另一台 AetherOS guest 上做 `e2fsck -n` → **文件系统 clean**；读它自己的 `/var/log/syslog` → `Startup finished in 13.7s`、`Reached target multi-user.target`；`auth.log` 只有 `Connection reset by authenticating user aether … [preauth]`（**没有** `Failed publickey`）；`authorized_keys` 完好且与宿主公钥一致 | **换 host-only 网络直连**（绕过 NAT 引擎）：`modifyvm <vm> --nic1 hostonly --hostonlyadapter1 "VirtualBox Host-Only Ethernet Adapter"`，然后用 `AETHER_VM_HOST=192.168.56.101 AETHER_VM_PORT=22`（DHCP 租约见 `%USERPROFILE%\.VirtualBox\HostInterfaceNetworking-…-Dhcpd.leases`）。**注意**：host-only 没有外网，别指望在 guest 里 `apt-get`；另加一块 NAT 网卡（`--nic2 nat`）实测会**再次失去可达性**，别这么干 —— 要装包就在宿主下载好再 SFTP 上去 |
+| 宿主 `ssh` 报 `UNPROTECTED PRIVATE KEY FILE`（权限太开） | Windows 上该私钥的 ACL 允许其它用户访问 | 用 `scripts/vm.py`（paramiko **不做**这个检查）；或另存一份 ACL 收紧的副本。**不要去改用户原有的私钥** |
 
 > **为什么选"注入公钥"而不是"改口令"**：不动原有凭据、可直接撤销
 > （删掉 `/home/aether/.ssh/authorized_keys` 里那一行即可），而且
