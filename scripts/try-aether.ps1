@@ -1,18 +1,18 @@
-# 一条命令把 AetherOS 跑起来（Windows）：没有 ISO 就下载 Release 里的，然后用 QEMU 引导。
+﻿# 一条命令把 AetherOS 跑起来（Windows）：没有 ISO 就下载 Release 里的，然后用 QEMU 引导。
 #
 #   pwsh -File scripts\try-aether.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\try-aether.ps1
 #
-# 想调内存/版本：pwsh -File scripts\try-aether.ps1 -Memory 2048 -Version v0.1.0
+# 想调内存/版本：pwsh -File scripts\try-aether.ps1 -Memory 2048 -Version v0.1.1
 param(
     [int]$Memory = 1024,
-    [string]$Version = "v0.1.0",
+    [string]$Version = "v0.1.1",
     [string]$IsoName = "aetheros-0.1-amd64.iso",
     # 已发布 ISO 的 SHA256（与 site/release.json 同源）。
     # ⚠️ 这是 **Release 资产**（40,327,168 字节）的哈希，与仓库根目录那份本地构建
     # 产物不同；2026-10-02 实际下载复核过，与 GitHub API 的 digest 一致。
     # 传空字符串（-Sha256 ""）表示知情地跳过校验；自建镜像填自己的哈希。
-    [string]$Sha256 = "7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb"
+    [string]$Sha256 = "eea68da9e4a9c7c58558c488b8c3f0192d82c0b550effde1d5cb194e58211e69"
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,7 +47,7 @@ if (-not $qemuCmd) {
   （或从 https://www.qemu.org/download/#windows 下载安装包）
 
 不想装 QEMU 也可以：直接下载 ISO 用 VirtualBox / VMware 挂载开机。
-ISO 直链：https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso
+ISO 直链：https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso
 "@ -ForegroundColor Yellow
     exit 1
 }

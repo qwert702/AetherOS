@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>下载 AetherOS — 可引导 ISO（38.5 MB，含 SHA256 校验）</title>
-<meta name="description" content="下载 AetherOS 可引导 ISO：38.5 MB，QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和与常见问题排错。">
+<title>下载 AetherOS — 可引导 ISO（41.0 MB，含 SHA256 校验）</title>
+<meta name="description" content="下载 AetherOS 可引导 ISO：41.0 MB，QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和与常见问题排错。">
 <link rel="canonical" href="https://aether.cbnac.com/download.html">
 <link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/download.html">
 <link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/download.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AetherOS">
 <meta property="og:url" content="https://aether.cbnac.com/download.html">
-<meta property="og:title" content="下载 AetherOS — 可引导 ISO（38.5 MB）">
+<meta property="og:title" content="下载 AetherOS — 可引导 ISO（41.0 MB）">
 <meta property="og:description" content="QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和。">
 <meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -35,9 +35,9 @@
 
 <header class="hero"><div class="wrap">
   <h1>下载 AetherOS</h1>
-  <p class="lede">可引导 ISO，<strong>38.5 MB</strong>。选一个虚拟机，三分钟就能进桌面。</p>
+  <p class="lede">可引导 ISO，<strong>41.0 MB</strong>。选一个虚拟机，三分钟就能进桌面。</p>
   <div class="cta">
-    <a class="btn primary" href="https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso">下载 ISO <small>38.5 MB</small></a>
+    <a class="btn primary" href="https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso">下载 ISO <small>41.0 MB</small></a>
     <a class="btn ghost" href="#qemu">看安装步骤</a>
   </div>
 </div></header>
@@ -46,12 +46,12 @@
   <h2>文件信息</h2>
   <table>
     <tbody>
-      <tr><th style="width:180px">版本</th><td>v0.1.0</td></tr>
+      <tr><th style="width:180px">版本</th><td>v0.1.1</td></tr>
       <tr><th>文件名</th><td><code>aetheros-0.1-amd64.iso</code></td></tr>
-      <tr><th>体积</th><td>38.5 MB（40327168 字节）</td></tr>
+      <tr><th>体积</th><td>41.0 MB（42991616 字节）</td></tr>
       <tr><th>构建日期</th><td>2026-09-29</td></tr>
       <tr><th>架构</th><td>x86_64（需要支持 64 位虚拟化）</td></tr>
-      <tr><th>SHA256</th><td><code style="word-break:break-all">7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb</code></td></tr>
+      <tr><th>SHA256</th><td><code style="word-break:break-all">eea68da9e4a9c7c58558c488b8c3f0192d82c0b550effde1d5cb194e58211e69</code></td></tr>
       <tr><th>许可证</th><td>GPL-3.0-only</td></tr>
     </tbody>
   </table>
@@ -69,7 +69,7 @@
 <pre><code>qemu-img create -f qcow2 aether.qcow2 4G
 qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
   <div class="note" style="border-left:4px solid #d97706;padding-left:12px">
-    <strong>⚠️ v0.1.0 的 ISO 装机不可用。</strong>
+    <strong>⚠️ v0.1.1 的 ISO 装机不可用。</strong>
     实测该 ISO 未经 <code>isohybrid</code> 处理（首 512 字节无 MBR 签名），
     不能 dd 到磁盘引导；安装器检测到这一点会<strong>拒绝执行且不写入目标盘</strong>。
     引导与跑 Live 桌面不受影响。构建侧已补上 isohybrid 步骤（<code>platform/build-iso.sh</code>），
@@ -129,7 +129,7 @@ qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-0.1-amd64.iso -boot
     <a href="/">首页</a><a href="/download.html">下载</a><a href="/changelog.html">更新日志</a>
     <a href="/faq.html">常见问题</a><a href="https://github.com/qwert702/AetherOS">GitHub</a><a href="/en/download.html">English</a>
   </div>
-  <p style="margin:14px 0 0">AetherOS · GPL-3.0-only · 版本 v0.1.0 · 本页数据由 <code>scripts/gen-site.py</code> 从仓库实测注入</p>
+  <p style="margin:14px 0 0">AetherOS · GPL-3.0-only · 版本 v0.1.1 · 本页数据由 <code>scripts/gen-site.py</code> 从仓库实测注入</p>
 </div></footer>
 
 </body>

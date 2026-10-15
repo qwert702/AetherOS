@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AetherOS — a desktop OS whose userspace is written from scratch (Rust, 38.5 MB ISO)</title>
-<meta name="description" content="AetherOS: Linux kernel plus a from-scratch Rust userspace — PID 1, window compositor, terminal, Chinese IME and an AI hub with per-tool permission gating. Bootable ISO is only 38.5 MB, 768 tests passing, verified on QEMU / VirtualBox / VMware, and it installs real Linux software. GPL-3.0.">
+<title>AetherOS — a desktop OS whose userspace is written from scratch (Rust, 41.0 MB ISO)</title>
+<meta name="description" content="AetherOS: Linux kernel plus a from-scratch Rust userspace — PID 1, window compositor, terminal, Chinese IME and an AI hub with per-tool permission gating. Bootable ISO is only 41.0 MB, 768 tests passing, verified on QEMU / VirtualBox / VMware, and it installs real Linux software. GPL-3.0.">
 <meta name="keywords" content="AetherOS,Rust operating system,hobby OS,from scratch userspace,Linux distribution,window compositor,init system,AI agent,permission gate,Buildroot,osdev">
 <link rel="canonical" href="https://aether.cbnac.com/en/">
 <link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/">
@@ -15,13 +15,13 @@
 <meta property="og:locale:alternate" content="zh_CN">
 <meta property="og:url" content="https://aether.cbnac.com/en/">
 <meta property="og:title" content="AetherOS — a desktop OS whose userspace is written from scratch">
-<meta property="og:description" content="Linux kernel + from-scratch Rust userspace. Bootable ISO is only 38.5 MB, and it runs real Linux software.">
+<meta property="og:description" content="Linux kernel + from-scratch Rust userspace. Bootable ISO is only 41.0 MB, and it runs real Linux software.">
 <meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="768">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="AetherOS — userspace written from scratch">
-<meta name="twitter:description" content="Bootable ISO 38.5 MB. Runs real Linux software. GPL-3.0.">
+<meta name="twitter:description" content="Bootable ISO 41.0 MB. Runs real Linux software. GPL-3.0.">
 <meta name="twitter:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
 <link rel="icon" href="/assets/favicon.svg">
 <link rel="stylesheet" href="/assets/app.css">
@@ -32,10 +32,10 @@
   "name": "AetherOS",
   "applicationCategory": "OperatingSystem",
   "operatingSystem": "Linux kernel (x86_64)",
-  "softwareVersion": "v0.1.0",
-  "fileSize": "38.5 MB",
+  "softwareVersion": "v0.1.1",
+  "fileSize": "41.0 MB",
   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
-  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso",
+  "downloadUrl": "https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso",
   "codeRepository": "https://github.com/qwert702/AetherOS",
   "description": "A desktop operating system with a from-scratch Rust userspace: compositor, terminal, IME and an AI hub with per-tool permission gating, on top of the Linux kernel."
 }
@@ -63,15 +63,15 @@
   <p class="lede">
     The Linux kernel, plus a Rust userspace built from zero: <strong>PID 1</strong>, a <strong>window compositor</strong>,
     a <strong>terminal emulator</strong>, a <strong>Chinese IME</strong> and an <strong>AI hub</strong> with per-tool
-    permission gating. The bootable ISO is only <strong>38.5 MB</strong> — and it runs real Linux software.
+    permission gating. The bootable ISO is only <strong>41.0 MB</strong> — and it runs real Linux software.
   </p>
   <div class="cta">
-    <a class="btn primary" href="/en/download.html">Download ISO <small>38.5 MB</small></a>
+    <a class="btn primary" href="/en/download.html">Download ISO <small>41.0 MB</small></a>
     <a class="btn ghost" href="https://github.com/qwert702/AetherOS">Source code</a>
     <a class="btn ghost" href="/en/changelog.html">Changelog</a>
   </div>
   <div class="stats">
-    <div><b>38.5 MB</b><span>bootable ISO</span></div>
+    <div><b>41.0 MB</b><span>bootable ISO</span></div>
     <div><b>51,138</b><span>lines of Rust (43 files)</span></div>
     <div><b>768</b><span>unit tests passing</span></div>
     <div><b>3</b><span>hypervisors verified</span></div>
@@ -103,7 +103,7 @@
     <div class="card"><h3>AI hub with per-tool permission gating</h3>
       <p>Every tool call passes a gate; L2+ actions raise a confirmation dialog and are audited. The architecture is
          <strong>client → your own gateway → any model</strong>, so no upstream API keys live on the machine.</p></div>
-    <div class="card"><h3>The whole system is 38.5 MB</h3>
+    <div class="card"><h3>The whole system is 41.0 MB</h3>
       <p>Small enough to boot with one command.
          Zero compiler warnings on both targets, 19 UI screenshots regression-checked pixel by pixel.</p></div>
   </div>
@@ -128,7 +128,7 @@
     <a href="/en/download.html">download page</a>.</p>
 <pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
   <div class="step"><div class="n">1</div><div><h3>Download the ISO</h3>
-    <p class="sub" style="margin:0">38.5 MB, with a published SHA256.</p></div></div>
+    <p class="sub" style="margin:0">41.0 MB, with a published SHA256.</p></div></div>
   <div class="step"><div class="n">2</div><div><h3>Boot it</h3>
     <p class="sub" style="margin:0">QEMU as above; VirtualBox / VMware steps on the download page.</p></div></div>
   <div class="step"><div class="n">3</div><div><h3>Optional: install to disk</h3>
@@ -142,7 +142,7 @@
       <p>Rewriting the kernel buys nothing — Android and ChromeOS use it too. The product difference lives above it,
          and above it <strong>everything is written from scratch</strong>. <a href="/en/faq.html">More in the FAQ</a>.</p></details>
     <details><summary>Can I use it daily?</summary>
-      <p>It is an early <strong>v0.1.0 release</strong>: great for experimenting and development,
+      <p>It is an early <strong>v0.1.1 release</strong>: great for experimenting and development,
          not recommended for important data yet.</p></details>
     <details><summary>How do I install software?</summary>
       <p><code>wget -O- &lt;package-url&gt; | sh</code> — the custom package format plus <code>aetherd</code>.
@@ -160,7 +160,7 @@
   </div>
   <p style="margin:14px 0 0">
     AetherOS · <a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0-only</a> ·
-    v0.1.0 · ISO built 2026-10-01 · numbers injected by <code>scripts/gen-site.py</code>
+    v0.1.1 · ISO built 2026-10-01 · numbers injected by <code>scripts/gen-site.py</code>
   </p>
 </div></footer>
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # 一条命令把 AetherOS 跑起来：没有 ISO 就下载 Release 里的，然后用 QEMU 引导。
 #
 #   # 直接跑（先看一眼内容再执行更稳妥）：
@@ -8,11 +8,11 @@
 #   # 或者克隆下来跑：
 #   bash scripts/try-aether.sh
 #
-# 想调内存/版本：AETHER_MEM=2048 AETHER_VERSION=v0.1.0 bash scripts/try-aether.sh
+# 想调内存/版本：AETHER_MEM=2048 AETHER_VERSION=v0.1.1 bash scripts/try-aether.sh
 # 额外参数会原样传给 QEMU：bash scripts/try-aether.sh -vnc :0
 set -euo pipefail
 
-VERSION="${AETHER_VERSION:-v0.1.0}"
+VERSION="${AETHER_VERSION:-v0.1.1}"
 ISO="${AETHER_ISO:-aetheros-0.1-amd64.iso}"
 MEM="${AETHER_MEM:-1024}"
 URL="https://github.com/qwert702/AetherOS/releases/download/${VERSION}/${ISO}"
@@ -30,7 +30,7 @@ URL="https://github.com/qwert702/AetherOS/releases/download/${VERSION}/${ISO}"
 #
 # 换版本时同步更新 site/release.json 与本常量；自建镜像用 AETHER_SHA256=<你的哈希>
 # 覆盖；显式置空（AETHER_SHA256=）表示知情地跳过校验。
-SHA256="${AETHER_SHA256-7c50f4814785d83b3defd0e2e7a35524f182c775e0be5a9fa2de893bd7fecdcb}"
+SHA256="${AETHER_SHA256-eea68da9e4a9c7c58558c488b8c3f0192d82c0b550effde1d5cb194e58211e69}"
 
 # 校验 $ISO 的 SHA256；通过返回 0，不通过返回 1。
 verify_iso() {
@@ -81,7 +81,7 @@ if [ -z "$QEMU" ]; then
   Windows         : winget install SoftwareFreedomConservancy.QEMU
                     —— 或者干脆不用 QEMU：下载 ISO 用 VirtualBox / VMware 挂载也能开
 
-  ISO 直链：https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso
+  ISO 直链：https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso
 EOF
     exit 1
 fi

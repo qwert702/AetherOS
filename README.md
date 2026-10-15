@@ -1,6 +1,6 @@
 # AetherOS
 
-[**English**](README.en.md) · 中文 ｜ [**下载 ISO（38.5 MB）**](https://github.com/qwert702/AetherOS/releases/download/v0.1.0/aetheros-0.1-amd64.iso) ｜ [落地页](https://aether.cbnac.com/) ｜ [装软件指南](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
+[**English**](README.en.md) · 中文 ｜ [**下载 ISO（41.0 MB）**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) ｜ [落地页](https://aether.cbnac.com/) ｜ [装软件指南](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
 
 **一个自研的操作系统**：Linux 内核 + 全自研 Rust 用户态 + AI 中枢。
 
@@ -11,7 +11,7 @@
 |---|---|
 | **规模** | 合计 51,138 行 Rust / 71 个源文件 / 7 个 crate（2026-10-11 实测） |
 | **验证** | 768 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
-| **产物** | 可引导 ISO 约 38.5 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
+| **产物** | 可引导 ISO 约 41.0 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](assets/ui-archive/host-ui-light-desktop.png)
 

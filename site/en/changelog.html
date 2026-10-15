@@ -1104,6 +1104,21 @@
 <p># 版本发布说明</p>
 <p>&gt;</p>
 <p>&gt;</p>
+<h2 id="v0-1-1-2026-10-15">v0.1.1 — 2026-10-15</h2>
+<p><strong>v0.1.0 之后的第一个更新</strong>（仍是 prerelease）。相对 v0.1.0 的变化：</p>
+<ul>
+  <li><strong>ISO 真的 isohybrid 了</strong>（offset 510 = <code>55aa</code>）：v0.1.0 的资产<strong>从未过 isohybrid</strong>，</li>
+</ul>
+<p>  所以 <code>dd</code> 到 U 盘起不来、装不了机 —— 根因是同步工具按字符串前缀跳过了 <code>platform/build-iso.sh</code>，</p>
+<p>  构建机两周一直在用旧脚本。已修，并有门禁盯着。</p>
+<ul>
+  <li><strong>终端等宽字体补上</strong>：此前镜像里没有等宽字体，终端只能逐字回退成非等宽。</li>
+  <li><strong>通知正文全量双语</strong>（118 个生产调用点，含外部来源文本的两语言消毒）。</li>
+  <li><strong>依赖漏洞修复</strong>：<code>rustls</code> 0.23.43 → 0.23.46（RUSTSEC-2026-0285）；<code>cargo audit</code> 复验 0 漏洞。</li>
+  <li><strong>装机验证四步全过</strong>：起 ISO → 安装器 → <strong>拔掉光驱从盘引导</strong> → 重启后 <code>/var</code> 写入仍在。</li>
+  <li>规模：51,138 行 Rust / 71 文件 · 768 项测试 · 34 项门禁全绿。</li>
+</ul>
+<p>校验和与体积见下载页 —— 由发布流程<strong>从资产本身</strong>算出（这一次实测回下载一致）。</p>
 <h2 id="v0-1-0-2026-09-29">v0.1.0 — 2026-09-29</h2>
 <p><strong>首个公开版本。</strong> 可引导 ISO，QEMU / VirtualBox / VMware 三个平台实测开机；可安装到虚拟磁盘后独立引导。</p>
 <p><em>First public release. Bootable ISO verified on QEMU, VirtualBox and VMware. ~~installable to a virtual disk and bootable from it~~ — <strong>corrected 2026-10-02: the published ISO is not isohybrid, so disk installation does not work; see the note below.</strong></em></p>
