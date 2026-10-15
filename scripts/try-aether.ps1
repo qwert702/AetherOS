@@ -9,7 +9,7 @@ param(
     [string]$Version = "v0.1.1",
     [string]$IsoName = "aetheros-0.1-amd64.iso",
     # 已发布 ISO 的 SHA256（与 site/release.json 同源）。
-    # ⚠️ 这是 **Release 资产**（40,327,168 字节）的哈希，与仓库根目录那份本地构建
+    # ⚠️ 这是 **Release 资产**（42,991,616 字节）的哈希，与仓库根目录那份本地构建
     # 产物不同；2026-10-02 实际下载复核过，与 GitHub API 的 digest 一致。
     # 传空字符串（-Sha256 ""）表示知情地跳过校验；自建镜像填自己的哈希。
     [string]$Sha256 = "eea68da9e4a9c7c58558c488b8c3f0192d82c0b550effde1d5cb194e58211e69"
