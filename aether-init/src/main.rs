@@ -6,6 +6,12 @@
 //!
 //! 设计：小而美。不做 socket 激活/定时器/cgroup，先做对、做小。
 
+// `autoinstall` 的调用点只在 Linux 上（引导期无人安装），但**纯逻辑的单元测试要在
+// 任意平台都能跑**（门禁在 Windows 上跑 cargo test）。所以模块在 `test` 时也编译：
+// 否则 `cargo build` 在 Windows 上会把这批 pub 项判成 dead_code（8 条告警）——
+// 而"0 告警"是本项目硬标准。
+#[cfg(any(target_os = "linux", test))]
+mod autoinstall;
 mod ipc;
 mod logtee;
 mod manager;
@@ -171,6 +177,30 @@ fn run_pid1() -> anyhow::Result<()> {
         }
     }
     eprintln!("[aether-init] PID 1 启动");
+
+    // 引导期**无人安装**（见 `autoinstall` 模块头）：让"挂上 ISO 一开机就装完"成立。
+    //
+    // 位置很关键：**必须在 `mount_persist()` 之前** —— 安装器要重建持久分区，
+    // 先把它挂到 /var 会打架。触发条件是"命令行开关 **且** 根是只读 live 介质"，
+    // 两条缺一不可（只看开关的话，从磁盘引导会把刚装好的系统再装一遍）。
+    #[cfg(target_os = "linux")]
+    if autoinstall::requested() {
+        let installer = autoinstall::installer_path();
+        let partitions = std::fs::read_to_string("/proc/partitions").unwrap_or_default();
+        let disk = autoinstall::pick_target_disk(&partitions);
+        match (installer, disk) {
+            // 装完会 sync + 关机，不返回
+            (Some(installer), Some(disk)) => autoinstall::run(installer, &disk),
+            (installer, disk) => {
+                // 降级为普通 live 启动：宁可什么都不做，也不"猜路径/猜盘"去动磁盘
+                eprintln!(
+                    "[aether-init] 自动安装放弃（安装器={installer:?} 目标盘={disk:?}）—— 按 live 启动"
+                );
+                eprintln!("{}", autoinstall::RESULT_FAIL);
+            }
+        }
+    }
+
     // 持久化分区在服务之前挂载：logtee 写 /var/log/aether 时已是真磁盘
     #[cfg(target_os = "linux")]
     {

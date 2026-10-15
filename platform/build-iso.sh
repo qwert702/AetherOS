@@ -40,6 +40,33 @@ else
     echo "   （提醒会同时出现在启动横幅与 /etc/issue 里，不会「悄悄」存在。）"
 fi
 
+# ── 自动安装版（2026-10-15，P0）────────────────────────────────────────────
+# 设了 AETHER_AUTOINSTALL=1 时，把引导菜单的**默认项**换成"自动安装"：
+# 挂上这个 ISO 一开机就自己装到最大的一块固定盘（VMware/VirtualBox 无人值守）。
+#
+# guest 侧还有第二道闸：必须"根是只读 live 介质"才会装（见 aether-init 的 autoinstall
+# 模块）—— 否则系统分区是 ISO 的拷贝，从磁盘引导时命令行同样带这个参数，会把刚装好的
+# 系统**再装一遍**（毁盘级）。两道闸缺一不可。
+#
+# 菜单文件是仓库里被 git 跟踪的，所以这里**临时改、退出时还原**（trap 兜住中断）：
+# 不能把"默认自动安装"留在仓库里。
+if [ -n "${AETHER_AUTOINSTALL:-}" ]; then
+    MENU="$BR_EXT/isolinux.cfg"
+    MENU_BAK="$(mktemp)"
+    cp -a "$MENU" "$MENU_BAK"
+    trap 'cp -a "$MENU_BAK" "$MENU" 2>/dev/null || true; rm -f "$MENU_BAK"' EXIT
+    sed -i 's/^DEFAULT aether$/DEFAULT autoinstall/' "$MENU"
+    if ! grep -q '^DEFAULT autoinstall$' "$MENU"; then
+        echo "!! AETHER_AUTOINSTALL=1 但菜单里没找到可切换的默认项（期望 'DEFAULT aether'）" >&2
+        exit 1
+    fi
+    if ! grep -q 'aether\.autoinstall=1' "$MENU"; then
+        echo "!! 菜单里没有带 aether.autoinstall=1 的项 —— 自动安装版会是普通镜像" >&2
+        exit 1
+    fi
+    echo "==> 自动安装版：引导默认项 = autoinstall（挂上开机即装盘；装完自动关机）"
+fi
+
 echo "==> [1/3] musl 静态编译 Aether 组件"
 rustup target add x86_64-unknown-linux-musl
 COMPONENTS=(aether-init aetherd aether-ops aether-compositor aether-install)
