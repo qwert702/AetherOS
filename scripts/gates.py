@@ -229,6 +229,12 @@ def main() -> int:
     # 这条自检是纯逻辑的：不需要 fontTools、不需要源字体。
     steps.append(("字体产物命名契约自检（构建机不可用也能跑）",
                   [PY, "scripts/mkfont.py", "--selftest"]))
+    # **生效 vhost 的识别**（2026-10-15 真实事故）：这台生产机是"宝塔"式 —— nginx 手工启动、
+    # 只 include `/www/server/panel/vhost/nginx/*.conf`，**不读 `/etc/nginx/conf.d/`**。
+    # 老逻辑写死 conf.d → 写进去的是**死文件**：`nginx -t` 通过、站点照开、脚本还报"部署成功"，
+    # 但那份配置永远不生效。这条自检验"从 `nginx -T` 里认出真正生效的文件"，本机就能跑。
+    steps.append(("部署脚本生效 vhost 识别自检（不需要服务器）",
+                  [PY, "scripts/deploy-site.py", "--selftest"]))
     steps.append(("Python 语法检查", [PY, "-m", "py_compile", *[
         str(p.relative_to(ROOT)) for p in sorted((ROOT / "scripts").glob("*.py"))
     ]]))

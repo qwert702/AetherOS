@@ -45,6 +45,46 @@
 
 <section><div class="wrap">
   <div class="log">
+<p># 2026-10-15：发布 v0.1.1（首次真正上传资产 + 首次真正部署生产站）</p>
+<h2 id="v0-1-1">一、发布 v0.1.1</h2>
+<table><tbody>
+  <tr><td>步骤</td><td>结果</td></tr>
+  <tr><td>上传资产</td><td><code>aetheros-0.1-amd64.iso</code> · <strong>42,991,616 字节（41.0 MB）</strong> · tag <code>v0.1.1</code>（prerelease，同 v0.1.0）</td></tr>
+  <tr><td>校验</td><td>GitHub 自己算的 asset digest = <code>sha256:eea68da9…</code>；<strong>把资产下载回来重算</strong>，与本地构建逐字节一致 ✓</td></tr>
+  <tr><td>同步发布事实</td><td><code>site/release.json</code>（tag/字节/体积/哈希/日期）· README 中英各 2 处体积 · <code>try-aether.sh/.ps1</code> 的内置哈希<strong>与注释</strong> · <code>docs/index.html</code>（GitHub Pages）· CHANGELOG 新增 v0.1.1 段</td></tr>
+  <tr><td>站点门禁</td><td>抓出 <code>try-aether.*</code> 里还是旧哈希（<strong>用户校验会失败</strong>）→ 已换；又抓出两处注释里的旧字节数 → 已同步</td></tr>
+</tbody></table>
+<h2 id="h-5">二、生产站部署（H-5 的"未部署"就此销掉）</h2>
+<p><code>https://aether.cbnac.com/</code> 从 v0.1.0 的事实更新到 <strong>v0.1.1 · 41.0 MB · <code>eea68da9…</code></strong>，</p>
+<p>5 项安全响应头全部实际下发 ✓，既有业务（cbnac.com / school / api / dili / teach …）<strong>状态码全未变</strong> ✓。</p>
+<p>重载方式是<strong>给 master 发 HUP</strong>（优雅、零停机），并用"worker 进程是否换代"证明<strong>真的重载了</strong>。</p>
+<h2 id="3-scripts-deploy-site-py">三、首次部署暴露的 3 个真缺陷（都在 <code>scripts/deploy-site.py</code>）</h2>
+<p><strong>① 校验与 dump 用错了二进制。</strong> 这台机器上 PATH 里的 <code>nginx</code> 是 <strong>1.24.0（没编 <code>stream</code> 模块）</strong>，</p>
+<p>而<strong>正在跑</strong>的是 <code>/www/server/nginx/sbin/nginx -c /www/server/nginx/conf/nginx.conf</code>（宝塔构建，有 <code>stream</code>）。</p>
+<p>拿 PATH 里那个去测宝塔配置 → <code>unknown directive "stream"</code> —— <strong>一个根本不存在的故障</strong>。</p>
+<p>→ 改成从 master 进程命令行里取 <strong>(二进制, 配置)</strong>，校验与 dump 都用它们。</p>
+<p><strong>② vhost 写进了不会被加载的目录。</strong> 宝塔的 nginx.conf 只 <code>include /www/server/panel/vhost/nginx/*.conf</code>，</p>
+<p><strong>不读 <code>/etc/nginx/conf.d/</code></strong>；而 <code>nginx -t</code>/<code>-T</code> 默认测的又是 <code>/etc/nginx/nginx.conf</code>（它 include conf.d）。</p>
+<p>两者不是同一个文件 → 老逻辑形成<strong>两层假绿</strong>：<code>nginx -t</code> 说 OK、站点照开、脚本打印"部署成功"，</p>
+<p>而写进去的配置<strong>永远不会生效</strong>。</p>
+<p>→ 改成<strong>问运行中的 nginx</strong>：<code>&lt;它的二进制&gt; -T -c &lt;它的配置&gt;</code>，从输出里的</p>
+<p><code># configuration file &lt;路径&gt;:</code> 注释头认出<strong>真正生效的那个 vhost 文件</strong>。</p>
+<p><strong>③ reload 只有两种方式，这机器两种都不成立。</strong> nginx 不在 systemd 下（<code>systemctl is-active</code> = inactive），</p>
+<p><code>/run/nginx.pid</code> 是 <strong>0 字节</strong>（2026-10-03 留下的）→ <code>systemctl reload</code> 与 <code>nginx -s reload</code> 双双失败</p>
+<p>（<code>invalid PID number "" in "/run/nginx.pid"</code>）。</p>
+<p>→ 加第三条路：<strong>直接给 master 发 HUP</strong>，并用 worker 换代作为"真的生效"的判据；</p>
+<p>三种都不成立时<strong>显式拒绝</strong>（生产机上盲重启会与既有实例抢端口）。</p>
+<p><strong>另外加了一条保护</strong>：生效的 vhost 若<strong>已带 TLS 段（certbot 管理）</strong>，脚本<strong>绝不覆盖</strong>它</p>
+<p>（那里面有 certbot 插的 <code>listen 443</code> 与证书路径，覆盖=把 HTTPS 弄没），</p>
+<p>改为<strong>校验</strong>它与本站一致（root、安全头片段），不一致就报错让人工处理 —— 脚本不猜。</p>
+<p>判据：<code>scripts/deploy-site.py --selftest</code>（9 项：生效 vhost 识别 + 运行中进程识别，<strong>不需要服务器与凭据</strong>）</p>
+<p>已进 <code>gates.py</code>（<strong>34 → 35 项</strong>）。</p>
+<h2 id="">四、仍未做</h2>
+<p>1. <strong>真机验收（#32）</strong>：45 项要走物理机（U 盘 dd、装盘、断电、ALSA、真实键鼠）。</p>
+<p>2. <strong>M-13 端到端多行粘贴</strong>：前置已在 guest 实测（bash 5.2.21 + <code>pty.rs</code> 优先 bash ⇒ 括号粘贴生效），</p>
+<p>   但<strong>真在 GUI 里粘一次</strong>还没做（需要终端窗口 + 宿主剪贴板共享）。</p>
+<p>3. 生产机上那个 <code>/etc/nginx/conf.d/aether.cbnac.com.conf</code> 现在是<strong>历史遗留的死文件</strong></p>
+<p>   （脚本已不再依赖它；本次部署仍会写它以保证脚本自身完整）。要不要删掉由你定 —— 删了不影响线上。</p>
 <p># 2026-10-14：装机验证 + 依赖 CVE 收口 + 审计文档纠偏</p>
 <h2 id="33">一、装机验证（台账 #33 后半段）—— <strong>四项判据全过</strong></h2>
 <p>此前 ISO 重建好了、isohybrid 也验证了，但<strong>没有人真的装过一次机</strong>。今天做了：</p>
