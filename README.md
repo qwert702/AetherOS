@@ -206,9 +206,9 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 |---|---|---|---|
 | `aether-compositor/` | 32,458 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
 | `aetherd/` | 12,527 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
-| `aether-init/` | 3,035 | PID 1 与服务管理 | M3 |
+| `aether-init/` | 3,327 | PID 1 与服务管理 | M3 |
 | `aether-ops/` | 1,026 | AI 运维与自修复 | M5 |
-| `aether-install/` | 926 | 磁盘安装器 | M6 |
+| `aether-install/` | 1,018 | 磁盘安装器 | M6 |
 | `aether-ipc/` | 1,155 | 全系统 IPC 协议 | M0 |
 | `aether-shell/` | 11 | 占位骨架 | M2 |
 | `platform/` | — | Buildroot 外部树、rootfs overlay、ISO 打包 | M3 |
