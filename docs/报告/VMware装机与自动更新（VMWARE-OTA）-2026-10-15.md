@@ -192,9 +192,10 @@ P0 完成后，"在 VMware 里装完整系统"这件事就闭环了；P1 完成�
 {
   "version": "0.1.2",                 // 形如 1.2.3，只比较数字段；比当前旧 ⇒ 拒收
   "files": [
-    { "path": "usr/bin/aetherd", "sha256": "<hex 小写>" }
-    // path 既是包内相对路径，**也是**它要覆盖的目标（resolve_target）
-    // 目标必须在 TARGET_PREFIXES 白名单内
+    { "path": "/var/apps/hello/hello", "sha256": "<64 位 hex 小写>", "bytes": 1234 }
+    // path 是**绝对目标路径**；包内相对路径 = 去掉开头的 '/'（verify_bundle 的取法）
+    // 三条必查：绝对、无 ..、无控制字符、命中白名单；且 sha256 必须是 64 位 hex、
+    // 同一 path 不许出现两次。白名单**不含 /usr/bin/** ⇒ 系统组件走整机路径（--keep-var）
   ]
 }
 ```
