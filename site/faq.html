@@ -64,7 +64,7 @@
 
   <details><summary>系统里到底哪些是自己写的？</summary>
     <p>Linux 内核与 Buildroot 提供的交叉工具链/根文件系统基础设施不是；其余全自研，共
-       7 个 Rust crate、24,388 行代码（72 个源文件）：</p>
+       7 个 Rust crate、24,388 行代码（73 个源文件）：</p>
     <ul>
       <li><code>aether-init</code>：PID 1，服务编排、持久化分区、串口日志、故障自愈</li>
       <li><code>aether-compositor</code>：窗口合成器，直接写 framebuffer，含窗口管理、平铺布局、阴影圆角、脏行上屏</li>
@@ -99,7 +99,7 @@
        内核与基础设施来自 Buildroot，字体是构建期按 GB2312 + 拉丁子集化生成的（约 5.7 MB）。</p></details>
 
   <details><summary>需要什么硬件？</summary>
-    <p>64 位 x86 虚拟化环境、1 GB 内存起、支持 1024×774 的显示适配器。已在
+    <p>64 位 x86 虚拟化环境、1 GB 内存起、支持 1024×778 的显示适配器。已在
        QEMU / VirtualBox / VMware 三个平台实测开机；真实硬件通常可用，但当前以虚拟机为主要验证环境。</p></details>
 
   <details><summary>界面支持中文吗？</summary>

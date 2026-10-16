@@ -18,6 +18,11 @@ mod policy;
 mod timesync;
 mod snapshots;
 mod update;
+// `updater` 的运行路径只在 Linux 上被调用（serve 分支里 cfg(linux)），而 `--all-targets`
+// 构建时测试目标也会编 —— 用 `any(target_os = "linux", test)`：纯判据仍可跨平台测，
+// Windows 的非测试目标则不编译它（否则整条运行链会被判 dead_code，破坏 0 告警标准）。
+#[cfg(any(target_os = "linux", test))]
+mod updater;
 mod removable;
 mod display;
 mod perm;
@@ -358,6 +363,17 @@ fn main() -> Result<()> {
                     // 挂载失败不该拦住服务启动：应用是附加能力，AI 中枢才是本体
                     Err(e) => eprintln!("[aetherd] 挂载已装应用失败（不影响服务启动）: {e}"),
                 }
+            }
+            // P1 自动更新（2026-10-16）：定时拉更新源 → 校验 → 投进 incoming/ → 下次启动生效。
+            //
+            // 为什么放在 serve 里、且**失败不拦启动**：与上面 apps::link_all 同一条原则 ——
+            // AI 中枢才是本体，更新是附加能力；配置写错/源不可达都只该记日志，不该让系统起不来。
+            #[cfg(target_os = "linux")]
+            {
+                let _ = updater::spawn(
+                    std::path::PathBuf::from(update::UPDATE_ROOT),
+                    std::path::PathBuf::from(updater::CONFIG_PATH),
+                );
             }
             server::serve(config_from_env())?;
         }
