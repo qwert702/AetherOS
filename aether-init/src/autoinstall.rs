@@ -3,11 +3,21 @@
 //! ## 触发条件必须**同时**满足两条
 //!
 //! 1. 内核命令行里有 `aether.autoinstall=1`（只有引导菜单里那个"自动安装"项带它）；
-//! 2. **根是只读的 live 介质**（iso9660/squashfs/…）。
+//! 2. **本机还没有 AetherOS 的安装**（任一分区没有合法安装标记，见
+//!    [`crate::persist::any_existing_install`]）。
 //!
 //! 只看第 1 条会出**毁盘级**事故：系统分区是 ISO 的拷贝，连引导配置一起被装进磁盘，
 //! 于是**从磁盘引导时命令行照样带这个参数** —— 它会把刚装好的系统**再装一遍**。
-//! 加上第 2 条之后，从盘引导（ext4、rw）永远不会触发。这是本模块最要紧的一条判据。
+//!
+//! ## 第 2 条判据踩过的坑（2026-10-15 实测）
+//!
+//! 第一版写的是"根是**只读** + iso9660/squashfs 之类的 live 类型"。实机一跑就**永远不成立**：
+//! AetherOS 是 initramfs 引导，根报 `rootfs`（rw），既不是 ISO 类型也不是只读 ——
+//! 串口里看得清清楚楚：命令行有 `aether.autoinstall=1`，却没有一行我的输出（判据静默不成立）。
+//!
+//! 幸好当时的降级路径是"什么都不做、按普通 live 启动"，所以**没有乱写磁盘**。
+//! 换成本项目自己的**安装标记**（写持久分区上、绑定磁盘 MBR 签名）之后：
+//! 从已装盘引导时标记必然在 ⇒ 绝不重装。**判据要挑"这件事本身的证据"，而不是它的间接迹象。**
 //!
 //! ## 目标盘怎么选
 //!
@@ -18,6 +28,9 @@
 //!
 //! 装完打一行结果标记（宿主脚本与串口判据都按它取证）→ `sync` → **关机**。
 //! 关机而不是重启：让宿主有机会先改引导顺序（从光驱改磁盘），再开机引导新系统。
+
+#[cfg(target_os = "linux")]
+use std::path::Path;
 
 /// 触发开关。**逐 token 精确匹配** —— `contains` 会让 `aether.autoinstall=10` 假阳。
 pub const FLAG: &str = "aether.autoinstall=1";
@@ -37,28 +50,16 @@ pub const INSTALLER_CANDIDATES: [&str; 3] = [
     "/bin/aether-install",
 ];
 
-/// 根文件系统是这些类型 ⇒ 认为"当前跑在 live 介质上"。
-pub const LIVE_FSTYPES: [&str; 6] = ["iso9660", "squashfs", "erofs", "udf", "cramfs", "romfs"];
-
 /// 命令行里是否有开关（逐 token 比较）。
 pub fn flag_present(cmdline: &str) -> bool {
     cmdline.split_whitespace().any(|t| t == FLAG)
 }
 
-/// `/proc/mounts` 的根那一行是否为"**只读** + live 文件系统"。
+/// 该不该装：**开关在** 且 **本机还没有安装**。两条缺一不可（第二条是毁盘级判据）。
 ///
-/// 非 Linux 上永远返回 false（本模块的核心路径也是 `cfg(target_os = "linux")`）。
-pub fn root_is_readonly_live(mounts: &str) -> bool {
-    mounts
-        .lines()
-        .find_map(|line| {
-            let f: Vec<&str> = line.split_whitespace().collect();
-            // proc/mounts: device mountpoint fstype options …
-            (f.len() >= 4 && f[1] == "/").then(|| (f[2], f[3]))
-        })
-        .is_some_and(|(fstype, opts)| {
-            LIVE_FSTYPES.contains(&fstype) && opts.split(',').any(|o| o == "ro")
-        })
+/// 抽成纯函数是为了能在任意平台跑单元测试 —— 这条判据的分支一旦写错就是"重装整盘"。
+pub fn should_install(flag: bool, already_installed: bool) -> bool {
+    flag && !already_installed
 }
 
 /// 从 `/proc/partitions` 里挑目标盘：跳过可移动/虚拟设备，取最大的一块**整盘**。
@@ -89,15 +90,21 @@ pub fn pick_target_disk(partitions: &str) -> Option<String> {
         .map(|(_, name)| format!("/dev/{name}"))
 }
 
-/// 读 `/proc/cmdline` 与 `/proc/mounts`，判断这次启动是否该自动装。
+/// 读 `/proc/cmdline`，并在开关存在时问一次"本机装过没有"。
+///
+/// 注意：**先看开关再探测** —— 开关不在时完全不去碰磁盘（不做任何多余动作）。
 #[cfg(target_os = "linux")]
 pub fn requested() -> bool {
     let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
-    if !flag_present(&cmdline) {
+    let flag = flag_present(&cmdline);
+    if !flag {
         return false;
     }
-    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
-    root_is_readonly_live(&mounts)
+    let already = crate::persist::any_existing_install();
+    if already {
+        eprintln!("[aether-init] 自动安装跳过：本机已有 AetherOS 安装（安装标记在）—— 绝不重装");
+    }
+    should_install(flag, already)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -108,7 +115,6 @@ pub fn requested() -> bool {
 /// 找一个真实存在的安装器（按候选顺序）。找不到返回 `None` —— 调用方**降级为普通 live 启动**。
 #[cfg(target_os = "linux")]
 pub fn installer_path() -> Option<&'static str> {
-    use std::path::Path;
     INSTALLER_CANDIDATES
         .iter()
         .find(|p| Path::new(p).is_file())
@@ -118,7 +124,7 @@ pub fn installer_path() -> Option<&'static str> {
 /// 装机并**关机**（不返回）。只在"该装 + 装得了"时调用。
 ///
 /// 为什么关机而不是重启：让宿主有机会先改引导顺序（光驱 → 磁盘）再开机，
-/// 否则会又从 ISO 引导一次（虽然第 2 条判据挡住了重装，但那样就白装一遍）。
+/// 否则会又从 ISO 引导一次（虽然安装标记挡住了重装，但那样就白装一遍）。
 #[cfg(target_os = "linux")]
 pub fn run(installer: &str, disk: &str) -> ! {
     use crate::power::sync_and_reboot;
@@ -163,20 +169,14 @@ mod tests {
     }
 
     #[test]
-    fn live_root_detected_only_when_readonly_iso() {
-        // 真·live：iso9660 且 ro
-        assert!(root_is_readonly_live(
-            "/dev/sr0 / iso9660 ro,relatime 0 0\n/dev/sda2 /var ext4 rw 0 0\n"
-        ));
-        // 装完从**磁盘**引导：ext4 rw ⇒ 绝不能再触发（这是毁盘级判据）
-        assert!(!root_is_readonly_live("/dev/sda1 / ext4 rw,relatime 0 0\n"));
-        // ISO 类型但被挂成 rw（异常场景）：也不触发 —— 只读才是 live 的判据
-        assert!(!root_is_readonly_live("/dev/sr0 / iso9660 rw 0 0\n"));
-        // squashfs ro 也算 live
-        assert!(root_is_readonly_live("none / squashfs ro 0 0\n"));
-        // 没有根那一行：不触发
-        assert!(!root_is_readonly_live("/dev/sda2 /var ext4 rw 0 0\n"));
-        assert!(!root_is_readonly_live(""));
+    fn installs_only_with_flag_and_no_existing_install() {
+        // 该装：开关在 + 盘是空的
+        assert!(should_install(true, false));
+        // 开关在但**已经装过** ⇒ 绝不装（毁盘级：从盘引导时命令行同样带这个开关）
+        assert!(!should_install(true, true));
+        // 没有开关：无论盘什么状态都不动
+        assert!(!should_install(false, false));
+        assert!(!should_install(false, true));
     }
 
     #[test]

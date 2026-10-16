@@ -1,4 +1,4 @@
-//! 持久化分区：把安装器建好的 ext4 分区（卷标 AETHER，通常是 /dev/<盘>2）
+﻿//! 持久化分区：把安装器建好的 ext4 分区（卷标 AETHER，通常是 /dev/<盘>2）
 //! 在启动时挂到 /var，使日志、诊断报告、审计跨重启保留。
 //!
 //! 设计：
@@ -14,6 +14,23 @@
 /// 持久化分区候选：virtio 优先，其次 SATA/IDE（VMware/VBox 常用），最后 nvme。
 pub const PERSIST_CANDIDATES: [&str; 4] =
     ["/dev/vda2", "/dev/sda2", "/dev/hda2", "/dev/nvme0n1p2"];
+
+/// 本机是否**已经有** AetherOS 的安装（任一分区带合法安装标记）。
+///
+/// 给引导期无人安装用（见 `autoinstall` 模块）：判断"这台机器装过了吗"。
+///
+/// **为什么用安装标记而不是猜文件系统类型**（2026-10-15 实测教训）：
+/// 第一版判据是"根是只读 + iso9660/squashfs"，结果在这台机器上**永远不成立** ——
+/// AetherOS 是 initramfs 引导，根报 `rootfs`（rw），既不是 ISO 类型也不是只读。
+/// 判据不成立时无人安装被静默跳过（**幸好**当时选择"什么都不做"，没去乱写磁盘）。
+/// 换成安装标记之后：标记由安装器写在持久分区上、还绑定了磁盘 MBR 签名，
+/// 从已装盘引导时它一定在 ⇒ 绝不会重装（这才是那条"毁盘级"判据的正确形态）。
+///
+/// 探测本身走 [`has_install_marker`]：只读挂载 + 卷标核对 + 磁盘签名绑定，且用符号链接安全的读法。
+#[cfg(target_os = "linux")]
+pub fn any_existing_install() -> bool {
+    PERSIST_CANDIDATES.iter().any(|dev| has_install_marker(dev))
+}
 
 /// 我们自己的持久化分区的 ext4 卷标。
 ///
