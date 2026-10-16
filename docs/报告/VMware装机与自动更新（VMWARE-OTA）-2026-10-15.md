@@ -179,3 +179,55 @@ P0 完成后，"在 VMware 里装完整系统"这件事就闭环了；P1 完成�
   但**"在 VMware 里无人安装"本身还没做过** —— 上面 P0 就是把它做实。
 * **`aetherd` 轮询更新源是新功能**，现在只有"管理员把包放进 `incoming/`"这半套。
 * VMware 侧的串口/快照能力是**本机实测过的工具能力**（`vmrun` 可用、`serial0` 已落盘），但**装机流程尚未在 VMware 上跑通**。
+---
+
+## 11. P1 实施细节（2026-10-16 补：更新源已定为 **VPS `aether.cbnac.com`**）
+
+### 11.1 接口已经钉死（读自现有代码，不要另造）
+
+`aetherd/src/update.rs` 认的包格式：
+
+```jsonc
+// <包目录>/update.json
+{
+  "version": "0.1.2",                 // 形如 1.2.3，只比较数字段；比当前旧 ⇒ 拒收
+  "files": [
+    { "path": "usr/bin/aetherd", "sha256": "<hex 小写>" }
+    // path 既是包内相对路径，**也是**它要覆盖的目标（resolve_target）
+    // 目标必须在 TARGET_PREFIXES 白名单内
+  ]
+}
+```
+
+投递与生效链（**都已存在，别重写**）：
+
+```
+incoming/<包目录>/          管理员/程序把包放这里（界面只能选 incoming 的直接子目录）
+   ↓ aetherd stage()        逐文件 sha256 校验（不符整包拒绝）→ 写 staged/<id>/ + ready.json
+   ↓ 最后写 apply.list      每行 <sha256>\t<bytes>\t<target>（存在即表示暂存完整）
+   ↓ 下次启动 aether-init    PID 1 按 apply.list 应用 → 写 applied 记录
+```
+
+### 11.2 P1 要新写的东西（两半）
+
+| 文件 | 新/改 | 作用 | 验收判据 |
+|---|---|---|---|
+| `scripts/mkupdate.py` | 新 | **宿主侧**：从构建产物生成包（`update.json` + 文件 + 逐文件 sha256），并校验"目标都在白名单内" | `--selftest`（纯逻辑，本机可跑）；生成的包能被 `aetherd stage()` 接受 |
+| `aetherd/src/updater.rs` | 新 | **guest 侧**：读 `/var/lib/aether/update.json` 的 `{"url": ..., "check_minutes": ..., "auto_apply": false}` → 定时 `GET <url>/update.json` → `version_is_newer` 才下载 → 逐文件校验 → 投进 `incoming/` → 调 `stage()` | 单元测试：版本比较、拒降级、哈希不符拒收、URL 拼接；不联网也能测（注入一个本地目录/桩） |
+| `aetherd/src/main.rs` | 改 | 把 updater 起进服务循环 | `aetherd` 启动日志出现 updater 行 |
+| `deploy-site.py` | 改 | 把更新包目录一并发布到 VPS（`/var/www/aether.cbnac.com/updates/`），并在站点上给 `update.json` | 部署后 `curl https://aether.cbnac.com/updates/update.json` 返回清单 |
+
+### 11.3 端到端验收（P1 的"完成"定义）
+
+1. 宿主：改一行代码 → `python scripts/mkupdate.py --version 0.1.2 --out updates/`（**不碰 guest**）
+2. 发布：`deploy-site.py`（把 `updates/` 传上 VPS）
+3. guest：`aetherd` 在一个 `check_minutes` 周期内自动拉到 → `/var/lib/aether/update/incoming/<包>` 出现
+4. 重启 guest → 目标文件哈希 == 包内哈希 → 版本号/可观察行为确实变了
+5. **负向对照**：把包内一个字节改坏 → 拒收（不写 `apply.list`）；把 `version` 改成更旧 → 拒降级
+
+### 11.4 安全要点（沿用既有纪律）
+
+* `UPDATE_ROOT` 只允许 root 写（既有前提）；updater 只写 `incoming/`，**不直接写系统路径**；
+* 下载后**逐文件 sha256** 必须与清单一致，否则整包拒绝（不"应用能应用的那些"）；
+* 更新源用 **HTTPS**（`https://aether.cbnac.com/updates/`），并考虑给清单加签名（下一步可选）；
+* `auto_apply` 默认 **false**（检查自动、应用需确认）；无人值守场景再显式打开。
