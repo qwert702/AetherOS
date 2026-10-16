@@ -184,19 +184,24 @@ fn run_pid1() -> anyhow::Result<()> {
     // 先把它挂到 /var 会打架。触发条件是"命令行开关 **且** 根是只读 live 介质"，
     // 两条缺一不可（只看开关的话，从磁盘引导会把刚装好的系统再装一遍）。
     #[cfg(target_os = "linux")]
-    if autoinstall::requested() {
-        let installer = autoinstall::installer_path();
-        let partitions = std::fs::read_to_string("/proc/partitions").unwrap_or_default();
-        let disk = autoinstall::pick_target_disk(&partitions);
-        match (installer, disk) {
-            // 装完会 sync + 关机，不返回
-            (Some(installer), Some(disk)) => autoinstall::run(installer, &disk),
-            (installer, disk) => {
-                // 降级为普通 live 启动：宁可什么都不做，也不"猜路径/猜盘"去动磁盘
-                eprintln!(
-                    "[aether-init] 自动安装放弃（安装器={installer:?} 目标盘={disk:?}）—— 按 live 启动"
-                );
-                eprintln!("{}", autoinstall::RESULT_FAIL);
+    match autoinstall::requested() {
+        // 不装：什么都不做（判据不成立时"什么都不做"是一等公民）
+        autoinstall::Action::None => {}
+        action => {
+            let keep_var = action == autoinstall::Action::InstallKeepVar;
+            let installer = autoinstall::installer_path();
+            let partitions = std::fs::read_to_string("/proc/partitions").unwrap_or_default();
+            let disk = autoinstall::pick_target_disk(&partitions);
+            match (installer, disk) {
+                // 装完会 sync + 关机，不返回
+                (Some(installer), Some(disk)) => autoinstall::run(installer, &disk, keep_var),
+                (installer, disk) => {
+                    // 降级为普通 live 启动：宁可什么都不做，也不"猜路径/猜盘"去动磁盘
+                    eprintln!(
+                        "[aether-init] 自动安装放弃（安装器={installer:?} 目标盘={disk:?} keep_var={keep_var}）—— 按 live 启动"
+                    );
+                    eprintln!("{}", autoinstall::RESULT_FAIL);
+                }
             }
         }
     }

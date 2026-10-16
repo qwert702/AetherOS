@@ -55,14 +55,18 @@ if [ -n "${AETHER_AUTOINSTALL:-}" ]; then
     MENU_BAK="$(mktemp)"
     cp -a "$MENU" "$MENU_BAK"
     trap 'cp -a "$MENU_BAK" "$MENU" 2>/dev/null || true; rm -f "$MENU_BAK"' EXIT
-    sed -i 's/^DEFAULT aether$/DEFAULT autoinstall/' "$MENU"
-    if ! grep -q '^DEFAULT autoinstall$' "$MENU"; then
-        echo "!! AETHER_AUTOINSTALL=1 但菜单里没找到可切换的默认项（期望 'DEFAULT aether'）" >&2
+    # AETHER_AUTOINSTALL=keepvar ⇒ 默认项指向"换系统（保留 /var）"那一项
+    WANT="autoinstall"
+    if [ "${AETHER_AUTOINSTALL}" = "keepvar" ]; then WANT="keepvar"; fi
+    sed -i "s/^DEFAULT aether$/DEFAULT ${WANT}/" "$MENU"
+    if ! grep -q "^DEFAULT ${WANT}$" "$MENU"; then
+        echo "!! AETHER_AUTOINSTALL=${AETHER_AUTOINSTALL} 但菜单里没找到可切换的默认项（期望 'DEFAULT aether'）" >&2
         exit 1
     fi
-    if ! grep -q 'aether\.autoinstall=1' "$MENU"; then
-        echo "!! 菜单里没有带 aether.autoinstall=1 的项 —— 自动安装版会是普通镜像" >&2
-        exit 1
+    if [ "${WANT}" = "keepvar" ]; then
+        grep -q 'aether\.keepvar=1' "$MENU" || { echo "!! 菜单里没有带 aether.keepvar=1 的项" >&2; exit 1; }
+    else
+        grep -q 'aether\.autoinstall=1' "$MENU" || { echo "!! 菜单里没有带 aether.autoinstall=1 的项" >&2; exit 1; }
     fi
     echo "==> 自动安装版：引导默认项 = autoinstall（挂上开机即装盘；装完自动关机）"
 fi

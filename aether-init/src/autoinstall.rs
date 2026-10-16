@@ -1,13 +1,14 @@
 //! 引导期**无人安装**（live 介质专用）—— 让"挂上 ISO 一开机就装完"成立。
 //!
-//! ## 触发条件必须**同时**满足两条
+//! ## 两种模式，判据互补（都必须"开关 + 盘的现状"同时成立）
 //!
-//! 1. 内核命令行里有 `aether.autoinstall=1`（只有引导菜单里那个"自动安装"项带它）；
-//! 2. **本机还没有 AetherOS 的安装**（任一分区没有合法安装标记，见
-//!    [`crate::persist::any_existing_install`]）。
+//! | 模式 | 引导开关 | 还要求 | 效果 |
+//! |---|---|---|---|
+//! | 首次装机 | `aether.autoinstall=1` | 盘上**还没有** AetherOS | 整盘装（含重建 /var） |
+//! | 换系统   | `aether.keepvar=1`     | 盘上**已经有** AetherOS | 只换系统，**/var 原地保留** |
 //!
-//! 只看第 1 条会出**毁盘级**事故：系统分区是 ISO 的拷贝，连引导配置一起被装进磁盘，
-//! 于是**从磁盘引导时命令行照样带这个参数** —— 它会把刚装好的系统**再装一遍**。
+//! 只看开关会出**毁盘级**事故：系统分区是 ISO 的拷贝，连引导配置一起被装进磁盘，
+//! 于是**从磁盘引导时命令行照样带那个开关** —— 首次装机模式会把刚装好的系统**再装一遍**。
 //!
 //! ## 第 2 条判据踩过的坑（2026-10-15 实测）
 //!
@@ -16,33 +17,23 @@
 //! 串口里看得清清楚楚：命令行有 `aether.autoinstall=1`，却没有一行我的输出（判据静默不成立）。
 //!
 //! 幸好当时的降级路径是"什么都不做、按普通 live 启动"，所以**没有乱写磁盘**。
-//! 换成本项目自己的**安装标记**（写持久分区上、绑定磁盘 MBR 签名）之后：
-//! 从已装盘引导时标记必然在 ⇒ 绝不重装。**判据要挑"这件事本身的证据"，而不是它的间接迹象。**
-//!
-//! ## 目标盘怎么选
-//!
-//! 无人值守时没人给 `--disk`。规则：跳过光驱/软驱/回环/zram/device-mapper 后，
-//! 取容量最大的那块整盘 —— VMware 与 VirtualBox 的装机盘就是唯一的固定盘。
-//!
-//! ## 退出方式
-//!
-//! 装完打一行结果标记（宿主脚本与串口判据都按它取证）→ `sync` → **关机**。
-//! 关机而不是重启：让宿主有机会先改引导顺序（从光驱改磁盘），再开机引导新系统。
+//! 换成本项目自己的**安装标记**（写持久分区上、绑定磁盘 MBR 签名）之后一次通过。
+//! **判据要挑"这件事本身的证据"，而不是它的间接迹象。**
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
 
-/// 触发开关。**逐 token 精确匹配** —— `contains` 会让 `aether.autoinstall=10` 假阳。
+/// 首次装机开关。**逐 token 精确匹配** —— `contains` 会让 `aether.autoinstall=10` 假阳。
 pub const FLAG: &str = "aether.autoinstall=1";
+/// 换系统（保留 /var）开关。
+pub const KEEP_VAR_FLAG: &str = "aether.keepvar=1";
 
-/// 结果标记：宿主脚本与串口判据按这两行取证据（不要改字面量，手册里引用了它们）。
+/// 结果标记：宿主脚本与串口判据按这几行取证据（不要改字面量，证据文件里引用了它们）。
 pub const RESULT_PASS: &str = "AETHER-AUTOINSTALL: PASS";
 pub const RESULT_FAIL: &str = "AETHER-AUTOINSTALL: FAIL";
+pub const RESULT_PASS_KEEP: &str = "AETHER-KEEPVAR: PASS";
 
 /// 安装器候选路径。镜像里装在 `/usr/bin`；留候选是为了不让"路径变了"变成静默失败。
-///
-/// 只在 Linux 上用到（本模块的检测与执行都是 Linux 专属），所以这里也加门 ——
-/// 否则 Windows 构建会因 dead_code 告警（项目标准是 0 告警）。
 #[cfg(target_os = "linux")]
 pub const INSTALLER_CANDIDATES: [&str; 3] = [
     "/usr/bin/aether-install",
@@ -50,21 +41,39 @@ pub const INSTALLER_CANDIDATES: [&str; 3] = [
     "/bin/aether-install",
 ];
 
-/// 命令行里是否有开关（逐 token 比较）。
-pub fn flag_present(cmdline: &str) -> bool {
-    cmdline.split_whitespace().any(|t| t == FLAG)
+/// 这次启动该干什么。三态而不是 bool：**"什么都不做"是一等公民** ——
+/// 判据不成立时必须什么都不做，而不是猜一个动作去做。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// 不装（按普通 live 启动，或按已装系统启动）。
+    None,
+    /// 首次装机：整盘写系统 + 重建 /var。
+    Install,
+    /// 换系统：只写系统分区，**保留 /var**（安装器 `--keep-var`）。
+    InstallKeepVar,
 }
 
-/// 该不该装：**开关在** 且 **本机还没有安装**。两条缺一不可（第二条是毁盘级判据）。
+/// 命令行里是否有某个开关（逐 token 比较）。
+pub fn flag_present(cmdline: &str, flag: &str) -> bool {
+    cmdline.split_whitespace().any(|t| t == flag)
+}
+
+/// 决定这次启动干什么。**纯函数**（判据一旦写错就是"重装整盘"或"误删 /var"）。
 ///
-/// 抽成纯函数是为了能在任意平台跑单元测试 —— 这条判据的分支一旦写错就是"重装整盘"。
-pub fn should_install(flag: bool, already_installed: bool) -> bool {
-    flag && !already_installed
+/// 两条判据互补：
+/// * 首次装机要求"还没装过" —— 否则从盘引导会把刚装好的系统再装一遍（毁盘级）；
+/// * 换系统要求"已经装过" —— 没有旧系统时"保留 /var"没有对象，安装器也会中止。
+pub fn plan(first_install_flag: bool, keep_var_flag: bool, already_installed: bool) -> Action {
+    if keep_var_flag && already_installed {
+        return Action::InstallKeepVar;
+    }
+    if first_install_flag && !already_installed {
+        return Action::Install;
+    }
+    Action::None
 }
 
 /// 从 `/proc/partitions` 里挑目标盘：跳过可移动/虚拟设备，取最大的一块**整盘**。
-///
-/// `/proc/partitions` 每行形如 `   8        0   41943040 sda`（主设备号 次设备号 块数 名字）。
 pub fn pick_target_disk(partitions: &str) -> Option<String> {
     /// 这些前缀不是装机目标：光驱、回环、内存盘、软驱、压缩内存盘、device-mapper。
     const SKIP: [&str; 6] = ["sr", "loop", "ram", "fd", "zram", "dm-"];
@@ -90,26 +99,32 @@ pub fn pick_target_disk(partitions: &str) -> Option<String> {
         .map(|(_, name)| format!("/dev/{name}"))
 }
 
-/// 读 `/proc/cmdline`，并在开关存在时问一次"本机装过没有"。
-///
-/// 注意：**先看开关再探测** —— 开关不在时完全不去碰磁盘（不做任何多余动作）。
+/// 读 `/proc/cmdline`，并在有开关时问一次"本机装过没有"，最后交给纯函数判定。
 #[cfg(target_os = "linux")]
-pub fn requested() -> bool {
+pub fn requested() -> Action {
     let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
-    let flag = flag_present(&cmdline);
-    if !flag {
-        return false;
+    let first = flag_present(&cmdline, FLAG);
+    let keep = flag_present(&cmdline, KEEP_VAR_FLAG);
+    if !first && !keep {
+        return Action::None;
     }
     let already = crate::persist::any_existing_install();
-    if already {
-        eprintln!("[aether-init] 自动安装跳过：本机已有 AetherOS 安装（安装标记在）—— 绝不重装");
+    let action = plan(first, keep, already);
+    match action {
+        Action::None if keep => eprintln!(
+            "[aether-init] 换系统跳过：盘上没有 AetherOS 安装（没有可保留的 /var）—— 按普通 live 启动"
+        ),
+        Action::None if first => eprintln!(
+            "[aether-init] 首次装机跳过：本机已有 AetherOS 安装（安装标记在）—— 绝不重装"
+        ),
+        _ => {}
     }
-    should_install(flag, already)
+    action
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn requested() -> bool {
-    false
+pub fn requested() -> Action {
+    Action::None
 }
 
 /// 找一个真实存在的安装器（按候选顺序）。找不到返回 `None` —— 调用方**降级为普通 live 启动**。
@@ -121,25 +136,27 @@ pub fn installer_path() -> Option<&'static str> {
         .copied()
 }
 
-/// 装机并**关机**（不返回）。只在"该装 + 装得了"时调用。
-///
-/// 为什么关机而不是重启：让宿主有机会先改引导顺序（光驱 → 磁盘）再开机，
-/// 否则会又从 ISO 引导一次（虽然安装标记挡住了重装，但那样就白装一遍）。
+/// 装机并**关机**（不返回）。`keep_var` 决定是否保留 /var。
 #[cfg(target_os = "linux")]
-pub fn run(installer: &str, disk: &str) -> ! {
+pub fn run(installer: &str, disk: &str, keep_var: bool) -> ! {
     use crate::power::sync_and_reboot;
     // PowerAction 定义在 aether_ipc 里（不是 power）—— 从 power 导会报 E0603 私有访问
     use aether_ipc::PowerAction;
 
-    eprintln!("[aether-init] 自动安装开始：{installer} --disk {disk} --yes");
-    let status = std::process::Command::new(installer)
-        .args(["--disk", disk, "--yes"])
-        .status();
+    let mut args = vec!["--disk", disk, "--yes"];
+    if keep_var {
+        args.push("--keep-var");
+    }
+    eprintln!(
+        "[aether-init] 自动安装开始（keep_var={keep_var}）：{installer} {}",
+        args.join(" ")
+    );
+    let status = std::process::Command::new(installer).args(&args).status();
 
     match status {
         Ok(s) if s.success() => {
-            eprintln!("[aether-init] 自动安装完成（{disk}）");
-            eprintln!("{RESULT_PASS}");
+            eprintln!("[aether-init] 自动安装完成（{disk}，keep_var={keep_var}）");
+            eprintln!("{}", if keep_var { RESULT_PASS_KEEP } else { RESULT_PASS });
             eprintln!("[aether-init] 关机 —— 等宿主把引导顺序改成磁盘后再开机");
         }
         other => {
@@ -159,24 +176,36 @@ mod tests {
 
     #[test]
     fn flag_matches_exact_token_only() {
-        assert!(flag_present("console=ttyS0 aether.autoinstall=1 quiet"));
-        assert!(flag_present("aether.autoinstall=1"));
+        assert!(flag_present("console=ttyS0 aether.autoinstall=1 quiet", FLAG));
+        assert!(flag_present("aether.keepvar=1", KEEP_VAR_FLAG));
         // 前缀像但值不同：**不能**假阳（否则"手动装到一半"会被误判）
-        assert!(!flag_present("aether.autoinstall=10"));
-        assert!(!flag_present("aether.autoinstall=1x"));
-        assert!(!flag_present("xaether.autoinstall=1"));
-        assert!(!flag_present(""));
+        assert!(!flag_present("aether.autoinstall=10", FLAG));
+        assert!(!flag_present("aether.autoinstall=1x", FLAG));
+        assert!(!flag_present("xaether.autoinstall=1", FLAG));
+        assert!(!flag_present("", FLAG));
     }
 
     #[test]
-    fn installs_only_with_flag_and_no_existing_install() {
-        // 该装：开关在 + 盘是空的
-        assert!(should_install(true, false));
+    fn first_install_only_when_disk_is_empty() {
+        // 开关在 + 盘是空的 ⇒ 装
+        assert_eq!(plan(true, false, false), Action::Install);
         // 开关在但**已经装过** ⇒ 绝不装（毁盘级：从盘引导时命令行同样带这个开关）
-        assert!(!should_install(true, true));
-        // 没有开关：无论盘什么状态都不动
-        assert!(!should_install(false, false));
-        assert!(!should_install(false, true));
+        assert_eq!(plan(true, false, true), Action::None);
+        // 没有开关：无论如何都不动
+        assert_eq!(plan(false, false, false), Action::None);
+        assert_eq!(plan(false, false, true), Action::None);
+    }
+
+    #[test]
+    fn keep_var_only_when_disk_already_installed() {
+        // 换系统 + 已有安装 ⇒ 保留 /var 地装
+        assert_eq!(plan(false, true, true), Action::InstallKeepVar);
+        // 换系统但没有旧系统 ⇒ 什么都不做（没有可保留的 /var，安装器也会中止）
+        assert_eq!(plan(false, true, false), Action::None);
+        // 两个开关同时给：以"换系统"为准（盘已装过时）
+        assert_eq!(plan(true, true, true), Action::InstallKeepVar);
+        // 两个开关同时给且盘是空的：按首次装机
+        assert_eq!(plan(true, true, false), Action::Install);
     }
 
     #[test]
