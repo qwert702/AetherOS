@@ -67,6 +67,13 @@ pub struct Options {
     /// 整盘清零在几百 GB 的盘上要几分钟到几十分钟，而"旧数据仍留在未使用扇区"
     /// 对演示系统不是威胁模型的一部分。需要移交/回收机器时显式打开。
     pub wipe: bool,
+    /// `--keep-var`：**保留现有 /var**（只换系统，不重建持久分区）。默认**关** ——
+    /// 它是"就地换系统"：误用会留下一个与旧系统混在一起的 /var；要换系统时显式打开。
+    ///
+    /// 为什么必须在 **dd 之前**记住分区项：dd 会把 ISO 的 MBR（只含 ISO 那一项）
+    /// 写进目标盘首扇区，旧的分区表与**磁盘签名一起被覆盖** ——
+    /// 这正是"整机更新会丢 /var"的机制（见 `capture_persist`）。
+    pub keep_var: bool,
 }
 
 pub fn parse_args(args: &[String]) -> Result<Options> {
@@ -74,6 +81,7 @@ pub fn parse_args(args: &[String]) -> Result<Options> {
     let mut yes = false;
     let mut persist = true;
     let mut wipe = false;
+    let mut keep_var = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -88,15 +96,16 @@ pub fn parse_args(args: &[String]) -> Result<Options> {
             "--yes" => yes = true,
             "--no-persist" => persist = false,
             "--wipe" => wipe = true,
+            "--keep-var" => keep_var = true,
             other => bail!(
                 "未知参数「{other}」（用法: aether-install --disk <块设备> --yes \
-                 [--no-persist] [--wipe]）"
+                 [--no-persist] [--wipe] [--keep-var]）"
             ),
         }
         i += 1;
     }
     let disk = disk.ok_or_else(|| anyhow::anyhow!("必须用 --disk 指定目标块设备（如 /dev/vda）"))?;
-    Ok(Options { disk, yes, persist, wipe })
+    Ok(Options { disk, yes, persist, wipe, keep_var })
 }
 
 /// 目标盘防呆校验：存在、是块设备（Unix）、不小于 MIN_DISK_MB。
@@ -367,7 +376,7 @@ fn reread_and_wait(disk: &str, index: u32) -> Result<PathBuf> {
 /// 搭建持久化分区：追加分区 → 格式化 → 建骨架 → 写标识。
 /// 返回分区节点路径。
 #[cfg(target_os = "linux")]
-fn setup_persist(disk: &str) -> Result<String> {
+fn setup_persist(disk: &str, kept: Option<(usize, MbrEntry, u32)>) -> Result<String> {
     let total = disk_size_sectors(disk)?;
 
     // 1. 读回磁盘头部（含 dd 写入的 isohybrid MBR）
@@ -383,28 +392,38 @@ fn setup_persist(disk: &str) -> Result<String> {
         bail!("MBR 签名缺失（ISO 是否经过 isohybrid？）");
     }
 
-    // 2. 规划并写入分区项
-    let (index, start, sectors) = plan_persist_partition(&mbr, total).ok_or_else(|| {
-        anyhow::anyhow!(
-            "磁盘放不下持久化分区（剩余空间不足，或 >2TB 超出 MBR 可表达范围）；系统仍可引导但运行在内存里"
-        )
-    })?;
-    let entry = MbrEntry {
-        bootable: false,
-        part_type: PART_TYPE_LINUX,
-        lba_start: start,
-        sectors,
+    // 2. 写入分区项。`--keep-var` 时**沿用记录下来的那一项**，磁盘签名也一并还原 ——
+    // 安装标记绑定的就是那个签名，变一下启动侧的身份校验就失败（/var 挂不上）。
+    let (index, entry, disk_sig) = match &kept {
+        Some((idx, e, sig)) => {
+            println!("aether-install: --keep-var：沿用原分区项（不重新规划），/var 原地保留");
+            (*idx, e.clone(), *sig)
+        }
+        None => {
+            let (index, start, sectors) = plan_persist_partition(&mbr, total).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "磁盘放不下持久化分区（剩余空间不足，或 >2TB 超出 MBR 可表达范围）；系统仍可引导但运行在内存里"
+                )
+            })?;
+            let entry = MbrEntry {
+                bootable: false,
+                part_type: PART_TYPE_LINUX,
+                lba_start: start,
+                sectors,
+            };
+            // 身份绑定（审计 #13）：给这块盘一个随机签名，并把它写进分区里的安装标记。
+            // 启动时 aether-init 要求"分区所在盘的 MBR 签名 == 标记里的 id" ——
+            // 拷到别的盘的分区因此挂不上（见 `mbr_disk_signature` 的说明与诚实边界）。
+            (index, entry, random_disk_signature())
+        }
     };
     set_partition_entry(&mut mbr, index, &entry)?;
-    // 身份绑定（审计 #13）：给这块盘一个随机签名，并把它写进分区里的安装标记。
-    // 启动时 aether-init 要求"分区所在盘的 MBR 签名 == 标记里的 id" ——
-    // 拷到别的盘的分区因此挂不上（见 `mbr_disk_signature` 的说明与诚实边界）。
-    let disk_sig = random_disk_signature();
     set_disk_signature(&mut mbr, disk_sig);
     f.seek(SeekFrom::Start(0))?;
     f.write_all(&mbr)?;
     f.sync_all()?;
     drop(f);
+    let (start, sectors) = (entry.lba_start, entry.sectors);
     println!(
         "aether-install: 持久化分区 {index} 起始扇区 {start} 大小 {}MB",
         sectors as u64 * 512 / 1024 / 1024
@@ -414,7 +433,9 @@ fn setup_persist(disk: &str) -> Result<String> {
     let node = reread_and_wait(disk, index as u32)?;
     let node_s = node.to_string_lossy().to_string();
 
-    // 4. 清掉这块分区上遗留的文件系统签名，再格式化（审计 M-8）。
+    // 4. `--keep-var` 时**整段跳过**：既不清签名也不 mkfs —— 这就是"保留 /var"的全部含义。
+    if kept.is_none() {
+    // 清掉这块分区上遗留的文件系统签名，再格式化（审计 M-8）。
     //
     // 为什么必须清：装机目标盘上常常有**上一个系统**的分区痕迹。mkfs.ext4 -F 会
     // 覆盖本分区的超级块，但残留的其它签名（如旧的 vfat/LVM/RAID 元数据）会让
@@ -441,6 +462,9 @@ fn setup_persist(disk: &str) -> Result<String> {
         .context("执行 mkfs.ext4 失败")?;
     if !st.success() {
         bail!("mkfs.ext4 {node_s} 失败: {st}");
+    }
+    } else {
+        println!("aether-install: --keep-var：跳过 wipefs/mkfs —— 持久分区原样保留");
     }
 
     // 5. 挂载 + 骨架
@@ -488,11 +512,19 @@ fn setup_persist(disk: &str) -> Result<String> {
         format!("{ts}\nid={disk_sig:08x}\n"),
     )
         .map_err(|e| anyhow::anyhow!("写入 {INSTALL_MARKER} 失败: {e} —— 持久分区将无法被识别"))?;
-    std::fs::write(
-        format!("{PERSIST_MNT}/boot.log"),
-        format!("{ts} 安装完成（分区 {node_s}）\n"),
-    )
-    .map_err(|e| anyhow::anyhow!("写入 boot.log 失败: {e}"))?;
+    // `--keep-var` 时**追加**而不是覆盖：既然承诺"保留 /var"，就不该把它的启动历史清掉。
+    let boot_line = format!("{ts} 安装完成（分区 {node_s}）\n");
+    let boot_log = format!("{PERSIST_MNT}/boot.log");
+    let boot_res = if kept.is_some() {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&boot_log)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, boot_line.as_bytes()))
+    } else {
+        std::fs::write(&boot_log, boot_line)
+    };
+    boot_res.map_err(|e| anyhow::anyhow!("写入 boot.log 失败: {e}"))?;
 
     // 6. 卸载（交给下次启动的 aether-init 挂到 /var）
     let _ = Command::new("/bin/umount").arg(PERSIST_MNT).status();
@@ -522,10 +554,47 @@ fn has_mbr(path: &str) -> Result<bool> {
     Ok(mbr[510] == 0x55 && mbr[511] == 0xAA)
 }
 
+/// `--keep-var` 用：在 **dd 之前**读出现有的持久分区项与磁盘签名。
+///
+/// 认法：MBR 分区表里**类型为 `PART_TYPE_LINUX`（0x83）**的那一项就是我们的持久分区
+/// （ISO 那一项的类型是 0x17／隐藏 ISO，本项目布局下两者不会混）。
+/// 找不到就**报错中止**，绝不"悄悄建一块新的 /var" —— 那会让用户以为数据保住了。
+///
+/// 为什么连磁盘签名一起记：安装标记 `log/install-id` 里绑定了 `id=<签名>`，
+/// 启动侧 `aether-init` 要求"分区所在盘的 MBR 签名 == 标记里的 id"。
+/// 签名变了 ⇒ `/var` 挂不上 ⇒ 用户看到"装完系统，数据全没了"。
+#[cfg(target_os = "linux")]
+fn capture_persist(disk: &str) -> Result<(usize, MbrEntry, u32)> {
+    use std::io::Read;
+    let mut mbr = [0u8; 512];
+    std::fs::File::open(disk)
+        .with_context(|| format!("打开 {disk} 失败"))?
+        .read_exact(&mut mbr)
+        .context("读取 MBR 失败")?;
+    if mbr[510] != 0x55 || mbr[511] != 0xAA {
+        bail!("目标盘 {disk} 上没有 MBR 签名 —— 它看起来不是 AetherOS 装过的盘（--keep-var 需要一块装过的盘）");
+    }
+    for i in 0..4 {
+        let base = 446 + i * 16;
+        if mbr[base + 4] != PART_TYPE_LINUX {
+            continue;
+        }
+        let lba_start = u32::from_le_bytes([mbr[base + 8], mbr[base + 9], mbr[base + 10], mbr[base + 11]]);
+        let sectors = u32::from_le_bytes([mbr[base + 12], mbr[base + 13], mbr[base + 14], mbr[base + 15]]);
+        if sectors == 0 {
+            continue;
+        }
+        let entry = MbrEntry { bootable: false, part_type: PART_TYPE_LINUX, lba_start, sectors };
+        let sig = u32::from_le_bytes([mbr[440], mbr[441], mbr[442], mbr[443]]);
+        return Ok((i, entry, sig));
+    }
+    bail!("--keep-var 找不到现有持久分区（分区表里没有 0x83 项）—— 已中止，未对 {disk} 做任何写入")
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opt = parse_args(&args)?;
-    let (yes, persist, wipe) = (opt.yes, opt.persist, opt.wipe);
+    let (yes, persist, wipe, keep_var) = (opt.yes, opt.persist, opt.wipe, opt.keep_var);
 
     // 先规范化（审计 M-7）：后面所有比较与写入都用规范化后的路径
     let disk = canonicalize_disk(&opt.disk)?;
@@ -550,6 +619,29 @@ fn main() -> Result<()> {
              已中止：**未对 {disk} 做任何写入**"
         );
     }
+
+    // `--keep-var`：**必须在 dd 之前**把现有持久分区项与磁盘签名记下来。
+    // dd 会把 ISO 的 MBR 写进首扇区，分区表与签名**一起被覆盖** ——
+    // 不先记住，就会得到"新系统 + 一块谁也不认领的旧 /var"。
+    // 找不到现有持久分区就**中止**：绝不"悄悄建一块新的 /var"（那等于骗用户说数据保住了）。
+    #[cfg(target_os = "linux")]
+    let kept = if keep_var {
+        let k = capture_persist(&disk)?;
+        println!(
+            "aether-install: --keep-var：记住现有持久分区（项 {} 起始扇区 {} 大小 {}MB，磁盘签名 {:08x}）",
+            k.0,
+            k.1.lba_start,
+            k.1.sectors as u64 * 512 / 1024 / 1024,
+            k.2
+        );
+        Some(k)
+    } else {
+        None
+    };
+    // 非 Linux（开发机）上 `capture_persist` 与 `setup_persist` 都不参与编译 ⇒
+    // 显式吃掉这个变量（真正会装机的只有 Linux），否则本机 0 告警标准会被打破。
+    #[cfg(not(target_os = "linux"))]
+    let _ = keep_var; // 非 Linux：capture_persist/setup_persist 不参与编译 —— 显式吃掉，避免告警
 
     // 可选的整盘清零（审计 M-8）：默认不做，理由是时间成本 vs 威胁模型；
     // 需要把机器移交出去时用 --wipe 把旧数据真正抹掉。
@@ -583,7 +675,7 @@ fn main() -> Result<()> {
 
     if persist {
         #[cfg(target_os = "linux")]
-        match setup_persist(&disk) {
+        match setup_persist(&disk, kept) {
             Ok(node) => println!("aether-install: 持久化分区 {node}"),
             Err(e) => {
                 // 引导已就绪：持久化失败只告警，不判安装失败
