@@ -29,8 +29,14 @@ pub const FLAG: &str = "aether.autoinstall=1";
 pub const KEEP_VAR_FLAG: &str = "aether.keepvar=1";
 
 /// 结果标记：宿主脚本与串口判据按这几行取证据（不要改字面量，证据文件里引用了它们）。
+///
+/// 只被 `run()`（Linux 专属）使用 ⇒ 按平台加门。否则 `--all-targets` 构建里，
+/// 测试目标下的 Windows 版本会因为"没人用"报 dead_code 告警（项目标准是 0 告警）。
+#[cfg(target_os = "linux")]
 pub const RESULT_PASS: &str = "AETHER-AUTOINSTALL: PASS";
+#[cfg(target_os = "linux")]
 pub const RESULT_FAIL: &str = "AETHER-AUTOINSTALL: FAIL";
+#[cfg(target_os = "linux")]
 pub const RESULT_PASS_KEEP: &str = "AETHER-KEEPVAR: PASS";
 
 /// 安装器候选路径。镜像里装在 `/usr/bin`；留候选是为了不让"路径变了"变成静默失败。
@@ -122,10 +128,7 @@ pub fn requested() -> Action {
     action
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn requested() -> Action {
-    Action::None
-}
+// 注意：`requested()` 只在 Linux 上存在 —— 唯一调用点是 main.rs 的引导期钩子（同为 Linux 专属）。
 
 /// 找一个真实存在的安装器（按候选顺序）。找不到返回 `None` —— 调用方**降级为普通 live 启动**。
 #[cfg(target_os = "linux")]
