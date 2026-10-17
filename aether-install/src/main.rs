@@ -563,16 +563,16 @@ fn has_mbr(path: &str) -> Result<bool> {
 /// 为什么连磁盘签名一起记：安装标记 `log/install-id` 里绑定了 `id=<签名>`，
 /// 启动侧 `aether-init` 要求"分区所在盘的 MBR 签名 == 标记里的 id"。
 /// 签名变了 ⇒ `/var` 挂不上 ⇒ 用户看到"装完系统，数据全没了"。
-#[cfg(target_os = "linux")]
-fn capture_persist(disk: &str) -> Result<(usize, MbrEntry, u32)> {
-    use std::io::Read;
-    let mut mbr = [0u8; 512];
-    std::fs::File::open(disk)
-        .with_context(|| format!("打开 {disk} 失败"))?
-        .read_exact(&mut mbr)
-        .context("读取 MBR 失败")?;
+/// 从 MBR 里找出持久分区项。**纯函数**（便于用往返判据把它钉住）。
+///
+/// 返回的分区号是 **1 基** —— 与 [`set_partition_entry`] 和 [`plan_persist_partition`] 一致。
+/// ⚠️ 这里曾经写成 0 基（`for i in 0..4` 直接返回 i）：
+/// 于是 `--keep-var` 写回时偏移少一格，把 **slot 0 的系统分区项顶掉了** ⇒
+/// 分区表只剩持久分区 ⇒ 内核只看到 /dev/sda1 ⇒ aether-init 的候选写死 /dev/sda2 ⇒
+/// 换完系统只能内存态启动（2026-10-17 第三轮实验实测，证据在 docs/证据/T3验证-*.md）。
+pub fn find_persist_entry(mbr: &[u8; 512]) -> Result<(usize, MbrEntry, u32)> {
     if mbr[510] != 0x55 || mbr[511] != 0xAA {
-        bail!("目标盘 {disk} 上没有 MBR 签名 —— 它看起来不是 AetherOS 装过的盘（--keep-var 需要一块装过的盘）");
+        bail!("目标盘上没有 MBR 签名 —— 它看起来不是 AetherOS 装过的盘（--keep-var 需要一块装过的盘）");
     }
     for i in 0..4 {
         let base = 446 + i * 16;
@@ -586,9 +586,21 @@ fn capture_persist(disk: &str) -> Result<(usize, MbrEntry, u32)> {
         }
         let entry = MbrEntry { bootable: false, part_type: PART_TYPE_LINUX, lba_start, sectors };
         let sig = u32::from_le_bytes([mbr[440], mbr[441], mbr[442], mbr[443]]);
-        return Ok((i, entry, sig));
+        // **+1**：分区号是 1 基（见函数文档的踩坑说明）
+        return Ok((i + 1, entry, sig));
     }
-    bail!("--keep-var 找不到现有持久分区（分区表里没有 0x83 项）—— 已中止，未对 {disk} 做任何写入")
+    bail!("--keep-var 找不到现有持久分区（分区表里没有 0x83 项）—— 已中止，未做任何写入")
+}
+
+#[cfg(target_os = "linux")]
+fn capture_persist(disk: &str) -> Result<(usize, MbrEntry, u32)> {
+    use std::io::Read;
+    let mut mbr = [0u8; 512];
+    std::fs::File::open(disk)
+        .with_context(|| format!("打开 {disk} 失败"))?
+        .read_exact(&mut mbr)
+        .context("读取 MBR 失败")?;
+    find_persist_entry(&mbr)
 }
 
 fn main() -> Result<()> {
@@ -698,6 +710,47 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// 造一个「slot0 = 系统分区(0x17)、slot1 = 持久分区(0x83)」的 MBR
+    fn mbr_with_system_and_persist() -> [u8; 512] {
+        let mut mbr = [0u8; 512];
+        mbr[510] = 0x55;
+        mbr[511] = 0xAA;
+        // 磁盘签名
+        mbr[440..444].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        // slot0：系统分区（隐藏 ISO，0x17），LBA 0，20000 扇区
+        let b0 = 446;
+        mbr[b0 + 4] = 0x17;
+        mbr[b0 + 8..b0 + 12].copy_from_slice(&0u32.to_le_bytes());
+        mbr[b0 + 12..b0 + 16].copy_from_slice(&20000u32.to_le_bytes());
+        // slot1：持久分区（0x83），LBA 20000，8000 扇区
+        let b1 = 462;
+        mbr[b1 + 4] = PART_TYPE_LINUX;
+        mbr[b1 + 8..b1 + 12].copy_from_slice(&20000u32.to_le_bytes());
+        mbr[b1 + 12..b1 + 16].copy_from_slice(&8000u32.to_le_bytes());
+        mbr
+    }
+
+    /// 回归判据（2026-10-17 的真实 bug）：capture 的索引必须与 set_partition_entry 的约定一致，
+    /// 且**写回后系统分区项必须完好**（此前差一导致它被顶掉，换完系统只能内存态启动）。
+    #[test]
+    fn persist_entry_index_is_one_based_and_never_clobbers_the_system_entry() {
+        let mbr = mbr_with_system_and_persist();
+        let (index, entry, sig) = find_persist_entry(&mbr).expect("持久分区应能找到");
+        assert_eq!(index, 2, "持久分区在 slot1 ⇒ 分区号必须是 2（1 基）");
+        assert_eq!(entry.lba_start, 20000);
+        assert_eq!(sig, 0x1234_5678);
+
+        // 模拟 --keep-var 的写回：写同一个分区号，系统分区项必须原样保留
+        let mut patched = mbr;
+        set_partition_entry(&mut patched, index, &entry).expect("写回应成功");
+        let entries = read_entries(&patched);
+        assert_eq!(entries[0].part_type, 0x17, "slot0 的系统分区项被顶掉了（这就是那个 bug）");
+        assert_eq!(entries[0].lba_start, 0);
+        assert_eq!(entries[1].part_type, PART_TYPE_LINUX);
+        assert_eq!(entries[1].lba_start, 20000);
+        assert_eq!(entries[1].sectors, 8000);
+    }
     use super::*;
 
     fn args(list: &[&str]) -> Vec<String> {
