@@ -13,6 +13,9 @@
 | `gen-site.py --check` | 站点页面 / 发布事实 / 下载脚本哈希是否需要 `--refresh` | 代码本身 |
 | `mkapp.py --selftest` | 打包器的纯函数边界（路径穿越等） | 真实打包流程 |
 | `gen-site.py --selftest` | 链接白名单等纯函数边界 | 真实渲染（由 --check 覆盖） |
+| `publish-updates.py --selftest` | 发布布局摊平/白名单 | 真上传（需 VPS）|
+| `update-contract-check.py --selftest` | 契约：布局↔URL | 真 HTTP 契约测试（默认跑）|
+| `keepvar-verify.py --selftest` | ext4 UUID 解析/记录计数 | 真磁盘（需 VM 关机）|
 | `mkupdate.py --selftest` | 更新包的路径白名单/哈希/三条负向对照 | 真实拉取与 stage（需 guest）|
 
 **Linux 专属断言只在 Linux 上执行** —— 这正是要把它放进 CI 的原因：
@@ -232,6 +235,11 @@ def main() -> int:
                   [PY, "scripts/mkfont.py", "--selftest"]))
     # 更新包打包器（P1 宿主侧）：判据同 Rust 侧的 path_is_allowed，自检含三条负向对照
     steps.append(("更新包打包器自检（路径白名单/负向对照）", [PY, "scripts/mkupdate.py", "--selftest"]))
+    # P1 发布侧 / 契约 / T3 验证 / 数字回填 —— 每个判据都要有正控且走单一入口
+    steps.append(("更新包发布器自检（白名单/摊平映射）", [PY, "scripts/publish-updates.py", "--selftest"]))
+    steps.append(("更新链路契约自检（发布布局 vs guest URL）", [PY, "scripts/update-contract-check.py", "--selftest"]))
+    steps.append(("T3 验证工具自检（ext4 UUID/记录计数）", [PY, "scripts/keepvar-verify.py", "--selftest"]))
+    steps.append(("数字回填工具自检（四类发现解析）", [PY, "scripts/follow-gate-numbers.py", "--selftest"]))
     # **生效 vhost 的识别**（2026-10-15 真实事故）：这台生产机是"宝塔"式 —— nginx 手工启动、
     # 只 include `/www/server/panel/vhost/nginx/*.conf`，**不读 `/etc/nginx/conf.d/`**。
     # 老逻辑写死 conf.d → 写进去的是**死文件**：`nginx -t` 通过、站点照开、脚本还报"部署成功"，
