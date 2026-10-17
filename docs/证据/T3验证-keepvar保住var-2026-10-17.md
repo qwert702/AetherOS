@@ -123,3 +123,28 @@ MBR 55AA: 55 aa ✓       磁盘签名: 109df173
 **结论：`--keep-var` 的数据保全做对了，但"换完系统能正常用"没做到。T3 = FAIL。**
 修法方向：`capture_persist()` 返回的索引要和 `set_partition_entry()` 的索引约定对齐（差一），
 并补一个"两者必须一致"的单元测试；修完重跑本实验。
+
+---
+
+## 五、第四轮实验（2026-10-17 下午，用**修好的** installer 重跑）
+
+**修复内容**：`find_persist_entry` 的索引改回 **1 基**（与 `set_partition_entry` / `plan_persist_partition`
+一致）+ 往返回归单测（断言写回后 slot0 的系统分区项必须完好）。ISO sha256 `e7143e35…`（构建机实测一致）。
+
+| 阶段 | 关键串口行 | 结论 |
+|---|---|---|
+| ① 装机（autoinstall ISO）| `sda: sda1 sda2` · `EXT4-fs (sda2): mounted … 45b81b0b-7460-44a2-bb77-c6d54013b862` · `AETHER-AUTOINSTALL: PASS` | ✅ 基线 UUID = `45b81b0b-…` |
+| ② 换系统（keepvar ISO，修复版）| `aether.keepvar=1` · `沿用原分区项` · `跳过 wipefs/mkfs` · 同一 UUID · `AETHER-KEEPVAR: PASS` | ✅ 数据保住 |
+| ③ **拔光驱从磁盘引导** | **`sda: sda1 sda2`（两项都在 ✓）** · **`EXT4-fs (sda2): mounted … ro` → `unmounting`（探测成功 ✓）** | ✅ **索引 bug 已修复** |
+
+### 但暴露了第二个问题（必须修）
+
+阶段③ 的串口**在持久分区探测之后停止增长**（31148 字节，VM 仍在运行 ✗）。原因判断：
+
+> 装好的系统**引导配置里仍带 `aether.keepvar=1`**（引导配置是 keepvar ISO 的拷贝）。
+> 于是每次从磁盘引导时 `requested()` 都会判成 `InstallKeepVar` ⇒ **试图重复安装**。
+
+**修法**（下一步，未做）：安装成功后在**目标系统的引导配置**里把该参数剥掉
+（`DEFAULT keepvar` → `DEFAULT aether`，或直接删掉 `aether.keepvar=1` 这一段）——
+autoinstall 的 `aether.autoinstall=1` 同理。修完再跑一次本实验，判据是：
+从磁盘引导后串口出现 `持久化分区已挂载: /dev/sda2 -> /var` 且 **不出现** "自动安装开始"。
