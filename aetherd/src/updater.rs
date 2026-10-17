@@ -83,6 +83,15 @@ pub fn manifest_url(base: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), MANIFEST_NAME)
 }
 
+/// 远端这个版本是否**已经暂存过**（等着下次启动生效）。
+///
+/// 为什么需要它：`stage()` 成功之后 `incoming/<version>/` 按设计会留着，
+/// 而 `current_version()` 读的是 `/etc/aether/version`（**还是旧版**）——
+/// 于是不加判断的话，下一轮会再次认为"有新版"，撞上残留目录后**永久卡死**。
+pub fn already_staged(remote: &str, staged: Option<&str>) -> bool {
+    staged == Some(remote)
+}
+
 /// 距离上次检查是否已经够了。**纯函数**：便于把"定时"这件事本身也测掉。
 pub fn should_check(last_check_unix: u64, now_unix: u64, check_minutes: u64) -> bool {
     // 时钟回拨（对时/休眠恢复）时 `now < last` —— 这时**允许**检查一次，
@@ -174,11 +183,17 @@ pub fn run_once(root: &Path, cfg: &Config) -> Result<Outcome, String> {
     let incoming = root.join(crate::update::INCOMING);
     let tmp = incoming.join(format!(".{}.partial", manifest.version));
     let final_dir = incoming.join(&manifest.version);
+    // 已经暂存过这个版本 ⇒ 不是错：它正等着 PID 1 下次启动应用。
+    // （不加这一条的话，第一次成功 stage 之后每轮都会走到下面的"残留目录"分支，
+    //  updater 从此永久卡死 —— 2026-10-17 复查发现。）
+    let staged_now = crate::update::staged(root).map(|s| s.version);
+    if already_staged(&manifest.version, staged_now.as_deref()) {
+        return Ok(Outcome::UpToDate { remote: manifest.version, current });
+    }
+    // 残留同名目录（例如上一轮 stage 失败留下的）⇒ 清掉重下，别把 updater 卡在这里。
     if final_dir.exists() {
-        return Err(format!(
-            "{} 已存在（上一轮的包还没被应用）—— 本轮跳过，等它生效后再谈",
-            final_dir.display()
-        ));
+        std::fs::remove_dir_all(&final_dir)
+            .map_err(|e| format!("清理残留目录 {} 失败：{e}", final_dir.display()))?;
     }
     let _ = std::fs::remove_dir_all(&tmp);
     for f in &manifest.files {
@@ -296,6 +311,15 @@ mod tests {
         assert!(!should_check(now - 299, now, 5), "差一秒 ⇒ 不查");
         // 时钟回拨（休眠恢复/对时）：必须允许查，否则一次回拨就静默停摆
         assert!(should_check(now + 10_000, now, 360), "时钟回拨 ⇒ 允许查一次");
+    }
+
+    #[test]
+    fn staged_version_is_not_an_error_and_never_sticks_the_updater() {
+        // 已暂存同一版本 ⇒ 视为"已就绪"，不再重复下载（否则会卡死）
+        assert!(already_staged("0.1.2", Some("0.1.2")));
+        // 暂存的是别的版本 / 没暂存 ⇒ 该继续处理
+        assert!(!already_staged("0.1.3", Some("0.1.2")));
+        assert!(!already_staged("0.1.2", None));
     }
 
     #[test]

@@ -16,7 +16,7 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 
 | | |
 |---|---|
-| **Scale** | 51,849 lines of Rust / 73 source files / 7 crates (measured 2026-10-06) |
+| **Scale** | 51,873 lines of Rust / 73 source files / 7 crates (measured 2026-10-06) |
 | **Verification** | 778 unit tests green · 0 compiler warnings on Windows and on 6/7 crates for musl (`aetherd` cannot be cross-checked because of ring) · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
 | **Artifact** | bootable ISO ≈ 41.0 MB, tested booting in QEMU, VirtualBox and VMware |
 
