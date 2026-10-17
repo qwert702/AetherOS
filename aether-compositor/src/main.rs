@@ -449,6 +449,7 @@ fn run_fbdev() -> anyhow::Result<()> {
             // 否则锁屏就只是「盖了一层图」，后面的窗口照样能被点到。
             // 放在 match 之前、且排在 DNS 守卫之前：锁着的时候一切输入都归锁屏。
             if matches!(route, KeyRoute::Lock) {
+                apply_pointer(&ev, &mut mouse, renderer.settings.mouse_speed_pct as f32 / 100.0, w, h);
                 handle_lock_key(&mut renderer.lock, &ev);
                 continue;
             }
@@ -457,6 +458,8 @@ fn run_fbdev() -> anyhow::Result<()> {
             if matches!(route, KeyRoute::Setup) {
                 // 键盘与鼠标**共用同一个动作应用函数**（`apply_setup_action`）——
                 // 否则"按 1 选语言"与"点语言按钮"会各写一份，两份迟早分叉。
+                // 向导打开时也必须更新光标位置（否则只有一个鼠标的用户永远出不去：向导只吃 Char/Enter/Escape）
+                apply_pointer(&ev, &mut mouse, renderer.settings.mouse_speed_pct as f32 / 100.0, w, h);
                 let act = match &ev {
                     input::UiEvent::Char(c) => setup::handle_key(renderer.setup.step, *c),
                     input::UiEvent::Enter => setup::Action::Next,
@@ -4378,6 +4381,32 @@ fn run_menu_item(desktop: &mut Desktop, menu: usize, item: usize) -> (Option<Toa
         (2, 3) => (set_layout(desktop, Layout::Float), None),
         (3, 0) => (None, Some("AetherOS 0.1.0 预览版 · Linux 内核 + 全自研用户态 + AI 中枢".into())),
         _ => (None, None),
+    }
+}
+
+/// 指针位置更新（与"事件交给谁"无关的**纯状态**）。
+///
+/// 为什么单独抽出来：主循环里 KeyRoute::Lock / KeyRoute::Setup 这类分支会 continue 掉事件 ——
+/// 位置更新原本只在下面的 match ev 里做，于是**向导或锁屏开着时光标完全不动**
+/// （2026-10-17 实测：首启向导吞掉全部输入，鼠标键盘都像失灵，桌面却照常显示）。
+/// 这些分支必须也调用它。注意只在 continue 的分支里调用，避免与 match 里的更新重复（否则速度翻倍）。
+// 与 input.rs 同一约定：该函数只在 Linux 目标的主循环里被调用，
+// Windows 上编译测试目标时它没有调用点 —— 用 allow 而不是 #[cfg] 保持定义可见。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn apply_pointer(ev: &input::UiEvent, mouse: &mut (f32, f32), spd: f32, w: usize, h: usize) {
+    match ev {
+        input::UiEvent::MouseMove { dx, dy } => {
+            mouse.0 = (mouse.0 + *dx as f32 * spd).clamp(0.0, (w - 1) as f32);
+            mouse.1 = (mouse.1 + *dy as f32 * spd).clamp(0.0, (h - 1) as f32);
+        }
+        input::UiEvent::MouseAbs { x, y, min_x, max_x, min_y, max_y } => {
+            let (sx, sy) = ((*max_x - *min_x) as f32, (*max_y - *min_y) as f32);
+            if sx > 0.0 && sy > 0.0 {
+                mouse.0 = ((*x - *min_x) as f32 / sx * (w - 1) as f32).clamp(0.0, (w - 1) as f32);
+                mouse.1 = ((*y - *min_y) as f32 / sy * (h - 1) as f32).clamp(0.0, (h - 1) as f32);
+            }
+        }
+        _ => {}
     }
 }
 
