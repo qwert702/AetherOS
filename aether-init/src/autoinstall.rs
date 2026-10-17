@@ -64,12 +64,33 @@ pub fn flag_present(cmdline: &str, flag: &str) -> bool {
     cmdline.split_whitespace().any(|t| t == flag)
 }
 
+/// 光驱里**有没有盘**（`/sys/block/sr0/size` 的内容是 512 字节扇区数）。
+///
+/// 为什么这是判定"我在 live 介质上吗"的可靠依据：装好的系统与 live 环境在
+/// `/proc/cmdline` 上无法区分（同一个内核、同一个 initramfs），而装好的**系统分区是
+/// ISO 的只读拷贝**（iso9660）—— 引导配置里的参数**改不掉**。
+/// 于是改用操作契约本身：跑 autoinstall/keepvar 时一定插着 ISO；正常从盘引导时
+/// 按手册光驱必须断开。读不到该文件（没有光驱）或大小为 0（没插盘）都视为"不是 live"。
+pub fn live_medium(cd_size_text: &str) -> bool {
+    cd_size_text.trim().parse::<u64>().map(|n| n > 0).unwrap_or(false)
+}
+
 /// 决定这次启动干什么。**纯函数**（判据一旦写错就是"重装整盘"或"误删 /var"）。
 ///
 /// 两条判据互补：
 /// * 首次装机要求"还没装过" —— 否则从盘引导会把刚装好的系统再装一遍（毁盘级）；
 /// * 换系统要求"已经装过" —— 没有旧系统时"保留 /var"没有对象，安装器也会中止。
-pub fn plan(first_install_flag: bool, keep_var_flag: bool, already_installed: bool) -> Action {
+pub fn plan(
+    first_install_flag: bool,
+    keep_var_flag: bool,
+    already_installed: bool,
+    live: bool,
+) -> Action {
+    // 两种自动动作都要求"在 live 介质上" —— 否则从磁盘引导时，引导配置里残留的
+    // aether.keepvar=1 / aether.autoinstall=1 会让系统**反复重装**（2026-10-17 实测）。
+    if !live {
+        return Action::None;
+    }
     if keep_var_flag && already_installed {
         return Action::InstallKeepVar;
     }
@@ -115,7 +136,15 @@ pub fn requested() -> Action {
         return Action::None;
     }
     let already = crate::persist::any_existing_install();
-    let action = plan(first, keep, already);
+    // 光驱里有盘 ⇒ 大概率是插着 ISO 引导；从盘引导时按手册光驱是断开的（见 live_medium）
+    let live = live_medium(&std::fs::read_to_string("/sys/block/sr0/size").unwrap_or_default());
+    let action = plan(first, keep, already, live);
+    if !live && (first || keep) {
+        eprintln!(
+            "[aether-init] 自动动作跳过：光驱里没有盘（说明不是 live 引导，而是从磁盘引导）\
+             —— 引导配置里残留的 aether.autoinstall/keepvar 参数不会触发重装"
+        );
+    }
     match action {
         Action::None if keep => eprintln!(
             "[aether-init] 换系统跳过：盘上没有 AetherOS 安装（没有可保留的 /var）—— 按普通 live 启动"
@@ -191,24 +220,24 @@ mod tests {
     #[test]
     fn first_install_only_when_disk_is_empty() {
         // 开关在 + 盘是空的 ⇒ 装
-        assert_eq!(plan(true, false, false), Action::Install);
+        assert_eq!(plan(true, false, false, true), Action::Install);
         // 开关在但**已经装过** ⇒ 绝不装（毁盘级：从盘引导时命令行同样带这个开关）
-        assert_eq!(plan(true, false, true), Action::None);
+        assert_eq!(plan(true, false, true, true), Action::None);
         // 没有开关：无论如何都不动
-        assert_eq!(plan(false, false, false), Action::None);
-        assert_eq!(plan(false, false, true), Action::None);
+        assert_eq!(plan(false, false, false, true), Action::None);
+        assert_eq!(plan(false, false, true, true), Action::None);
     }
 
     #[test]
     fn keep_var_only_when_disk_already_installed() {
         // 换系统 + 已有安装 ⇒ 保留 /var 地装
-        assert_eq!(plan(false, true, true), Action::InstallKeepVar);
+        assert_eq!(plan(false, true, true, true), Action::InstallKeepVar);
         // 换系统但没有旧系统 ⇒ 什么都不做（没有可保留的 /var，安装器也会中止）
-        assert_eq!(plan(false, true, false), Action::None);
+        assert_eq!(plan(false, true, false, true), Action::None);
         // 两个开关同时给：以"换系统"为准（盘已装过时）
-        assert_eq!(plan(true, true, true), Action::InstallKeepVar);
+        assert_eq!(plan(true, true, true, true), Action::InstallKeepVar);
         // 两个开关同时给且盘是空的：按首次装机
-        assert_eq!(plan(true, true, false), Action::Install);
+        assert_eq!(plan(true, true, false, true), Action::Install);
     }
 
     #[test]
@@ -239,5 +268,24 @@ major minor  #blocks  name
     fn picks_the_bigger_of_two_disks() {
         let two = "   8        0    1048576 sda\n   8       16   41943040 sdb\n";
         assert_eq!(pick_target_disk(two), Some("/dev/sdb".to_string()));
+    }
+
+    #[test]
+    fn live_medium_reads_cd_size() {
+        assert!(live_medium("20971520"), "有盘（扇区数 > 0）⇒ live");
+        assert!(!live_medium("0"), "空光驱（0）⇒ 不是 live");
+        assert!(!live_medium(""), "读不到 ⇒ 不是 live");
+        assert!(!live_medium("garbage"), "内容不认识 ⇒ 不是 live（不猜）");
+    }
+
+    #[test]
+    fn no_live_medium_never_installs_even_with_flags() {
+        // 从磁盘引导时，引导配置里残留的开关**不能**触发任何自动动作（否则会反复重装）
+        assert_eq!(plan(true, false, false, false), Action::None, "无盘 + autoinstall 开关 ⇒ 什么都不做");
+        assert_eq!(plan(false, true, true, false), Action::None, "无盘 + keepvar 开关 ⇒ 什么都不做");
+        assert_eq!(plan(true, true, true, false), Action::None);
+        // 有盘时行为不变
+        assert_eq!(plan(true, false, false, true), Action::Install);
+        assert_eq!(plan(false, true, true, true), Action::InstallKeepVar);
     }
 }
