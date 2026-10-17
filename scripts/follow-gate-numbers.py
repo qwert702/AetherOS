@@ -98,10 +98,20 @@ def apply_findings(findings: list[dict], dry_run: bool) -> int:
                     continue
                 # 只替换"成对出现"的那一处（声明值 + 其所在行/文档内的位置）
                 if f["kind"] == "tests":
-                    s = re.sub(rf"(\| `{re.escape(f['crate'])}` \| )\d+( \| ){re.escape(d)}( \|)",
-                               rf"\g<1>\g<2>{r}\g<3>", s, count=1)
+                    # 真实行格式：`| `aetherd` | 129 | 238 | 备注 |` —— 测试数在**第 3 列**
+                    s2 = re.sub(rf"(\| `{re.escape(f['crate'])}` \| )\d+( \| ){re.escape(d)}( \|)",
+                                rf"\g<1>\g<2>{r}\g<3>", s, count=1)
+                    s = s2
                 else:
-                    s = s.replace(d, r, 1)
+                    # **按行定位**：只改同时含有"声明上下文"与"声明值"的那一行。
+                    # 不做整文档 replace(d, r, 1) —— 那会改到历史段落，导致死循环。
+                    what = f.get("what", "")
+                    lines = s.split("\n")
+                    for i, ln in enumerate(lines):
+                        if what and what in ln and d in ln:
+                            lines[i] = ln.replace(d, r, 1)
+                            break
+                    s = "\n".join(lines)
         if s != before:
             changed += 1
             if not dry_run:
@@ -141,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
              "逐文件行数解析出 (aetherd/src/main.rs, 879)"),
             (any(x["kind"] == "tests" and x["crate"] == "aetherd" and x["real"] == ("238",) for x in fs),
              "测试表行解析出 (aetherd, 238)"),
+            # 真实行格式的**解析**自检：`| `aetherd` | 129 | 238 | 备注 |`
+            (parse_findings("[FAIL] x.md: 测试表：`aetherd` 声明 238 项 `#[test]`，实测 239\n"
+                            "| `aetherd` | 129 | 238 | 备注 |")
+             and parse_findings("[FAIL] x.md: 测试表：`aetherd` 声明 238 项 `#[test]`，实测 239")[0]["real"] == ("239",),
+             "真实行格式：测试数解析正确（第 3 列是测试数，不是第 2 列）"),
             (any(x["kind"] == "sum" and x["real"] == ("443", "803") for x in fs),
              "合计行解析出 (443, 803)"),
             (parse_findings("") == [] and parse_findings("[OK  ] 一切正常") == [],
@@ -165,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             break
     else:
-        print("已达最大轮数，仍有不一致 —— 请人看一眼（可能是结构性问题，不是数字问题）", file=sys.stderr)
+        print("已达最大轮数，仍有不一致 —— **不要提交**，请看上面哪条没改进去"
+              "（可能是结构性问题：漏登记文件、或判据期望的行格式变了）", file=sys.stderr)
         return 1
     print(f"共回填 {total} 处")
     return 0
