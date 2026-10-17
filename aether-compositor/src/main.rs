@@ -514,6 +514,18 @@ fn run_fbdev() -> anyhow::Result<()> {
                     mouse.0 = (mouse.0 + dx as f32 * spd).clamp(0.0, (w - 1) as f32);
                     mouse.1 = (mouse.1 + dy as f32 * spd).clamp(0.0, (h - 1) as f32);
                 }
+                // 绝对指针（USB 手写板）：按设备量程线性映射到屏幕像素。
+                // 量程退化（max<=min）直接忽略 —— 不做除零。
+                input::UiEvent::MouseAbs { x, y, min_x, max_x, min_y, max_y } => {
+                    let span_x = (max_x - min_x) as f32;
+                    let span_y = (max_y - min_y) as f32;
+                    if span_x > 0.0 && span_y > 0.0 {
+                        mouse.0 = ((x - min_x) as f32 / span_x * (w - 1) as f32)
+                            .clamp(0.0, (w - 1) as f32);
+                        mouse.1 = ((y - min_y) as f32 / span_y * (h - 1) as f32)
+                            .clamp(0.0, (h - 1) as f32);
+                    }
+                }
                 input::UiEvent::MouseDown => mouse_down = true,
                 input::UiEvent::Wheel { dy } => {
                     // P1：滚轮此前**完全没有映射**（长列表只能一页页翻）。

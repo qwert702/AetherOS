@@ -81,6 +81,16 @@ pub enum UiEvent {
     LayoutKey(usize),
     /// 鼠标相对位移（evdev REL 事件，按下时主循环据此累计坐标）
     MouseMove { dx: i32, dy: i32 },
+    /// **绝对**指针位置（EV_ABS）：x/y 是设备原始值，量程一并带出，由主循环映射到屏幕。
+    /// 虚拟机（VMware/VBox）默认的 USB 手写板走这条通路 —— 不需要指针抓取。
+    MouseAbs {
+        x: i32,
+        y: i32,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    },
     MouseDown,
     MouseUp,
     /// 滚轮（evdev REL_WHEEL）：**正数向上、负数向下**（linux/input.h 约定）。
@@ -101,6 +111,16 @@ struct RawEvent {
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
 const REL_X: u16 = 0x00;
+/// 绝对坐标轴（USB 手写板/触摸屏用这个 —— VMware/VBox 默认给的就是手写板）
+const EV_ABS: u16 = 0x03;
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+/// `EVIOCGABS(abs)` = _IOR('E', 0x40 + abs, struct input_absinfo(24B)) —— 用来读设备的量程。
+/// 量程必须**读设备**而不是写死（不同驱动/设备不一样）。
+#[cfg(target_os = "linux")]
+const EVIOCGABS_X: libc::c_ulong = 0x8018_4540;
+#[cfg(target_os = "linux")]
+const EVIOCGABS_Y: libc::c_ulong = 0x8018_4541;
 const REL_Y: u16 = 0x01;
 /// 纵向滚轮（一格 = value 1；正值向上）
 const REL_WHEEL: u16 = 0x08;
@@ -231,13 +251,17 @@ pub fn enter_intent(
 #[cfg(target_os = "linux")]
 pub fn spawn(tx: Sender<UiEvent>) {
     std::thread::spawn(move || {
-        let mut devs: Vec<File> = Vec::new();
+        let mut devs: Vec<Dev> = Vec::new();
+        // 绝对指针的两轴合流状态（按设备序保持一一对应）
+        let mut abs_states: Vec<AbsState> = Vec::new();
         let mut rel_seen: u64 = 0; // 遥测：收到的 REL 事件数
+        let mut abs_seen: u64 = 0; // 遥测：合成的绝对坐标事件数
         // 修饰键状态跨事件累积，必须活在循环外
         let mut mods = Mods::default();
         loop {
             if devs.is_empty() {
                 devs = open_devices();
+                abs_states = (0..devs.len()).map(|_| AbsState::default()).collect();
                 if devs.is_empty() {
                     eprintln!("aether-compositor: 尚无 /dev/input/event*，2s 后重试");
                     std::thread::sleep(Duration::from_secs(2));
@@ -249,9 +273,9 @@ pub fn spawn(tx: Sender<UiEvent>) {
                 );
             }
             let mut traffic = false;
-            for d in &mut devs {
+            for (di, d) in devs.iter_mut().enumerate() {
                 let mut buf = [0u8; 24 * 32];
-                match d.read(&mut buf) {
+                match d.file.read(&mut buf) {
                     Ok(n) if n >= 24 => {
                         traffic = true;
                         for chunk in buf[..n / 24 * 24].chunks_exact(24) {
@@ -272,6 +296,28 @@ pub fn spawn(tx: Sender<UiEvent>) {
                                     );
                                 }
                             }
+                            // 绝对坐标（USB 手写板）：两轴合流后交给主循环映射
+                            if raw.type_ == EV_ABS {
+                                if let Some(range) = d.abs {
+                                    if let Some(ui) = abs_states[di].feed(raw.code, raw.value, range) {
+                                        abs_seen += 1;
+                                        if abs_seen <= 3 || abs_seen % 200 == 0 {
+                                            eprintln!(
+                                                "[input] ABS {}（量程 {}..{} × {}..{}，累计 {abs_seen} 次）",
+                                                match ui {
+                                                    UiEvent::MouseAbs { x, y, .. } => format!("x={x} y={y}"),
+                                                    _ => String::from("?"),
+                                                },
+                                                range.min_x,
+                                                range.max_x,
+                                                range.min_y,
+                                                range.max_y
+                                            );
+                                        }
+                                        let _ = tx.send(ui);
+                                    }
+                                }
+                            }
                             for ui in translate(&raw, &mut mods) {
                                 let _ = tx.send(ui);
                             }
@@ -288,8 +334,50 @@ pub fn spawn(tx: Sender<UiEvent>) {
     });
 }
 
+/// 一个已打开的 evdev 设备：文件句柄 + （若是绝对指针）它的量程。
 #[cfg(target_os = "linux")]
-fn open_devices() -> Vec<File> {
+pub struct Dev {
+    pub file: std::fs::File,
+    pub abs: Option<AbsRange>,
+}
+
+/// `struct input_absinfo`（`linux/input.h`，6 × __s32 = 24B）
+#[cfg(target_os = "linux")]
+#[repr(C)]
+#[derive(Default)]
+struct AbsInfo {
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
+
+/// 读一个设备的绝对量程；不是绝对指针（没有 ABS_X/Y）就返回 None。
+#[cfg(target_os = "linux")]
+fn read_abs_range(f: &std::fs::File) -> Option<AbsRange> {
+    use std::os::unix::io::AsRawFd;
+    let fd = f.as_raw_fd();
+    let mut x = AbsInfo::default();
+    let mut y = AbsInfo::default();
+    // SAFETY：fd 是刚打开的有效 evdev 句柄；AbsInfo 的布局与内核 struct input_absinfo 一致。
+    let ok_x = unsafe { libc::ioctl(fd, EVIOCGABS_X, &mut x) } >= 0;
+    let ok_y = unsafe { libc::ioctl(fd, EVIOCGABS_Y, &mut y) } >= 0;
+    if !(ok_x && ok_y) {
+        return None;
+    }
+    let r = AbsRange {
+        min_x: x.minimum,
+        max_x: x.maximum,
+        min_y: y.minimum,
+        max_y: y.maximum,
+    };
+    r.is_sane().then_some(r)
+}
+
+#[cfg(target_os = "linux")]
+fn open_devices() -> Vec<Dev> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir("/dev/input") else {
         return out;
@@ -306,10 +394,57 @@ fn open_devices() -> Vec<File> {
             .custom_flags(libc::O_NONBLOCK)
             .open(&p)
         {
-            out.push(f);
+            let abs = read_abs_range(&f);
+            out.push(Dev { file: f, abs });
         }
     }
     out
+}
+
+/// 一台绝对指针设备的量程（来自内核 ioctl，不写死）。
+#[derive(Clone, Copy, Debug)]
+pub struct AbsRange {
+    pub min_x: i32,
+    pub max_x: i32,
+    pub min_y: i32,
+    pub max_y: i32,
+}
+
+impl AbsRange {
+    /// 量程必须两个轴都非退化，否则映射会除零。
+    pub fn is_sane(&self) -> bool {
+        self.max_x > self.min_x && self.max_y > self.min_y
+    }
+}
+
+/// 绝对指针的**两轴合流**状态：内核把 X/Y 分两条事件发，必须凑齐才产出一个位置。
+#[derive(Default)]
+pub struct AbsState {
+    x: Option<i32>,
+    y: Option<i32>,
+}
+
+impl AbsState {
+    /// 喂一条 EV_ABS 事件；两个轴都到齐时返回一条 [`UiEvent::MouseAbs`]。
+    pub fn feed(&mut self, code: u16, value: i32, range: AbsRange) -> Option<UiEvent> {
+        match code {
+            ABS_X => self.x = Some(value),
+            ABS_Y => self.y = Some(value),
+            _ => return None,
+        }
+        if !range.is_sane() {
+            return None;
+        }
+        let (x, y) = (self.x?, self.y?);
+        Some(UiEvent::MouseAbs {
+            x,
+            y,
+            min_x: range.min_x,
+            max_x: range.max_x,
+            min_y: range.min_y,
+            max_y: range.max_y,
+        })
+    }
 }
 
 fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
@@ -393,7 +528,10 @@ fn translate(raw: &RawEvent, mods: &mut Mods) -> Vec<UiEvent> {
             let c = if mods.shift { shift_of(base) } else { base };
             vec![UiEvent::Char(c)]
         }
-        EV_REL => match raw.code {
+        // 绝对坐标：这里只做"按键/滚轮以外"的兜底——真正的合流在 AbsState 里做，
+    // 所以 translate 对 ABS 返回空（避免重复产生事件）。
+    EV_ABS => vec![],
+    EV_REL => match raw.code {
             REL_X => vec![UiEvent::MouseMove { dx: raw.value, dy: 0 }],
             REL_Y => vec![UiEvent::MouseMove { dx: 0, dy: raw.value }],
             REL_WHEEL => vec![UiEvent::Wheel { dy: raw.value }],
@@ -504,6 +642,40 @@ fn key_char(code: u16) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 绝对坐标：只给一个轴时**不能**产生事件（否则位置会跳到半边）
+    #[test]
+    fn abs_state_needs_both_axes() {
+        let r = AbsRange { min_x: 0, max_x: 32767, min_y: 0, max_y: 32767 };
+        let mut st = AbsState::default();
+        assert!(st.feed(ABS_X, 1000, r).is_none(), "只有 X 时不该产出事件");
+        let ev = st.feed(ABS_Y, 2000, r).expect("Y 到齐后应产出一条");
+        match ev {
+            UiEvent::MouseAbs { x, y, max_x, max_y, .. } => {
+                assert_eq!((x, y), (1000, 2000));
+                assert_eq!((max_x, max_y), (32767, 32767));
+            }
+            _ => panic!("应为 MouseAbs"),
+        }
+    }
+
+    /// 退化量程（max == min）必须被拒 —— 否则主循环映射会除零
+    #[test]
+    fn abs_range_rejects_degenerate() {
+        assert!(!AbsRange { min_x: 0, max_x: 0, min_y: 0, max_y: 100 }.is_sane());
+        assert!(!AbsRange { min_x: 0, max_x: 100, min_y: 5, max_y: 5 }.is_sane());
+        let mut st = AbsState::default();
+        let bad = AbsRange { min_x: 0, max_x: 0, min_y: 0, max_y: 0 };
+        assert!(st.feed(ABS_X, 1, bad).is_none());
+        assert!(st.feed(ABS_Y, 1, bad).is_none());
+    }
+
+    /// translate 对 EV_ABS 返回空（合流由 AbsState 负责，避免重复产生事件）
+    #[test]
+    fn translate_leaves_abs_to_abs_state() {
+        assert!(translate(&ev(EV_ABS, ABS_X, 100), &mut Mods::default()).is_empty());
+        assert!(translate(&ev(EV_ABS, ABS_Y, 100), &mut Mods::default()).is_empty());
+    }
 
     fn ev(type_: u16, code: u16, value: i32) -> RawEvent {
         RawEvent { type_, code, value }
