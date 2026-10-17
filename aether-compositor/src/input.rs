@@ -232,6 +232,7 @@ pub fn enter_intent(
 pub fn spawn(tx: Sender<UiEvent>) {
     std::thread::spawn(move || {
         let mut devs: Vec<File> = Vec::new();
+        let mut rel_seen: u64 = 0; // 遥测：收到的 REL 事件数
         // 修饰键状态跨事件累积，必须活在循环外
         let mut mods = Mods::default();
         loop {
@@ -261,6 +262,16 @@ pub fn spawn(tx: Sender<UiEvent>) {
                                     chunk[20], chunk[21], chunk[22], chunk[23],
                                 ]),
                             };
+                            // 遥测：串口能看出"事件到底有没有进来"（2026-10-17 鼠标不动排查）
+                            if raw.type_ == EV_REL {
+                                rel_seen += 1;
+                                if rel_seen <= 3 || rel_seen % 200 == 0 {
+                                    eprintln!(
+                                        "[input] REL code={} value={}（累计 {rel_seen} 次）",
+                                        raw.code, raw.value
+                                    );
+                                }
+                            }
                             for ui in translate(&raw, &mut mods) {
                                 let _ = tx.send(ui);
                             }
