@@ -15,6 +15,7 @@
 | `gen-site.py --selftest` | 链接白名单等纯函数边界 | 真实渲染（由 --check 覆盖） |
 | `publish-updates.py --selftest` | 发布布局摊平/白名单 | 真上传（需 VPS）|
 | `update-contract-check.py --selftest` | 契约：布局↔URL | 真 HTTP 契约测试（默认跑）|
+| `vmware-keepvar.py --selftest` | vmx 改写三步 + 缺行报错 | 真执行（需 VM 关机）|
 | `keepvar-verify.py --selftest` | ext4 UUID 解析/记录计数 | 真磁盘（需 VM 关机）|
 | `mkupdate.py --selftest` | 更新包的路径白名单/哈希/三条负向对照 | 真实拉取与 stage（需 guest）|
 
@@ -240,6 +241,7 @@ def main() -> int:
     steps.append(("更新链路契约自检（发布布局 vs guest URL）", [PY, "scripts/update-contract-check.py", "--selftest"]))
     steps.append(("T3 验证工具自检（ext4 UUID/记录计数）", [PY, "scripts/keepvar-verify.py", "--selftest"]))
     steps.append(("数字回填工具自检（四类发现解析）", [PY, "scripts/follow-gate-numbers.py", "--selftest"]))
+    steps.append(("换系统脚本自检（vmx 改写/负向）", [PY, "scripts/vmware-keepvar.py", "--selftest"]))
     # **生效 vhost 的识别**（2026-10-15 真实事故）：这台生产机是"宝塔"式 —— nginx 手工启动、
     # 只 include `/www/server/panel/vhost/nginx/*.conf`，**不读 `/etc/nginx/conf.d/`**。
     # 老逻辑写死 conf.d → 写进去的是**死文件**：`nginx -t` 通过、站点照开、脚本还报"部署成功"，

@@ -120,10 +120,10 @@ def run(argv: list[str] | None = None) -> int:
     for a, b in zip(original.splitlines(), to_cd.splitlines()):
         if a != b:
             print(f"  - {a}\n  + {b}")
-    print("== 装完之后 ==")
+    print("== 装完之后（改回磁盘引导 + 断开光驱）==")
     for a, b in zip(original.splitlines(), to_disk.splitlines()):
-        if a != b and a in to_cd:
-            print(f"  - {to_cd.splitlines()[original.splitlines().index(a)]}")
+        if a != b:
+            print(f"  - {a}")
             print(f"  + {b}")
 
     if not args.apply:
