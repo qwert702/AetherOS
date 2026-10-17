@@ -1,4 +1,4 @@
-# 交接摘要（2026-10-17）
+﻿# 交接摘要（2026-10-17）
 
 > **给后来的人**：5 分钟看懂 AetherOS 现在到哪了、哪些是真做完的、哪些是**卡在人手上**的。
 > 更细的证据在两份文档里：[VMware 无人装机](../证据/VMware无人装机（AUTOINSTALL）-2026-10-16.md)、
@@ -34,7 +34,7 @@ python scripts/gates.py --fast     # 27 项，日常改动用这个
 
 | 事项 | 卡在哪 | 怎么解（都已就绪）|
 |---|---|---|
-| **T3 端到端**：换系统后 `/var` 的 ext4 UUID 不变、启动记录不减 | **需要把那台 VMware VM 关机**（agent 无法代替）| 关机后一条命令：`python scripts/vmware-keepvar.py --apply --expect-uuid <基线> --min-records <条数>` |
+| ~~T3 端到端~~ **已完成（2026-10-17）** | — | ✅ `--keep-var` 三轮实验全绿：装机 → 换系统（UUID 不变 ✓）→ 拔光驱从盘引导（`持久化分区已挂载: /dev/sda2 -> /var` ✓ 且不重复安装 ✓）。证据：[T3验证-keepvar保住var](../证据/T3验证-keepvar保住var-2026-10-17.md) 第六节。**VMware 侧尾巴**：`vmware-keepvar.py --apply` 真跑一次仍待**人关机** |
 | 更新链路真机端到端（guest 拉到 → 重启生效）| 同上 | 假源可在宿主起，不依赖生产 VPS；注：`aetherd` 的 updater **强制 https**，本地测试要按 `update-contract-check.py` 的方式验布局 |
 | 更新源上线生产 | **需要人确认**（只新增 `/var/www/aether.cbnac.com/updates/`，`rm -rf` 即回滚）| `python scripts/publish-updates.py updates/<ver> --apply` |
 | 真机验收 #32（45 项）| **需要物理机** | 手册见 `docs/报告/实机验收手册（RUNBOOK）-2026-10-11.md` |

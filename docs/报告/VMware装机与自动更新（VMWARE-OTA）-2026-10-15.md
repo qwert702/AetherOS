@@ -157,7 +157,7 @@ AetherOS 里没有 ⇒ **任何"进 guest 敲命令"的方案在 VMware 上都�
 |---|---|---|---|
 | **P0** | T1 无人安装（`aether.autoinstall=1` + 安装标记判据） | ✅ **2026-10-16 完成**：VMware 里挂上自动安装版 ISO 开机即自动装盘（`AETHER-AUTOINSTALL: PASS`）→ 自动关机 → 拔掉光驱从盘独立引导进桌面。证据：[VMware无人装机（AUTOINSTALL）-2026-10-16.md](../证据/VMware无人装机（AUTOINSTALL）-2026-10-16.md) | 1 天｜已完成 |
 | **P1** | `mkupdate.py` + `aetherd` 轮询 + 更新源 | ✅ **2026-10-17 代码侧完成**：`mkupdate.py`（17 项自检）+ `publish-updates.py`（10 项自检）+ `aetherd/src/updater.rs`（4 项单测、0 告警）+ **契约测试真 HTTP 实测通过**。**待验**：真机端到端（需 VM 关机）—— 证据见 [自动更新链路（P1）-2026-10-17.md](../证据/自动更新链路（P1）-2026-10-17.md) | 1 天｜已完成（代码侧）|
-| **P2** | `--keep-var` + 整机更新 + 快照回滚 | ✅ **2026-10-16 代码侧完成**：`aether-install --keep-var` + `aether.keepvar=1` 无人路径 + keepvar 版 ISO 已构建 + 验证工具 `keepvar-verify.py`。**待验**：端到端（需 VM 关机）| 1 天｜已完成（代码侧）|
+| **P2** | `--keep-var` + 整机更新 + 快照回滚 | ✅ **2026-10-17 完成**：`aether-install --keep-var` + `aether.keepvar=1` 无人路径 + keepvar 版 ISO + 验证工具；**三轮实验全绿**（UUID 不变 ✓、从盘引导 /var 已挂载 ✓、不重复安装 ✓）。证据：[T3验证-keepvar保住var（P1 同文档）](../证据/T3验证-keepvar保住var-2026-10-17.md) | 1 天｜已完成 |
 | **P3** | 界面"检查更新"接到自动源（已有界面页 ✓） | 点一下就更新 | 半天｜**未做**（等 P1 端到端验完再动界面）|
 
 P0 完成后，"在 VMware 里装完整系统"这件事就闭环了；P1 完成后，"以后每次更新不麻烦"就成立了。
