@@ -513,6 +513,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     let spd = renderer.settings.mouse_speed_pct as f32 / 100.0;
                     mouse.0 = (mouse.0 + dx as f32 * spd).clamp(0.0, (w - 1) as f32);
                     mouse.1 = (mouse.1 + dy as f32 * spd).clamp(0.0, (h - 1) as f32);
+                {
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static N: AtomicU64 = AtomicU64::new(0);
+                    let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= 5 || n % 100 == 0 {
+                        eprintln!("[cursor] REL 第 {n} 次：({:.0},{:.0}) +({dx},{dy}) 屏 {w}x{h}", mouse.0, mouse.1);
+                    }
+                }
                 }
                 // 绝对指针（USB 手写板）：按设备量程线性映射到屏幕像素。
                 // 量程退化（max<=min）直接忽略 —— 不做除零。
@@ -524,6 +532,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                             .clamp(0.0, (w - 1) as f32);
                         mouse.1 = ((y - min_y) as f32 / span_y * (h - 1) as f32)
                             .clamp(0.0, (h - 1) as f32);
+                        {
+                            use std::sync::atomic::{AtomicU64, Ordering};
+                            static N: AtomicU64 = AtomicU64::new(0);
+                            let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+                            if n <= 5 || n % 100 == 0 {
+                                eprintln!("[cursor] ABS 第 {n} 次：({:.0},{:.0}) 屏 {w}x{h}", mouse.0, mouse.1);
+                            }
+                        }
                     }
                 }
                 input::UiEvent::MouseDown => mouse_down = true,
