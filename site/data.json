@@ -1,8 +1,8 @@
 {
   "version": "v0.1.1",
-  "rust_lines": "52,185",
+  "rust_lines": "52,193",
   "rust_files": "73",
-  "rust_lines_num": 52185,
+  "rust_lines_num": 52193,
   "crates": 7,
   "tests": "785",
   "iso_bytes": 42991616,

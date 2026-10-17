@@ -250,7 +250,10 @@ pub fn enter_intent(
 
 #[cfg(target_os = "linux")]
 pub fn spawn(tx: Sender<UiEvent>) {
+    // 无条件日志：先确认"采集线程到底有没有被启动"，再看它走到哪一步
+    eprintln!("[input] 采集线程已启动（即将打开 /dev/input/event*）");
     std::thread::spawn(move || {
+        eprintln!("[input] 线程已进入主循环");
         let mut devs: Vec<Dev> = Vec::new();
         // 绝对指针的两轴合流状态（按设备序保持一一对应）
         let mut abs_states: Vec<AbsState> = Vec::new();
@@ -395,6 +398,11 @@ fn open_devices() -> Vec<Dev> {
             .open(&p)
         {
             let abs = read_abs_range(&f);
+            eprintln!(
+                "[input] 打开 {} 成功（绝对指针量程: {:?}）",
+                p.display(),
+                abs.map(|r| (r.min_x, r.max_x, r.min_y, r.max_y))
+            );
             out.push(Dev { file: f, abs });
         }
     }
