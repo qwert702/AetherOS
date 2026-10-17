@@ -15,7 +15,7 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 #[cfg(target_os = "linux")]
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 #[cfg(target_os = "linux")]
 use std::io::Read;
 #[cfg(target_os = "linux")]
@@ -118,9 +118,9 @@ const ABS_Y: u16 = 0x01;
 /// `EVIOCGABS(abs)` = _IOR('E', 0x40 + abs, struct input_absinfo(24B)) —— 用来读设备的量程。
 /// 量程必须**读设备**而不是写死（不同驱动/设备不一样）。
 #[cfg(target_os = "linux")]
-const EVIOCGABS_X: libc::c_ulong = 0x8018_4540;
+const EVIOCGABS_X: libc::c_int = 0x8018_4540u32 as i32;
 #[cfg(target_os = "linux")]
-const EVIOCGABS_Y: libc::c_ulong = 0x8018_4541;
+const EVIOCGABS_Y: libc::c_int = 0x8018_4541u32 as i32;
 const REL_Y: u16 = 0x01;
 /// 纵向滚轮（一格 = value 1；正值向上）
 const REL_WHEEL: u16 = 0x08;
