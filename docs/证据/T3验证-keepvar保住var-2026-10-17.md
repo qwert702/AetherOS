@@ -148,3 +148,28 @@ MBR 55AA: 55 aa ✓       磁盘签名: 109df173
 （`DEFAULT keepvar` → `DEFAULT aether`，或直接删掉 `aether.keepvar=1` 这一段）——
 autoinstall 的 `aether.autoinstall=1` 同理。修完再跑一次本实验，判据是：
 从磁盘引导后串口出现 `持久化分区已挂载: /dev/sda2 -> /var` 且 **不出现** "自动安装开始"。
+
+---
+
+## 六、**最终结论：PASS** ✓（2026-10-17 下午，第五轮实验 —— 两个 bug 都修完）
+
+ISO sha256 `0b5e5cda…`（构建机实测一致；`live_medium` 在源码中出现 9 次 ⇒ 第二个修复已进镜像）。
+
+| 阶段 | 关键串口原文 | 判据 |
+|---|---|---|
+| ① 装机（autoinstall ISO）| `EXT4-fs (sda2): mounted filesystem d84d3f3d-702a-47aa-b6fa-adf6d02516fa r/w` · `AETHER-AUTOINSTALL: PASS` | 基线 UUID = `d84d3f3d-…` |
+| ② 换系统（keepvar ISO）| 同一 UUID `d84d3f3d-…` · `沿用原分区项（不重新规划），/var 原地保留` · `跳过 wipefs/mkfs —— 持久分区原样保留` · `AETHER-KEEPVAR: PASS` | ✅ **数据保住** |
+| ③ **拔光驱从盘引导** | ①`自动动作跳过：光驱里没有盘（说明不是 live 引导，而是从磁盘引导）—— 引导配置里残留的 aether.autoinstall/keepvar 参数不会触发重装`<br>②**`持久化分区已挂载: /dev/sda2 -> /var（nodev,nosuid,errors=remount-ro）`**<br>③`aether-compositor: fbdev aether-ops: 巡检#1 … 服务=aetherd=✓ compositor=✓ getty=✓ network=✓ ops=✓` | ✅ **不重复安装**<br>✅ **/var 挂载成功**<br>✅ 五服务全起 |
+
+### 两个 bug 的修复对账
+
+| bug | 修法 | 正对它的判据 |
+|---|---|---|
+| 分区索引差一（`capture_persist` 返回 0 基，而 `set_partition_entry` 是 1 基）| `find_persist_entry` 改为 **1 基** | 阶段③ `sda: sda1 sda2` 两项齐全 ✓；往返回归单测 ✓ |
+| 从盘引导重复安装（引导配置是只读 iso9660 拷贝，参数改不掉）| 自动动作额外要求 **"光驱里有盘"**（`live_medium`）| 阶段③ 明说"自动动作跳过…不会触发重装" ✓；`no_live_medium_never_installs_even_with_flags` 单测 ✓ |
+
+### 仍未覆盖（诚实边界）
+
+- 本轮在 **VirtualBox** 验证（4 GB VDI、串口落盘）✓；**VMware 那台**未跑（需人关机 ✓）；
+  但两个 bug 都是**平台无关**的（分区表 + 引导期判据）✓，VMware 侧只差"换盘"动作（`vmware-keepvar.py` 已就绪 ✓）。
+- `vmware-keepvar.py --apply` 真跑一次仍未做（只做过干跑）✓。
