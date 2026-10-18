@@ -464,6 +464,14 @@ fn run_fbdev() -> anyhow::Result<()> {
                     input::UiEvent::Char(c) => setup::handle_key(renderer.setup.step, *c),
                     input::UiEvent::Enter => setup::Action::Next,
                     input::UiEvent::Escape => setup::Action::SkipAll,
+                    // §5.8：**向导的按钮也能点** —— 命中区由 draw_setup 登记进 setup_hits，
+                    // 动作经 setup::action_at 从 options 那张表取出（与按键同源，不分叉）。
+                    // 用 MouseUp 而不是 MouseDown：与下文"按下-抬起 = 一次点击"的约定一致（拖出去不算点击）。
+// 缺了这条：光标能移动（apply_pointer 已修），但点"中文/English"没反应 ——
+// 因为 KeyRoute::Setup 分支在下面那段点击处理**之前**就 continue 了。
+                    input::UiEvent::MouseUp => renderer
+                        .setup_hit(mouse.0, mouse.1)
+                        .map_or(setup::Action::None, |idx| setup::action_at(renderer.setup.step, idx)),
                     _ => setup::Action::None,
                 };
                 let mark_done = apply_setup_action(act, &mut renderer, &ai_tx, &mut toast);

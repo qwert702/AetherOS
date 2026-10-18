@@ -9,8 +9,8 @@
 
 | | |
 |---|---|
-| **规模** | 合计 52,222 行 Rust / 73 个源文件 / 7 个 crate（2026-10-11 实测） |
-| **验证** | 785 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
+| **规模** | 合计 52,251 行 Rust / 73 个源文件 / 7 个 crate（2026-10-11 实测） |
+| **验证** | 786 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 41.0 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
 ![桌面（明亮主题）](assets/ui-archive/host-ui-light-desktop.png)
@@ -33,7 +33,7 @@
   外泄路径是用**两个假 LLM 端点 + canary 文件**端到端证明的（13 字输入、两次读文件，
   云端端点确实收到了 canary），修复后的行为由 `router` 的两条单测钉住。
 - **连字体都自己带。** 桌面用 **Noto Sans CJK SC 子集**（GB2312 + 拉丁 + 标点，约 5.7 MB，**含真粗体**）—— 不是「粗体=正文字体」的伪粗。
-- **可验证，而不是"我觉得没问题"。** 除 785 项单测外，还有 **57 档 `--shot` 的逐字节回归门禁**
+- **可验证，而不是"我觉得没问题"。** 除 786 项单测外，还有 **57 档 `--shot` 的逐字节回归门禁**
   （差异 > 0.02% 即失败）、12 小时 43 分的稳定性长跑（3053 轮巡检：服务退出 0 / 自动重启 0 /
   panic 0，内存无泄漏趋势）、四轮代码审查且**未修项归零**。
 - **真能装应用。** 在没有任何包管理器的系统上做了自己的应用包格式（清单 + 依赖预检），
@@ -50,7 +50,7 @@ cd AetherOS
 cargo run -p aether-compositor                     # 交互预览（默认明亮主题）
 cargo run -p aether-compositor -- --theme dark     # 深空主题
 cargo run -p aether-compositor -- --shot 2         # 单帧截图自检
-cargo test --workspace                             # 单元测试（Windows 785 项，见「测试与验证」）
+cargo test --workspace                             # 单元测试（Windows 786 项，见「测试与验证」）
 ```
 
 构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
@@ -204,7 +204,7 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
-| `aether-compositor/` | 32,706 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
+| `aether-compositor/` | 32,735 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
 | `aetherd/` | 12,875 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
 | `aether-init/` | 3,378 | PID 1 与服务管理 | M3 |
 | `aether-ops/` | 1,026 | AI 运维与自修复 | M5 |
@@ -257,7 +257,7 @@ AI 能操作真实的机器，所以权限这块是系统里设计得最细的�
 
 | 手段 | 现状 |
 |---|---|
-| 单元测试 | Windows 785 项全绿（2026-10-11 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
+| 单元测试 | Windows 786 项全绿（2026-10-11 实测，`cargo test --workspace`）；Linux 侧**未实测**（本机跑不了 Linux 二进制，需在构建机复核） |
 | 编译警告 | Windows 侧 0 条；musl 侧 0 条但**只覆盖 6/7 crate**（`aetherd` 受 ring 交叉编译限制查不了，见上） |
 | 视觉回归 | **57 档 `--shot` 逐字节比对**（基线 `docs/证据/shot-baseline.json`），当前 57/57 零差异 |
 | 代码审查 | 四轮全量 / 增量审查，问题全部修复（未修项归零）；结论总集见 [`docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md`](docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md) |

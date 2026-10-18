@@ -56,6 +56,15 @@ pub fn options(step: usize) -> Vec<(&'static str, &'static str, Action)> {
     }
 }
 
+/// 第 `step` 步里第 `idx` 个选项对应的动作（**鼠标点击**用）。
+///
+/// 与 [`options`] 同一张表 ⇒ 点按钮和按数字键走的是同一份数据，不会分叉。
+/// 越界或未知步骤一律返回 [`Action::None`]（下标来自绘制层登记的命中区，
+/// 对外接口不假设它一定合法 —— 与 `options` 不 panic 的原则一致）。
+pub fn action_at(step: usize, idx: usize) -> Action {
+    options(step).get(idx).map_or(Action::None, |(_, _, a)| *a)
+}
+
 /// 向导步数（语言 / 时区 / 主题 / 连网）。
 pub const STEP_COUNT: usize = 4;
 
@@ -216,6 +225,18 @@ pub fn hint(step: usize) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_at_maps_language_buttons_and_never_panics() {
+        // 向导第 1 步（语言）的两个按钮 —— 这正是用户点"中文 / English"走的那条路
+        assert_eq!(action_at(0, 0), Action::SetLang(0));
+        assert_eq!(action_at(0, 1), Action::SetLang(1));
+        // 负向：越界下标与未知步骤都必须给 None（不得 panic）
+        assert_eq!(action_at(0, 2), Action::None);
+        assert_eq!(action_at(99, 0), Action::None);
+        // 第 4 步的"开始使用"按钮 = Next（与回车同源）
+        assert_eq!(action_at(3, 0), Action::Next);
+    }
 
     #[test]
     fn wizard_shows_exactly_when_settings_say_it_is_not_done() {
