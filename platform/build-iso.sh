@@ -11,6 +11,19 @@
 #   4. isohybrid + 自检（MBR 签名）—— 少了这步 ISO 只能光盘引导、不能装机
 set -euo pipefail
 
+# `--check-auth` 只做认证模式判断并退出，供 scripts/iso-auth-check.py 自检；
+# 不触发任何编译/下载。默认构建必须显式选择"上锁"或"演示"模式。
+CHECK_AUTH_ONLY=0
+for arg in "$@"; do
+    case "$arg" in
+        --check-auth) CHECK_AUTH_ONLY=1 ;;
+        *)
+            echo "!! 未知参数：$arg（只支持 --check-auth）" >&2
+            exit 2
+            ;;
+    esac
+done
+
 # Rust 不在非交互式 SSH 的 PATH 里（2026-09-29 实测：无人值守跑本脚本会
 # `rustup: command not found` 而立刻失败）。显式补上，让脚本在 CI/ssh 下也能跑。
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -21,23 +34,36 @@ BUILD="$ROOT/platform/build"
 OVERLAY="$ROOT/platform/overlay"
 BR_EXT="$ROOT/platform/br2-external"
 
-# ── 认证基线（2026-10-02 审计 M-4）──────────────────────────────────────────
-# 出厂镜像 root **无口令**：控制台/串口拿到就是 root。对 Live 演示系统这是刻意的
-# （没有账号体系才谈得上"一条命令跑起来"），但必须**显式可见**，而且要有上锁的路：
-#   AETHER_ROOT_PW_HASH="$(openssl passwd -6)" platform/build-iso.sh
-# 设了就由 post-build.sh 写进镜像的 /etc/shadow（0600），登录需要口令。
+# ── 认证基线（2026-10-02 审计 M-4；2026-10-24 改为安全默认）──────────────
+# 两种模式，必须显式选择一种：
+#   AETHER_ROOT_PW_HASH="$(openssl passwd -6)" platform/build-iso.sh   # 上锁
+#   AETHER_DEMO=1 platform/build-iso.sh                                # 演示（root 无口令）
 #
-# ⚠️ 口令哈希**不写进 overlay 目录**（对抗审查发现）：`platform/overlay/etc/` 已被
-# git 跟踪，写在那里会让 `/etc/shadow` 出现在 `git status` 里，一次 `git add -A`
+# 为什么不默认无口令：这是**安全默认值**。演示镜像仍可构建，但必须把
+# `AETHER_DEMO=1` 写出来；否则构建直接失败，避免"忘了设口令就发布"。
+#
+# ⚠️ 口令哈希**不写进 overlay 目录**：`platform/overlay/etc/` 已被 git 跟踪，
+# 写在那里会让 `/etc/shadow` 出现在 `git status` 里，一次 `git add -A`
 # 就把口令哈希提交进仓库（离线爆破素材）。改为把哈希经环境变量交给 Buildroot 的
 # post-build 脚本，只在**构建产物**里落盘。
 if [ -n "${AETHER_ROOT_PW_HASH:-}" ]; then
+    AUTH_MODE=locked
     export AETHER_ROOT_PW_HASH
     echo "==> 认证基线：root 口令哈希已交给 post-build 写入镜像（不会落进仓库）"
+elif [ "${AETHER_DEMO:-0}" = "1" ]; then
+    AUTH_MODE=demo
+    echo "!! 认证基线：AETHER_DEMO=1 —— root 无口令，控制台/串口拿到即 root。"
+    echo "   这只能用于 Live 演示；发布前请确认 /etc/issue 已明确标注。"
 else
-    echo "!! 认证基线：出厂镜像 root 无口令 —— 控制台/串口拿到即 root。"
-    echo "   这是 Live 演示系统的刻意取舍；要上锁请设 AETHER_ROOT_PW_HASH=\"\$(openssl passwd -6)\" 重新构建。"
-    echo "   （提醒会同时出现在启动横幅与 /etc/issue 里，不会「悄悄」存在。）"
+    echo "!! 认证基线未选择：拒绝构建。" >&2
+    echo "   上锁：AETHER_ROOT_PW_HASH=\"\$(openssl passwd -6)\" $0" >&2
+    echo "   演示：AETHER_DEMO=1 $0" >&2
+    exit 1
+fi
+
+if [ "$CHECK_AUTH_ONLY" = "1" ]; then
+    echo "AUTH_MODE=$AUTH_MODE"
+    exit 0
 fi
 
 # ── 自动安装版（2026-10-15，P0）────────────────────────────────────────────

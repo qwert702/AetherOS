@@ -102,10 +102,12 @@ def main() -> int:
         if subset:
             print(f"② 门禁数：[SKIP] 子集模式（--{subset_mode} 本次 {real_gates} 步，"
                   f"与文档声明的全量步数不可比）")
-        elif real_gates and doc_gates != real_gates:
-            problems.append(f"门禁数：文档 {doc_gates}，本次运行 {real_gates}")
         else:
+            # 无论对错都打印这一行：`sync-doc-numbers.py` 靠它取实测值。
+            # 只在成功时打印会让"检查会红而同步修不了"（2026-10-24 实测踩到）。
             print(f"② 门禁数：文档 {doc_gates} / 本次运行 {real_gates}")
+            if real_gates and doc_gates != real_gates:
+                problems.append(f"门禁数：文档 {doc_gates}，本次运行 {real_gates}")
     else:
         print("② 门禁数：[SKIP] 没有 gate-count.txt（单独跑本脚本时会这样）")
 

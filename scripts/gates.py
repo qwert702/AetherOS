@@ -193,6 +193,8 @@ def main() -> int:
     # ISO 组件门禁（2026-10-06 加，附录 GV）：仓库里的二进制 crate 必须进镜像。
     # 加它的原因：aether-install 曾在仓库里却不在 build-iso.sh 的 COMPONENTS 里，
     # 而**没有任何判据在看这件事**（sh -n 查不出来，它不是语法错误）。
+    steps.append(("认证基线自检（安全默认 / demo / locked）",
+                  [PY, "scripts/iso-auth-check.py", "--selftest"]))
     steps.append(("ISO 组件门禁（二进制 crate 都在镜像里）",
                   [PY, "scripts/iso-components-check.py"]))
     # 归档走查图门禁（2026-10-06 加，附录 GY）：assets/ui-archive/ 那批图

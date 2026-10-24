@@ -244,10 +244,10 @@ def sync_once(dry: bool) -> int:
     # 守卫挂在 **③b / ③c** 上（"离事实最近的那一行"），不是 ① 行 ——
     # ① 行说的是收尾报告（第 6 节已修对），拿它当守卫会让 README 的偏差被跳过。
     for name, line_pat, pats in (
-        ("README.md", r"③b README 测试数：文档 ([\d,]+) / 实测 ([\d,]+)",
+        ("README.md", r"③b README 测试数：(?:文档 )?([\d,]+) / 实测 ([\d,]+)",
          [r"\*\*([\d,]+) 项单元测试全绿\*\*", r"([\d,]+) 项单元测试全绿",
           r"Windows ([\d,]+) 项全绿"]),
-        ("README.en.md", r"③c README.en 测试数：文档 ([\d,]+) / 实测 ([\d,]+)",
+        ("README.en.md", r"③c README.en 测试数：(?:文档 )?([\d,]+) / 实测 ([\d,]+)",
          [r"([\d,]+) unit tests green", r"Beyond the ([\d,]+) unit tests"]),
     ):
         m7 = re.search(line_pat, dn)
