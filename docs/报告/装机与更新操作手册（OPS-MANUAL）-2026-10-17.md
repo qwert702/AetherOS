@@ -95,6 +95,9 @@ python scripts/keepvar-verify.py --selftest
 | 构建机（VirtualBox）停在 GRUB 菜单 | 硬断电后的典型表现 | `VBoxManage controlvm <vm> keyboardputscancode 1c 9c`（一个回车）|
 | 构建机 SSH 不通但 VM 在跑 | 同上：客机根本没进 Linux | 先看 GRUB；`acpipowerbutton` 温柔关机后重启 |
 | 在 ISO 里搜不到某个字符串 | 根文件系统是**压缩**的 | "搜不到" ≠ "不存在"：在打包前的二进制/overlay 上验 |
+| 首启向导里点「中文/English」没反应 | 向导的鼠标点击路径在 `KeyRoute::Setup` 守卫之后，被 `continue` 吞掉（2026-10-24 已修，提交 `ba3b36f`）| 旧镜像上按 `1`（中文）/`2`（English）/`Esc` 绕过；装了新镜像后可直接点 |
+| 换了 ISO 但系统没变（安装像没执行）| 光驱没真正挂上，VM 10 秒"无引导介质"退出；脚本又把 `storageattach` 的错误吞了 | 挂载命令**不要** `Out-Null`；判据只看串口是否出现 `自动安装开始（keep_var=true）` |
+| 从盘启动后自动安装失败并关机（`打不开安装源 /dev/sr0` / `No medium found`）| 装好的系统引导配置仍带 `aether.keepvar=1`，且"空光驱仍报旧容量"骗过了 `live_medium()` | 临时：`sata0:1.present = "FALSE"` 摘掉光驱设备；根治：改用真正探测介质（见证据文档 SETUP-CLICK 第四节）|
 
 ## 七、当前状态（2026-10-17）
 
