@@ -38,6 +38,7 @@ from pathlib import Path
 # 与 aetherd::update::TARGET_PREFIXES / updater 同一条判据（改一处必须改三处，故在此断言自检）
 TARGET_PREFIXES = ("/var/apps/", "/etc/aether/", "/var/lib/aether/")
 MANIFEST_NAME = "update.json"
+MANIFEST_SIG_NAME = "update.json.sig"
 DEFAULT_ROOT = "/var/www/aether.cbnac.com"
 REMOTE_SUBDIR = "updates"
 
@@ -62,6 +63,16 @@ def plan_upload(package: Path) -> list[tuple[Path, str]]:
     manifest = package / MANIFEST_NAME
     if not manifest.is_file():
         raise SystemExit(f"包里没有 {MANIFEST_NAME}：{manifest}")
+    signature = package / MANIFEST_SIG_NAME
+    if not signature.is_file():
+        raise SystemExit(
+            f"包里没有 {MANIFEST_SIG_NAME}：{signature}（生产发布必须签名；"
+            "用 mkupdate.py --signing-key 生成）"
+        )
+    if signature.stat().st_size != 64:
+        raise SystemExit(
+            f"签名文件长度不对：{signature.stat().st_size} 字节（期望 64）"
+        )
     m = json.loads(manifest.read_text(encoding="utf-8"))
     version = m.get("version")
     if not isinstance(version, str) or not re.fullmatch(r"\d+(\.\d+)*", version):
@@ -70,7 +81,10 @@ def plan_upload(package: Path) -> list[tuple[Path, str]]:
     if not isinstance(files, list) or not files:
         raise SystemExit("清单里没有任何文件")
 
-    plan: list[tuple[Path, str]] = [(manifest, MANIFEST_NAME)]
+    plan: list[tuple[Path, str]] = [
+        (manifest, MANIFEST_NAME),
+        (signature, MANIFEST_SIG_NAME),
+    ]
     for f in files:
         p = f.get("path")
         if not isinstance(p, str):
@@ -175,8 +189,12 @@ def selftest() -> int:
             "version": "0.1.2",
             "files": [{"path": "/var/apps/hello/hello", "sha256": h, "bytes": 18}],
         }), encoding="utf-8")
+        # 发布契约要求签名文件存在；自检只验布局，不验密码学（Rust 单测验）
+        (pkg / MANIFEST_SIG_NAME).write_bytes(b"\x00" * 64)
         plan = dict((rel, local.name) for local, rel in plan_upload(pkg))
         check(plan.get(MANIFEST_NAME) == MANIFEST_NAME, "清单映射到 update.json（摊平，不带版本目录）")
+        check(plan.get(MANIFEST_SIG_NAME) == MANIFEST_SIG_NAME,
+              "签名映射到 update.json.sig（与清单同目录）")
         check(plan.get("var/apps/hello/hello") == "hello",
               "包内文件映射到 var/apps/hello/hello（**摊平**：guest 就是按这个 URL 拉的）")
         # 负向：清单里塞系统二进制 ⇒ 整包拒绝
@@ -196,6 +214,17 @@ def selftest() -> int:
             check(False, "负向：非法版本号应当被拒绝，却没有")
         except SystemExit:
             check(True, "负向：非法版本号被拒绝")
+        # 负向：缺签名 ⇒ 发布必须拒绝
+        (pkg / MANIFEST_NAME).write_text(json.dumps({
+            "version": "0.1.3",
+            "files": [{"path": "/var/apps/hello/hello", "sha256": h, "bytes": 18}],
+        }), encoding="utf-8")
+        (pkg / MANIFEST_SIG_NAME).unlink()
+        try:
+            plan_upload(pkg)
+            check(False, "负向：缺签名应当被拒绝，却没有")
+        except SystemExit:
+            check(True, "负向：缺签名被拒绝")
 
     print("自检" + ("全部通过" if not fails else f"失败（{len(fails)} 项）"))
     return 0 if not fails else 1

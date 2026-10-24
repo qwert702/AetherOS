@@ -8,6 +8,7 @@
 //!
 //! 流程：
 //! ```text
+//! 0. 验签   verify_manifest_signature → `update.json.sig`（Ed25519；先验签后解析）
 //! 1. 校验   parse_manifest → 版本、白名单、路径形态
 //! 2. 验哈希 verify_bundle  → 逐文件 sha256（不符就整包拒绝）
 //! 3. 暂存   stage          → 拷进 staged/，写 ready.json（含逐文件哈希）
@@ -26,6 +27,17 @@ use std::path::{Path, PathBuf};
 pub const UPDATE_ROOT: &str = "/var/lib/aether/update";
 /// 清单文件名。
 pub const MANIFEST: &str = "update.json";
+/// 清单签名文件名（Ed25519 detached signature，原始 64 字节）。
+// Windows 构建没有 Linux 更新器调用点；单测仍会断言 URL 拼接，故不判死代码。
+#[allow(dead_code)]
+pub const MANIFEST_SIG: &str = "update.json.sig";
+/// 更新清单签名公钥（32 字节原始 Ed25519 公钥）。
+///
+/// 这是**公开**材料，可以入库；私钥绝不入库。更新器只信任这把钥匙：
+/// 即使 HTTPS 服务器被攻破、清单与包被同时替换，没有私钥也签不出可被接受的清单。
+// Windows 构建没有 Linux 更新器调用点；单测仍会检查长度，故不判死代码。
+#[allow(dead_code)]
+pub const UPDATE_PUBKEY: &[u8] = include_bytes!("../keys/update_pubkey.bin");
 /// 待处理包的投递目录（管理员把更新包放这里；**界面只能选其中的直接子目录**）。
 ///
 /// 多这一层的理由：`stage()` 接的是"包目录路径"。若这个路径来自界面，
@@ -171,6 +183,43 @@ pub fn parse_manifest(text: &str) -> Result<UpdateManifest, String> {
         }
     }
     Ok(m)
+}
+
+/// 校验清单的 Ed25519 签名（生产公钥）。
+///
+/// 必须在 `parse_manifest` **之前**调用：先确认"这份清单确实是我们签的"，
+/// 再去解析其中的版本/路径/哈希。否则攻击者可以用任意 JSON 触发解析器。
+// 生产调用点在 Linux 更新器；Windows 构建只看得到测试，故不判死代码。
+#[allow(dead_code)]
+pub fn verify_manifest_signature(manifest: &[u8], signature: &[u8]) -> Result<(), String> {
+    verify_manifest_signature_with_key(manifest, signature, UPDATE_PUBKEY)
+}
+
+/// 可注入公钥的验签实现（测试用；生产入口见上方）。
+#[allow(dead_code)]
+pub fn verify_manifest_signature_with_key(
+    manifest: &[u8],
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<(), String> {
+    if public_key.len() != 32 {
+        return Err(format!(
+            "更新公钥长度不对（期望 32 字节 Ed25519 公钥，实得 {} 字节）",
+            public_key.len()
+        ));
+    }
+    if signature.len() != 64 {
+        return Err(format!(
+            "清单签名长度不对（期望 64 字节 Ed25519 签名，实得 {} 字节）",
+            signature.len()
+        ));
+    }
+    use ring::signature::{UnparsedPublicKey, ED25519};
+    UnparsedPublicKey::new(&ED25519, public_key)
+        .verify(manifest, signature)
+        .map_err(|_| {
+            "清单签名校验失败：签名与公钥不匹配（清单可能被篡改，整包拒绝）".to_string()
+        })
 }
 
 /// 逐文件核对哈希与大小。返回核对过的文件数。
@@ -671,4 +720,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // ── Ed25519 清单签名（2026-10-24）────────────────────────────────────
+    use ring::rand::SystemRandom;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    fn test_keypair() -> (Ed25519KeyPair, Vec<u8>) {
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("生成测试密钥失败");
+        let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("加载测试密钥失败");
+        let public = pair.public_key().as_ref().to_vec();
+        (pair, public)
+    }
+
+    #[test]
+    fn manifest_signature_accepts_exact_bytes() {
+        let (pair, public) = test_keypair();
+        let manifest = br#"{"version":"1.0.1","files":[]}"#;
+        let sig = pair.sign(manifest);
+        assert!(verify_manifest_signature_with_key(manifest, sig.as_ref(), &public).is_ok());
+    }
+
+    #[test]
+    fn tampered_manifest_is_rejected() {
+        let (pair, public) = test_keypair();
+        let mut manifest = br#"{"version":"1.0.1","files":[]}"#.to_vec();
+        let sig = pair.sign(&manifest);
+        manifest[0] ^= 0x01; // 改一个字节
+        let err = verify_manifest_signature_with_key(&manifest, sig.as_ref(), &public)
+            .expect_err("篡改后的清单必须被拒绝");
+        assert!(err.contains("签名校验失败"), "错误信息应说明验签失败：{err}");
+    }
+
+    #[test]
+    fn truncated_signature_is_rejected() {
+        let (pair, public) = test_keypair();
+        let manifest = b"signed manifest";
+        let sig = pair.sign(manifest);
+        let err = verify_manifest_signature_with_key(manifest, &sig.as_ref()[..63], &public)
+            .expect_err("63 字节签名必须被拒绝");
+        assert!(err.contains("长度不对"), "错误信息应说明长度：{err}");
+    }
+
+    #[test]
+    fn wrong_public_key_is_rejected() {
+        let (pair, _public) = test_keypair();
+        let (_other, other_public) = test_keypair();
+        let manifest = b"signed manifest";
+        let sig = pair.sign(manifest);
+        let err = verify_manifest_signature_with_key(manifest, sig.as_ref(), &other_public)
+            .expect_err("错误公钥必须被拒绝");
+        assert!(err.contains("签名校验失败"), "错误信息应说明验签失败：{err}");
+    }
+
+    #[test]
+    fn malformed_public_key_is_rejected() {
+        let (pair, _public) = test_keypair();
+        let manifest = b"signed manifest";
+        let sig = pair.sign(manifest);
+        let err = verify_manifest_signature_with_key(manifest, sig.as_ref(), &[0u8; 31])
+            .expect_err("31 字节公钥必须被拒绝");
+        assert!(err.contains("公钥长度不对"), "错误信息应说明公钥长度：{err}");
+    }
+
+    #[test]
+    fn production_public_key_is_a_real_ed25519_key() {
+        assert_eq!(UPDATE_PUBKEY.len(), 32, "生产公钥必须是 32 字节 Ed25519 公钥");
+        // 用生产公钥跑一次必败的验签：既确认包装函数可用，也确认它不会放行伪造签名。
+        assert!(verify_manifest_signature(b"not signed", &[0u8; 64]).is_err());
+    }
 }

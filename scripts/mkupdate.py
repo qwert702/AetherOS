@@ -6,6 +6,7 @@
 ```
 <out>/<version>/
   update.json                 { "version": "0.1.2", "files": [ {path, sha256, bytes} ] }
+  update.json.sig             Ed25519 签名（64 字节；生产打包必须）
   var/apps/hello/hello        包内相对路径 = 目标路径去掉开头的 '/'
 ```
 
@@ -35,6 +36,7 @@ from pathlib import Path
 # ── 与 Rust 侧一致的常量（改一处必须改两处，所以这里写死并加断言自检）────────
 TARGET_PREFIXES = ("/var/apps/", "/etc/aether/", "/var/lib/aether/")
 MANIFEST_NAME = "update.json"
+MANIFEST_SIG_NAME = "update.json.sig"
 MAX_FILES = 4096
 VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -94,7 +96,58 @@ def collect(stage: Path) -> list[tuple[str, Path]]:
     return out
 
 
-def pack(version: str, stage: Path, out: Path) -> Path:
+def _load_private_key(path: Path):
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError as exc:  # pragma: no cover - 只在缺依赖时走到
+        raise PackError(
+            "签名需要 cryptography（python -m pip install -r scripts/requirements.txt）"
+        ) from exc
+    key_path = path.expanduser()
+    if not key_path.is_file():
+        raise PackError(f"签名私钥不存在：{key_path}")
+    try:
+        key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    except (ValueError, TypeError) as exc:
+        raise PackError(f"签名私钥读不出来（需要 Ed25519 PKCS#8 PEM）：{exc}") from exc
+    if not isinstance(key, Ed25519PrivateKey):
+        raise PackError("签名私钥必须是 Ed25519 密钥")
+    return key
+
+
+def public_key_of(private_key) -> bytes:
+    from cryptography.hazmat.primitives import serialization
+
+    return private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+
+
+def sign_manifest(pkg: Path, key_path: Path) -> bytes:
+    """对 `update.json` 的**原始字节**签名，写 `update.json.sig`（64 字节）。"""
+    key = _load_private_key(key_path)
+    data = (pkg / MANIFEST_NAME).read_bytes()
+    signature = key.sign(data)
+    (pkg / MANIFEST_SIG_NAME).write_bytes(signature)
+    return signature
+
+
+def verify_manifest_signature(pkg: Path, public_key: bytes) -> bool:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    try:
+        signature = (pkg / MANIFEST_SIG_NAME).read_bytes()
+        data = (pkg / MANIFEST_NAME).read_bytes()
+        Ed25519PublicKey.from_public_bytes(public_key).verify(signature, data)
+        return True
+    except (InvalidSignature, OSError, ValueError):
+        return False
+
+
+def pack(version: str, stage: Path, out: Path, signing_key: Path | None = None) -> Path:
     if not valid_version(version):
         raise PackError(f"版本号不合法：{version!r}（只允许数字与点，如 1.2.3）")
     files = collect(stage)
@@ -112,10 +165,16 @@ def pack(version: str, stage: Path, out: Path) -> Path:
     (pkg / MANIFEST_NAME).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=False) + "\n", encoding="utf-8"
     )
+    if signing_key is not None:
+        sign_manifest(pkg, signing_key)
     return pkg
 
 
-def verify_package(pkg: Path) -> list[str]:
+def verify_package(
+    pkg: Path,
+    require_signature: bool = False,
+    public_key: bytes | None = None,
+) -> list[str]:
     """打包后的**独立复检**：读回清单、逐条核对哈希与大小（不信任打包过程）。"""
     problems: list[str] = []
     m = json.loads((pkg / MANIFEST_NAME).read_text(encoding="utf-8"))
@@ -140,6 +199,16 @@ def verify_package(pkg: Path) -> list[str]:
             problems.append(f"{path}：哈希不符（清单 {sha} / 实际 {sha256_file(src)}）")
         if src.stat().st_size != size:
             problems.append(f"{path}：大小不符（清单 {size} / 实际 {src.stat().st_size}）")
+    if require_signature:
+        sig = pkg / MANIFEST_SIG_NAME
+        if not sig.is_file():
+            problems.append(f"缺少签名文件：{MANIFEST_SIG_NAME}")
+        elif sig.stat().st_size != 64:
+            problems.append(f"签名长度不对：{sig.stat().st_size} 字节（期望 64）")
+        elif public_key is None:
+            problems.append("缺少验签公钥，无法确认签名")
+        elif not verify_manifest_signature(pkg, public_key):
+            problems.append("清单签名校验失败（签名与公钥不匹配）")
     return problems
 
 
@@ -204,6 +273,31 @@ def selftest() -> int:
         except PackError:
             check(True, "负向③：目标包目录已存在 ⇒ 拒绝覆盖")
 
+        # 签名闭环（有 cryptography 才跑；CI 的快速门禁不要求装它）
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        except ImportError:
+            print("  [SKIP] 未安装 cryptography，跳过签名自检")
+        else:
+            key = Ed25519PrivateKey.generate()
+            key_path = root / "test-signing-key.pem"
+            key_path.write_bytes(key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            ))
+            pub = public_key_of(key)
+            signed = pack("0.1.4", root / "stage", root / "updates", signing_key=key_path)
+            check((signed / MANIFEST_SIG_NAME).stat().st_size == 64, "签名文件为 64 字节")
+            check(verify_package(signed, require_signature=True, public_key=pub) == [],
+                  "签名包独立复检通过")
+            # 负向：改清单一个字节 ⇒ 验签必须失败
+            manifest = signed / MANIFEST_NAME
+            manifest.write_bytes(manifest.read_bytes().replace(b"0.1.4", b"0.1.5", 1))
+            probs = verify_package(signed, require_signature=True, public_key=pub)
+            check(any("签名校验失败" in p for p in probs), "负向④：清单被篡改 ⇒ 验签失败")
+
     print(f"\n自检结果：{'全部通过' if not fails else f'{len(fails)} 项失败'}")
     return 1 if fails else 0
 
@@ -213,6 +307,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--version", help="版本号，形如 0.1.2")
     ap.add_argument("--from", dest="stage", help="暂存树（目录结构 = 目标路径）")
     ap.add_argument("--out", default="updates", help="输出目录（默认 updates/）")
+    ap.add_argument("--signing-key", help="Ed25519 私钥 PEM（生产打包必须提供）")
+    ap.add_argument(
+        "--allow-unsigned-dev",
+        action="store_true",
+        help="仅本地开发：允许生成无签名包（生产发布禁止；客户端默认会拒绝）",
+    )
     ap.add_argument("--selftest", action="store_true", help="跑纯逻辑自检，不打包")
     args = ap.parse_args(argv)
 
@@ -220,18 +320,31 @@ def main(argv: list[str] | None = None) -> int:
         return selftest()
     if not args.version or not args.stage:
         ap.error("需要 --version 与 --from（或 --selftest）")
+    if not args.signing_key and not args.allow_unsigned_dev:
+        ap.error("生产打包必须提供 --signing-key（本地开发可用 --allow-unsigned-dev）")
     try:
-        pkg = pack(args.version, Path(args.stage), Path(args.out))
+        pkg = pack(
+            args.version,
+            Path(args.stage),
+            Path(args.out),
+            signing_key=Path(args.signing_key) if args.signing_key else None,
+        )
     except PackError as e:
         print(f"mkupdate: 打包失败（整包拒绝）：{e}", file=sys.stderr)
         return 2
-    problems = verify_package(pkg)
+    if args.signing_key:
+        pub = public_key_of(_load_private_key(Path(args.signing_key)))
+        problems = verify_package(pkg, require_signature=True, public_key=pub)
+    else:
+        problems = verify_package(pkg)
     if problems:
         print("mkupdate: 复检不通过：", file=sys.stderr)
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         return 3
-    print(f"mkupdate: 已生成 {pkg}（{len(json.loads((pkg / MANIFEST_NAME).read_text(encoding='utf-8'))['files'])} 个文件，复检通过）")
+    count = len(json.loads((pkg / MANIFEST_NAME).read_text(encoding="utf-8"))["files"])
+    signed = "已签名" if args.signing_key else "未签名（开发模式）"
+    print(f"mkupdate: 已生成 {pkg}（{count} 个文件，{signed}，复检通过）")
     return 0
 
 

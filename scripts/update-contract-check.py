@@ -40,6 +40,7 @@ from pathlib import Path
 # 与 aetherd::update::TARGET_PREFIXES 同一条判据
 TARGET_PREFIXES = ("/var/apps/", "/etc/aether/", "/var/lib/aether/")
 MANIFEST_NAME = "update.json"
+MANIFEST_SIG_NAME = "update.json.sig"
 
 
 def host_file(rel: str) -> bool:
@@ -55,8 +56,14 @@ def published_layout(package: Path, site: Path) -> list[tuple[str, Path]]:
     顺带校验清单里的每个 path 都在白名单内、且包内文件存在。
     """
     manifest = package / MANIFEST_NAME
+    signature = package / MANIFEST_SIG_NAME
+    if not signature.is_file():
+        raise SystemExit(f"包内缺签名：{signature}")
     m = json.loads(manifest.read_text(encoding="utf-8"))
-    plan: list[tuple[str, Path]] = [(MANIFEST_NAME, manifest)]
+    plan: list[tuple[str, Path]] = [
+        (MANIFEST_NAME, manifest),
+        (MANIFEST_SIG_NAME, signature),
+    ]
     for f in m["files"]:
         rel = f["path"].lstrip("/")
         if not host_file(rel):
@@ -84,6 +91,8 @@ def make_package(root: Path) -> Path:
                    "sha256": hashlib.sha256(body).hexdigest(),
                    "bytes": len(body)}],
     }, ensure_ascii=False), encoding="utf-8")
+    # 契约测试只验"布局与 URL"；签名的密码学校验由 Rust 单测与 mkupdate 自检覆盖。
+    (pkg / MANIFEST_SIG_NAME).write_bytes(b"\x00" * 64)
     return pkg
 
 
@@ -121,6 +130,8 @@ def contract_check() -> int:
                 raw = urllib.request.urlopen(f"{base}/{MANIFEST_NAME}", timeout=10).read()
                 m = json.loads(raw.decode("utf-8"))
                 check(m["version"] == "0.1.2", "拉到的清单版本正确（0.1.2）")
+                sig = urllib.request.urlopen(f"{base}/{MANIFEST_SIG_NAME}", timeout=10).read()
+                check(len(sig) == 64, f"签名文件按 guest URL 可取到且为 64 字节（实得 {len(sig)}）")
                 # ② 每个文件按 <base>/<rel> 拉，逐字节对哈希
                 all_ok = True
                 for f in m["files"]:

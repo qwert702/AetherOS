@@ -1,4 +1,4 @@
-﻿# 装机与更新操作手册（2026-10-17）
+# 装机与更新操作手册（2026-10-17）
 
 > **给谁看**：要把 AetherOS 装进 VMware、或要把系统/应用更新到新版本的人。
 > **原则**：能用一条命令就不用两条；每个破坏性动作都写明**怎么回滚**。
@@ -48,12 +48,18 @@ python scripts/vmware-keepvar.py --apply --expect-uuid <①的UUID> --min-record
 ### 宿主侧：打一个包
 
 ```powershell
+# 首次：生成 Ed25519 签名密钥（私钥必须在仓库外，0600；公钥写入 aetherd/keys/）
+python scripts/update-keygen.py --private-key "$HOME/.aether/update-signing-key.pem"
+
 # 暂存树按"目标路径"摆：stage/var/apps/hello/hello ⇒ 目标 /var/apps/hello/hello
-python scripts/mkupdate.py --version 0.1.2 --from stage --out updates
+python scripts/mkupdate.py --version 0.1.2 --from stage --out updates `
+  --signing-key "$HOME/.aether/update-signing-key.pem"
 ```
 
 > 白名单**只有** `/var/apps/`、`/etc/aether/`、`/var/lib/aether/`；
 > 系统组件（`/usr/bin/*`、内核、合成器）**不能**走这条路 —— 那用第三节的整机更新。
+> 2026-10-24 起，生产包必须带 `update.json.sig`；`--allow-unsigned-dev` 只用于本地开发，
+> guest 默认会拒绝无签名清单。
 
 ### 发布
 
@@ -67,7 +73,8 @@ python scripts/publish-updates.py updates/0.1.2 --apply     # 真上传（要 AE
 `aetherd` 每 `check_minutes`（配置在 `/etc/aether/updater.json`，**只接受 https**）检查一次：
 
 ```
-拉清单 → 比版本（拒降级）→ 逐文件下载 → 校验哈希（不符整包拒绝）
+拉清单 + update.json.sig → **先验签（Ed25519）** → 比版本（拒降级）
+→ 逐文件下载 → 校验哈希（不符整包拒绝）
 → 投 incoming/<版本>/ → stage() 暂存 → **下次启动生效**
 ```
 

@@ -1,4 +1,4 @@
-﻿//! **自动更新：定时从更新源拉包并暂存**（P1 guest 侧，2026-10-16）。
+//! **自动更新：定时从更新源拉包并暂存**（P1 guest 侧，2026-10-16）。
 //!
 //! ## 它做什么 / 不做什么
 //!
@@ -7,17 +7,20 @@
 //! * 不做：**不直接改系统文件**。真正生效仍由 PID 1 在下次启动时按 `apply.list` 应用
 //!   —— 这条链是既有机制，本模块只是把"包"送进 `incoming/`，与管理员手工投放等价。
 //!
-//! ## 三条硬约束（都来自既有设计，别在这里绕开）
+//! ## 四条硬约束（都来自既有设计，别在这里绕开）
 //!
-//! 1. **拒降级**：`stage()` 自己会挡（`version_is_newer`），这里也先挡一次，省一次下载；
-//! 2. **整包拒绝**：任一文件哈希/大小不符就不投递（`verify_bundle` 的语义）；
-//! 3. **只写 incoming/**：目标路径的白名单与路径形态由既有的 `parse_manifest` 校验
+//! 1. **先验签**：`update.json` 必须有 `update.json.sig`（Ed25519），验签失败整包拒绝；
+//! 2. **拒降级**：`stage()` 自己会挡（`version_is_newer`），这里也先挡一次，省一次下载；
+//! 3. **整包拒绝**：任一文件哈希/大小不符就不投递（`verify_bundle` 的语义）；
+//! 4. **只写 incoming/**：目标路径的白名单与路径形态由既有的 `parse_manifest` 校验
 //!   （绝对、无 `..`、无控制字符、命中 `/var/apps` `/etc/aether` `/var/lib/aether`）。
 //!
 //! ## 安全边界（诚实写在这里）
 //!
 //! * 更新源只接受 **https://** —— 明文 http 会被中间人换包（哈希清单与包同源，一起被换）。
 //!   局域网明文源要显式改这一条，属于刻意的取舍，不是遗漏。
+//! * HTTPS 只保护传输；**清单与包的真实性由 Ed25519 签名保证**。服务器被攻破时，
+//!   没有私钥就签不出能被接受的清单。`AETHER_ALLOW_UNSIGNED_UPDATE=1` 只用于本地开发。
 //! * 失败一律**只记日志、不重试轰炸**：下一轮（默认 6 小时）再看，避免把更新源打挂。
 //! * 开关默认 **关**：配置不存在就不跑（`/etc/aether/updater.json` 由管理员/镜像提供）。
 
@@ -41,6 +44,12 @@ pub const MAX_CHECK_MINUTES: u64 = 7 * 24 * 60;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// 清单大小上限（1 MB）：清单只该是路径/哈希列表，不应该有别的载荷。
+#[cfg(target_os = "linux")]
+pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+/// 签名大小上限（128 字节）：Ed25519 原始签名固定 64 字节，留一倍余量。
+#[cfg(target_os = "linux")]
+pub const MAX_SIGNATURE_BYTES: usize = 128;
 /// 单次 HTTP 超时：清单与文件都用它。
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
@@ -83,6 +92,23 @@ pub fn manifest_url(base: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), MANIFEST_NAME)
 }
 
+/// 清单签名的完整 URL（与清单同目录的 `update.json.sig`）。
+pub fn signature_url(base: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        crate::update::MANIFEST_SIG
+    )
+}
+
+/// 是否允许"无签名更新"——**只用于本地开发**，生产必须保持关闭。
+#[cfg(target_os = "linux")]
+fn unsigned_update_allowed() -> bool {
+    std::env::var("AETHER_ALLOW_UNSIGNED_UPDATE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
 /// 远端这个版本是否**已经暂存过**（等着下次启动生效）。
 ///
 /// 为什么需要它：`stage()` 成功之后 `incoming/<version>/` 按设计会留着，
@@ -119,16 +145,39 @@ fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build()
 }
 
-/// 取清单文本。
+/// 取一段有限大小的字节（清单、签名共用）。
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
-fn fetch_manifest(url: &str) -> Result<String, String> {
+fn fetch_bytes(url: &str, limit: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
     let resp = agent()
         .get(url)
         .call()
-        .map_err(|e| format!("拉清单失败（{url}）：{e}"))?;
-    resp.into_string()
-        .map_err(|e| format!("读清单正文失败（{url}）：{e}"))
+        .map_err(|e| format!("拉取失败（{url}）：{e}"))?;
+    let mut reader = resp.into_reader();
+    let mut body = Vec::new();
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|e| format!("读正文失败（{url}）：{e}"))?;
+    if body.len() > limit {
+        return Err(format!("{url} 超过大小上限 {limit} 字节"));
+    }
+    Ok(body)
+}
+
+/// 取清单原始字节（**验签必须基于原始字节**，不能先转字符串再拼回去）。
+#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+fn fetch_manifest(url: &str) -> Result<Vec<u8>, String> {
+    fetch_bytes(url, MAX_MANIFEST_BYTES)
+}
+
+/// 取清单签名（原始 64 字节）。
+#[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
+fn fetch_signature(url: &str) -> Result<Vec<u8>, String> {
+    fetch_bytes(url, MAX_SIGNATURE_BYTES)
 }
 
 /// 下载单个文件到 `dest`，带大小上限（边写边数，超限即中止并返回 Err）。
@@ -172,7 +221,24 @@ fn download_to(url: &str, dest: &Path) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn run_once(root: &Path, cfg: &Config) -> Result<Outcome, String> {
     let url = manifest_url(&cfg.url);
-    let text = fetch_manifest(&url)?;
+    let manifest_bytes = fetch_manifest(&url)?;
+    let sig_url = signature_url(&cfg.url);
+    let signature = match fetch_signature(&sig_url) {
+        Ok(s) => s,
+        Err(e) if unsigned_update_allowed() => {
+            eprintln!(
+                "[aetherd] ⚠ 自动更新开发模式：允许无签名清单（AETHER_ALLOW_UNSIGNED_UPDATE=1；{e}）"
+            );
+            Vec::new()
+        }
+        Err(e) => return Err(e),
+    };
+    // **先验签、后解析**：攻击者不能拿任意 JSON 喂给解析器。
+    if !(signature.is_empty() && unsigned_update_allowed()) {
+        crate::update::verify_manifest_signature(&manifest_bytes, &signature)?;
+    }
+    let text = String::from_utf8(manifest_bytes)
+        .map_err(|e| format!("清单不是合法 UTF-8：{e}"))?;
     let manifest = crate::update::parse_manifest(&text)?;
     let current = crate::update::current_version();
     if !crate::update::version_is_newer(&manifest.version, &current) {
@@ -301,6 +367,19 @@ mod tests {
         assert_eq!(manifest_url("https://h/updates/"), "https://h/updates/update.json");
         // 少一个斜杠就 404 是最常见的部署坑，两种写法必须等价
         assert_eq!(manifest_url("https://h"), "https://h/update.json");
+    }
+
+    #[test]
+    fn signature_url_matches_manifest_layout() {
+        assert_eq!(
+            signature_url("https://h/updates"),
+            "https://h/updates/update.json.sig"
+        );
+        assert_eq!(
+            signature_url("https://h/updates/"),
+            "https://h/updates/update.json.sig"
+        );
+        assert_eq!(signature_url("https://h"), "https://h/update.json.sig");
     }
 
     #[test]
