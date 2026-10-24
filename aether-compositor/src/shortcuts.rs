@@ -165,7 +165,14 @@ mod tests {
     /// 而没改这张表，这条测试就会变红 —— 这正是它存在的意义。
     #[test]
     fn every_listed_shortcut_is_actually_wired_in_the_source() {
-        let main_src = include_str!("main.rs");
+        // 事件循环在 2026-10-24 拆到 app_main.rs / fbdev_app.rs；三处都扫，避免拆分后探针静默失效。
+        let main_src = concat!(
+            include_str!("main.rs"),
+            "\n",
+            include_str!("app_main.rs"),
+            "\n",
+            include_str!("fbdev_app.rs")
+        );
         let input_src = include_str!("input.rs");
         for s in SHORTCUTS {
             let hay = if s.in_input { input_src } else { main_src };
@@ -175,7 +182,7 @@ mod tests {
                 s.keys,
                 s.desc,
                 s.probe,
-                if s.in_input { "input.rs" } else { "main.rs" }
+                if s.in_input { "input.rs" } else { "main.rs/app_main.rs" }
             );
         }
     }
@@ -210,7 +217,13 @@ mod tests {
     /// 所以顺带断言探针不能太短）。
     #[test]
     fn the_probe_mechanism_itself_rejects_fabricated_entries() {
-        let main_src = include_str!("main.rs");
+        let main_src = concat!(
+            include_str!("main.rs"),
+            "\n",
+            include_str!("app_main.rs"),
+            "\n",
+            include_str!("fbdev_app.rs")
+        );
         let fabricated = "input::UiEvent::CtrlAltDel('x') => {";
         assert!(
             !main_src.contains(fabricated),

@@ -1409,6 +1409,7 @@ pub enum WinKind {
     /// 文本文件预览
     Preview,
     /// Wayland 客户端窗口（3.1 spike）：内容由客户端经 wl_shm 提供
+    #[allow(dead_code)] // 生产路径未接；由 sync_wayland 的测试构造。
     Wayland,
     /// **设置中心**（2026-09-29 P3）：左侧分组导航 + 右侧页面内容。
     /// 在此之前点 Dock 的"设置"打开的是文件管理器（标题写着"设置"的假窗口）。
