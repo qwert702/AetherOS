@@ -1,4 +1,4 @@
-﻿[中文](README.md) | **English** · [**Download ISO (41.0 MB)**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
+[中文](README.md) | **English** · [**Download ISO (41.0 MB)**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
 
 # AetherOS
 
@@ -16,14 +16,14 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 
 | | |
 |---|---|
-| **Scale** | 52,490 lines of Rust / 73 source files / 7 crates (measured 2026-10-06) |
+| **Scale** | 52,478 lines of Rust / 73 source files / 7 crates (measured 2026-10-06) |
 | **Verification** | 793 unit tests green · 0 compiler warnings on Windows and on 6/7 crates for musl (`aetherd` cannot be cross-checked because of ring) · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
 | **Artifact** | bootable ISO ≈ 41.0 MB, tested booting in QEMU, VirtualBox and VMware |
 
 ## What makes it unusual
 
 - **The whole user space is home-grown.** The compositor rasterizes in software over `fbdev` and needs no GPU; the VT/ANSI parser, the PTY glue layer, the Chinese input method, PID 1, the IPC protocol and the disk installer are all first-party code. None of the seven crates is glued together from an existing desktop stack.
-- **The AI is a first-class part of the system, not a chat window.** `aetherd` runs as a daemon and exposes 15 tools that actually operate the machine. Simple commands are answered by an offline rule-based intent channel (**no model call at all**); only complex requests reach an LLM, which is routed locally or to the cloud according to privacy and complexity.
+- **The AI is a first-class part of the system, not a chat window.** `aetherd` runs as a daemon and exposes 16 tools that actually operate the machine. Simple commands are answered by an offline rule-based intent channel (**no model call at all**); only complex requests reach an LLM, which is routed locally or to the cloud according to privacy and complexity.
 - **The permission model is the most carefully designed part of the system.** Four authorization levels (L0–L3), one-time confirmation tokens bound to both the tool and its arguments (5-minute expiry, single use), six distinct audit verdicts, and a rejection cooldown. The key invariant is **sensitive output is pinned local**: once `read_file` or `clipboard_read` results enter the context, every later round of that conversation stays on-device and never goes to the cloud. This was not inferred — the exfiltration path was demonstrated end to end with **two fake LLM endpoints and a canary file** (a 13-character input and two file reads, with the canary indeed arriving at the cloud endpoint), and the fixed behavior is pinned by two `router` unit tests.
 - **Verifiable, not "looks fine to me".** Beyond the 793 unit tests there is a **per-pixel regression gate over 19 archived walkthrough images** (fails on more than 0.02% difference), a 12 h 43 m stability soak (3,053 patrol rounds: 0 service exits, 0 restarts, 0 panics, no memory leak trend), and four full code-review rounds with **zero unresolved findings**.
 - **It really installs applications.** On a system with no package manager at all, it ships its own application package format (manifest + dependency preflight). Installed programs are immediately callable from `/usr/local/bin`, **an icon appears in the Dock**, and clicking it opens a terminal and runs the program.
@@ -85,10 +85,11 @@ Written down so nobody misuses it — not self-deprecation. The full list lives 
   `platform/build-iso.sh` now applies isohybrid with a self-check, so a rebuilt ISO will
   support installation (see
   [`docs/报告/安全审计（SECURITY-AUDIT）-2026-10-02.md`](docs/报告/安全审计（SECURITY-AUDIT）-2026-10-02.md), finding H-6).
-- **No user accounts**: the shipped image has **no root password**, so console access
+- **No user accounts**: the shipped v0.1.1 image has **no root password**, so console access
   (including serial) is root — a deliberate trade-off for a live demo system (stated in the
-  boot banner and `/etc/issue`). To lock an image down, build with
-  `AETHER_ROOT_PW_HASH="$(openssl passwd -6)"` (see `platform/build-iso.sh`).
+  boot banner and `/etc/issue`). Starting 2026-10-24, self-built images are secure by default:
+  set `AETHER_ROOT_PW_HASH="$(openssl passwd -6)"`; a demo image must explicitly set
+  `AETHER_DEMO=1`, otherwise the build fails (see `platform/build-iso.sh`).
 - `aether-shell` is an 11-line placeholder; shell duties currently sit inside the compositor.
 
 ## Application packages

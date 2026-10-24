@@ -5,15 +5,28 @@
 ## 一键构建
 
 ```bash
-./platform/build-iso.sh          # 在 Linux/Ubuntu 构建机内运行（WSL2 或独立 VM 均可）
+# 演示镜像（root 无口令；必须显式写 AETHER_DEMO=1）
+AETHER_DEMO=1 ./platform/build-iso.sh
+
+# 上锁镜像（root 需要口令；推荐用于任何非演示构建）
+AETHER_ROOT_PW_HASH="$(openssl passwd -6)" ./platform/build-iso.sh
 ```
+
+> 2026-10-24 起**没有第三种默认值**：两个变量都不设时脚本直接失败，避免
+> "忘了设口令就发布"。只做认证模式检查可跑 `./platform/build-iso.sh --check-auth`。
 
 脚本三步（头注释为准）：musl 静态交叉编译自研组件 → 连同中文屏显字体拷进 rootfs overlay
 → 下载 Buildroot 2024.02.1、应用 `aetheros_defconfig` 并出 ISO。
-产物落在仓库根目录 `aetheros-0.1-amd64.iso`（约 30 MB），中间产物在 `platform/build/`（不入版本控制）。
+产物落在仓库根目录 `aetheros-0.1-amd64.iso`（v0.1.1 为 41.0 MB），中间产物在 `platform/build/`（不入版本控制）。
 
 构建机准备见 `scripts/setup-vm.ps1`；在 VM 内也可以用 `scripts/vm-build-iso.sh` 包一层
 （它负责把 `~/.cargo/bin` 补进 PATH，并把日志落到 `iso-build.log`）。
+
+宿主侧 Python 工具依赖已锁定在 `scripts/requirements.txt`：
+
+```bash
+python -m pip install -r scripts/requirements.txt
+```
 
 ## 目录
 

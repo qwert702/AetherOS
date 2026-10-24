@@ -1,7 +1,9 @@
-﻿/target
+/target
 **/target
 Cargo.lock.orig
 *.iso
+# 本地归档的旧构建产物（含 ISO/校验文件；发布资产以 site/release.json 为准）
+/dist/
 preview.bmp
 build/rootfs/
 build/downloads/

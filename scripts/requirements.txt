@@ -1,0 +1,16 @@
+# AetherOS 宿主侧 Python 依赖（2026-10-24 锁定）
+#
+# 这些只用于 scripts/ 下的开发/构建/发布工具，不进 guest 镜像。
+# 版本取自 2026-10-24 开发机实测（python 3.11）；升级前请跑：
+#   python -m pip install -r scripts/requirements.txt
+#   python scripts/gates.py --fast
+#
+# 说明：
+#   * paramiko    —— scripts/vm.py、deploy-site.py、publish-updates.py 的 SSH/SFTP
+#   * cryptography—— paramiko 的间接依赖；同时用于 Ed25519 更新签名/验签
+#   * Pillow      —— scripts/bmp2png.py、截图/走查图处理
+#   * fonttools   —— scripts/mkfont.py（Noto CJK 子集，构建机用）
+paramiko==5.0.0
+cryptography==49.0.0
+Pillow==12.2.0
+fonttools==4.63.0

@@ -31,7 +31,6 @@ use std::time::Duration;
 
 /// 配置文件（在 `TARGET_PREFIXES` 白名单内，可被更新包自己更新）。
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 pub const CONFIG_PATH: &str = "/etc/aether/updater.json";
 /// 更新源上清单文件的固定名字（与 `crate::update::MANIFEST` 同名，指同一个东西）。
 pub const MANIFEST_NAME: &str = "update.json";
@@ -42,7 +41,6 @@ pub const MIN_CHECK_MINUTES: u64 = 5;
 pub const MAX_CHECK_MINUTES: u64 = 7 * 24 * 60;
 /// 单文件大小上限（64 MB）：防"清单说 1 字节、实际给几个 GB"把持久分区写满。
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// 清单大小上限（1 MB）：清单只该是路径/哈希列表，不应该有别的载荷。
 #[cfg(target_os = "linux")]
@@ -51,7 +49,6 @@ pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 #[cfg(target_os = "linux")]
 pub const MAX_SIGNATURE_BYTES: usize = 128;
 /// 单次 HTTP 超时：清单与文件都用它。
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -131,7 +128,6 @@ pub fn should_check(last_check_unix: u64, now_unix: u64, check_minutes: u64) -> 
 /// 一轮检查的结果（既用于日志，也用于测试断言）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 pub enum Outcome {
     /// 远端不比当前新 —— 什么都不做。
     UpToDate { remote: String, current: String },
@@ -140,13 +136,11 @@ pub enum Outcome {
 }
 
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build()
 }
 
 /// 取一段有限大小的字节（清单、签名共用）。
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 fn fetch_bytes(url: &str, limit: usize) -> Result<Vec<u8>, String> {
     use std::io::Read;
@@ -168,20 +162,17 @@ fn fetch_bytes(url: &str, limit: usize) -> Result<Vec<u8>, String> {
 
 /// 取清单原始字节（**验签必须基于原始字节**，不能先转字符串再拼回去）。
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 fn fetch_manifest(url: &str) -> Result<Vec<u8>, String> {
     fetch_bytes(url, MAX_MANIFEST_BYTES)
 }
 
 /// 取清单签名（原始 64 字节）。
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 fn fetch_signature(url: &str) -> Result<Vec<u8>, String> {
     fetch_bytes(url, MAX_SIGNATURE_BYTES)
 }
 
 /// 下载单个文件到 `dest`，带大小上限（边写边数，超限即中止并返回 Err）。
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 fn download_to(url: &str, dest: &Path) -> Result<(), String> {
     use std::io::{Read, Write};
@@ -217,7 +208,6 @@ fn download_to(url: &str, dest: &Path) -> Result<(), String> {
 /// 跑一轮：拉清单 → 比版本 → 下载 → 校验 → 投递 → 暂存。
 ///
 /// `root` 是更新根目录（生产上是 [`crate::update::UPDATE_ROOT`]；测试里传临时目录）。
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub fn run_once(root: &Path, cfg: &Config) -> Result<Outcome, String> {
     let url = manifest_url(&cfg.url);
@@ -284,7 +274,6 @@ pub fn run_once(root: &Path, cfg: &Config) -> Result<Outcome, String> {
 
 /// 读配置；文件不存在或读不出内容都视为"未开启"（返回 `None` 并打一行日志）。
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 pub fn load_config(path: &Path) -> Option<Config> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -305,7 +294,6 @@ pub fn load_config(path: &Path) -> Option<Config> {
 
 /// 起一个后台线程做定时更新。**失败不影响服务启动**（与 `apps::link_all` 同一条原则：
 /// AI 中枢才是本体，更新是附加能力）。
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub fn spawn(root: PathBuf, config_path: PathBuf) -> Option<std::thread::JoinHandle<()>> {
     let cfg = load_config(&config_path)?;

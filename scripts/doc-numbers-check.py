@@ -211,6 +211,27 @@ def main() -> int:
         for _v in _hits:
             if real_files is not None and _v != real_files:
                 problems.append(f"INDEX「N 个 .rs」：文档 {_v}，实测 {real_files}")
+    # ③g 工具数：从 `aetherd/src/tools.rs::registry()` 实测，防止"15/16 个工具"再漂。
+    _tools = ROOT / "aetherd" / "src" / "tools.rs"
+    if _tools.exists():
+        _tt = _tools.read_text(encoding='utf-8')
+        _start = _tt.find("pub fn registry()")
+        _end = _tt.find("pub fn is_known_tool")
+        if _start >= 0 and _end > _start:
+            _real_tools = len(re.findall(r'name:\s*"([a-z_]+)"', _tt[_start:_end]))
+            for _label, _path, _pat in (
+                ("README.md 工具数", README, r"(\d+) 个工具"),
+                ("README.en 工具数", README_EN, r"(\d+) tools"),
+                ("INDEX 工具数", INDEX, r"\*\*(\d+) 个工具\*\*"),
+            ):
+                if not _path.exists():
+                    continue
+                _vals = [int(v) for v in re.findall(_pat, _path.read_text(encoding='utf-8'))]
+                print(f"③g {_label}：{_vals} / 实测 {_real_tools}")
+                for _v in _vals:
+                    if _v != _real_tools:
+                        problems.append(f"{_label}：文档 {_v}，实测 {_real_tools}")
+
     if REPORT.exists():
         _ft = REPORT.read_text(encoding='utf-8')
         for _pat, _what, _real in (

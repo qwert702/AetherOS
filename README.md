@@ -9,7 +9,7 @@
 
 | | |
 |---|---|
-| **规模** | 合计 52,490 行 Rust / 73 个源文件 / 7 个 crate（2026-10-11 实测） |
+| **规模** | 合计 52,478 行 Rust / 73 个源文件 / 7 个 crate（2026-10-11 实测） |
 | **验证** | 793 项单元测试全绿 · Windows 侧 0 编译警告、musl 侧 6/7 crate 0 警告（`aetherd` 受 ring 交叉编译限制查不了）· 连续 **12 小时 43 分**不崩 · 权限链路端到端实证 |
 | **产物** | 可引导 ISO 约 41.0 MB，QEMU / VirtualBox / VMware 三个平台都实测开机过 |
 
@@ -25,7 +25,7 @@
 - **整条用户态都是自己写的。** 窗口合成器走 fbdev 软件光栅化（不依赖 GPU），VT/ANSI 解析器、
   PTY 胶合层、中文输入法、PID 1、IPC 协议、磁盘安装器全部自研 —— 7 个 crate 里没有一行是
   拿现成桌面组件拼出来的。
-- **AI 是系统的一等公民，不是聊天窗口。** `aetherd` 常驻，15 个工具能真的操作这台机器；
+- **AI 是系统的一等公民，不是聊天窗口。** `aetherd` 常驻，16 个工具能真的操作这台机器；
   简单指令走离线规则通道（**不调模型**），复杂请求才进 LLM，并按隐私与复杂度在本地/云端混合路由。
 - **权限模型是设计得最细的一块。** L0–L3 分级 + 确认令牌（绑定工具与参数、5 分钟过期、用后即废）
   + 6 种审计裁决值 + 拒绝冷却。其中 **「敏感输出强制本地」** 尤其关键：`read_file` /
@@ -89,9 +89,10 @@ cargo test --workspace                             # 单元测试（Windows 793 
   在**动目标盘之前**拒绝执行并说明原因。引导与 Live 桌面不受影响。
   `platform/build-iso.sh` 已补上 isohybrid 步骤与自检，重新构建后装机可用
   （见 [`docs/报告/安全审计（SECURITY-AUDIT）-2026-10-02.md`](docs/报告/安全审计（SECURITY-AUDIT）-2026-10-02.md) H-6）
-- **没有账号体系**：出厂镜像 root **无口令**，控制台（含串口）拿到就是 root ——
-  Live 演示系统的刻意取舍（启动横幅与 `/etc/issue` 都会写明）。要上锁的镜像：
-  构建时设 `AETHER_ROOT_PW_HASH="$(openssl passwd -6)"` 重新构建（见 `platform/build-iso.sh`）
+- **没有账号体系**：已发布的 v0.1.1 是 Live 演示镜像，root **无口令**，控制台（含串口）
+  拿到就是 root —— 这是刻意取舍（启动横幅与 `/etc/issue` 都会写明）。2026-10-24 起
+  自建镜像改为**安全默认**：必须设 `AETHER_ROOT_PW_HASH="$(openssl passwd -6)"`；
+  只做演示必须显式 `AETHER_DEMO=1`，否则构建直接失败（见 `platform/build-iso.sh`）
 - `aether-shell` 是 11 行占位，Shell 职责暂时压在 compositor 里
 
 ## 装应用
@@ -205,7 +206,7 @@ aether-ops 巡检 ─▶ init 服务状态 + /var/log/aether ─▶ 自愈重启
 | 目录 | 行数 | 说明 | 里程碑 |
 |---|---|---|---|
 | `aether-compositor/` | 32,735 | 合成器 + 桌面 Shell 职责（渲染 / 布局 / 终端 / IME / Wayland spike） | M1–M2 |
-| `aetherd/` | 13,071 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
+| `aetherd/` | 13,059 | AI 中枢守护进程（agent / 工具 / 权限 / 路由 / 模型配置 / 回收站 / 应用安装） | M4 |
 | `aether-init/` | 3,421 | PID 1 与服务管理 | M3 |
 | `aether-ops/` | 1,026 | AI 运维与自修复 | M5 |
 | `aether-install/` | 1,071 | 磁盘安装器 | M6 |
