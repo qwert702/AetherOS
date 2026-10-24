@@ -208,3 +208,42 @@ AETHER-AUTOINSTALL: FAIL
 [    2.951603] sd 0:0:0:0: [sda] Stopping disk
 [    3.809270] reboot: Power down
 ```
+
+---
+
+## 七、★ 补记（2026-10-24 21:40）：坑 3 已**根治并全部验证通过**
+
+### 修法（提交 `9781044`，方案 A）
+把"光驱里有没有盘"的判据从**读 `/sys/block/sr0/size`** 换成**内核的权威回答**：
+
+| 位置 | 改动 |
+|---|---|
+| `aether-init/src/autoinstall.rs` | 新增 `CDS_NO_INFO=0` / `CDS_NO_DISC=1` / `CDS_TRAY_OPEN=2` / `CDS_DRIVE_NOT_READY=3` / `CDS_DISC_OK=4` 常量与纯函数 `disc_ready(status)`：**只有 `CDS_DISC_OK` 才算 live** |
+| 同上 | 新增 `cdrom_has_disc()`：打开 `/dev/sr0`，用 `CDROM_DRIVE_STATUS`(`0x5326`) ioctl 问一次；打不开设备（没有光驱/已被摘掉）⇒ `false`；`DISC_OK` ⇒ `true`；`NO_DISC` ⇒ 立刻 `false`；其它（未就绪等虚拟光驱瞬时态）⇒ **有界重试 20×100ms** 后判否，绝不无限等待 |
+| 同上 | `requested()` 的 `live` 改调 `cdrom_has_disc()`，删掉读 `size` 的旧路径 |
+
+**为什么这是根治**：`CDROM_DRIVE_STATUS` 回答的是"**驱动器里到底有没有介质**"，而不是"设备最后见过多大容量的盘"，
+所以"光驱设备在、但没放盘"这种 VMware 常态不会再被误判成 live。
+
+### 测试
+`autoinstall::tests::disc_ready_only_accepts_disc_ok`：
+正向 `CDS_DISC_OK` ⇒ `true`；负向 `NO_DISC` / `TRAY_OPEN` / `DRIVE_NOT_READY` / `NO_INFO` / `-1`（ioctl 失败）⇒ 全部 `false`。
+保留 `no_live_medium_never_installs_even_with_flags`（`plan` 层：无 live 介质时，命令行带 `autoinstall`/`keepvar` 也一律 `Action::None`）。
+
+### 端到端验证（VMware，全部串口原文）
+| 阶段 | 串口证据 | 结论 |
+|---|---|---|
+| 安装（保留 /var）| `自动安装开始（keep_var=true）` → `沿用原分区项` → `跳过 wipefs/mkfs` → `自动安装完成` → **`AETHER-KEEPVAR: PASS`** | 装进去了 ✓ |
+| **从磁盘启动**（光驱设备保留、不放盘 —— 正是当初翻车的场景）| **`自动动作跳过：光驱里没有盘（说明不是 live 引导，而是从磁盘引导）—— 引导配置里残留的 aether.autoinstall/keepvar 参数不会触发重装`** | **修复生效 ✓**（是"跳过"，不是"失败"）|
+| 系统起来 | `持久化分区已挂载: /dev/sda2 -> /var` + `[input] 采集线程已启动` + `aether-compositor: evdev 输入已接入（5 个设备）` | 盘上是**带鼠标修复 + 向导点击修复 + 光驱判据修复**的新版 ✓ |
+
+### 顺带记录的两个操作坑（这次卡了两小时）
+1. **`vmware.exe` 实例卡住会让后续 `-x` 全部静默失败**：表现为 `vmware.log` 的修改时间不再前进、
+   `vmware-vmx` 进程数为 0、串口文件不生成。处置：`Stop-Process -Name vmware` + 清掉 `*.lck` 再启动。
+2. **C 盘只剩 0.2 GB 时 VMware 直接起不来**（同样表现为静默失败）。处置：清 `%TEMP%` / `%LOCALAPPDATA%\Temp` /
+   `C:\Windows\Temp`，腾到 0.5 GB 以上即可；根治仍需清理 C 盘大户（`Users` 约 108 GB、`Program Files` 约 28 GB）。
+
+### 当前结论
+**坑 3 关闭** ✓。VMware 里的 `AetherOS` 现在是**带全部修复**的系统，且**每次从盘启动不会再尝试重装** ✓。
+剩余的已知未验证项只有一条：**向导按钮点击**目前由单元测试与代码路径保证 ✓，
+端到端"手指点击"验证需要向导真正弹出来（若 `/var` 里已有 `settings_done`，向导不会出现）。
