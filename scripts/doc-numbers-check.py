@@ -94,12 +94,13 @@ def main() -> int:
         # 报出来的错误看不懂。读的时候顺手把 BOM 吃掉（2026-10-11 实测踩到过）。
         raw = GATE_COUNT.read_text(encoding='utf-8-sig').split()
         real_gates = int(raw[0]) if raw and raw[0].isdigit() else None
-        # 第二行是模式（`full` / `fast`）。`--fast` 只跑秒级子集，
-        # 拿它的步数去比文档里的**全量**步数必然不相等 —— 那不是缺陷，是窗口取错了
+        # 第二行是模式（`full` / `fast` / `ci`）。`--fast` 与 `--ci` 都只跑子集，
+        # 拿它们的步数去比文档里的**全量**步数必然不相等 —— 那不是缺陷，是窗口取错了
         # （2026-10-11：`gates.py --fast` 一直是红的，红的就是这一条）。
-        subset = len(raw) > 1 and raw[1] == "fast"
+        subset_mode = raw[1] if len(raw) > 1 else ""
+        subset = subset_mode in ("fast", "ci")
         if subset:
-            print(f"② 门禁数：[SKIP] 子集模式（--fast 本次 {real_gates} 步，"
+            print(f"② 门禁数：[SKIP] 子集模式（--{subset_mode} 本次 {real_gates} 步，"
                   f"与文档声明的全量步数不可比）")
         elif real_gates and doc_gates != real_gates:
             problems.append(f"门禁数：文档 {doc_gates}，本次运行 {real_gates}")

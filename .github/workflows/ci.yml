@@ -1,14 +1,15 @@
-# AetherOS 持续集成：把"只有开发机上跑得起来"的门禁搬到 Linux 上真的跑一遍。
+# AetherOS 持续集成。
 #
-# 为什么必须有（2026-10-02 安全审计 D.2 第 18 条）：
-#   * 开发机是 Windows，**所有 `#[cfg(unix)]` / `#[cfg(target_os = "linux")]` 的用例
-#     在那边根本不执行**，却一直被当作"已验证"；
-#   * `cargo test`、`repo-stats.py --check`、`gen-site.py --check` 全靠人记得跑；
-#   * musl 交叉编译只有 6/7 crate 能在开发机查（aetherd 需要 x86_64-linux-musl-gcc）。
+# 2026-10-24 重构原因：此前的单一 job 把「全量门禁」放在最前面，而全量门禁里的
+# 像素/布局/性能检查依赖字体、显示环境与稳定帧时间；GitHub 托管 runner 上这些
+# 条件不成立，于是两个平台都在第一步就红，后面的 Linux 专属 `cargo test` 永远
+# 被跳过。结果就是：CI 看起来存在，但 Linux 分支从未真正被验证。
 #
-# ⚠️ 诚实提示：**这份工作流在本地无法验证**（没有 GitHub 运行器）。
-#    第一次真正跑起来时，Linux 侧可能立刻红 —— 那正是它的价值：
-#    把这些年"从没被执行过"的断言暴露出来，而不是继续当作已验证。
+# 现在的分工：
+#   * fast  —— 秒级文档/站点/链接/纯函数门禁，两个平台都跑；
+#   * test  —— 编译 + 单元测试，两个平台都跑；Ubuntu 上的 `cargo test` 就是
+#              `#[cfg(unix)]` / `#[cfg(target_os = "linux")]` 分支的真实执行入口；
+#   * 全量像素/性能门禁留在构建机或自托管 runner，见 docs/证据/CI诊断-2026-10-24.md。
 name: CI
 
 on:
@@ -17,15 +18,35 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  gates:
-    name: 门禁（${{ matrix.os }}）
+  fast:
+    name: 快速门禁（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}
-    # 挂住的 job 会白烧默认 360 分钟（代码审查指出没设上限）：门禁本身最多几分钟，
-    # 30 分钟足够跑完（首次构建含依赖编译）。
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 跑快速门禁
+        run: python scripts/gates.py --fast
+
+  test:
+    name: 编译与测试（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      fail-fast: false          # 两个平台各自出结论，一个红不代表另一个也红
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -33,10 +54,6 @@ jobs:
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
-        with:
-          # musl 目标用于"Linux 目标能否编译"的静态检查（不改链接器，ring 那类
-          # 需要 C 交叉工具链的 crate 会在 CI 上暴露出来）
-          targets: x86_64-unknown-linux-musl
 
       - uses: actions/setup-python@v5
         with:
@@ -52,12 +69,19 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      # Windows 上缺 MSVC，仓库用 rust-lld + 自包含 mingw 运行库（见 .cargo/config.toml），
-      # 因此不需要额外装工具链。
-      - name: 跑全部门禁
-        run: python scripts/gates.py --online
-
-      # Linux 专属断言在这里**真的执行**（Windows 任务里会被跳过）。
-      - name: Linux 专属用例（unix/linux 分支）
+      # minifb 在 Linux 上需要 X11 / xkbcommon 开发库；缺了会在 `cargo build` 阶段
+      # 直接失败，而不是等到运行时。Ubuntu runner 默认不保证这些包存在。
+      - name: 安装 Linux 图形构建依赖
         if: runner.os == 'Linux'
-        run: cargo test --workspace -- --nocapture
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev
+
+      - name: 编译全部目标（--locked）
+        run: cargo build --workspace --all-targets --locked
+
+      # 这一步在 Ubuntu 上会真正执行 `cfg(unix)` / `cfg(target_os = "linux")` 分支；
+      # 在 Windows 上则执行 Windows 分支。两个平台的结果都必须绿。
+      - name: 单元测试（--locked）
+        run: cargo test --workspace --locked

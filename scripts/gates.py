@@ -56,17 +56,26 @@ PY = sys.executable
 # 测试自身的空间占用问题在测试里解决（例：审计轮转测试用 1KB 上限，见 perm.rs）。
 
 
-def run(cmd: list[str], timeout: int = 1800) -> tuple[int, str]:
+def run(cmd: list[str], timeout: int = 1800,
+        log_path: Path | None = None) -> tuple[int, str]:
     t0 = time.time()
     try:
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=timeout)
         out = (r.stdout or "") + (r.stderr or "")
+        if log_path is not None:
+            log_path.write_text(out, encoding="utf-8")
         return r.returncode, f"{time.time() - t0:.1f}s · {out.strip()[-400:]}"
     except subprocess.TimeoutExpired:
-        return 124, f"超时（{timeout}s）"
+        detail = f"超时（{timeout}s）"
+        if log_path is not None:
+            log_path.write_text(detail, encoding="utf-8")
+        return 124, detail
     except FileNotFoundError as exc:
-        return 127, f"命令不存在：{exc}"
+        detail = f"命令不存在：{exc}"
+        if log_path is not None:
+            log_path.write_text(detail, encoding="utf-8")
+        return 127, detail
 
 
 def _posix_shell() -> str | None:
@@ -89,12 +98,29 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="跑完所有门禁")
     ap.add_argument("--online", action="store_true", help="允许 cargo 联网（CI 用）")
     ap.add_argument("--fast", action="store_true", help="只跑秒级检查")
+    ap.add_argument(
+        "--ci",
+        action="store_true",
+        help="CI 模式：cargo build/test + 快速门禁；跳过依赖显示/字体的像素、布局、性能门禁",
+    )
+    ap.add_argument("--log-dir", default="", help="把每一步的完整输出写到该目录（CI 失败排查用）")
     args = ap.parse_args()
 
     offline = [] if args.online else ["--offline"]
+    log_dir = Path(args.log_dir) if args.log_dir else None
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
 
     steps: list[tuple[str, list[str]]] = []
-    if not args.fast:
+    if args.ci:
+        # CI 只跑"不依赖显示环境/字体/计时"的部分。像素、布局、性能门禁
+        # 依赖字体与稳定的帧时间，放在构建机或自托管 runner 上跑；在
+        # GitHub 托管 runner 上跑它们只会制造与代码无关的红灯。
+        steps.append(("cargo build（CI，--locked）",
+                      ["cargo", "build", "--workspace", "--all-targets", "--locked", *offline]))
+        steps.append(("cargo test（CI，--locked）",
+                      ["cargo", "test", "--workspace", "--locked", *offline]))
+    if not args.fast and not args.ci:
         # --locked：与 platform/build-iso.sh 保持一致（对抗审查发现 CI 没带）——
         # Cargo.lock 一旦漂移，不加 --locked 的 CI 会静默接受并构建出不同的依赖树，
         # 而 M-9 的核心主张正是"同一提交必然得到同一产物"。
@@ -256,14 +282,16 @@ def main() -> int:
     # 第二行的 `fast` / `full` 是给文档数字判据看的：`--fast` 只跑子集，
     # 与文档里声明的"全量步数"本来就不可比 —— 不标记的话这一步**必然判红**
     # （2026-10-11 实测：`gates.py --fast` 退出码 1，红的是文档数字而不是代码）。
-    mode = "fast" if args.fast else "full"
+    mode = "fast" if args.fast else ("ci" if args.ci else "full")
     (ROOT / "docs" / "证据" / "gate-count.txt").write_text(
         f"{len(steps)}\n{mode}\n", encoding="utf-8"
     )
 
     failed: list[str] = []
-    for name, cmd in steps:
-        code, detail = run(cmd)
+    for index, (name, cmd) in enumerate(steps, 1):
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+        log_path = log_dir / f"{index:02d}-{safe}.log" if log_dir is not None else None
+        code, detail = run(cmd, log_path=log_path)
         mark = "OK  " if code == 0 else "FAIL"
         print(f"[{mark}] {name}  ({detail.splitlines()[0] if detail else ''})")
         if code != 0:
