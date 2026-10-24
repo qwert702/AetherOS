@@ -64,15 +64,54 @@ pub fn flag_present(cmdline: &str, flag: &str) -> bool {
     cmdline.split_whitespace().any(|t| t == flag)
 }
 
-/// 光驱里**有没有盘**（`/sys/block/sr0/size` 的内容是 512 字节扇区数）。
+/// 光驱"有没有盘"的权威判据：`CDROM_DRIVE_STATUS` 的返回值（见 linux/cdrom.h）。
 ///
-/// 为什么这是判定"我在 live 介质上吗"的可靠依据：装好的系统与 live 环境在
-/// `/proc/cmdline` 上无法区分（同一个内核、同一个 initramfs），而装好的**系统分区是
-/// ISO 的只读拷贝**（iso9660）—— 引导配置里的参数**改不掉**。
-/// 于是改用操作契约本身：跑 autoinstall/keepvar 时一定插着 ISO；正常从盘引导时
-/// 按手册光驱必须断开。读不到该文件（没有光驱）或大小为 0（没插盘）都视为"不是 live"。
-pub fn live_medium(cd_size_text: &str) -> bool {
-    cd_size_text.trim().parse::<u64>().map(|n| n > 0).unwrap_or(false)
+/// 为什么不再用 `/sys/block/sr0/size`：设备存在但**没放盘**时，该值仍可能报告
+/// 上一次介质的容量（VMware 实测，2026-10-22）—— 于是一次从盘引导会被误判成
+/// "在 live 介质上"，把 `aether.keepvar=1` 当成"请再装一遍"，安装器找不到安装源后关机。
+pub const CDS_NO_INFO: i32 = 0;
+/// 光驱里没有盘。
+pub const CDS_NO_DISC: i32 = 1;
+/// 托盘打开。
+pub const CDS_TRAY_OPEN: i32 = 2;
+/// 还没就绪（虚拟光驱刚上电常见，值得重试）。
+pub const CDS_DRIVE_NOT_READY: i32 = 3;
+/// 有盘且可读。
+pub const CDS_DISC_OK: i32 = 4;
+
+/// `CDROM_DRIVE_STATUS` 的 ioctl 请求号（linux/cdrom.h）。
+#[cfg(target_os = "linux")]
+const CDROM_DRIVE_STATUS: libc::c_int = 0x5326;
+
+/// 只有"有盘且可读"才算 live（**纯函数**，便于测试；不猜）。
+pub fn disc_ready(status: i32) -> bool {
+    status == CDS_DISC_OK
+}
+
+/// 打开 `/dev/sr0` 问一次"有没有盘"。
+///
+/// * 打不开设备（没有光驱，或光驱已被摘掉）⇒ 不是 live（从盘引导的常态）；
+/// * `CDS_DISC_OK` ⇒ live；`CDS_NO_DISC` ⇒ 立刻结论"没有盘"；
+/// * 其它（`CDS_DRIVE_NOT_READY` / `CDS_TRAY_OPEN` / 失败）⇒ **有界重试** 20×100ms 后判否，
+///   绝不无限等待。
+#[cfg(target_os = "linux")]
+fn cdrom_has_disc() -> bool {
+    use std::os::unix::io::AsRawFd;
+    for _ in 0..20 {
+        let Ok(f) = std::fs::File::open("/dev/sr0") else {
+            return false;
+        };
+        // SAFETY: 用刚打开的有效 fd；CDROM_DRIVE_STATUS 只返回整数状态，不写用户内存。
+        let rc = unsafe { libc::ioctl(f.as_raw_fd(), CDROM_DRIVE_STATUS, 0) };
+        if disc_ready(rc) {
+            return true;
+        }
+        if rc == CDS_NO_DISC {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
 }
 
 /// 决定这次启动干什么。**纯函数**（判据一旦写错就是"重装整盘"或"误删 /var"）。
@@ -136,8 +175,8 @@ pub fn requested() -> Action {
         return Action::None;
     }
     let already = crate::persist::any_existing_install();
-    // 光驱里有盘 ⇒ 大概率是插着 ISO 引导；从盘引导时按手册光驱是断开的（见 live_medium）
-    let live = live_medium(&std::fs::read_to_string("/sys/block/sr0/size").unwrap_or_default());
+    // 光驱里有盘 ⇒ 大概率是插着 ISO 引导；从盘引导时按手册光驱是断开的（见 cdrom_has_disc）
+    let live = cdrom_has_disc();
     let action = plan(first, keep, already, live);
     if !live && (first || keep) {
         eprintln!(
@@ -271,11 +310,15 @@ major minor  #blocks  name
     }
 
     #[test]
-    fn live_medium_reads_cd_size() {
-        assert!(live_medium("20971520"), "有盘（扇区数 > 0）⇒ live");
-        assert!(!live_medium("0"), "空光驱（0）⇒ 不是 live");
-        assert!(!live_medium(""), "读不到 ⇒ 不是 live");
-        assert!(!live_medium("garbage"), "内容不认识 ⇒ 不是 live（不猜）");
+    fn disc_ready_only_accepts_disc_ok() {
+        // 正向：有盘可读才算 live
+        assert!(disc_ready(CDS_DISC_OK), "CDS_DISC_OK ⇒ live");
+        // 负向：没盘 / 托盘开 / 未就绪 / 未知 / ioctl 失败（负值）都不是 live
+        assert!(!disc_ready(CDS_NO_DISC), "没盘 ⇒ 不是 live");
+        assert!(!disc_ready(CDS_TRAY_OPEN), "托盘打开 ⇒ 不是 live");
+        assert!(!disc_ready(CDS_DRIVE_NOT_READY), "未就绪 ⇒ 不是 live（不猜）");
+        assert!(!disc_ready(CDS_NO_INFO), "未知 ⇒ 不是 live");
+        assert!(!disc_ready(-1), "ioctl 失败 ⇒ 不是 live");
     }
 
     #[test]
