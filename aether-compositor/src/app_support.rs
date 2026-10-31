@@ -628,12 +628,12 @@ pub(crate) enum AiEvent {
 /// 安装向导状态（仅 Live ISO 会话；run_fbdev 持有）。
 #[cfg(target_os = "linux")]
 pub(crate) struct Installer {
-    open: bool,
-    disks: Vec<(String, u64)>,
-    selected: usize,
-    running: bool,
+    pub(crate) open: bool,
+    pub(crate) disks: Vec<(String, u64)>,
+    pub(crate) selected: usize,
+    pub(crate) running: bool,
     /// (结果文案, 是否错误)
-    message: Option<(String, bool)>,
+    pub(crate) message: Option<(String, bool)>,
 }
 
 #[cfg(target_os = "linux")]
@@ -652,7 +652,7 @@ impl Installer {
         tty_log(&format!("安装向导打开，发现 {} 块磁盘", self.disks.len()));
     }
 
-    fn snapshot(&self) -> Option<InstallerUi<'_>> {
+    pub(crate) fn snapshot(&self) -> Option<InstallerUi<'_>> {
         if !self.open {
             return None;
         }

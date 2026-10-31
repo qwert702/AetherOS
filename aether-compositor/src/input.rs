@@ -365,8 +365,8 @@ fn read_abs_range(f: &std::fs::File) -> Option<AbsRange> {
     let mut x = AbsInfo::default();
     let mut y = AbsInfo::default();
     // SAFETY：fd 是刚打开的有效 evdev 句柄；AbsInfo 的布局与内核 struct input_absinfo 一致。
-    let ok_x = unsafe { libc::ioctl(fd, EVIOCGABS_X, &mut x) } >= 0;
-    let ok_y = unsafe { libc::ioctl(fd, EVIOCGABS_Y, &mut y) } >= 0;
+    let ok_x = unsafe { libc::ioctl(fd, EVIOCGABS_X as _, &mut x) } >= 0;
+    let ok_y = unsafe { libc::ioctl(fd, EVIOCGABS_Y as _, &mut y) } >= 0;
     if !(ok_x && ok_y) {
         return None;
     }

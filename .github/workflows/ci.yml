@@ -45,6 +45,10 @@ jobs:
     name: 编译与测试（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # 仓库的 Windows 开发路径是 GNU（.cargo/config.toml 配 rust-lld + 自包含 mingw），
+    # 不是 MSVC。CI 必须用同一条链路，否则会在测试里得到与开发机不同的行为。
+    env:
+      RUSTUP_TOOLCHAIN: ${{ runner.os == 'Windows' && 'stable-x86_64-pc-windows-gnu' || 'stable' }}
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +58,8 @@ jobs:
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ runner.os == 'Windows' && 'stable-x86_64-pc-windows-gnu' || 'stable' }}
 
       - uses: actions/setup-python@v5
         with:

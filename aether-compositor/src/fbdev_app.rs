@@ -6,7 +6,7 @@ use super::*;
 /// evdev 键盘/鼠标接入（M4）：AI 指令条可输入、Dock/菜单可点击、
 /// 窗口可拖拽；Enter 发送指令到 aetherd（离线意图优先），Action 落地为桌面行为。
 #[cfg(target_os = "linux")]
-fn run_fbdev() -> anyhow::Result<()> {
+pub(crate) fn run_fbdev() -> anyhow::Result<()> {
     tty_log("启动，正在打开 /dev/fb0");
     let mut fb = match fbdev::Fbdev::open() {
         Ok(fb) => fb,

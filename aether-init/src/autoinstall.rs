@@ -69,12 +69,15 @@ pub fn flag_present(cmdline: &str, flag: &str) -> bool {
 /// 为什么不再用 `/sys/block/sr0/size`：设备存在但**没放盘**时，该值仍可能报告
 /// 上一次介质的容量（VMware 实测，2026-10-22）—— 于是一次从盘引导会被误判成
 /// "在 live 介质上"，把 `aether.keepvar=1` 当成"请再装一遍"，安装器找不到安装源后关机。
+#[allow(dead_code)] // 生产只比较 DISC_OK/NO_DISC；其余供负向测试。
 pub const CDS_NO_INFO: i32 = 0;
 /// 光驱里没有盘。
 pub const CDS_NO_DISC: i32 = 1;
 /// 托盘打开。
+#[allow(dead_code)] // 生产只比较 DISC_OK/NO_DISC；其余供负向测试。
 pub const CDS_TRAY_OPEN: i32 = 2;
 /// 还没就绪（虚拟光驱刚上电常见，值得重试）。
+#[allow(dead_code)] // 生产只比较 DISC_OK/NO_DISC；其余供负向测试。
 pub const CDS_DRIVE_NOT_READY: i32 = 3;
 /// 有盘且可读。
 pub const CDS_DISC_OK: i32 = 4;
@@ -102,7 +105,7 @@ fn cdrom_has_disc() -> bool {
             return false;
         };
         // SAFETY: 用刚打开的有效 fd；CDROM_DRIVE_STATUS 只返回整数状态，不写用户内存。
-        let rc = unsafe { libc::ioctl(f.as_raw_fd(), CDROM_DRIVE_STATUS, 0) };
+        let rc = unsafe { libc::ioctl(f.as_raw_fd(), CDROM_DRIVE_STATUS as _, 0) };
         if disc_ready(rc) {
             return true;
         }

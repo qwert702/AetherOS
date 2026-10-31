@@ -258,6 +258,7 @@ pub fn cell_at(
 
     /// 屏幕内容为空的判定（仅测试使用：渲染路径没有「空白就不画」的分支）。
     #[cfg(test)]
+    #[allow(dead_code)] // 跨目标编译时测试常量可能被优化掉，避免平台间告警差异。
     pub fn is_blank(&self) -> bool {
         self.screen.to_lines().iter().all(|l| l.is_empty())
     }
