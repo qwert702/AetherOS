@@ -39,7 +39,18 @@ jobs:
           python-version: "3.11"
 
       - name: 跑快速门禁
-        run: python scripts/gates.py --fast
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! python scripts/gates.py --fast --log-dir fast-logs 2>&1 | tee fast.log; then
+            grep -E "FAIL|门禁未通过|Traceback|Error" fast.log | tail -n 40 | while IFS= read -r line; do
+              echo "::error title=fast-gate::$line"
+            done
+            grep -hE "FAIL|门禁未通过|Traceback|Error|error:" fast-logs/*.log 2>/dev/null | tail -n 40 | while IFS= read -r line; do
+              echo "::error title=fast-gate-log::$line"
+            done
+            exit 1
+          fi
 
   test:
     name: 编译与测试（${{ matrix.os }}）
@@ -96,9 +107,14 @@ jobs:
           if ! cargo build --workspace --all-targets --locked 2>&1 | tee build.log; then
             # 把失败摘要回写成 check annotation：公开仓库的 job 日志下载需要管理员权限，
             # 但 annotation 可读。这样下一次红的时候不用再猜。
-            tail -n 40 build.log | while IFS= read -r line; do
+            grep -E "error(\[|:)|panicked|warning:" build.log | tail -n 60 | while IFS= read -r line; do
               echo "::error title=cargo-build::$line"
             done
+            tail -n 20 build.log | while IFS= read -r line; do
+              echo "::error title=cargo-build-tail::$line"
+            done
+            free -h || true
+            df -h || true
             exit 1
           fi
 
