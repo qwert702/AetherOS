@@ -1,6 +1,6 @@
 # AetherOS
 
-[**English**](README.en.md) · 中文 ｜ [**下载 ISO（41.0 MB）**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) ｜ [落地页](https://aether.cbnac.com/) ｜ [装软件指南](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
+[**English**](README.en.md) · 中文 ｜ [**下载 ISO（41.0 MB）**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) ｜ [落地页](https://aether.cbnac.com/) ｜ [文档导航](docs/README.md) ｜ [装软件指南](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
 
 **一个自研的操作系统**：Linux 内核 + 全自研 Rust 用户态 + AI 中枢。
 

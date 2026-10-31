@@ -654,16 +654,16 @@ def main(argv: list[str]) -> int:
             # shots 也纳入门禁：站点上那个数字曾是手写的 17，而实际门禁覆盖 19 张 ——
             # 因为 patch_values 只在"上次值 ≠ 本次值"时才替换，常量一旦与 data.json
             # 脱节就永远补不上（2026-10-02 审计，与 iso_bytes 同一类问题）。
-            "index.html": ["rust_lines", "tests", "iso_size", "shots"],
-            "en/index.html": ["rust_lines", "tests", "iso_size", "shots"],
+            "index.html": ["rust_lines", "rust_files", "tests", "iso_size", "shots"],
+            "en/index.html": ["rust_lines", "rust_files", "tests", "iso_size", "shots"],
             # iso_bytes/iso_sha256 也纳入门禁：它的字面量曾长期停在 40,351,744
             # （与实测差 8,192 字节）而没人发现；哈希则一度是本地产物那份
             # （2026-10-02 安全审计 §3.2/§3.3）。
             "download.html": ["iso_size", "iso_bytes", "iso_sha256"],
             "en/download.html": ["iso_size", "iso_bytes", "iso_sha256"],
             # faq 页也写着 ISO 体积，此前不在门禁范围内（代码审查发现 4.8）
-            "faq.html": ["iso_size"],
-            "en/faq.html": ["iso_size"],
+            "faq.html": ["iso_size", "rust_lines", "rust_files"],
+            "en/faq.html": ["iso_size", "rust_lines", "rust_files"],
         }
         # **带上下文的锚定匹配**（代码审查发现）：原先只判"这个值出现在页面任意位置" ——
         # 于是把"19 张走查图"改成 10 张、只要页面别处还有个 19 就能过。
@@ -672,7 +672,8 @@ def main(argv: list[str]) -> int:
         between = r"(?:\s|<[^>]*>|&nbsp;)*"
         anchor = {
             # 中英两版页面各用各的量词，两种都接受（锚定只为了防止"数字出现在别处"）
-            "rust_lines": between + r"(?:行|lines)",
+            "rust_lines": between + r"(?:行|lines)(?:代码| of code)?",
+            "rust_files": between + r"(?:个源文件|source files|files)",
             "tests": between + r"(?:项|unit tests|tests)",
             "shots": between + r"(?:张|UI screenshots|screenshots|images)",
             "iso_size": r"",
@@ -690,6 +691,13 @@ def main(argv: list[str]) -> int:
                     print(f"[FAIL] {rel} 里找不到当前 {k}={want_v}（页面与数据脱节，"
                           f"期望形如 /{pat}/）")
                     return 1
+
+        # og:image:height 曾被误注入测试数（793），分享卡片尺寸必须是图片实际高度 630。
+        for rel in ("index.html", "en/index.html"):
+            body = (SITE / rel).read_text(encoding="utf-8")
+            if 'property="og:image:height" content="630"' not in body:
+                print(f"[FAIL] {rel} 的 og:image:height 必须是 630（og-cover.png 实际尺寸 1200×630）")
+                return 1
 
         # —— 禁止站点上出现"非已发布产物"的 sha256 ——
         #
