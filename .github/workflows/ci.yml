@@ -88,13 +88,34 @@ jobs:
             libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev
 
       - name: 编译全部目标（--locked）
+        shell: bash
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.rust_toolchain }}
-        run: cargo build --workspace --all-targets --locked
+        run: |
+          set -o pipefail
+          if ! cargo build --workspace --all-targets --locked 2>&1 | tee build.log; then
+            # 把失败摘要回写成 check annotation：公开仓库的 job 日志下载需要管理员权限，
+            # 但 annotation 可读。这样下一次红的时候不用再猜。
+            tail -n 40 build.log | while IFS= read -r line; do
+              echo "::error title=cargo-build::$line"
+            done
+            exit 1
+          fi
 
       # 这一步在 Ubuntu 上会真正执行 `cfg(unix)` / `cfg(target_os = "linux")` 分支；
       # 在 Windows 上则执行 Windows 分支。两个平台的结果都必须绿。
       - name: 单元测试（--locked）
+        shell: bash
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.rust_toolchain }}
-        run: cargo test --workspace --locked
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace --locked 2>&1 | tee test.log; then
+            grep -E "FAILED|panicked|^error|test result: FAILED" test.log | tail -n 30 | while IFS= read -r line; do
+              echo "::error title=cargo-test::$line"
+            done
+            tail -n 20 test.log | while IFS= read -r line; do
+              echo "::error title=cargo-test-tail::$line"
+            done
+            exit 1
+          fi
