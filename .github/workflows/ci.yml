@@ -12,6 +12,12 @@
 #   * 全量像素/性能门禁留在构建机或自托管 runner，见 docs/证据/CI诊断-2026-10-24.md。
 name: CI
 
+# Windows runner 的默认控制台编码不是 UTF-8；门禁脚本里有中文与符号，
+# 不显式设置会在 print 时抛 UnicodeEncodeError（2026-10-31 实测）。
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
 on:
   push:
     branches: ["**"]

@@ -1469,10 +1469,13 @@ mod tests {
                     assert!(!msg.contains("已关机"), "受理不等于已完成：{msg}")
                 }
                 Ok(other) => panic!("system_power 不应返回非文本结果：{other:?}"),
-                Err(e) => assert!(
-                    e.contains("aether-init") || e.contains("电源动作"),
-                    "失败要给出真实原因：{e}"
-                ),
+                Err(e) => {
+                    let text = e.to_string();
+                    assert!(
+                        text.contains("aether-init") || text.contains("电源动作"),
+                        "失败要给出真实原因：{text}"
+                    )
+                }
             }
         }
     }

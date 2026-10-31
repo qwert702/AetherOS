@@ -187,7 +187,7 @@ def main() -> int:
                 [PY, "scripts/musl-warn-check.py"],
             ))
         else:
-            print("⚠ 跳过 musl 检查：未安装 x86_64-unknown-linux-musl（rustup target add 后可查）"
+            print("[WARN] 跳过 musl 检查：未安装 x86_64-unknown-linux-musl（rustup target add 后可查）"
                   " —— 这一步**没有**被执行，别当成已通过")
 
     # ISO 组件门禁（2026-10-06 加，附录 GV）：仓库里的二进制 crate 必须进镜像。
@@ -212,7 +212,7 @@ def main() -> int:
         None,
     )
     if args.ci or _binary is None:
-        print("⚠ 跳过归档走查图门禁：未构建 aether-compositor（干净 checkout / CI 快速模式）")
+        print("[WARN] 跳过归档走查图门禁：未构建 aether-compositor（干净 checkout / CI 快速模式）")
     else:
         steps.append(("归档走查图门禁（逐像素 vs assets/ui-archive/）",
                       [PY, "scripts/archive-ui-shots.py", "--check"]))
@@ -238,7 +238,7 @@ def main() -> int:
                        "platform/overlay/init"):
             steps.append((f"shell 语法：{script}", [sh, "-n", script]))
     else:
-        print("⚠ 本机没有可用的 POSIX shell，跳过构建脚本语法检查（Linux CI 会跑）")
+        print("[WARN] 本机没有可用的 POSIX shell，跳过构建脚本语法检查（Linux CI 会跑）")
     # e2e 的**判定逻辑**自检：不需要合成器、不需要真机，所以能进日常门禁。
     # 真实 e2e 在完整模式跑（见上）；这一步保证"脚本本身没写错"。
     steps.append(("自动 e2e 判定逻辑自检", [PY, "scripts/e2e-ui-actions.py", "--selftest"]))
