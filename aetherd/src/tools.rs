@@ -1465,7 +1465,10 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             match out {
-                Ok(msg) => assert!(!msg.contains("已关机"), "受理不等于已完成：{msg}"),
+                Ok(ExecOutcome::Done(msg)) => {
+                    assert!(!msg.contains("已关机"), "受理不等于已完成：{msg}")
+                }
+                Ok(other) => panic!("system_power 不应返回非文本结果：{other:?}"),
                 Err(e) => assert!(
                     e.contains("aether-init") || e.contains("电源动作"),
                     "失败要给出真实原因：{e}"

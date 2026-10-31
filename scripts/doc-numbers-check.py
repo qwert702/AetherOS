@@ -64,15 +64,23 @@ def main() -> int:
     problems: list[str] = list(PROBLEMS)
 
     # ① 测试数
-    proc = subprocess.run(
-        ["cargo", "test", "--workspace", "--offline", "--locked", "--", "--list"],
-        cwd=ROOT, capture_output=True, text=True,
-    )
-    real_tests = sum(1 for line in proc.stdout.splitlines() if line.endswith(': test'))
+    try:
+        proc = subprocess.run(
+            ["cargo", "test", "--workspace", "--offline", "--locked", "--", "--list"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        real_tests = sum(1 for line in proc.stdout.splitlines() if line.endswith(': test'))
+    except FileNotFoundError:
+        # CI 的 fast job 不装 Rust：没有 cargo 不是"测试数为 0"，而是本次不检查测试数。
+        proc = None
+        real_tests = 0
     doc_tests = declared(text, r'单元 \+ 集成测试 \| \*\*(\d+) 项全绿\*\*')
     print(f"① 测试数：文档 {doc_tests} / 实测 {real_tests}")
     if real_tests == 0:
-        print("   [SKIP] 拿不到测试清单（cargo 不可用？）")
+        # CI 的 fast job 不装 Rust（它只跑文档/纯函数门禁）。此时 `cargo test --list`
+        # 拿不到清单，不能把 0 当成"测试全没了"——把测试相关比较整体跳过。
+        print("   [SKIP] 拿不到测试清单（cargo 不可用？测试相关比较本次跳过）")
+        real_tests = None
     elif doc_tests != real_tests:
         problems.append(f"测试数：文档 {doc_tests}，实测 {real_tests}")
 
@@ -116,7 +124,7 @@ def main() -> int:
         rtext = README.read_text(encoding='utf-8')
         doc_readme_tests = declared(rtext, r"\| (\d+) 项单元测试全绿")
         print(f"③b README 测试数：{doc_readme_tests} / 实测 {real_tests}")
-        if doc_readme_tests != real_tests:
+        if real_tests is not None and doc_readme_tests != real_tests:
             problems.append(f"README 测试数：文档 {doc_readme_tests}，实测 {real_tests}")
         doc_readme_files = declared(rtext, r"(\d+) 个源文件")
         print(f"③b README 源文件数：{doc_readme_files} / 实测 {real_files}")
@@ -129,7 +137,7 @@ def main() -> int:
         _m = re.search(r"(\d+)\s+unit tests?\s+(?:all\s+)?(?:green|pass)", etext, re.I)
         doc_en_tests = int(_m.group(1)) if _m else None
         print(f"③c README.en 测试数：{doc_en_tests} / 实测 {real_tests}")
-        if doc_en_tests != real_tests:
+        if real_tests is not None and doc_en_tests != real_tests:
             problems.append(f"README.en 测试数：文档 {doc_en_tests}，实测 {real_tests}")
 
     # ③d **同一事实的全部写法**（附录 GP）：门禁只认一种写法的话，
@@ -144,6 +152,11 @@ def main() -> int:
             # 子集模式下"门禁数"这个事实压根没法得出（本次没跑全量），
             # 硬比只会得到一个假红 —— 明确跳过并说明，而不是让它去误报。
             print(f"③d {_label}：[SKIP] 子集模式（本次运行不含全量门禁数）")
+            continue
+        if real_tests is None and _label in (
+            "README.md Windows 行", "README.en Beyond 行", "收尾报告 自引用行"
+        ):
+            print(f"③d {_label}：[SKIP] 本次拿不到测试清单")
             continue
         if not _path.exists():
             continue
@@ -202,7 +215,7 @@ def main() -> int:
             for _m2 in re.finditer(_pat, _rtext):
                 _v = int(_m2.group(1))
                 print(f"③f {_what}：{_v} / 实测 {real_tests}")
-                if _v != real_tests:
+                if real_tests is not None and _v != real_tests:
                     problems.append(f"{_what}：文档 {_v}，实测 {real_tests}")
     if INDEX.exists():
         _itext = INDEX.read_text(encoding='utf-8')

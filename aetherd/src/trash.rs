@@ -297,6 +297,9 @@ mod tests {
         let root = d.join("trash");
         let f = d.join("note.txt");
         std::fs::write(&f, b"hello").unwrap();
+        // Windows 的短路径（RUNNER~1）与 canonicalize 后的长路径不同：
+        // 先按生产代码同一规则取期望值，避免把路径规范化误判成恢复失败。
+        let expected = crate::tools::strip_verbatim_prefix(std::fs::canonicalize(&f).unwrap());
 
         let name = trash(&root, &f).expect("应能移入回收站");
         assert!(!f.exists(), "原文件应已被移走");
@@ -309,7 +312,7 @@ mod tests {
         assert_eq!(entries[0].bytes, 5);
 
         let back = restore(&root, &name).expect("应能恢复");
-        assert_eq!(back, f);
+        assert_eq!(back, expected);
         assert_eq!(std::fs::read(&f).unwrap(), b"hello");
         assert!(list(&root).is_empty(), "恢复后条目应消失");
         let _ = std::fs::remove_dir_all(&d);
