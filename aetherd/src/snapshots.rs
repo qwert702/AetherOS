@@ -550,7 +550,7 @@ mod tests {
             dir.join(MANIFEST),
             format!(
                 "{{\"version\":1,\"id\":\"{id}\",\"created_unix\":1791112953,\"entries\":[\
-                 {{\"path\":\"{tp}\",\"checksum\":\"{}\",\"bytes\":{},\"existed\":true,\"mode\":416}}]}}",
+                 {{\"path\":\"{tp}\",\"checksum\":\"{}\",\"bytes\":{},\"existed\":true,\"mode\":384}}]}}",
                 checksum(old),
                 old.len()
             ),
