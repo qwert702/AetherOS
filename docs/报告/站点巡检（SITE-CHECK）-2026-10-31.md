@@ -36,6 +36,7 @@ python scripts/check-links.py
 | `site/index.html`、`site/en/index.html` | `og:image:height=793` | `630` | 分享图实际尺寸 1200×630；793 是测试数被误注入 |
 | `site/faq.html`、`site/en/faq.html` | `24,388 行` / `24,388 lines` | `52,544` | FAQ 的手写总行数停留在旧版本 |
 | `site/download.html`、`site/en/download.html`、`site/faq.html` | `1024×793` | `1024×768` | 最小分辨率笔误（793 同样是测试数串入） |
+| `site/index.html`、`site/en/index.html`、`site/download.html`、`site/en/download.html` | ISO 构建日期 `2026-09-29` / `2026-10-01` | `2026-10-15` | 与 `site/release.json` 的 `iso_date` 对齐 |
 
 同时给 `scripts/gen-site.py --check` 补了两类回归判据：
 

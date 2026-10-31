@@ -654,13 +654,13 @@ def main(argv: list[str]) -> int:
             # shots 也纳入门禁：站点上那个数字曾是手写的 17，而实际门禁覆盖 19 张 ——
             # 因为 patch_values 只在"上次值 ≠ 本次值"时才替换，常量一旦与 data.json
             # 脱节就永远补不上（2026-10-02 审计，与 iso_bytes 同一类问题）。
-            "index.html": ["rust_lines", "rust_files", "tests", "iso_size", "shots"],
-            "en/index.html": ["rust_lines", "rust_files", "tests", "iso_size", "shots"],
+            "index.html": ["rust_lines", "rust_files", "tests", "iso_size", "iso_date", "shots"],
+            "en/index.html": ["rust_lines", "rust_files", "tests", "iso_size", "iso_date", "shots"],
             # iso_bytes/iso_sha256 也纳入门禁：它的字面量曾长期停在 40,351,744
             # （与实测差 8,192 字节）而没人发现；哈希则一度是本地产物那份
             # （2026-10-02 安全审计 §3.2/§3.3）。
-            "download.html": ["iso_size", "iso_bytes", "iso_sha256"],
-            "en/download.html": ["iso_size", "iso_bytes", "iso_sha256"],
+            "download.html": ["iso_size", "iso_bytes", "iso_sha256", "iso_date"],
+            "en/download.html": ["iso_size", "iso_bytes", "iso_sha256", "iso_date"],
             # faq 页也写着 ISO 体积，此前不在门禁范围内（代码审查发现 4.8）
             "faq.html": ["iso_size", "rust_lines", "rust_files"],
             "en/faq.html": ["iso_size", "rust_lines", "rust_files"],
