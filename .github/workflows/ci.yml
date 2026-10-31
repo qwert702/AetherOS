@@ -55,6 +55,12 @@ jobs:
             grep -hE "FAIL|门禁未通过|Traceback|Error|error:" fast-logs/*.log 2>/dev/null | tail -n 40 | while IFS= read -r line; do
               echo "::error title=fast-gate-log::$line"
             done
+            grep -hE "^ +- |^\[FAIL\]" fast-logs/*.log 2>/dev/null | tail -n 30 | while IFS= read -r line; do
+              echo "::error title=fast-gate-detail::$line"
+            done
+            tail -n 20 fast.log | while IFS= read -r line; do
+              echo "::error title=fast-gate-tail::$line"
+            done
             exit 1
           fi
 
