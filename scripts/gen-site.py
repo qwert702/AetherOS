@@ -123,8 +123,13 @@ def measure(skip_tests: bool, previous: dict) -> dict:
     """从仓库实测出所有对外数字。"""
     d: dict = {}
 
-    # 版本号：最近的 tag（没有 tag 就退回 v0.1.0，与 GitHub Release 一致）
-    tag = run(["git", "describe", "--tags", "--abbrev=0"]).strip()
+    # 版本号：`site/release.json` 是已发布产物的权威事实，优先用它的 tag。
+    # CI 的 checkout 默认是浅克隆、不带 tags —— 只看 `git describe` 会把版本
+    # 误判成 v0.1.0（2026-10-31 CI 实测），与 data.json 的 v0.1.1 冲突。
+    rel = load_release()
+    tag = str((rel or {}).get("tag", "")).strip()
+    if not tag:
+        tag = run(["git", "describe", "--tags", "--abbrev=0"]).strip()
     d["version"] = tag or "v0.1.0"
 
     # 代码规模：口径唯一来源是 scripts/repo-stats.py（它自己带 --check 门禁）
@@ -152,7 +157,6 @@ def measure(skip_tests: bool, previous: dict) -> dict:
     # 本地工作区 ISO 40,359,936 字节 / sha256 43c53f4c…，于是下载页让人拿一个
     # **对不上的哈希**去校验自己下载的文件（2026-10-02 安全审计发现）。
     # 发布流程：重建 ISO → 上传 Release → 更新 site/release.json → --refresh。
-    rel = load_release()
     if rel is not None:
         for k in ("iso_bytes", "iso_size", "iso_sha256", "iso_date"):
             if k in rel:
