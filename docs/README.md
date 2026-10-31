@@ -13,7 +13,7 @@
 | Rust 规模 | **52,544 行 / 77 个源文件 / 7 个 crate** | `python scripts/repo-stats.py` |
 | 单元 + 集成测试 | **793 项全绿** | `cargo test --workspace --offline --locked` |
 | 完整门禁 | **42/42 全过** | `python scripts/gates.py` |
-| CI | run #89 四个 job 全绿 | [CI 诊断](证据/CI诊断-2026-10-24.md) |
+| CI | run #86–#91 连续全绿（最新 #91） | [CI 诊断](证据/CI诊断-2026-10-24.md) |
 | ISO | v0.1.1 · **41.0 MB** · SHA256 `eea68da9…` | `site/release.json`、[下载页](https://aether.cbnac.com/download.html) |
 | 本地站点 | `gen-site.py --check` 通过，页面数据与仓库一致 | `python scripts/gen-site.py --check` |
 | 线上站点 | 可访问、TLS 与安全头正常；**内容仍是旧版数字** | [站点巡检](报告/站点巡检（SITE-CHECK）-2026-10-31.md) |
@@ -67,6 +67,7 @@
 | 文档 | 用途 |
 |---|---|
 | [路线图与已知缺口（ROADMAP）](路线图与已知缺口（ROADMAP）-2026-09-05.md) | M0–M6 里程碑与后续方向 |
+| [后续发展计划（NEXT-PLAN）](报告/后续发展计划（NEXT-PLAN）-2026-10-31.md) | M7–M10 工作项、验收标准与执行顺序（当前计划） |
 | [功能缺口清单（FEATURE-GAPS）](报告/功能缺口清单（FEATURE-GAPS）-2026-10-02.md) | P0/P1/P2 缺口、里程碑建议 |
 | [生产化计划（PRODUCTION-PLAN）](报告/生产化计划（PRODUCTION-PLAN）-2026-09-28.md) | 生产化实施计划（当前版本） |
 | [第三阶段决策（PHASE3-DECISION）](报告/第三阶段决策（PHASE3-DECISION）-2026-09-28.md) | 阶段 3 范围与取舍 |
