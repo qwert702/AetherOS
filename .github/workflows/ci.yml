@@ -47,19 +47,22 @@ jobs:
     timeout-minutes: 30
     # 仓库的 Windows 开发路径是 GNU（.cargo/config.toml 配 rust-lld + 自包含 mingw），
     # 不是 MSVC。CI 必须用同一条链路，否则会在测试里得到与开发机不同的行为。
-    env:
-      RUSTUP_TOOLCHAIN: ${{ runner.os == 'Windows' && 'stable-x86_64-pc-windows-gnu' || 'stable' }}
+    # 用 matrix 显式带 toolchain：`runner` 上下文在 job 级 env 不可用（会被判为无效 workflow）。
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            rust_toolchain: stable
+          - os: windows-latest
+            rust_toolchain: stable-x86_64-pc-windows-gnu
     steps:
       - uses: actions/checkout@v4
 
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ runner.os == 'Windows' && 'stable-x86_64-pc-windows-gnu' || 'stable' }}
+          toolchain: ${{ matrix.rust_toolchain }}
 
       - uses: actions/setup-python@v5
         with:
@@ -85,9 +88,13 @@ jobs:
             libx11-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev
 
       - name: 编译全部目标（--locked）
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.rust_toolchain }}
         run: cargo build --workspace --all-targets --locked
 
       # 这一步在 Ubuntu 上会真正执行 `cfg(unix)` / `cfg(target_os = "linux")` 分支；
       # 在 Windows 上则执行 Windows 分支。两个平台的结果都必须绿。
       - name: 单元测试（--locked）
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.rust_toolchain }}
         run: cargo test --workspace --locked
