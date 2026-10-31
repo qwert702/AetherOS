@@ -58,7 +58,9 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TARGET = ROOT / "aether-compositor" / "src" / "main.rs"
+TARGETS = tuple(ROOT / "aether-compositor" / "src" / name for name in (
+    "main.rs", "app_main.rs", "fbdev_app.rs", "app_support.rs"
+))
 
 #: 实测 118 个生产调用点（2026-10-11）。低于它说明解析器坏了 —— 报错，不要静默通过。
 MIN_SITES = 100
@@ -452,15 +454,18 @@ def selftest() -> int:
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
-    if not TARGET.exists():
-        print(f"[FAIL] 找不到 {TARGET}")
+    existing = [p for p in TARGETS if p.exists()]
+    if not existing:
+        print(f"[FAIL] 找不到任何扫描目标：{[str(p) for p in TARGETS]}")
         return 1
-    text = TARGET.read_text(encoding="utf-8")
-    try:
-        sites = scan(text)
-    except ValueError as e:
-        print(f"[FAIL] 解析失败：{e}")
-        return 1
+    text = "\n".join(p.read_text(encoding="utf-8") for p in existing)
+    sites = []
+    for p in existing:
+        try:
+            sites.extend(scan(p.read_text(encoding="utf-8")))
+        except ValueError as e:
+            print(f"[FAIL] 解析失败（{p.name}）：{e}")
+            return 1
 
     buckets: dict[str, list[tuple[int, str]]] = {k: [] for k in LABEL}
     for line, kind, expr in sites:
@@ -497,7 +502,7 @@ def main() -> int:
         return 0
 
     # 默认：打印分类清单（Markdown 表，供审计与阶段 2.2 的改造清单）
-    print(f"# 通知正文（push_toast）双语审计 · {TARGET.relative_to(ROOT)}")
+    print("# 通知正文（push_toast）双语审计 · " + ", ".join(p.name for p in existing))
     print()
     print(f"生产调用点 **{len(sites)}** 个 —— 已双语 **{len(buckets['ok'])}** · {summary}")
     print()
