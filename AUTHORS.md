@@ -4,6 +4,7 @@
 
 - **qwert702** — AetherOS 作者与维护者
   - GitHub：<https://github.com/qwert702>
+  - 个人博客：<https://blog.cbnac.com/blog/>
   - 项目主页：<https://aether.cbnac.com/>
   - 负责：整体架构、Rust 用户态、合成器、`aetherd`、构建/发布流程与安全基线
 
