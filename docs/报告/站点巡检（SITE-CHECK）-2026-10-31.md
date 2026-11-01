@@ -115,14 +115,14 @@ sudo -n true → SUDO_OK
 
 root 私钥已从本机删除。后续应优先使用 `aether-deploy`，不要继续使用 root 直连。
 
-**已知限制**：非 root 的 `deploy-site.py --check-only` 在 `probe_layout` 阶段没有识别到
-`/www/server/panel/vhost/nginx`，回退到 `/etc/nginx/conf.d`。因此本次实际部署仍由 root 完成；
-如果要长期用 `aether-deploy` 部署，需要先修 `probe_layout` 的 `nginx -T` 权限处理，并确认
-`/var/www/aether.cbnac.com` 的写权限。这是一个后续安全改进项，不应假装已经解决。
+**非 root 状态**：`probe_layout` 已改为优先用 `sudo -n nginx -T` 识别运行中的配置；
+`aether-deploy --check-only` 现在能正确识别 `/www/server/panel/vhost/nginx/aether.cbnac.com.conf`。
+但 `/var/www/aether.cbnac.com` 仍是 `nginx:nginx 755`，`aether-deploy` 无法直接 SFTP 上传；
+因此本次实际部署仍由 root 完成。长期使用非 root 部署需调整目录写权限或让上传走 sudo。
 
 ## 五、结论边界
 
 - 线上站点已完成一次真实部署，公开数字已同步；这不是本地模拟结果。
 - 本次使用了 root 一次性例外；root 私钥已删除，但**这把 key 曾在聊天记录中出现，仍建议轮换**。
 - 下载页的 v0.1.1 ISO 装机警告仍然有效；只有重建并发布新 ISO 后才能解除。
-- 非 root 部署链路尚未完全验证，已记录为后续改进项。
+- 非 root 的 `check-only` 已验证；完整非 root 部署仍受 `/var/www` 目录写权限限制。

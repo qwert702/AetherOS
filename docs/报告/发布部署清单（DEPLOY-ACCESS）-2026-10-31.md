@@ -131,6 +131,6 @@ python scripts/site-health-check.py
 后续注意事项：
 
 1. `aether-deploy` 已存在，优先用它，不再使用 root 直连；
-2. 非 root 的 `deploy-site.py --check-only` 仍存在 `probe_layout` 识别问题（回退到 `/etc/nginx/conf.d`），长期使用前需要修脚本或调整权限；
+2. 非 root 的 `probe_layout` 已修好，`--check-only` 能识别正确 vhost；但 `/var/www/aether.cbnac.com` 仍是 `nginx:nginx 755`，完整非 root 上传需要调整目录权限或改上传实现；
 3. 曾经出现在聊天记录中的 root key 建议在服务器侧轮换；
 4. 后续发布按 `site-health-check.py` + `release-readiness.py` 两个检查器执行。

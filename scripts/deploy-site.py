@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """把 AetherOS 官网部署到 VPS（自动适配 Debian / RHEL 系布局）。
 
 ## 一条命令
@@ -341,8 +341,12 @@ def probe_layout(c) -> dict:
     ps = sh(c, "ps -eo pid,cmd | grep 'nginx: master process' | grep -v grep | head -1", check=False)
     layout["nginx_bin"], layout["nginx_conf"] = running_nginx(ps)
     _nx = layout["nginx_bin"] or "nginx"
-    _tcmd = (f"{_nx} -T" + (f" -c {layout['nginx_conf']}" if layout["nginx_conf"] else "")
-             + " 2>/dev/null || nginx -T 2>/dev/null || true")
+    # 非 root 账号读不到 /www/server/nginx/conf/ 时，`nginx -T` 会静默失败并被误判成
+    # “vhost 不在惯例目录”。先用 `sudo -n` 问运行中的 nginx，再退回直连（root 场景）。
+    _t_suffix = (f" -c {layout['nginx_conf']}" if layout["nginx_conf"] else "")
+    _tcmd = (f"sudo -n {_nx} -T{_t_suffix} 2>/dev/null"
+             f" || {_nx} -T{_t_suffix} 2>/dev/null"
+             f" || sudo -n nginx -T 2>/dev/null || nginx -T 2>/dev/null || true")
     t = sh(c, _tcmd, check=False)
     found = parse_vhost_file(t, DOMAIN)
     layout["conf_dir"] = os.path.dirname(found) if found else "/etc/nginx/conf.d"
