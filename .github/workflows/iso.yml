@@ -1,0 +1,81 @@
+name: ISO Build
+
+# 手动构建可引导 ISO。默认 demo 仅用于构建验证；正式发布请用 locked 并配置 secret。
+# 不随 push 触发：Buildroot 首次构建 30–60 分钟，不应阻塞日常 CI。
+on:
+  workflow_dispatch:
+    inputs:
+      auth_mode:
+        description: "认证模式：demo 仅验证构建，locked 用于正式发布"
+        required: true
+        default: demo
+        type: choice
+        options:
+          - demo
+          - locked
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 构建 ISO（${{ inputs.auth_mode }}）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bison flex libssl-dev bc rsync cpio unzip wget curl \
+            file musl-tools libncurses-dev fonts-wqy-microhei python3
+
+      - name: 安装 Rust 与 musl 目标
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: 构建 ISO（demo）
+        if: ${{ inputs.auth_mode == 'demo' }}
+        env:
+          AETHER_DEMO: "1"
+        run: bash platform/build-iso.sh
+
+      - name: 构建 ISO（locked）
+        if: ${{ inputs.auth_mode == 'locked' }}
+        env:
+          AETHER_ROOT_PW_HASH: ${{ secrets.AETHER_ROOT_PW_HASH }}
+        run: |
+          if [ -z "${AETHER_ROOT_PW_HASH:-}" ]; then
+            echo "::error::locked 模式需要仓库 secret AETHER_ROOT_PW_HASH"
+            exit 1
+          fi
+          bash platform/build-iso.sh
+
+      - name: 校验 ISO（大小 / SHA256 / isohybrid）
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          p = Path("aetheros-0.1-amd64.iso")
+          if not p.is_file():
+              raise SystemExit("找不到 aetheros-0.1-amd64.iso")
+          data = p.read_bytes()
+          size = len(data)
+          digest = hashlib.sha256(data).hexdigest()
+          magic = data[510:512].hex()
+          print(f"size={size}")
+          print(f"sha256={digest}")
+          print(f"offset510={magic}")
+          if magic != "55aa":
+              raise SystemExit("isohybrid MBR signature missing")
+          PY
+
+      - name: 上传 ISO 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: aetheros-iso-${{ inputs.auth_mode }}
+          path: aetheros-0.1-amd64.iso
+          if-no-files-found: error
