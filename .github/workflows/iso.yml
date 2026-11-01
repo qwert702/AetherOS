@@ -29,7 +29,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential bison flex libssl-dev bc rsync cpio unzip wget curl \
+            build-essential bison flex libssl-dev libelf-dev libdw-dev bc rsync cpio unzip wget curl \
             file musl-tools libncurses-dev fonts-wqy-microhei python3
 
       - name: 安装 Rust 与 musl 目标
