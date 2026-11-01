@@ -47,6 +47,7 @@ import base64
 import hashlib
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -343,9 +344,11 @@ def probe_layout(c) -> dict:
     _nx = layout["nginx_bin"] or "nginx"
     # 非 root 账号读不到 /www/server/nginx/conf/ 时，`nginx -T` 会静默失败并被误判成
     # “vhost 不在惯例目录”。先用 `sudo -n` 问运行中的 nginx，再退回直连（root 场景）。
-    _t_suffix = (f" -c {layout['nginx_conf']}" if layout["nginx_conf"] else "")
-    _tcmd = (f"sudo -n {_nx} -T{_t_suffix} 2>/dev/null"
-             f" || {_nx} -T{_t_suffix} 2>/dev/null"
+    # 路径来自远端 ps 输出，必须按 shell 参数引用，避免把异常字符带进命令。
+    _nx_q = shlex.quote(_nx)
+    _t_suffix = (f" -c {shlex.quote(layout['nginx_conf'])}" if layout["nginx_conf"] else "")
+    _tcmd = (f"sudo -n {_nx_q} -T{_t_suffix} 2>/dev/null"
+             f" || {_nx_q} -T{_t_suffix} 2>/dev/null"
              f" || sudo -n nginx -T 2>/dev/null || nginx -T 2>/dev/null || true")
     t = sh(c, _tcmd, check=False)
     found = parse_vhost_file(t, DOMAIN)
