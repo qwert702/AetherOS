@@ -1,5 +1,10 @@
 # AetherOS
 
+[![CI](https://github.com/qwert702/AetherOS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qwert702/AetherOS/actions/workflows/ci.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/qwert702/AetherOS)](https://github.com/qwert702/AetherOS/releases)
+[![Website](https://img.shields.io/badge/website-aether.cbnac.com-0b8496)](https://aether.cbnac.com/)
+
 [**English**](README.en.md) · 中文 ｜ [**下载 ISO（41.0 MB）**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) ｜ [落地页](https://aether.cbnac.com/) ｜ [文档导航](docs/README.md) ｜ [装软件指南](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
 
 **一个自研的操作系统**：Linux 内核 + 全自研 Rust 用户态 + AI 中枢。
@@ -331,6 +336,17 @@ Aether/
 | [`docs/报告/`](docs/报告/) | 带日期的一次性产物：功能缺口清单、安全审计、计划与验收报告 |
 | [`docs/发布/`](docs/发布/) | 发布与宣传素材（发布清单、文案模板） |
 | [`docs/归档/`](docs/归档/) | 历史快照（决策历史，不作现状依据）：四轮审查总集、性能报告、旧版计划 |
+
+## 作者与维护
+
+AetherOS 由 [qwert702](https://github.com/qwert702) 发起并维护。
+
+- 作者主页：<https://github.com/qwert702>
+- 项目主页：<https://aether.cbnac.com/>
+- 问题反馈：<https://github.com/qwert702/AetherOS/issues>
+- 安全漏洞：请按 [SECURITY.md](SECURITY.md) 的私密通道报告，不要开公开 Issue
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 作者列表：[AUTHORS.md](AUTHORS.md)
 
 ## 许可证
 

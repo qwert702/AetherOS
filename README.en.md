@@ -2,6 +2,11 @@
 
 # AetherOS
 
+[![CI](https://github.com/qwert702/AetherOS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/qwert702/AetherOS/actions/workflows/ci.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/qwert702/AetherOS)](https://github.com/qwert702/AetherOS/releases)
+[![Website](https://img.shields.io/badge/website-aether.cbnac.com-0b8496)](https://aether.cbnac.com/)
+
 ![htop 3.3.0 from the Ubuntu 24.04 archive, running inside the AetherOS desktop](assets/screenshots/screenshot-htop-app.png)
 
 ![Demo: pulling a package from the host, installing htop, and running it on the desktop](assets/demo/demo-htop.gif)
@@ -295,6 +300,17 @@ Aether/
 | [`架构与设计决策（ARCHITECTURE）-2026-09-05.md`](docs/架构与设计决策（ARCHITECTURE）-2026-09-05.md) | Layering and ADRs (frozen at M0; see INDEX for current state) |
 | [`docs/交接报告（HANDOVER）-2026-09-11.md`](docs/交接报告（HANDOVER）-2026-09-11.md) | Handover report: measured results plus build and verification manual |
 | [`docs/归档/`](docs/归档/) | Historical snapshots (decision history, not a statement of current state) |
+
+## Author & maintainer
+
+AetherOS is created and maintained by [qwert702](https://github.com/qwert702).
+
+- Author profile: <https://github.com/qwert702>
+- Project website: <https://aether.cbnac.com/>
+- Issues: <https://github.com/qwert702/AetherOS/issues>
+- Security reports: follow [SECURITY.md](SECURITY.md); do not open a public issue
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Authors: [AUTHORS.md](AUTHORS.md)
 
 ## License
 

@@ -1,0 +1,77 @@
+name: Bug report
+description: 报告可复现的问题（不要在这里贴密钥/密码/完整漏洞利用链）
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供可复现步骤和真实日志；没有日志的“不能用”很难定位。
+        安全漏洞请不要走公开 Issue，按 [SECURITY.md](https://github.com/qwert702/AetherOS/blob/main/SECURITY.md) 私密报告。
+
+  - type: input
+    id: version
+    attributes:
+      label: AetherOS 版本 / commit
+      description: 例如 v0.1.1、ISO 文件名，或 git commit
+      placeholder: v0.1.1 / da26059
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 运行环境
+      options:
+        - QEMU
+        - VirtualBox
+        - VMware
+        - 物理机
+        - 仅主机预览（cargo run）
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从开机/启动开始，按顺序写清楚
+      placeholder: |
+        1. 启动 ...
+        2. 点击 ...
+        3. 看到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 包含错误文案、截图或串口日志（请先脱敏）
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: 串口日志、`/var/log/aether/` 片段、截图链接
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 Issue
+          required: true
+        - label: 日志已脱敏，不含密钥、密码、Token 或私人信息
+          required: true

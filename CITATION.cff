@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use AetherOS in research or a derivative project, please cite it as below."
+title: "AetherOS"
+abstract: >-
+  A bootable operating system built from the Linux kernel up with a from-scratch
+  Rust userspace: PID 1, framebuffer compositor, terminal, Chinese input method,
+  and a permission-gated AI assistant.
+type: software
+version: "0.1.1"
+date-released: "2026-10-15"
+license: GPL-3.0-only
+repository-code: "https://github.com/qwert702/AetherOS"
+url: "https://aether.cbnac.com/"
+authors:
+  - alias: "qwert702"
+    name: "qwert702"

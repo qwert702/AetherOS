@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 文档导航
+    url: https://github.com/qwert702/AetherOS/blob/main/docs/README.md
+    about: 先看文档入口、当前事实与已知边界
+  - name: 安全漏洞（私密）
+    url: https://github.com/qwert702/AetherOS/security/advisories/new
+    about: 不要在公开 Issue 中披露漏洞细节
