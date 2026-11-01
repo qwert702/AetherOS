@@ -1,0 +1,66 @@
+name: ISO Smoke
+
+# 只做启动冒烟：下载一个已构建的 ISO artifact，在 QEMU 里启动并检查串口日志。
+# 不重新构建，不发布；用于验证 Buildroot artifact 至少能进入 AetherOS 初始化。
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "包含 aetheros-iso-demo artifact 的 ISO Build run id"
+        required: true
+        default: "41289093190"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  smoke:
+    name: QEMU 启动冒烟
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 ISO artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aetheros-iso-demo
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: iso
+
+      - name: 安装 QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: 启动 QEMU 并检查串口
+        run: |
+          iso="$(find iso -name '*.iso' -type f | head -1)"
+          test -n "$iso"
+          echo "ISO=$iso"
+          set +e
+          timeout 120 qemu-system-x86_64 \
+            -machine accel=tcg -cpu max -m 1024 \
+            -cdrom "$iso" -boot d -display none \
+            -serial file:serial.log -no-reboot
+          code=$?
+          set -e
+          echo "qemu_exit=$code"
+          echo '--- serial tail ---'
+          tail -n 80 serial.log || true
+          if grep -qE 'aether-init|AetherOS|aether-compositor|login:' serial.log; then
+            echo "[PASS] serial 日志出现 AetherOS 初始化标记"
+          else
+            echo "[FAIL] serial 日志没有 AetherOS 初始化标记"
+            exit 1
+          fi
+
+      - name: 上传串口日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-smoke-serial
+          path: serial.log
+          if-no-files-found: warn
