@@ -342,6 +342,7 @@ Aether/
 AetherOS 由 [qwert702](https://github.com/qwert702) 发起并维护。
 
 - 作者主页：<https://github.com/qwert702>
+- 个人博客：<https://blog.cbnac.com/blog/>
 - 项目主页：<https://aether.cbnac.com/>
 - 问题反馈：<https://github.com/qwert702/AetherOS/issues>
 - 安全漏洞：请按 [SECURITY.md](SECURITY.md) 的私密通道报告，不要开公开 Issue

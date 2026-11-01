@@ -306,6 +306,7 @@ Aether/
 AetherOS is created and maintained by [qwert702](https://github.com/qwert702).
 
 - Author profile: <https://github.com/qwert702>
+- Personal blog: <https://blog.cbnac.com/blog/>
 - Project website: <https://aether.cbnac.com/>
 - Issues: <https://github.com/qwert702/AetherOS/issues>
 - Security reports: follow [SECURITY.md](SECURITY.md); do not open a public issue
