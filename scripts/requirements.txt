@@ -11,6 +11,6 @@
 #   * Pillow      —— scripts/bmp2png.py、截图/走查图处理
 #   * fonttools   —— scripts/mkfont.py（Noto CJK 子集，构建机用）
 paramiko==5.0.0
-cryptography==49.0.0
+cryptography==50.0.2
 Pillow==12.2.0
 fonttools==4.63.0
