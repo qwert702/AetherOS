@@ -1,7 +1,7 @@
 # 站点巡检（SITE-CHECK）— 2026-10-31
 
 > 范围：仓库内 `site/` 生成结果 + 线上 `https://aether.cbnac.com/`。
-> 本报告只记录实际请求/命令的结果；没有部署生产站点。
+> 本报告记录部署前的漂移、2026-10-31 的实际部署，以及部署后的验证结果。
 
 ## 一、结论
 
@@ -9,11 +9,11 @@
 |---|---|
 | 本地生成站点 | **通过**：9 个页面与实测数据一致，下载脚本哈希与 `site/release.json` 一致 |
 | 线上站点可用性 | **通过**：抽查的 8 个 URL 全部 HTTP 200，TLS 正常，安全响应头存在 |
-| 线上站点内容 | **不一致**：仍是旧版数字（51,138 行 / 71 文件 / 768 测试），仓库已是 52,544 / 77 / 793 |
-| 线上部署 | **未执行**：当前只有 root 账号，`deploy-site.py` 按安全策略拒绝 root 直连；没有非 root 部署凭据 |
-| 本地文档链接 | **通过**：103 条本地链接，断链 0 条 |
+| 线上站点内容 | **已同步**：52,544 行 / 77 文件 / 793 测试；`site-health-check` **39/39 通过** |
+| 线上部署 | **已完成**：2026-10-31 22:44（Asia/Shanghai）上传 24 个文件并热重载 nginx |
+| 本地文档链接 | **通过**：154 条本地链接，断链 0 条 |
 
-线上站点不是“坏了”，而是**没有跟上当前仓库**。这是公开信息准确性问题，不影响已有下载文件的哈希。
+线上站点曾落后于仓库；现在已同步。下载页对 v0.1.1 ISO 装机问题的警告仍然保留，因为那是**已发布产物**的真实状态，需重建 ISO 后才能解除。
 
 ## 二、本地站点检查
 
@@ -70,9 +70,9 @@ Strict-Transport-Security: max-age=31536000; includeSubDomains
 Permissions-Policy: geolocation=(), microphone=(), camera=()
 ```
 
-### 3.3 内容漂移
+### 3.3 部署前漂移（历史）
 
-| 页面 | 线上值 | 仓库当前值 |
+| 页面 | 部署前线上值 | 仓库当前值 |
 |---|---|---|
 | 首页（中文） | 51,138 行 / 71 个源文件 / 768 项测试 | 52,544 / 77 / 793 |
 | 首页（英文） | 51,138 lines / 71 files / 768 tests | 52,544 / 77 / 793 |
@@ -82,37 +82,47 @@ Permissions-Policy: geolocation=(), microphone=(), camera=()
 下载页的 `v0.1.1` ISO 事实（41.0 MB、SHA256 `eea68da9…`）与 `site/release.json` 一致；页面明确提示
 “v0.1.1 ISO 装机不可用（未经 isohybrid）”，这是对**已发布产物**的准确描述，需重建 ISO 后才能解除。
 
-## 四、部署阻塞与建议
+### 3.4 部署后验证
 
-`deploy-site.py --check-only` 被安全策略拒绝：
+2026-10-31 22:44（Asia/Shanghai）执行 `deploy-site.py --skip-build`，结果：
+
+- 上传 **24 个文件** → `/var/www/aether.cbnac.com`；
+- 现有 vhost `/www/server/panel/vhost/nginx/aether.cbnac.com.conf` 带 TLS 段，脚本**未覆盖**，只校验 root 与安全头片段；
+- `nginx -t` 使用运行中的二进制/配置，语法通过；
+- 给 master `3980202` 发 HUP，worker 进程换代，确认重载真实生效；
+- 既有业务 `cbnac.com` / `school.cbnac.com` / `api.cbnac.com` 均保持 200；
+- 安全响应头实测 **3/3 关键项**通过。
+
+部署后 `python scripts/site-health-check.py`：
 
 ```text
-拒绝以 root 直连 47.98.207.149：请用有 sudo 的普通账号（AETHER_VPS_USER）
+39/39 项通过；失败 0 项
 ```
 
-当前环境事实：
+首页确认出现 **52,544 行 / 77 个源文件 / 793 项测试**，ISO 日期为 **2026-10-15**；下载页哈希仍为
+`eea68da9…`，与 `site/release.json` 一致。
 
-- `AETHER_VPS_HOST` 已设置；
-- `AETHER_VPS_USER=root`；
-- 本机有 SSH 私钥，但没有配置非 root 部署账号。
+## 四、部署访问状态
 
-建议按以下顺序处理（**需要服务器管理权限**）：
+本次部署使用用户提供的 root 私钥（明确选择 `AETHER_VPS_ALLOW_ROOT=1`），属于一次性例外。
+部署期间已创建非 root 账号：
 
-1. 在 VPS 上创建有 `sudo` 的普通部署账号（或使用已有的非 root 账号），配置公钥登录；
-2. 设置 `AETHER_VPS_USER=<非 root 账号>`、`AETHER_VPS_KEY=<私钥路径>`；
-3. 先跑只读校验：
-   ```bash
-   python scripts/deploy-site.py --check-only --skip-build
-   ```
-4. 确认后再部署：
-   ```bash
-   python scripts/deploy-site.py
-   ```
-5. 部署后重新抓取首页/FAQ，确认 52,544 / 77 / 793 已上线，并复查安全响应头；
-6. 按安全审计建议轮换曾在聊天记录中出现过的 VPS 口令。
+```text
+aether-deploy:x:1001:1001::/home/aether-deploy:/bin/bash
+groups: aether-deploy, wheel
+sudo -n true → SUDO_OK
+```
+
+root 私钥已从本机删除。后续应优先使用 `aether-deploy`，不要继续使用 root 直连。
+
+**已知限制**：非 root 的 `deploy-site.py --check-only` 在 `probe_layout` 阶段没有识别到
+`/www/server/panel/vhost/nginx`，回退到 `/etc/nginx/conf.d`。因此本次实际部署仍由 root 完成；
+如果要长期用 `aether-deploy` 部署，需要先修 `probe_layout` 的 `nginx -T` 权限处理，并确认
+`/var/www/aether.cbnac.com` 的写权限。这是一个后续安全改进项，不应假装已经解决。
 
 ## 五、结论边界
 
-- 本报告**没有**修改生产服务器，也没有声称线上已经更新。
-- 线上站点仍可用、TLS 与安全头正常；问题是公开的规模/测试数字落后。
-- 本地站点已修正并通过门禁；等非 root 部署凭据就绪后，按第四节执行即可同步线上。
+- 线上站点已完成一次真实部署，公开数字已同步；这不是本地模拟结果。
+- 本次使用了 root 一次性例外；root 私钥已删除，但**这把 key 曾在聊天记录中出现，仍建议轮换**。
+- 下载页的 v0.1.1 ISO 装机警告仍然有效；只有重建并发布新 ISO 后才能解除。
+- 非 root 部署链路尚未完全验证，已记录为后续改进项。

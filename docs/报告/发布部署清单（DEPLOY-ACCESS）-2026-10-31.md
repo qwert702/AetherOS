@@ -8,8 +8,8 @@
 | 项目 | 要求 | 当前状态 |
 |---|---|---|
 | VPS 地址 | 已有 `AETHER_VPS_HOST=47.98.207.149` | 已设置 |
-| 非 root 账号 | 专用账号，例如 `aether-deploy`，有 `sudo -n` 权限 | **未创建**；当前只有 `root` |
-| SSH 私钥路径 | 本机私钥文件路径，例如 `C:\Users\cbn\.ssh\id_ed25519` | 本机存在；尚未配置到 VPS 账号 |
+| 非 root 账号 | 专用账号，例如 `aether-deploy`，有 `sudo -n` 权限 | **已创建**：`aether-deploy`（uid 1001，wheel，`sudo -n` 通过） |
+| SSH 私钥路径 | 本机私钥文件路径，例如 `C:\Users\cbn\.ssh\id_ed25519` | 本机存在；已安装到 `aether-deploy` |
 
 **不需要**：
 
@@ -61,16 +61,17 @@ visudo -cf /etc/sudoers.d/aether-deploy
 python scripts/deploy-preflight.py
 ```
 
-预期全部 PASS。当前实际结果是：
+设置环境变量后实际结果是 **5/5 PASS**：
 
 ```text
 [PASS] AETHER_VPS_HOST  (47.98.207.149)
-[PASS] AETHER_VPS_USER  (root)
-[FAIL] 非 root 账号  (当前是 root；deploy-site.py 默认拒绝 root 直连)
-[FAIL] AETHER_VPS_KEY  (未设置；推荐密钥认证，不建议用口令)
+[PASS] AETHER_VPS_USER  (aether-deploy)
+[PASS] 非 root 账号
+[PASS] 私钥文件存在
+[PASS] known_hosts 文件存在
 ```
 
-所以现在还不能部署；这不是代码问题，是访问方式不满足安全策略。
+2026-10-31 已完成一次真实部署；部署时使用用户提供的 root key 作为一次性例外，root key 已从本机删除。
 
 ## 四、部署命令
 
@@ -125,10 +126,11 @@ python scripts/site-health-check.py
 
 ## 八、当前结论
 
-**你只需要给我一个非 root 的 VPS 账号（或创建好该账号并配置本机公钥），不需要给我 root 密码或私钥内容。** 账号就绪后，我会按以下顺序执行：
+**部署已完成。** 2026-10-31 22:44（Asia/Shanghai）上传 24 个文件，线上 `site-health-check` **39/39 通过**；既有 `cbnac.com` / `school.cbnac.com` / `api.cbnac.com` 均保持 200。
 
-1. `deploy-preflight.py` 全 PASS；
-2. `deploy-site.py --check-only --skip-build`；
-3. `deploy-site.py` 正式部署；
-4. `site-health-check.py` 验证线上数字与安全头；
-5. 把部署结果补进站点巡检报告。
+后续注意事项：
+
+1. `aether-deploy` 已存在，优先用它，不再使用 root 直连；
+2. 非 root 的 `deploy-site.py --check-only` 仍存在 `probe_layout` 识别问题（回退到 `/etc/nginx/conf.d`），长期使用前需要修脚本或调整权限；
+3. 曾经出现在聊天记录中的 root key 建议在服务器侧轮换；
+4. 后续发布按 `site-health-check.py` + `release-readiness.py` 两个检查器执行。
