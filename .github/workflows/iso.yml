@@ -13,6 +13,14 @@ on:
         options:
           - demo
           - locked
+      autoinstall:
+        description: "是否生成自动安装版（AETHER_AUTOINSTALL=1）"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
 
 permissions:
   contents: read
@@ -41,12 +49,14 @@ jobs:
         if: ${{ inputs.auth_mode == 'demo' }}
         env:
           AETHER_DEMO: "1"
+          AETHER_AUTOINSTALL: ${{ inputs.autoinstall == '1' && '1' || '' }}
         run: bash platform/build-iso.sh
 
       - name: 构建 ISO（locked）
         if: ${{ inputs.auth_mode == 'locked' }}
         env:
           AETHER_ROOT_PW_HASH: ${{ secrets.AETHER_ROOT_PW_HASH }}
+          AETHER_AUTOINSTALL: ${{ inputs.autoinstall == '1' && '1' || '' }}
         run: |
           if [ -z "${AETHER_ROOT_PW_HASH:-}" ]; then
             echo "::error::locked 模式需要仓库 secret AETHER_ROOT_PW_HASH"
@@ -76,6 +86,6 @@ jobs:
       - name: 上传 ISO 产物
         uses: actions/upload-artifact@v4
         with:
-          name: aetheros-iso-${{ inputs.auth_mode }}
+          name: aetheros-iso-${{ inputs.auth_mode }}${{ inputs.autoinstall == '1' && '-auto' || '' }}
           path: aetheros-0.1-amd64.iso
           if-no-files-found: error

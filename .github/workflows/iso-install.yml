@@ -1,0 +1,83 @@
+name: ISO Install
+
+# 手动安装冒烟：下载自动安装版 ISO，在 QEMU 里装到一块临时磁盘，再从盘启动。
+# 只验证、不发布。输入 ISO Build run id 和 artifact 名称。
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "包含自动安装 ISO artifact 的 ISO Build run id"
+        required: true
+      artifact_name:
+        description: "自动安装 ISO artifact 名称"
+        required: true
+        default: "aetheros-iso-locked-auto"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  install:
+    name: QEMU 安装 + 从盘启动
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 ISO artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: iso
+
+      - name: 安装 QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: QEMU 自动安装到磁盘
+        run: |
+          iso="$(find iso -name '*.iso' -type f | head -1)"
+          test -n "$iso"
+          truncate -s 1G disk.raw
+          set +e
+          timeout 600 qemu-system-x86_64 \
+            -machine accel=tcg -cpu max -m 1024 \
+            -cdrom "$iso" -boot d \
+            -drive file=disk.raw,format=raw,if=virtio \
+            -display none -serial file:install.log -no-reboot
+          code=$?
+          set -e
+          echo "install_qemu_exit=$code"
+          tail -n 120 install.log || true
+          grep -q 'AETHER-AUTOINSTALL: PASS' install.log
+          used="$(du -m disk.raw | awk '{print $1}')"
+          echo "disk_used_mb=$used"
+          test "$used" -ge 10
+
+      - name: 从磁盘独立启动
+        run: |
+          set +e
+          timeout 300 qemu-system-x86_64 \
+            -machine accel=tcg -cpu max -m 1024 \
+            -drive file=disk.raw,format=raw,if=virtio \
+            -boot c -display none -serial file:disk.log -no-reboot
+          code=$?
+          set -e
+          echo "disk_qemu_exit=$code"
+          tail -n 120 disk.log || true
+          grep -qE '持久化分区已挂载|aether-init' disk.log
+          grep -q 'aether-ops' disk.log
+
+      - name: 上传安装与启动日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-install-logs
+          path: |
+            install.log
+            disk.log
+          if-no-files-found: warn
