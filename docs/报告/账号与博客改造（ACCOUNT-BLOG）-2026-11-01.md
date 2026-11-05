@@ -64,6 +64,7 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
   - `/blog/` 首页
   - `/blog/about.html` 关于
   - `/blog/archive.html` 归档
+  - `/blog/projects.html` 项目
   - `/blog/posts/aetheros.html`
   - `/blog/posts/static-blog.html`
   - `/blog/posts/notes.html`
@@ -75,7 +76,8 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 
 - 全站 header 的 GitHub 按钮
 - 首页 hero 的 GitHub 按钮
-- 首页 GitHub 项目卡
+- 首页 GitHub 项目卡与 6 个项目卡
+- `projects.html` 的 12 个项目卡与 GitHub 全部仓库入口
 - About 页的 GitHub 区块
 - 文章页 header/footer
 - 根入口 `https://blog.cbnac.com/` 的 GitHub 按钮
@@ -85,7 +87,8 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 - 主题：地质 / 时间，沿用「时光镌刻于层岩之中」
 - 暖白岩层、墨色正文、矿物青强调色；衬线标题 + 高可读正文
 - 明暗双主题、移动端双行导航、`prefers-reduced-motion`
-- 移除远程自动播放视频；首屏只使用静态排版与 CSS 纹理
+- 恢复旧版 CloudFront 视频 hero（静音、循环、`preload=metadata`），配静态海报与暗色渐变降级；移动端降低视频透明度
+- 首页新增「项目」区，`projects.html` 展示 AetherOS、DSH 插件、CutForge、OpenChatCut、服务器防火墙等 12 个项目，不再只出现 AetherOS
 
 ### 3.4 部署与安全
 
@@ -108,7 +111,9 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 |---|---|
 | 博客首页 | HTTP 200 |
 | 关于 / 归档 / 三篇文章 | HTTP 200 |
-| 首页 GitHub 链接 | 6 处 |
+| 首页 GitHub 链接 | 12 处 |
+| 项目页 GitHub 链接 | 16 处 |
+| 首页视频 hero | 旧 CloudFront 视频已恢复，CSP 增加 `media-src` |
 | RSS / sitemap | XML 解析通过 |
 | 本地 HTML 内部链接 | 除 `root-index.html` 的服务端绝对路径外，无断链 |
 | 安全头 | HSTS / CSP / Permissions-Policy / X-Frame-Options / nosniff / Referrer-Policy 均存在 |
