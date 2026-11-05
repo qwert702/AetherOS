@@ -1,4 +1,4 @@
-﻿# 账号与博客改造报告
+# 账号与博客改造报告
 
 > 日期：2026-11-01
 > 范围：GitHub 账号门面、个人博客 `blog.cbnac.com`、AetherOS 作者入口
@@ -90,7 +90,23 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 - 恢复旧版 CloudFront 视频 hero（静音、循环、`preload=metadata`），配静态海报与暗色渐变降级；移动端降低视频透明度
 - 首页新增「项目」区，`projects.html` 展示 AetherOS、DSH 插件、CutForge、OpenChatCut、服务器防火墙等 18 个项目，不再只出现 AetherOS
 
-### 3.4 部署与安全
+### 3.4 旧资料与 URL 恢复
+
+- 新增 `/blog/resources.html`，恢复旧站资源页内容：
+  - Claude Code 安装教程、安装命令与三张旧截图
+  - Claude Code 基础指令速查
+  - 数学课件与 Python 教程入口
+- 旧 URL 已做跳转：
+  - `/blog/resource` → `/blog/resources.html`
+  - `/blog/resource/claude-code` → `/blog/resources.html#claude-code`
+  - `/blog/resource/claude-code-basics` → `/blog/resources.html#basics`
+  - `/blog/about` → `/blog/about.html`
+  - `/blog/admin-panel` → `/blog/`（新静态站没有后台面板）
+- 旧站 `/math/` 与 `/tutorials/python/` 目录一直保留在原位，仍返回 200。
+- 旧站三张资源截图已复制到 `assets/resources/`，不再依赖已移动的旧 SPA 目录。
+- 旧站 CC-Switch 安装包文件在服务器上未找到；资源页保留官方入口，不伪造下载链接。
+
+### 3.5 部署与安全
 
 - 部署目录：`/var/www/cbnac.cn/blog`
 - 旧目录已移动为带时间戳的 `blog.old-*`，并在服务器 `/root/blog-backup-*.tar.gz` 保留压缩备份
@@ -110,10 +126,13 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 | 项目 | 结果 |
 |---|---|
 | 博客首页 | HTTP 200 |
-| 关于 / 归档 / 三篇文章 | HTTP 200 |
+| 关于 / 归档 / 资料 / 三篇文章 | HTTP 200 |
 | 首页 GitHub 链接 | 12 处 |
 | 项目页 GitHub 链接 | 18 个项目、全部指向 GitHub |
 | 首页视频 hero | 旧 CloudFront 视频已恢复，CSP 增加 `media-src` |
+| 旧 `/blog/resource`、`/blog/about` | 301 到新资料页 / 关于页 |
+| 旧 `/math/`、`/tutorials/python/` | HTTP 200，仍在原路径 |
+| 旧资源截图 | 3 张已复制到 `assets/resources/`，可访问 |
 | RSS / sitemap | XML 解析通过 |
 | 本地 HTML 内部链接 | 除 `root-index.html` 的服务端绝对路径外，无断链 |
 | 安全头 | HSTS / CSP / Permissions-Policy / X-Frame-Options / nosniff / Referrer-Policy 均存在 |
@@ -123,7 +142,7 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 
 ## 五、边界与后续
 
-- 旧博客的文章数据/源码没有在服务器上找到可直接导入的源文件；本轮新站使用新写的初始文章，旧构建产物完整备份。若后续找到旧文章导出，可直接替换 `posts/`。
+- 旧博客的独立源码仓库没有在服务器上找到；但旧构建产物已完整备份，旧资源页内容、关于页原文和三张截图已恢复到新站，旧资料 URL 也已做跳转。新站的文章区是本次新写的初始文章；若后续找到旧文章导出，可直接替换 `posts/`。
 - GitHub 头像、显示名、所在地、邮箱、社交账号没有编造；只设置了可确认的 `qwert702` 身份与博客链接。
 - GitHub Social preview 目前没有公开 REST API，需要在仓库 Settings → Social preview 手动上传；博客社交封面已生成在 `blog/assets/og-cover.png`。
 - 博客的登录/管理接口仍是服务器上原有 Next.js `/api/blog`，新静态站未接入后台编辑器；这是下一阶段工作，不影响阅读。
