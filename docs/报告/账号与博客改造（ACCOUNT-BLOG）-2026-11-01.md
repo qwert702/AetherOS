@@ -24,8 +24,9 @@
   - 官网、博客、源码、文档入口
   - GitHub Issues / PR 联系方式
 - Profile bio 已设置为 AetherOS 作者与维护者。
-- Profile 网站字段：`https://aether.cbnac.com/`
+- Profile 网站字段：`https://blog.cbnac.com/blog/`
 - Profile README 已加入博客入口：`https://blog.cbnac.com/blog/`
+- AetherOS 仓库主页保留：`https://aether.cbnac.com/`
 
 ### 2.2 仓库门面
 
