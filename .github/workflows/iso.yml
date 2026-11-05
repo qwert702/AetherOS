@@ -100,7 +100,7 @@ jobs:
           PY
 
       - name: 上传 ISO 产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aetheros-iso-${{ inputs.auth_mode }}${{ inputs.autoinstall == '1' && '-auto' || '' }}${{ inputs.updater_config == '1' && '-updater' || '' }}
           path: aetheros-0.1-amd64.iso
