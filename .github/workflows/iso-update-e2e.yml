@@ -1,0 +1,97 @@
+name: ISO Update E2E
+
+# 手动更新链路：自动安装 ISO → 写入 updater 配置 → 启动联网 → 拉取验签暂存
+# → 再启动应用 staged → 检查探针文件。只用于 R7 验证；不发布。
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "包含 aetheros-iso-locked-auto artifact 的 ISO Build run id"
+        required: true
+        default: "42014940806"
+      artifact_name:
+        description: "ISO artifact 名称"
+        required: true
+        default: "aetheros-iso-locked-auto"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  update:
+    name: guest 更新 E2E
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 ISO artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: iso
+
+      - name: 安装 QEMU 与 guestfs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 libguestfs-tools
+
+      - name: 自动安装到磁盘
+        run: |
+          iso="$(find iso -name '*.iso' -type f | head -1)"
+          test -n "$iso"
+          truncate -s 1G disk.raw
+          set +e
+          timeout 600 qemu-system-x86_64 \
+            -machine accel=tcg -cpu max -m 1024 \
+            -cdrom "$iso" -boot d \
+            -drive file=disk.raw,format=raw,if=virtio \
+            -display none -serial file:install.log -no-reboot
+          set -e
+          tail -n 60 install.log || true
+          grep -q 'AETHER-AUTOINSTALL: PASS' install.log
+
+      - name: 注入 updater 配置
+        run: |
+          cat > updater.json <<'EOF'
+          {"url":"https://aether.cbnac.com/updates","check_minutes":5}
+          EOF
+          virt-customize -a disk.raw --upload updater.json:/etc/aether/updater.json
+
+      - name: 启动 guest 拉取更新
+        run: |
+          set +e
+          timeout 180 qemu-system-x86_64 \
+            -machine accel=tcg -cpu max -m 1024 \
+            -drive file=disk.raw,format=raw,if=virtio \
+            -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+            -display none -serial file:update.log -no-reboot
+          set -e
+          tail -n 120 update.log || true
+          grep -qE '更新已暂存|update|staged' update.log
+
+      - name: 重启并检查应用结果
+        run: |
+          set +e
+          timeout 180 qemu-system-x86_64 \
+            -machine accel=tcg -cpu max -m 1024 \
+            -drive file=disk.raw,format=raw,if=virtio \
+            -display none -serial file:apply.log -no-reboot
+          set -e
+          tail -n 80 apply.log || true
+          test "$(virt-cat -a disk.raw /var/lib/aether/update-probe.txt 2>/dev/null)" = "R7 probe 0.1.2"
+          echo "UPDATE_APPLIED_OK"
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-update-e2e-logs
+          path: |
+            install.log
+            update.log
+            apply.log
+          if-no-files-found: warn
