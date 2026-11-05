@@ -13,6 +13,14 @@ on:
         description: "ISO artifact 名称"
         required: true
         default: "aetheros-iso-locked-auto"
+      inject_config:
+        description: "是否用 debugfs 注入 updater 配置（镜像已内置配置时设 0）"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "0"
 
 permissions:
   actions: read
@@ -55,6 +63,7 @@ jobs:
           grep -q 'AETHER-AUTOINSTALL: PASS' install.log
 
       - name: 注入 updater 配置
+        if: ${{ inputs.inject_config == '1' }}
         run: |
           sudo fdisk -l disk.raw || true
           start="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw1.*start= *\([0-9][0-9]*\).*/\1/p' | head -1)"

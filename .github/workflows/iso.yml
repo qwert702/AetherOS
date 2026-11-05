@@ -21,6 +21,14 @@ on:
         options:
           - "0"
           - "1"
+      updater_config:
+        description: "是否写入 /etc/aether/updater.json 测试配置（仅 R7 验证）"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
 
 permissions:
   contents: read
@@ -32,6 +40,14 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
+
+      - name: 写入 updater 测试配置
+        if: ${{ inputs.updater_config == '1' }}
+        run: |
+          mkdir -p platform/overlay/etc/aether
+          cat > platform/overlay/etc/aether/updater.json <<'EOF'
+          {"url":"https://aether.cbnac.com/updates","check_minutes":5}
+          EOF
 
       - name: 安装构建依赖
         run: |
@@ -86,6 +102,6 @@ jobs:
       - name: 上传 ISO 产物
         uses: actions/upload-artifact@v4
         with:
-          name: aetheros-iso-${{ inputs.auth_mode }}${{ inputs.autoinstall == '1' && '-auto' || '' }}
+          name: aetheros-iso-${{ inputs.auth_mode }}${{ inputs.autoinstall == '1' && '-auto' || '' }}${{ inputs.updater_config == '1' && '-updater' || '' }}
           path: aetheros-0.1-amd64.iso
           if-no-files-found: error
