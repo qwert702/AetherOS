@@ -57,17 +57,17 @@ jobs:
       - name: 注入 updater 配置
         run: |
           sudo fdisk -l disk.raw || true
-          start="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw2.*start= *\([0-9][0-9]*\).*/\1/p' | head -1)"
-          size="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw2.*size= *\([0-9][0-9]*\).*/\1/p' | head -1)"
+          start="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw1.*start= *\([0-9][0-9]*\).*/\1/p' | head -1)"
+          size="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw1.*size= *\([0-9][0-9]*\).*/\1/p' | head -1)"
           test -n "$start" && test -n "$size"
-          dd if=disk.raw of=part2.img bs=512 skip="$start" count="$size" status=progress
+          dd if=disk.raw of=part1.img bs=512 skip="$start" count="$size" status=progress
           cat > updater.json <<'EOF'
           {"url":"https://aether.cbnac.com/updates","check_minutes":5}
           EOF
-          sudo debugfs -w -R "mkdir /etc/aether" part2.img >/dev/null 2>&1 || true
-          sudo debugfs -w -R "write updater.json /etc/aether/updater.json" part2.img
-          dd if=part2.img of=disk.raw bs=512 seek="$start" conv=notrunc status=progress
-          rm -f part2.img
+          sudo debugfs -w -R "mkdir /etc/aether" part1.img >/dev/null 2>&1 || true
+          sudo debugfs -w -R "write updater.json /etc/aether/updater.json" part1.img
+          dd if=part1.img of=disk.raw bs=512 seek="$start" conv=notrunc status=progress
+          rm -f part1.img
 
       - name: 启动 guest 拉取更新
         run: |
