@@ -34,10 +34,10 @@ jobs:
           github-token: ${{ github.token }}
           path: iso
 
-      - name: 安装 QEMU 与 guestfs
+      - name: 安装 QEMU 与 ext4 工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 libguestfs-tools
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 e2fsprogs util-linux
 
       - name: 自动安装到磁盘
         run: |
@@ -55,13 +55,19 @@ jobs:
           grep -q 'AETHER-AUTOINSTALL: PASS' install.log
 
       - name: 注入 updater 配置
-        env:
-          LIBGUESTFS_BACKEND: direct
         run: |
+          sudo fdisk -l disk.raw || true
+          start="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw2.*start= *\([0-9][0-9]*\).*/\1/p' | head -1)"
+          size="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw2.*size= *\([0-9][0-9]*\).*/\1/p' | head -1)"
+          test -n "$start" && test -n "$size"
+          dd if=disk.raw of=part2.img bs=512 skip="$start" count="$size" status=progress
           cat > updater.json <<'EOF'
           {"url":"https://aether.cbnac.com/updates","check_minutes":5}
           EOF
-          virt-customize -a disk.raw --upload updater.json:/etc/aether/updater.json
+          sudo debugfs -w -R "mkdir /etc/aether" part2.img >/dev/null 2>&1 || true
+          sudo debugfs -w -R "write updater.json /etc/aether/updater.json" part2.img
+          dd if=part2.img of=disk.raw bs=512 seek="$start" conv=notrunc status=progress
+          rm -f part2.img
 
       - name: 启动 guest 拉取更新
         run: |
@@ -84,7 +90,10 @@ jobs:
             -display none -serial file:apply.log -no-reboot
           set -e
           tail -n 80 apply.log || true
-          test "$(virt-cat -a disk.raw /var/lib/aether/update-probe.txt 2>/dev/null)" = "R7 probe 0.1.2"
+          start="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw2.*start= *\([0-9][0-9]*\).*/\1/p' | head -1)"
+          size="$(sudo sfdisk -d disk.raw | sed -n 's/.*disk.raw2.*size= *\([0-9][0-9]*\).*/\1/p' | head -1)"
+          dd if=disk.raw of=part2-apply.img bs=512 skip="$start" count="$size" status=progress
+          test "$(debugfs -R 'cat /var/lib/aether/update-probe.txt' part2-apply.img 2>/dev/null)" = "R7 probe 0.1.2"
           echo "UPDATE_APPLIED_OK"
 
       - name: 上传日志
