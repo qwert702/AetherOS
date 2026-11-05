@@ -55,6 +55,8 @@ jobs:
           grep -q 'AETHER-AUTOINSTALL: PASS' install.log
 
       - name: 注入 updater 配置
+        env:
+          LIBGUESTFS_BACKEND: direct
         run: |
           cat > updater.json <<'EOF'
           {"url":"https://aether.cbnac.com/updates","check_minutes":5}
