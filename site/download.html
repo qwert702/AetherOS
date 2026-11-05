@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>下载 AetherOS — 可引导 ISO（41.0 MB，含 SHA256 校验）</title>
-<meta name="description" content="下载 AetherOS 可引导 ISO：41.0 MB，QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和与常见问题排错。">
+<title>下载 AetherOS — 可引导 ISO（26.0 MB，含 SHA256 校验）</title>
+<meta name="description" content="下载 AetherOS 可引导 ISO：26.0 MB，QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和与常见问题排错。">
 <link rel="canonical" href="https://aether.cbnac.com/download.html">
 <link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/download.html">
 <link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/download.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AetherOS">
 <meta property="og:url" content="https://aether.cbnac.com/download.html">
-<meta property="og:title" content="下载 AetherOS — 可引导 ISO（41.0 MB）">
+<meta property="og:title" content="下载 AetherOS — 可引导 ISO（26.0 MB）">
 <meta property="og:description" content="QEMU / VirtualBox / VMware 三种虚拟机的一步步安装说明，附 SHA256 校验和。">
 <meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -35,9 +35,9 @@
 
 <header class="hero"><div class="wrap">
   <h1>下载 AetherOS</h1>
-  <p class="lede">可引导 ISO，<strong>41.0 MB</strong>。选一个虚拟机，三分钟就能进桌面。</p>
+  <p class="lede">可引导 ISO，<strong>26.0 MB</strong>。选一个虚拟机，三分钟就能进桌面。</p>
   <div class="cta">
-    <a class="btn primary" href="https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso">下载 ISO <small>41.0 MB</small></a>
+    <a class="btn primary" href="https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64-20261105.iso">下载 ISO <small>26.0 MB</small></a>
     <a class="btn ghost" href="#qemu">看安装步骤</a>
   </div>
 </div></header>
@@ -47,11 +47,11 @@
   <table>
     <tbody>
       <tr><th style="width:180px">版本</th><td>v0.1.1</td></tr>
-      <tr><th>文件名</th><td><code>aetheros-0.1-amd64.iso</code></td></tr>
-      <tr><th>体积</th><td>41.0 MB（42991616 字节）</td></tr>
-      <tr><th>构建日期</th><td>2026-10-15</td></tr>
+      <tr><th>文件名</th><td><code>aetheros-0.1-amd64-20261105.iso</code></td></tr>
+      <tr><th>体积</th><td>26.0 MB（27262976 字节）</td></tr>
+      <tr><th>构建日期</th><td>2026-11-05</td></tr>
       <tr><th>架构</th><td>x86_64（需要支持 64 位虚拟化）</td></tr>
-      <tr><th>SHA256</th><td><code style="word-break:break-all">eea68da9e4a9c7c58558c488b8c3f0192d82c0b550effde1d5cb194e58211e69</code></td></tr>
+      <tr><th>SHA256</th><td><code style="word-break:break-all">53580ae53bb8dd83baa46115a6c3600d013c722cd40bce046119becbb71711ed</code></td></tr>
       <tr><th>许可证</th><td>GPL-3.0-only</td></tr>
     </tbody>
   </table>
@@ -64,16 +64,14 @@
 <section id="qemu"><div class="wrap">
   <h2>QEMU：一条命令</h2>
   <p class="sub">最省事的路径。装好 QEMU 后直接跑（把文件名换成你下载的那个）：</p>
-<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
+<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-0.1-amd64-20261105.iso -boot d</code></pre>
   <p class="sub">想装到虚拟磁盘（装完可脱离 ISO 独立引导）：</p>
 <pre><code>qemu-img create -f qcow2 aether.qcow2 4G
-qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
-  <div class="note" style="border-left:4px solid #d97706;padding-left:12px">
-    <strong>⚠️ v0.1.1 的 ISO 装机不可用。</strong>
-    实测该 ISO 未经 <code>isohybrid</code> 处理（首 512 字节无 MBR 签名），
-    不能 dd 到磁盘引导；安装器检测到这一点会<strong>拒绝执行且不写入目标盘</strong>。
-    引导与跑 Live 桌面不受影响。构建侧已补上 isohybrid 步骤（<code>platform/build-iso.sh</code>），
-    需重新构建 ISO 后才支持装机。
+qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-0.1-amd64-20261105.iso -boot d</code></pre>
+  <div class="note" style="border-left:4px solid #16a34a;padding-left:12px">
+    <strong>✓ 2026-11-05 重建 ISO 已通过安装验证。</strong>
+    已在 QEMU 中自动安装到磁盘并成功从盘独立启动（<code>AETHER-AUTOINSTALL: PASS</code>）。
+    下载后仍请先校验 SHA256，再按上面的 QEMU 命令启动。
   </div>
   <div class="note">进桌面后点 Dock 上的<strong>安装向导</strong>，把系统装到虚拟磁盘；重启时把 <code>-boot d</code> 去掉即从磁盘引导。</div>
 </div></section>
@@ -83,7 +81,7 @@ qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-0.1-amd64.iso -boot
   <div class="step"><div class="n">1</div><div><h3>新建虚拟机</h3>
     <p class="sub" style="margin:0">类型选 <code>Other Linux (64-bit)</code>，内存 1024 MB 以上，先不建硬盘（Live 体验）。</p></div></div>
   <div class="step"><div class="n">2</div><div><h3>挂载 ISO</h3>
-    <p class="sub" style="margin:0">设置 → 存储 → 光驱 → 选择下载的 <code>aetheros-0.1-amd64.iso</code>。</p></div></div>
+    <p class="sub" style="margin:0">设置 → 存储 → 光驱 → 选择下载的 <code>aetheros-0.1-amd64-20261105.iso</code>。</p></div></div>
   <div class="step"><div class="n">3</div><div><h3>启动</h3>
     <p class="sub" style="margin:0">开机即进桌面。想在磁盘上持久化，就在虚拟机里加一块虚拟硬盘后再用安装向导。</p></div></div>
   <div class="note">如果卡在 <code>buildroot login:</code> 而不是桌面，多半是 ISO 没挂上或虚拟光驱未连接 —— 检查上一步的挂载。</div>

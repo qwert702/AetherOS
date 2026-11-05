@@ -61,8 +61,9 @@
 | [账号与博客改造（ACCOUNT-BLOG）](报告/账号与博客改造（ACCOUNT-BLOG）-2026-11-01.md) | GitHub Profile、仓库归档、个人博客重建与验收 |
 | [安全审计（SECURITY-AUDIT）](报告/安全审计（SECURITY-AUDIT）-2026-10-02.md) | 全仓安全审计与修复台账（大文件） |
 | [依赖 CVE 核对（CVE-AUDIT）](证据/依赖CVE（CVE-AUDIT）-2026-10-14.md) | 依赖漏洞与版本核对 |
-| [发布链路检查](证据/发布链路-2026-11-01.md) | 官网已同步、更新包自检、ISO 未就绪的边界 |
-| [ISO 构建记录](证据/ISO构建-2026-11-01.md) | Buildroot demo 构建成功、isohybrid 校验与未发布边界 |
+| [发布链路检查](证据/发布链路-2026-11-01.md) | 官网已同步、更新包自检的历史边界 |
+| [ISO 构建记录](证据/ISO构建-2026-11-01.md) | Buildroot demo/locked 构建、QEMU 启动/安装/从盘验证 |
+| [发布记录](证据/发布记录-2026-11-05.md) | v0.1.1 新资产、下载页同步、release-readiness 9/9 |
 | [门禁数快照](证据/gate-count.txt) | `gates.py` 写入的本次运行门禁数 |
 
 ### 路线图与生产化

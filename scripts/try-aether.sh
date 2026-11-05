@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # 一条命令把 AetherOS 跑起来：没有 ISO 就下载 Release 里的，然后用 QEMU 引导。
 #
 #   # 直接跑（先看一眼内容再执行更稳妥）：
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 VERSION="${AETHER_VERSION:-v0.1.1}"
-ISO="${AETHER_ISO:-aetheros-0.1-amd64.iso}"
+ISO="${AETHER_ISO:-aetheros-0.1-amd64-20261105.iso}"
 MEM="${AETHER_MEM:-1024}"
 URL="https://github.com/qwert702/AetherOS/releases/download/${VERSION}/${ISO}"
 
@@ -24,13 +24,13 @@ URL="https://github.com/qwert702/AetherOS/releases/download/${VERSION}/${ISO}"
 # 拦截设备）被替换，用户就会开一个攻击者构造的系统。而哈希本来就有、就公开在
 # 官网下载页上，没有理由不用。
 #
-# ⚠️ 这个值是 **Release 资产**的哈希（42,991,616 字节），不是仓库根目录那份本地
-# 构建产物的哈希 —— 两者确实不同（本地 40,359,936 字节）。2026-10-02 实际下载该
-# 资产复核过：大小与 sha256 均与 GitHub API 的 digest 一致。
+# ⚠️ 这个值是 **Release 资产**的哈希（27,262,976 字节），不是仓库根目录那份本地
+# 构建产物的哈希。2026-11-05 上传后复核过：大小与 sha256 均与 GitHub API 的 digest
+# 一致。
 #
 # 换版本时同步更新 site/release.json 与本常量；自建镜像用 AETHER_SHA256=<你的哈希>
 # 覆盖；显式置空（AETHER_SHA256=）表示知情地跳过校验。
-SHA256="${AETHER_SHA256-eea68da9e4a9c7c58558c488b8c3f0192d82c0b550effde1d5cb194e58211e69}"
+SHA256="${AETHER_SHA256-53580ae53bb8dd83baa46115a6c3600d013c722cd40bce046119becbb71711ed}"
 
 # 校验 $ISO 的 SHA256；通过返回 0，不通过返回 1。
 verify_iso() {
@@ -81,13 +81,13 @@ if [ -z "$QEMU" ]; then
   Windows         : winget install SoftwareFreedomConservancy.QEMU
                     —— 或者干脆不用 QEMU：下载 ISO 用 VirtualBox / VMware 挂载也能开
 
-  ISO 直链：https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso
+  ISO 直链：https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64-20261105.iso
 EOF
     exit 1
 fi
 
 if [ ! -f "$ISO" ]; then
-    echo "[try-aether] 下载 ISO（约 38.5 MB）→ $ISO"
+    echo "[try-aether] 下载 ISO（约 26.0 MB）→ $ISO"
     if command -v curl >/dev/null 2>&1; then
         curl -fL --progress-bar -o "$ISO" "$URL"
     elif command -v wget >/dev/null 2>&1; then

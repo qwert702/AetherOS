@@ -1,4 +1,4 @@
-[中文](README.md) | **English** · [**Download ISO (41.0 MB)**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
+[中文](README.md) | **English** · [**Download ISO (26.0 MB)**](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64-20261105.iso) · [Landing page](https://aether.cbnac.com/) · [App packaging guide](docs/应用包格式（APP-PACKAGES）-2026-09-28.md)
 
 # AetherOS
 
@@ -23,7 +23,7 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 |---|---|
 | **Scale** | 52,544 lines of Rust / 77 source files / 7 crates (measured 2026-10-06) |
 | **Verification** | 793 unit tests green · 0 compiler warnings on Windows and on 6/7 crates for musl (`aetherd` cannot be cross-checked because of ring) · 12 h 43 m of continuous uptime without a crash · permission chain proven end to end |
-| **Artifact** | bootable ISO ≈ 41.0 MB, tested booting in QEMU, VirtualBox and VMware |
+| **Artifact** | bootable ISO ≈ 26.0 MB, tested booting in QEMU, VirtualBox and VMware |
 
 ## What makes it unusual
 
@@ -35,7 +35,7 @@ The kernel is deliberately the one piece that is *not* rewritten — Android and
 
 ## Quick start
 
-No build machine at hand? Grab the prebuilt bootable ISO from the [latest release](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso) — it boots in QEMU, VirtualBox and VMware.
+No build machine at hand? Grab the prebuilt bootable ISO from the [latest release](https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64-20261105.iso) — it boots in QEMU, VirtualBox and VMware.
 
 You do not need a virtual machine to preview the desktop:
 

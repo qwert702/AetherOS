@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Download AetherOS — bootable ISO (41.0 MB, SHA256 included)</title>
-<meta name="description" content="Download the AetherOS bootable ISO (41.0 MB), with step-by-step QEMU / VirtualBox / VMware instructions, SHA256 checksum and troubleshooting.">
+<title>Download AetherOS — bootable ISO (26.0 MB, SHA256 included)</title>
+<meta name="description" content="Download the AetherOS bootable ISO (26.0 MB), with step-by-step QEMU / VirtualBox / VMware instructions, SHA256 checksum and troubleshooting.">
 <link rel="canonical" href="https://aether.cbnac.com/en/download.html">
 <link rel="alternate" hreflang="zh-CN" href="https://aether.cbnac.com/download.html">
 <link rel="alternate" hreflang="en" href="https://aether.cbnac.com/en/download.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AetherOS">
 <meta property="og:url" content="https://aether.cbnac.com/en/download.html">
-<meta property="og:title" content="Download AetherOS — bootable ISO (41.0 MB)">
+<meta property="og:title" content="Download AetherOS — bootable ISO (26.0 MB)">
 <meta property="og:description" content="QEMU / VirtualBox / VMware instructions and SHA256 checksum.">
 <meta property="og:image" content="https://aether.cbnac.com/assets/img/og-cover.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -35,9 +35,9 @@
 
 <header class="hero"><div class="wrap">
   <h1>Download AetherOS</h1>
-  <p class="lede">A bootable ISO, <strong>41.0 MB</strong>. Pick a hypervisor and you are on the desktop in three minutes.</p>
+  <p class="lede">A bootable ISO, <strong>26.0 MB</strong>. Pick a hypervisor and you are on the desktop in three minutes.</p>
   <div class="cta">
-    <a class="btn primary" href="https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64.iso">Download ISO <small>41.0 MB</small></a>
+    <a class="btn primary" href="https://github.com/qwert702/AetherOS/releases/download/v0.1.1/aetheros-0.1-amd64-20261105.iso">Download ISO <small>26.0 MB</small></a>
     <a class="btn ghost" href="#steps">Install steps</a>
   </div>
 </div></header>
@@ -46,11 +46,11 @@
   <h2>File details</h2>
   <table><tbody>
     <tr><th style="width:180px">Version</th><td>v0.1.1</td></tr>
-    <tr><th>File name</th><td><code>aetheros-0.1-amd64.iso</code></td></tr>
-    <tr><th>Size</th><td>41.0 MB (42991616 bytes)</td></tr>
-    <tr><th>Built</th><td>2026-10-15</td></tr>
+    <tr><th>File name</th><td><code>aetheros-0.1-amd64-20261105.iso</code></td></tr>
+    <tr><th>Size</th><td>26.0 MB (27262976 bytes)</td></tr>
+    <tr><th>Built</th><td>2026-11-05</td></tr>
     <tr><th>Architecture</th><td>x86_64 (64-bit virtualisation required)</td></tr>
-    <tr><th>SHA256</th><td><code style="word-break:break-all">eea68da9e4a9c7c58558c488b8c3f0192d82c0b550effde1d5cb194e58211e69</code></td></tr>
+    <tr><th>SHA256</th><td><code style="word-break:break-all">53580ae53bb8dd83baa46115a6c3600d013c722cd40bce046119becbb71711ed</code></td></tr>
     <tr><th>License</th><td>GPL-3.0-only</td></tr>
   </tbody></table>
   <p class="sub" style="margin-top:16px">Verify after downloading:
@@ -59,17 +59,14 @@
 
 <section id="steps"><div class="wrap">
   <h2>QEMU — one command</h2>
-<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
+<pre><code>qemu-system-x86_64 -m 1024 -cdrom aetheros-0.1-amd64-20261105.iso -boot d</code></pre>
   <p class="sub">To install onto a virtual disk (boots standalone afterwards):</p>
 <pre><code>qemu-img create -f qcow2 aether.qcow2 4G
-qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-0.1-amd64.iso -boot d</code></pre>
-  <div class="note" style="border-left:4px solid #d97706;padding-left:12px">
-    <strong>⚠️ Disk installation does not work with the v0.1.1 ISO.</strong>
-    It was measured to be <em>not</em> isohybrid-processed (no MBR signature in the first 512 bytes),
-    so it cannot be dd'ed to a disk and booted. The installer detects this and
-    <strong>refuses to run without writing anything</strong> to the target disk.
-    Booting and running the live desktop are unaffected. The build script now applies isohybrid
-    (<code>platform/build-iso.sh</code>), so a rebuilt ISO will support installation.
+qemu-system-x86_64 -m 1024 -hda aether.qcow2 -cdrom aetheros-0.1-amd64-20261105.iso -boot d</code></pre>
+  <div class="note" style="border-left:4px solid #16a34a;padding-left:12px">
+    <strong>✓ The 2026-11-05 rebuilt ISO has passed installation testing.</strong>
+    It was automatically installed to a disk in QEMU and successfully booted from that disk
+    (<code>AETHER-AUTOINSTALL: PASS</code>). Please verify the SHA256 before booting.
   </div>
 
   <h2 style="margin-top:36px">VirtualBox</h2>
