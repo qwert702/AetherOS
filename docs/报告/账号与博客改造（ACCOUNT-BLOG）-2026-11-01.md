@@ -1,4 +1,4 @@
-# 账号与博客改造报告
+﻿# 账号与博客改造报告
 
 > 日期：2026-11-01
 > 范围：GitHub 账号门面、个人博客 `blog.cbnac.com`、AetherOS 作者入口
@@ -88,7 +88,7 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 - 暖白岩层、墨色正文、矿物青强调色；衬线标题 + 高可读正文
 - 明暗双主题、移动端双行导航、`prefers-reduced-motion`
 - 恢复旧版 CloudFront 视频 hero（静音、循环、`preload=metadata`），配静态海报与暗色渐变降级；移动端降低视频透明度
-- 首页新增「项目」区，`projects.html` 展示 AetherOS、DSH 插件、CutForge、OpenChatCut、服务器防火墙等 12 个项目，不再只出现 AetherOS
+- 首页新增「项目」区，`projects.html` 展示 AetherOS、DSH 插件、CutForge、OpenChatCut、服务器防火墙等 18 个项目，不再只出现 AetherOS
 
 ### 3.4 部署与安全
 
@@ -112,7 +112,7 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 | 博客首页 | HTTP 200 |
 | 关于 / 归档 / 三篇文章 | HTTP 200 |
 | 首页 GitHub 链接 | 12 处 |
-| 项目页 GitHub 链接 | 16 处 |
+| 项目页 GitHub 链接 | 18 个项目、全部指向 GitHub |
 | 首页视频 hero | 旧 CloudFront 视频已恢复，CSP 增加 `media-src` |
 | RSS / sitemap | XML 解析通过 |
 | 本地 HTML 内部链接 | 除 `root-index.html` 的服务端绝对路径外，无断链 |
