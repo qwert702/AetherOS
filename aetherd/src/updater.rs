@@ -227,7 +227,7 @@ pub fn run_once(root: &Path, cfg: &Config) -> Result<Outcome, String> {
     if !(signature.is_empty() && unsigned_update_allowed()) {
         crate::update::verify_manifest_signature(&manifest_bytes, &signature)?;
     }
-    let text = String::from_utf8(manifest_bytes)
+    let text = String::from_utf8(manifest_bytes.clone())
         .map_err(|e| format!("清单不是合法 UTF-8：{e}"))?;
     let manifest = crate::update::parse_manifest(&text)?;
     let current = crate::update::current_version();
