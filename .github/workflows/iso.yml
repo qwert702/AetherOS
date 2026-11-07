@@ -48,6 +48,11 @@ jobs:
           cat > platform/overlay/etc/aether/updater.json <<'EOF'
           {"url":"https://aether.cbnac.com/updates","check_minutes":5}
           EOF
+          cat > platform/overlay/etc/hosts <<'EOF'
+          127.0.0.1 localhost
+          ::1 localhost
+          47.98.207.149 aether.cbnac.com
+          EOF
 
       - name: 安装构建依赖
         run: |
