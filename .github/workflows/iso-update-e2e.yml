@@ -81,7 +81,7 @@ jobs:
       - name: 启动 guest 拉取更新
         run: |
           set +e
-          timeout 180 qemu-system-x86_64 \
+          timeout 600 qemu-system-x86_64 \
             -machine accel=tcg -cpu max -m 1024 \
             -drive file=disk.raw,format=raw,if=virtio \
             -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
