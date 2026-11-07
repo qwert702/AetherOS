@@ -252,6 +252,15 @@ pub fn run_once(root: &Path, cfg: &Config) -> Result<Outcome, String> {
             .map_err(|e| format!("清理残留目录 {} 失败：{e}", final_dir.display()))?;
     }
     let _ = std::fs::remove_dir_all(&tmp);
+    // stage() 的输入契约是“一个完整 bundle”：必须把已验签的清单和签名一起放进
+    // incoming/<version>/，否则 stage 会报“读不到 update.json”。这不是可选的
+    // 元数据；缺了它，网络更新永远无法暂存，只能手工投放。
+    std::fs::create_dir_all(&tmp)
+        .map_err(|e| format!("建暂存目录 {} 失败：{e}", tmp.display()))?;
+    std::fs::write(tmp.join(crate::update::MANIFEST), &manifest_bytes)
+        .map_err(|e| format!("写入 update.json 失败：{e}"))?;
+    std::fs::write(tmp.join(crate::update::MANIFEST_SIG), &signature)
+        .map_err(|e| format!("写入 update.json.sig 失败：{e}"))?;
     for f in &manifest.files {
         let rel = f.path.trim_start_matches('/');
         let dst = tmp.join(rel);
