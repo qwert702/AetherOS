@@ -41,6 +41,7 @@
 | [代码索引（INDEX）](代码索引（INDEX）-2026-09-11.md) | 逐 crate / 逐文件索引、已知缺口 |
 | [交接报告（HANDOVER）](交接报告（HANDOVER）-2026-09-11.md) | 早期完整交接记录 |
 | [视觉设计交接（UI-DESIGN-HANDOVER）](视觉设计交接（UI-DESIGN-HANDOVER）-2026-09-20.md) | 设计系统、字体、布局与走查图说明 |
+| [aether-shell 归属 ADR](架构决策（ADR）-aether-shell归属-2026-11-13.md) | 为什么暂不拆分 Shell、保留占位的决策与再评估条件 |
 
 ### 协议与规范
 
