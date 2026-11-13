@@ -1,6 +1,6 @@
 # AetherOS 文档导航
 
-> 整理日期：2026-11-13 · 适用代码：`main` @ `9b0e84d`（功能基线）
+> 整理日期：2026-11-13 · 适用代码：`main` @ `3510cd4`（代码基线）
 >
 > 这里是全仓文档的统一入口。根目录 [`README.md`](../README.md) 是项目门面；本页负责回答
 > “现在该读哪一篇、哪些是历史快照、哪些是当前事实”。
@@ -9,10 +9,10 @@
 
 | 项目 | 当前值 | 权威来源 |
 |---|---|---|
-| 代码版本 | `main` @ `9b0e84d`（功能基线） | `git rev-parse HEAD` |
+| 代码版本 | `main` @ `3510cd4`（代码基线） | `git rev-parse HEAD` |
 | Rust 规模 | **52,617 行 / 79 个源文件 / 7 个 crate** | `python scripts/repo-stats.py` |
 | 单元 + 集成测试 | **793 项全绿** | `cargo test --workspace --offline --locked` |
-| 完整门禁 | **42/42 全过** | `python scripts/gates.py` |
+| 完整门禁 | **42/42 全过**（2026-11-13 全量运行） | `python scripts/gates.py` |
 | CI | **run #155–#157 连续四 job 全绿**（Ubuntu/Windows × fast/test，2026-11-13） | [CI 诊断](证据/CI诊断-2026-10-24.md)、[项目进度复盘](报告/项目进度复盘（STATUS）-2026-11-13.md) |
 | ISO | v0.1.1 · **26.0 MB** · SHA256 `53580ae5…` | `site/release.json`、[下载页](https://aether.cbnac.com/download.html) |
 | 本地站点 | `gen-site.py --check` 通过，页面数据与仓库一致 | `python scripts/gen-site.py --check` |
