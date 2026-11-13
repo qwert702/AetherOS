@@ -647,9 +647,13 @@ def main(argv: list[str]) -> int:
         # 页面渲染用的是 rust_lines，所以页面比对也发现不了。
         # 现在按 measure() 实际产出的键逐个比；tests 在 skip_tests 时沿用旧值，
         # 天然相等，不需要特判。
+        # `generated` 是"这份 data.json 上次生成于哪天"，不是发布事实。
+        # 它由 `git log -1` 的提交日期算出，于是**每个新日期的提交**都会让它
+        # 与 data.json 不等 —— 2026-11-13 CI run #154 的 fast 门禁就是这样红的
+        # （代码/事实都没变，只是 HEAD 日期变了）。把它排除，只门禁真正的事实。
         comparable = [
             k for k in fresh
-            if k not in ("tests",) and data.get(k) != fresh.get(k)
+            if k not in ("tests", "generated") and data.get(k) != fresh.get(k)
         ]
         stale = [f"{k}: data.json={data.get(k)} 实测={fresh.get(k)}" for k in comparable]
         if stale:
