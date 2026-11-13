@@ -149,10 +149,12 @@ pub enum SoundTheme {
     Soft,
     /// 明亮：整体更高更短，更容易在嘈杂中听出来
     Bright,
+    /// 呼吸：气声质感、慢起慢落，像一次轻呼吸（安静环境/放松场景）
+    Breathe,
 }
 
 /// 主题数量（设置里存的就是下标）。
-pub const THEME_COUNT: u8 = 3;
+pub const THEME_COUNT: u8 = 4;
 
 impl SoundTheme {
     /// 从设置里的下标取（**越界一律退回经典**，不 panic）。
@@ -160,6 +162,7 @@ impl SoundTheme {
         match index {
             1 => SoundTheme::Soft,
             2 => SoundTheme::Bright,
+            3 => SoundTheme::Breathe,
             _ => SoundTheme::Classic,
         }
     }
@@ -169,6 +172,7 @@ impl SoundTheme {
             SoundTheme::Classic => "经典",
             SoundTheme::Soft => "柔和",
             SoundTheme::Bright => "明亮",
+            SoundTheme::Breathe => "呼吸",
         }
     }
 
@@ -177,6 +181,7 @@ impl SoundTheme {
             SoundTheme::Classic => "Classic",
             SoundTheme::Soft => "Soft",
             SoundTheme::Bright => "Bright",
+            SoundTheme::Breathe => "Breath",
         }
     }
 
@@ -201,8 +206,30 @@ impl SoundTheme {
                 Cue::Done => (1568.0, 60),
                 Cue::Error => (587.0, 130),
             },
+            // 呼吸：低频、慢起慢落；时长比其它主题长，气声包络见 cue_wav_with。
+            SoundTheme::Breathe => match cue {
+                Cue::Confirm => (392.0, 900),
+                Cue::Done => (523.25, 700),
+                Cue::Error => (261.63, 1200),
+            },
         }
     }
+}
+
+/// 呼吸主题的振幅包络：吸气（前 45%）+ 呼气（后 55%），两端归零。
+///
+/// 双叶正弦的平方让起落更柔；这是"呼吸"与其它主题最直接的区别。
+fn breath_envelope(i: u32, samples: u32) -> f32 {
+    if samples == 0 {
+        return 0.0;
+    }
+    let p = i as f32 / samples as f32;
+    let lobe = if p < 0.45 {
+        (p / 0.45 * std::f32::consts::PI).sin()
+    } else {
+        ((1.0 - p) / 0.55 * std::f32::consts::PI).sin()
+    };
+    lobe * lobe
 }
 
 /// 生成一段提示音的 WAV（16-bit PCM 单声道 8kHz）。
@@ -218,18 +245,35 @@ pub fn cue_wav_with(theme: SoundTheme, cue: Cue) -> Vec<u8> {
     let (freq, ms) = theme.tone(cue);
     let samples = SAMPLE_RATE * ms / 1000;
     let mut pcm: Vec<u8> = Vec::with_capacity(samples as usize * 2);
+    // 呼吸主题：用确定性的低通噪声做"气声"，叠一点低频正弦保证音高仍可辨。
+    // 噪声种子固定，保证同一主题/提示音每次生成的字节一致（可测试、可复现）。
+    let breath = theme == SoundTheme::Breathe;
+    let mut noise_state: u32 = 0x9E37_79B9;
+    let mut low_pass: f32 = 0.0;
     for i in 0..samples {
         let t = i as f32 / SAMPLE_RATE as f32;
-        // 两端各 5ms 淡入淡出：直接切断会产生"咔"声（听起来像故障而不是提示）
+        // 两端各 5ms 淡入淡出：直接切断会产生"咔"声（听起来像故障而不是提示）。
+        // 呼吸主题改用慢速的双叶包络（吸气 → 呼气），不再用 5ms 硬淡入。
         let fade = (ms as f32 * 0.05 / 1000.0 * SAMPLE_RATE as f32) as u32;
-        let env = if i < fade {
+        let env = if breath {
+            breath_envelope(i, samples)
+        } else if i < fade {
             i as f32 / fade as f32
         } else if i > samples - fade {
             (samples - i) as f32 / fade as f32
         } else {
             1.0
         };
-        let v = (t * freq * std::f32::consts::TAU).sin() * env * 0.25; // 0.25：提示音不该吓人
+        let tone = (t * freq * std::f32::consts::TAU).sin();
+        let v = if breath {
+            noise_state = noise_state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let white = ((noise_state >> 8) as f32 / 16_777_216.0) - 0.5;
+            // 一阶低通把白噪声磨成"呼——"的气声，避免高频嘶嘶声。
+            low_pass = low_pass * 0.90 + white * 0.10;
+            (low_pass * 0.85 + tone * 0.15) * env * 0.35
+        } else {
+            tone * env * 0.25 // 0.25：提示音不该吓人
+        };
         let s = (v * i16::MAX as f32) as i16;
         pcm.extend_from_slice(&s.to_le_bytes());
     }
@@ -511,7 +555,7 @@ mod tests {
     /// 用户还是得回头看屏幕 —— 那这个主题就是坏的。
     #[test]
     fn every_theme_keeps_its_three_cues_distinguishable() {
-        for theme in [SoundTheme::Classic, SoundTheme::Soft, SoundTheme::Bright] {
+        for theme in [SoundTheme::Classic, SoundTheme::Soft, SoundTheme::Bright, SoundTheme::Breathe] {
             let c = theme.tone(Cue::Confirm);
             let d = theme.tone(Cue::Done);
             let e = theme.tone(Cue::Error);
@@ -534,9 +578,13 @@ mod tests {
             let a = SoundTheme::Classic.tone(cue);
             let b = SoundTheme::Soft.tone(cue);
             let c = SoundTheme::Bright.tone(cue);
+            let d = SoundTheme::Breathe.tone(cue);
             assert_ne!(a, b, "经典与柔和在 {cue:?} 上完全一样");
             assert_ne!(b, c, "柔和与明亮在 {cue:?} 上完全一样");
             assert_ne!(a, c, "经典与明亮在 {cue:?} 上完全一样");
+            assert_ne!(a, d, "经典与呼吸在 {cue:?} 上完全一样");
+            assert_ne!(b, d, "柔和与呼吸在 {cue:?} 上完全一样");
+            assert_ne!(c, d, "明亮与呼吸在 {cue:?} 上完全一样");
         }
     }
 
@@ -544,6 +592,7 @@ mod tests {
     #[test]
     fn the_classic_theme_is_the_original_sound() {
         assert_eq!(SoundTheme::of(0), SoundTheme::Classic);
+        assert_eq!(SoundTheme::of(3), SoundTheme::Breathe);
         assert_eq!(SoundTheme::Classic.tone(Cue::Confirm), (880.0, 120));
         assert_eq!(SoundTheme::Classic.tone(Cue::Done), (1320.0, 80));
         assert_eq!(SoundTheme::Classic.tone(Cue::Error), (440.0, 160));
@@ -560,7 +609,7 @@ mod tests {
     /// WAV 仍然可解析（头 44 字节 + 数据长度对得上），且主题只改内容不改结构。
     #[test]
     fn themed_wav_still_has_a_valid_header() {
-        for theme in [SoundTheme::Classic, SoundTheme::Soft, SoundTheme::Bright] {
+        for theme in [SoundTheme::Classic, SoundTheme::Soft, SoundTheme::Bright, SoundTheme::Breathe] {
             let wav = cue_wav_with(theme, Cue::Confirm);
             assert!(wav.len() > 44, "{}：要有数据段", theme.label());
             assert_eq!(&wav[0..4], b"RIFF");
@@ -568,6 +617,17 @@ mod tests {
             // 数据长度字段（偏移 40..44）= 总长 - 44
             let declared = u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as usize;
             assert_eq!(declared, wav.len() - 44, "{}：长度字段要对得上", theme.label());
+            // 每个主题都必须真的出声（呼吸主题是低通噪声，峰值同样要过线）
+            let peak = wav[44..]
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
+                .max()
+                .unwrap_or(0);
+            assert!(peak > 1000, "{}：几乎是静音（峰值 {}）", theme.label(), peak);
+            if theme == SoundTheme::Breathe {
+                let classic = cue_wav_with(SoundTheme::Classic, Cue::Confirm);
+                assert!(wav.len() > classic.len(), "呼吸主题应比经典更长（慢起慢落）");
+            }
             // 默认函数 == 经典主题（向后兼容）
             assert_eq!(cue_wav_with(SoundTheme::Classic, Cue::Confirm), cue_wav_with(SoundTheme::Classic, Cue::Confirm));
         }

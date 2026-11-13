@@ -5255,7 +5255,7 @@ fn draw_settings_content(
                     crate::i18n::tr("提示音主题", "Sound theme"),
                     crate::i18n::pick(crate::i18n::lang(), theme.label(), theme.label_en())
                 ),
-                Some(crate::i18n::tr("点击切换并试听（经典 / 柔和 / 明亮）", "Click to cycle and preview")),
+                Some(crate::i18n::tr("点击切换并试听（经典 / 柔和 / 明亮 / 呼吸）", "Click to cycle and preview (Classic / Soft / Bright / Breath)")),
                 widgets::States::at(r_theme, mouse), Some(tr),
             );
             hits.push((r_theme, SettingsHit::CycleSoundTheme));

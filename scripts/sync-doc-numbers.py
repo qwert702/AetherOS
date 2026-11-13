@@ -233,6 +233,9 @@ def sync_once(dry: bool) -> int:
                 # 自引用行：两段都要等于实测值
                 real_t = re.search(r"① 测试数：文档 ([\d,]+) / 实测 ([\d,]+)", dn)
                 if real_t:
+                    if real_t.group(2).strip() in ("", "0"):
+                        print("  [SKIP] 实测为 0（拿不到测试清单），不把 0 写进自引用行")
+                        continue
                     s = re.sub(old_pat, f"「{real_t.group(2)} 项测试 / {real} 项门禁」", s)
                 continue
             # 逐写法：文档里现有的值 != 实测值就改（全部出现处）
