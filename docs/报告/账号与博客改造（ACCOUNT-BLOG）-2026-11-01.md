@@ -103,6 +103,7 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
   - `/blog/about` → `/blog/about.html`
   - `/blog/admin-panel` → `/blog/`（新静态站没有后台面板）
 - 旧站 `/math/` 与 `/tutorials/python/` 目录一直保留在原位，仍返回 200。
+- 地理实验仍在独立子域：`https://dili.cbnac.com/`（含长江、地上河、海陆、土壤、自流页面）；`/dili` 与 `/geography` 已 301 到该子域。
 - 旧站三张资源截图已复制到 `assets/resources/`，不再依赖已移动的旧 SPA 目录。
 - 旧站 CC-Switch 安装包文件在服务器上未找到；资源页保留官方入口，不伪造下载链接。
 
@@ -132,6 +133,8 @@ canonical 列表保留为 `awesome-deepseek-harness`。归档仓库描述已标�
 | 首页视频 hero | 旧 CloudFront 视频已恢复，CSP 增加 `media-src` |
 | 旧 `/blog/resource`、`/blog/about` | 301 到新资料页 / 关于页 |
 | 旧 `/math/`、`/tutorials/python/` | HTTP 200，仍在原路径 |
+| 地理实验 `dili.cbnac.com` | HTTP 200，首页与子页面可访问 |
+| 旧 `/dili`、`/geography` | 301 到 `https://dili.cbnac.com/` |
 | 旧资源截图 | 3 张已复制到 `assets/resources/`，可访问 |
 | RSS / sitemap | XML 解析通过 |
 | 本地 HTML 内部链接 | 除 `root-index.html` 的服务端绝对路径外，无断链 |
