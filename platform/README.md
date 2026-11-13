@@ -17,7 +17,7 @@ AETHER_ROOT_PW_HASH="$(openssl passwd -6)" ./platform/build-iso.sh
 
 脚本三步（头注释为准）：musl 静态交叉编译自研组件 → 连同中文屏显字体拷进 rootfs overlay
 → 下载 Buildroot 2024.02.1、应用 `aetheros_defconfig` 并出 ISO。
-产物落在仓库根目录 `aetheros-0.1-amd64.iso`（v0.1.1 为 41.0 MB），中间产物在 `platform/build/`（不入版本控制）。
+产物落在仓库根目录 `aetheros-0.1-amd64.iso`（v0.1.1 为 26.0 MB），中间产物在 `platform/build/`（不入版本控制）。
 
 构建机准备见 `scripts/setup-vm.ps1`；在 VM 内也可以用 `scripts/vm-build-iso.sh` 包一层
 （它负责把 `~/.cargo/bin` 补进 PATH，并把日志落到 `iso-build.log`）。

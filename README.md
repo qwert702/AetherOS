@@ -59,7 +59,11 @@ cargo test --workspace                             # 单元测试（Windows 793 
 ```
 
 构建可引导 ISO 需要一台 Linux 构建机（Buildroot），见 `platform/README.md`。
-在 Windows 开发机上 `cargo` 要加 `--offline`，否则会卡在 registry 访问。
+Windows 开发机请显式用 GNU 工具链：本仓库的 `.cargo/config.toml` 走 rust-lld + 自包含 mingw，
+而 `rustup` 的 `stable` 在 Windows 上通常解析成 MSVC（会报 `linker link.exe not found`）。
+依赖没缓存时先 `cargo fetch --locked`，再跑
+`cargo +stable-x86_64-pc-windows-gnu test --workspace --locked`（或设
+`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu`）。不要盲目加 `--offline`。
 
 ## 现在能做什么
 

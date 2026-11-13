@@ -1,3 +1,5 @@
 [toolchain]
-# 平台无关：Windows 解析为 x86_64-pc-windows-gnu，Linux 解析为 x86_64-unknown-linux-gnu
+# 平台无关写法：Linux 上解析为 x86_64-unknown-linux-gnu；
+# Windows 上 rustup 会解析成**宿主**工具链（通常是 MSVC），而本仓库需要 GNU。
+# Windows 开发请显式加 `+stable-x86_64-pc-windows-gnu` 或设 RUSTUP_TOOLCHAIN。
 channel = "stable"

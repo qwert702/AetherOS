@@ -46,11 +46,15 @@ cd AetherOS
 cargo run -p aether-compositor                     # interactive preview (light theme by default)
 cargo run -p aether-compositor -- --theme dark     # deep-space theme
 cargo run -p aether-compositor -- --shot 2         # single-frame screenshot self-check
-cargo test --workspace                             # unit tests (385 on Windows, see "Testing and verification")
+cargo test --workspace                             # unit tests (793 on Windows, see "Testing and verification")
 ```
 
 Building the bootable ISO requires a Linux build host running Buildroot — see `platform/README.md`.
-On a Windows development machine, add `--offline` to `cargo`, otherwise it stalls on registry access.
+On Windows, use the GNU toolchain explicitly: this repo's `.cargo/config.toml` expects rust-lld +
+self-contained mingw, while `rustup` usually resolves `stable` to MSVC (which fails with
+`linker link.exe not found`). If dependencies are not cached, run `cargo fetch --locked`, then
+`cargo +stable-x86_64-pc-windows-gnu test --workspace --locked` (or set
+`RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu`). Do not blindly add `--offline`.
 
 ## What it does today
 
@@ -232,7 +236,7 @@ A few invariants hold this together:
 
 | Method | Status |
 |---|---|
-| Unit tests | 774 green on Windows (measured 2026-10-11, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
+| Unit tests | 793 green on Windows (measured 2026-10-11, `cargo test --workspace`); the Linux side is **not measured here** (a Windows host cannot run Linux binaries — needs a build-host run) |
 | Compiler warnings | 0 on Windows; 0 on the 6 crates that can be musl-checked (`aetherd` cannot: ring needs x86_64-linux-musl-gcc) |
 | Visual regression | **57 `--shot` modes compared byte by byte** (baseline `docs/证据/shot-baseline.json`), currently 57/57 identical |
 | Code review | Four full and incremental review rounds, every finding fixed (zero unresolved); the consolidated report is [`docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md`](docs/归档/代码审查总集（CODE-REVIEW）-2026-09-29.md) |

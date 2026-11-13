@@ -224,6 +224,11 @@ def sync_once(dry: bool) -> int:
             if not m:
                 continue
             real = m.group(2)
+            # 实测为 0 = 测试清单没拿到（本机 MSVC/无 cargo），不是"测试真的没了"。
+            # 2026-11-07 就是这样把收尾报告从 793 写成 0 的；同步方必须拒绝写入。
+            if real.strip() in ("", "0"):
+                print(f"  [SKIP] 实测为 0（拿不到测试清单），不把 0 写进文档：{old_pat}")
+                continue
             if old_pat == r"「(\d+) 项测试 / (\d+) 项门禁」":
                 # 自引用行：两段都要等于实测值
                 real_t = re.search(r"① 测试数：文档 ([\d,]+) / 实测 ([\d,]+)", dn)

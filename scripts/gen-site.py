@@ -74,8 +74,23 @@ PAGES = [
 ]
 
 
-def run(args: list[str]) -> str:
+def run(args: list[str], *, check: bool = False) -> str:
+    """跑子进程并返回 stdout。
+
+    check=True 时退出码非零直接终止。cargo test 失败如果悄悄回退到上一次的
+    测试数，`--refresh` 会报成功、data.json 却继续公布旧数字 —— 正是本项目
+    最忌讳的"静默回退"（2026-11-13 实测：本机 cargo 默认解析到 MSVC、没有
+    link.exe，cargo test 全红，而 --refresh 仍安静地沿用 793）。
+    """
     r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if check and r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip().splitlines()[-20:]
+        sys.exit(
+            "[gen-site] 命令失败（exit=%d）：%s\n%s\n"
+            "提示：Windows 上请用 GNU 工具链（cargo +stable-x86_64-pc-windows-gnu ...），"
+            "或设置 RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu。"
+            % (r.returncode, " ".join(args), "\n".join(tail))
+        )
     return r.stdout or ""
 
 
@@ -146,9 +161,11 @@ def measure(skip_tests: bool, previous: dict) -> dict:
     if skip_tests:
         d["tests"] = previous.get("tests", "—")
     else:
-        out = run(["cargo", "test", "--workspace", "--offline", "--no-fail-fast"])
+        out = run(["cargo", "test", "--workspace", "--offline", "--no-fail-fast"], check=True)
         total = sum(int(x) for x in re.findall(r"test result: ok\. (\d+) passed", out))
-        d["tests"] = str(total) if total else previous.get("tests", "—")
+        if not total:
+            sys.exit("无法从 cargo test 输出解析测试数（格式变了？）")
+        d["tests"] = str(total)
 
     # —— ISO 事实：已发布产物优先 ——
     #
