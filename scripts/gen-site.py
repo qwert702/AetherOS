@@ -445,7 +445,9 @@ def patch_values(text: str, old: dict, new: dict) -> str:
     # 带上下文的（`16` 这种裸数字直接替换太危险，必须靠上下文锚定）
     o, n = str(old.get("rust_files", "")), str(new.get("rust_files", ""))
     if o and n and o != n:
-        text = re.sub(rf"{re.escape(o)}(?=\s*(?:个源文件|source files))", n, text)
+        # 英文首页写的是 "(77 files)"：`files` 单独一种写法也必须认，
+        # 否则 check 的锚点能接受它、patch 却永远不改（2026-11-13 实测）。
+        text = re.sub(rf"{re.escape(o)}(?=\s*(?:个源文件|source files|files))", n, text)
     o, n = str(old.get("shots", "")), str(new.get("shots", ""))
     if o and n and o != n:
         text = re.sub(rf"{re.escape(o)}(?=\s*(?:张界面走查图|UI screenshots))", n, text)
