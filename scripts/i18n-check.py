@@ -141,7 +141,9 @@ def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
     bad, scanned, allowed = [], 0, 0
-    for f in sorted(SRC.glob("*.rs")):
+    # 2026-11-13：draw.rs 拆出 draw/ 子模块后，必须递归扫描，否则
+    # 设置页的几十条双语取词会被漏掉（扫描覆盖阈值会假红/假绿）。
+    for f in sorted(SRC.rglob("*.rs")):
         text = f.read_text(encoding='utf-8')
         b, s, a = scan_text(f.name, text)
         bad += b

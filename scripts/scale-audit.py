@@ -174,7 +174,7 @@ def main() -> int:
     print(f"④ 循环/累积步长写死（>=20）：{len(loop_steps)} 处")
     # ⑥ 步长来自"按空间摊出来的变量"（clamp 且不含 px()）—— 静态扫描原本看不见这类
     var_steps = []
-    for f in sorted((ROOT / "aether-compositor/src").glob("*.rs")):
+    for f in sorted((ROOT / "aether-compositor/src").rglob("*.rs")):
         ls = f.read_text(encoding="utf-8").split("\n")
         for i, line in enumerate(ls):
             m = re.match(r"\s*(?:y|ry|x|rx|cy|cx)\s*\+=\s*([a-z_][a-z0-9_]*)\s*;", line)
@@ -197,7 +197,7 @@ def main() -> int:
         print(f"   行 {ln}: {msg}")
     # ⑦ 裁剪区间「设了必须清」的配对（文件级计数，见函数注释）
     clip_bad = []
-    for f in sorted((ROOT / "aether-compositor/src").glob("*.rs")):
+    for f in sorted((ROOT / "aether-compositor/src").rglob("*.rs")):
         src = f.read_text(encoding="utf-8")
         sets = src.count("set_clip_y(Some(")
         clears = src.count("set_clip_y(None")
