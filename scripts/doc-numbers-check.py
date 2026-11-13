@@ -217,6 +217,18 @@ def main() -> int:
                 print(f"③f {_what}：{_v} / 实测 {real_tests}")
                 if real_tests is not None and _v != real_tests:
                     problems.append(f"{_what}：文档 {_v}，实测 {real_tests}")
+    if README_EN.exists():
+        # README.en 的另外两种写法：快速开始注释与测试表。此前只认
+        # "N unit tests green"，于是 385 / 774 两处旧数字长期漂着没人管
+        # （2026-11-13 修：补进门禁，避免再靠人眼发现）。
+        _etext = README_EN.read_text(encoding='utf-8')
+        for _pat, _what in ((r"unit tests \((\d+) on Windows", "README.en 快速开始测试数"),
+                            (r"\| Unit tests \| (\d+) green", "README.en 测试表")):
+            for _m2 in re.finditer(_pat, _etext):
+                _v = int(_m2.group(1))
+                print(f"③f {_what}：{_v} / 实测 {real_tests}")
+                if real_tests is not None and _v != real_tests:
+                    problems.append(f"{_what}：文档 {_v}，实测 {real_tests}")
     if INDEX.exists():
         _itext = INDEX.read_text(encoding='utf-8')
         _hits = [int(h) for h in re.findall(r"(\d+) 个 \.rs", _itext)]
