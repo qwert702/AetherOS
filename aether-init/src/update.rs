@@ -14,10 +14,15 @@
 //! tab 作分隔符是安全的：路径校验**拒绝一切控制字符**（含 `\t`），
 //! 所以路径里不可能出现 tab。**这条依赖写在这里** —— 哪天放宽控制字符检查，格式要跟着改。
 //!
-//! ## 为什么这里不再验一遍哈希
+//! ## 为什么这里还要再验一遍哈希
 //!
-//! 暂存目录只有 root 能写，哈希在 `stage()` 时已经验过。init 只做**大小核对**
-//! （能发现截断）+ 原子替换。**若将来允许非 root 写暂存目录，这条必须改。**
+//! 2026-11-14 回滚演练发现：只校大小会接受**同尺寸但内容损坏**的暂存文件；
+//! 暂存目录虽然只有 root 能写，但盘坏/半写/人为误操作都可能造成这类损坏。
+//! init 是应用前最后一道闸，必须按 `apply.list` 里已记录的 SHA-256 再核一遍，
+//! 不匹配就拒绝整包并保留标记。
+//!
+//! 这是有意的 defense in depth，不是"不信任 `stage()`"—— stage 该验的已经验了，
+//! 这里只是最后一次落盘前把坏界面再收一遍。
 //!
 //! ## 可重入
 //!
@@ -25,6 +30,7 @@
 //! 所以"应用到一半掉电"不会留下不可恢复的状态 —— 标记还在，下次启动继续。
 
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))] // 调用点在 Linux 启动路径里
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// 更新根目录（与 `aetherd::update::UPDATE_ROOT` 是同一处；
@@ -111,6 +117,13 @@ pub fn has_pending(root: &Path) -> bool {
 }
 
 /// 暂存文件在暂存目录里的位置。
+/// 计算暂存文件的 SHA-256（小写十六进制）。更新文件有单文件上限，直接读入即可。
+fn sha256_hex(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
 pub fn staged_path(root: &Path, target: &str) -> PathBuf {
     root.join(STAGED).join(target.trim_start_matches('/'))
 }
@@ -151,6 +164,13 @@ pub fn apply_staged_with(
                 e.target,
                 e.bytes,
                 md.len()
+            ));
+        }
+        let actual_sha = sha256_hex(&src)?;
+        if actual_sha != e.sha256 {
+            return Err(format!(
+                "{}：SHA-256 不符（记录 {} / 实际 {}）—— 拒绝应用",
+                e.target, e.sha256, actual_sha
             ));
         }
         let dst = target_under(sys_root, &e.target);
@@ -215,9 +235,10 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, body).unwrap();
         let prev = std::fs::read_to_string(root.join(APPLY_LIST)).unwrap_or_default();
+        let hash = format!("{:x}", Sha256::digest(body));
         std::fs::write(
             root.join(APPLY_LIST),
-            format!("{prev}{}\t{}\t{}\n", "a".repeat(64), body.len(), target),
+            format!("{prev}{hash}\t{}\t{}\n", body.len(), target),
         )
         .unwrap();
     }
@@ -306,6 +327,21 @@ mod tests {
         std::fs::write(staged_path(&root, "/var/apps/demo/demo"), b"012").unwrap();
         let err = apply_staged_with(&root, &sys, 1).unwrap_err();
         assert!(err.contains("大小不符"), "{err}");
+        assert!(!sys.join("var/apps/demo/demo").exists());
+        assert!(has_pending(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **同尺寸但内容损坏 → 必须按 SHA-256 拒绝，且不覆盖旧文件。**
+    #[test]
+    fn a_same_size_corrupted_file_is_refused() {
+        let root = tmp("same-size-corrupt");
+        let sys = root.join("sys");
+        stage(&root, "/var/apps/demo/demo", b"0123456789");
+        // 改成同尺寸、不同内容：大小核对看不出来，只有哈希能拦住。
+        std::fs::write(staged_path(&root, "/var/apps/demo/demo"), b"012345678X").unwrap();
+        let err = apply_staged_with(&root, &sys, 1).unwrap_err();
+        assert!(err.contains("SHA-256"), "{err}");
         assert!(!sys.join("var/apps/demo/demo").exists());
         assert!(has_pending(&root));
         let _ = std::fs::remove_dir_all(&root);

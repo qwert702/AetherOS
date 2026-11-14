@@ -10,15 +10,15 @@
 | 项目 | 当前值 | 权威来源 |
 |---|---|---|
 | 代码版本 | `main` @ `9efdb93`（代码基线） | `git rev-parse HEAD` |
-| Rust 规模 | **52,623 行 / 80 个源文件 / 7 个 crate** | `python scripts/repo-stats.py` |
-| 单元 + 集成测试 | **793 项全绿** | `cargo test --workspace --offline --locked` |
+| Rust 规模 | **52,659 行 / 80 个源文件 / 7 个 crate** | `python scripts/repo-stats.py` |
+| 单元 + 集成测试 | **794 项全绿** | `cargo test --workspace --offline --locked` |
 | 完整门禁 | **42/42 全过**（2026-11-13 全量运行） | `python scripts/gates.py` |
 | CI | **run #155–#157 连续四 job 全绿**（Ubuntu/Windows × fast/test，2026-11-13） | [CI 诊断](证据/CI诊断-2026-10-24.md)、[项目进度复盘](报告/项目进度复盘（STATUS）-2026-11-13.md) |
 | ISO | v0.1.1 · **26.0 MB** · SHA256 `53580ae5…` | `site/release.json`、[下载页](https://aether.cbnac.com/download.html) |
 | 本地站点 | `gen-site.py --check` 通过，页面数据与仓库一致 | `python scripts/gen-site.py --check` |
-| 线上站点 | **已同步**：`site-health-check` 39/39，52,623 行 / 80 文件 / 793 测试 | [站点巡检](报告/站点巡检（SITE-CHECK）-2026-10-31.md) |
+| 线上站点 | **已同步**：`site-health-check` 39/39，52,659 行 / 80 文件 / 794 测试 | [站点巡检](报告/站点巡检（SITE-CHECK）-2026-10-31.md) |
 
-> 2026-11-13 部署后复核：线上首页/FAQ 显示 52,623 行 / 80 文件 / 793 测试，
+> 2026-11-14 部署后复核：线上首页/FAQ 显示 52,659 行 / 80 文件 / 794 测试，
 > 安全响应头正常，`site-health-check` 39/39。
 
 ## 先读这几篇
@@ -66,7 +66,7 @@
 | [依赖 CVE 核对（CVE-AUDIT）](证据/依赖CVE（CVE-AUDIT）-2026-10-14.md) | 依赖漏洞与版本核对 |
 | [发布链路检查](证据/发布链路-2026-11-01.md) | 官网已同步、更新包自检的历史边界 |
 | [ISO 构建记录](证据/ISO构建-2026-11-01.md) | Buildroot demo/locked 构建、QEMU 启动/安装/从盘验证 |
-| [QEMU 双次装机](证据/QEMU双次装机-2026-11-14.md) | QEMU 11.1.0 安装（E 盘）、两次自动装机 PASS、两次 keepvar 升级 PASS、一次原地文件级更新 PASS、从盘启动服务全绿 |
+| [QEMU 双次装机](证据/QEMU双次装机-2026-11-14.md) | QEMU 11.1.0 安装（E 盘）、两次自动装机 PASS、两次 keepvar 升级 PASS、一次原地文件级更新 PASS、一次文件级回滚 PASS、从盘启动服务全绿 |
 | [发布记录](证据/发布记录-2026-11-05.md) | v0.1.1 新资产、下载页同步、release-readiness 9/9 |
 | [更新源探测](证据/更新源-2026-11-05.md) | `/updates/update.json` + `.sig` 可访问且验签通过；真实更新包待做 |
 | [Guest 更新 E2E](证据/更新E2E-2026-11-05.md) | 0.1.2 探测包已由 guest 拉取、验签、暂存、重启应用 |
