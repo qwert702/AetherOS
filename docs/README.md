@@ -1,6 +1,6 @@
 # AetherOS 文档导航
 
-> 整理日期：2026-11-13 · 适用代码：`main` @ `9efdb93`（代码基线）
+> 整理日期：2026-11-13 · 适用代码：`main` @ `7b71abd`（代码基线）
 >
 > 这里是全仓文档的统一入口。根目录 [`README.md`](../README.md) 是项目门面；本页负责回答
 > “现在该读哪一篇、哪些是历史快照、哪些是当前事实”。
@@ -9,7 +9,7 @@
 
 | 项目 | 当前值 | 权威来源 |
 |---|---|---|
-| 代码版本 | `main` @ `9efdb93`（代码基线） | `git rev-parse HEAD` |
+| 代码版本 | `main` @ `7b71abd`（代码基线） | `git rev-parse HEAD` |
 | Rust 规模 | **52,659 行 / 80 个源文件 / 7 个 crate** | `python scripts/repo-stats.py` |
 | 单元 + 集成测试 | **794 项全绿** | `cargo test --workspace --offline --locked` |
 | 完整门禁 | **42/42 全过**（2026-11-13 全量运行） | `python scripts/gates.py` |
