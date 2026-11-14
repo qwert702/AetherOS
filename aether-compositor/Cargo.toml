@@ -20,7 +20,7 @@ libc = "0.2"
 # musl 静态编译（ISO rootfs）只需 fbdev 路径，minifb 的 X11 链接不可用，
 # 故排除 musl target。
 [target.'cfg(all(not(target_os = "linux"), not(target_env = "musl")))'.dependencies]
-minifb = "0.27"
+minifb = "0.29"
 
 [target.'cfg(unix)'.dependencies]
 # Wayland 合成器后端在 Linux/WSL2 上启用（M1 后期接入 smithay）
