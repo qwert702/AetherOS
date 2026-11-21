@@ -9,6 +9,8 @@ build/rootfs/
 build/downloads/
 __pycache__/
 *.log
+# 证据目录里的串口/构建日志是验收证据，必须入库（其余 *.log 仍忽略）
+!docs/证据/*.log
 preview.png
 .mimosa/
 .zcode/
