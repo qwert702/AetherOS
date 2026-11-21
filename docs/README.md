@@ -68,6 +68,7 @@
 | [发布链路检查](证据/发布链路-2026-11-01.md) | 官网已同步、更新包自检的历史边界 |
 | [ISO 构建记录](证据/ISO构建-2026-11-01.md) | Buildroot demo/locked 构建、QEMU 启动/安装/从盘验证 |
 | [QEMU 双次装机](证据/QEMU双次装机-2026-11-14.md) | QEMU 11.1.0 安装（E 盘）、两次自动装机 PASS、两次 keepvar 升级 PASS、一次原地文件级更新 PASS、一次文件级回滚 PASS、从盘启动服务全绿 |
+| [VMware 首次试用](证据/VMware试用-2026-11-21.md) | VMware 17 + ULM 下 vmwgfx SVGA v2 / fbdev 1280x800 / pcnet32 / 输入与服务全绿，约 28–29 fps |
 | [发布记录](证据/发布记录-2026-11-05.md) | v0.1.1 新资产、下载页同步、release-readiness 9/9 |
 | [更新源探测](证据/更新源-2026-11-05.md) | `/updates/update.json` + `.sig` 可访问且验签通过；真实更新包待做 |
 | [Guest 更新 E2E](证据/更新E2E-2026-11-05.md) | 0.1.2 探测包已由 guest 拉取、验签、暂存、重启应用 |
