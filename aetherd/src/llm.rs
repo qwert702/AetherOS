@@ -48,37 +48,32 @@ pub fn complete(
         body["tools"] = t.clone();
     }
 
+    // ureq 3：请求级配置走 `.config()..build()`；请求头方法 `.set(..)` 改名为
+    // `.header(..)`；请求级超时用 `timeout_per_call`（v2 的 `.timeout(..)` 已移除）。
+    //
+    // 关键：非 2xx 时**必须把服务器正文带出来**。ureq 3 的 `Error::StatusCode`
+    // 只携带状态码、不再附带响应体（v2 的 `Error::Status(code, r)` 已移除），
+    // 因此这里在请求层关闭 `http_status_as_error`，拿到 `Ok(Response)` 后自行判状态码、
+    // 自己读正文 —— 否则 Key 无效 / 模型名不存在 / 限流 / 网关 502 的真正原因
+    // （写在正文里）会再次只剩一个状态码。
     let resp = match ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", endpoint.api_key))
-        .timeout(std::time::Duration::from_secs(120))
+        .header("Authorization", &format!("Bearer {}", endpoint.api_key))
+        .config()
+        .http_status_as_error(false)
+        .timeout_per_call(Some(std::time::Duration::from_secs(120)))
+        .build()
         .send_json(body)
     {
         Ok(r) => r,
-        // 关键：非 2xx 时**必须把服务器正文带出来**。
-        // 旧实现在这里丢掉了正文，只剩 "status code 401"，而真正的原因
-        // （Key 无效 / 模型名不存在 / 限流 / 网关 502）恰恰写在正文里 ——
-        // "真实 LLM 协议不兼容"是本项目自评的头号架构风险，接入时不能没有这条线索。
-        Err(ureq::Error::Status(code, r)) => {
-            let detail = r.into_string().unwrap_or_default();
-            if en {
-                anyhow::bail!(
-                    "LLM request failed: {url} → HTTP {code}; server said: {}",
-                    body_snippet(&detail, en)
-                );
-            } else {
-                anyhow::bail!(
-                    "LLM 请求失败: {url} → HTTP {code}；服务器返回: {}",
-                    body_snippet(&detail, en)
-                );
-            }
-        }
         Err(e) => {
             let what = if en { "LLM request failed" } else { "LLM 请求失败" };
             return Err(anyhow::Error::new(e).context(format!("{what}: {url}")));
         }
     };
+    let code = resp.status().as_u16();
     let text = resp
-        .into_string()
+        .into_body()
+        .read_to_string()
         .with_context(|| {
             let what = if en {
                 "reading the LLM response failed"
@@ -87,6 +82,20 @@ pub fn complete(
             };
             format!("{what}: {url}")
         })?;
+    // 非 2xx：正文是唯一线索（Key 无效 / 模型名不存在 / 限流 / 网关 502），不能丢掉。
+    if !(200..=299).contains(&code) {
+        if en {
+            anyhow::bail!(
+                "LLM request failed: {url} → HTTP {code}; server said: {}",
+                body_snippet(&text, en)
+            );
+        } else {
+            anyhow::bail!(
+                "LLM 请求失败: {url} → HTTP {code}；服务器返回: {}",
+                body_snippet(&text, en)
+            );
+        }
+    }
     let v: Value = serde_json::from_str(&text).with_context(|| {
         if en {
             format!(
@@ -128,7 +137,9 @@ pub fn complete(
 pub fn local_available(base_url: &str) -> bool {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(2))
+        .config()
+        .timeout_per_call(Some(std::time::Duration::from_secs(2)))
+        .build()
         .call()
         .is_ok()
 }

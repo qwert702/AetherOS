@@ -228,6 +228,16 @@ def main() -> int:
     # 而原先没有任何检查在看这件事 —— 整理那次就是靠它抓出 5 条断链。
     steps.append(("文档链接门禁（本地链接必须能解析）",
                   [PY, "scripts/check-links.py"]))
+    # E4 离线发布门禁（fast 档）：复用 release-gate 聚合入口，只跑不依赖
+    # 线上站点与真实 ISO 的静态子项。release-readiness 需要待发布 ISO，
+    # 干净 checkout / 日常 fast 上必然判红，因此不进 fast，留给发布前流程；
+    # site-health 是线上巡检，--offline 由 release-gate 自身跳过。
+    if args.fast:
+        steps.append((
+            "离线发布门禁（静态子项，release-gate --offline）",
+            [PY, "scripts/release-gate.py", "--offline",
+             "--only", "site,doc-numbers,links,repo-stats"],
+        ))
     steps.append(("mkapp 自检（打包器边界）", [PY, "scripts/mkapp.py", "--selftest"]))
     steps.append(("站点生成器自检（链接白名单）", [PY, "scripts/gen-site.py", "--selftest"]))
     # 构建链脚本也要有判据（对抗审查发现：E–H 批次对交付链的修复没有任何自动检查）。

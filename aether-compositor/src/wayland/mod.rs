@@ -31,6 +31,7 @@
 //! 删了还得照着协议再写一遍。
 #![allow(dead_code)]
 
+pub mod fd;
 pub mod object;
 pub mod protocol;
 pub mod server;

@@ -10,16 +10,17 @@
 | 项目 | 当前值 | 权威来源 |
 |---|---|---|
 | 代码版本 | `main` @ `7b71abd`（代码基线） | `git rev-parse HEAD` |
-| Rust 规模 | **52,659 行 / 80 个源文件 / 7 个 crate** | `python scripts/repo-stats.py` |
-| 单元 + 集成测试 | **794 项全绿** | `cargo test --workspace --offline --locked` |
-| 完整门禁 | **42/42 全过**（2026-11-13 全量运行） | `python scripts/gates.py` |
+| Rust 规模 | **55,154 行 / 90 个源文件 / 7 个 crate**（2026-11-21 本轮实测） | `python scripts/repo-stats.py` |
+| 单元 + 集成测试 | **830 passed / 0 failed（Windows GNU，2026-11-21 复跑）**；同树 Linux 目标 854 passed / 0 failed，差异来自平台 cfg 测试；`cargo clippy --workspace --all-targets --locked` exit 0、0 error | `cargo test --workspace --locked` / `cargo clippy --workspace --all-targets --locked` |
+| 完整门禁 | 2026-11-13 全量 42/42 全过；**2026-11-21 Windows 复跑**：`shot-diff.py verify` 57 档 PASS；`gates.py --fast` 26/29 PASS、3 项 FAIL（本机缺 bash / git，非代码回归）；`release-gate.py` 联网 PASS 4 / FAIL 2 / SKIP 0（缺 git + 线上证书过期）。明细见 [PLAN-EXEC](报告/计划推进（PLAN-EXEC）-2026-11-21.md) 第五节 | `python scripts/gates.py` |
 | CI | **run #155–#157 连续四 job 全绿**（Ubuntu/Windows × fast/test，2026-11-13） | [CI 诊断](证据/CI诊断-2026-10-24.md)、[项目进度复盘](报告/项目进度复盘（STATUS）-2026-11-13.md) |
 | ISO | v0.1.1 · **26.0 MB** · SHA256 `53580ae5…` | `site/release.json`、[下载页](https://aether.cbnac.com/download.html) |
-| 本地站点 | `gen-site.py --check` 通过，页面数据与仓库一致 | `python scripts/gen-site.py --check` |
-| 线上站点 | **已同步**：`site-health-check` 39/39，52,659 行 / 80 文件 / 794 测试 | [站点巡检](报告/站点巡检（SITE-CHECK）-2026-10-31.md) |
+| 本地站点 | `gen-site.py --check` 站点自洽检查；2026-11-21 本机因 PATH 缺 git 该步 FAIL（`FileNotFoundError: [WinError 2]`，环境问题非内容漂移），带 git 的环境结果待 CI 复核 | `python scripts/gen-site.py --check` |
+| 线上站点 | **未随本轮重新部署**：线上仍是 2026-11-14 版本（52,659 行 / 80 文件 / 794 测试） | [站点巡检](报告/站点巡检（SITE-CHECK）-2026-10-31.md) |
 
-> 2026-11-14 部署后复核：线上首页/FAQ 显示 52,659 行 / 80 文件 / 794 测试，
-> 安全响应头正常，`site-health-check` 39/39。
+> 2026-11-21 本轮推进 NEXT-PLAN 第四章 15 个工作项（已完成 8 / 部分完成 5 / 未执行 2），
+> 逐项状态、证据与剩余动作见 [PLAN-EXEC](报告/计划推进（PLAN-EXEC）-2026-11-21.md)；
+> 代码事实以本表上方两行为准，线上站点事实要等下一次部署才会更新。
 
 ## 先读这几篇
 
@@ -72,6 +73,29 @@
 | [Guest 更新 E2E](证据/更新E2E-2026-11-05.md) | 0.1.2 探测包已由 guest 拉取、验签、暂存、重启应用 |
 | [门禁数快照](证据/gate-count.txt) | `gates.py` 写入的本次运行门禁数 |
 
+### 本轮计划推进（2026-11-21）
+
+| 文档 | 用途 |
+|---|---|
+| [计划推进（PLAN-EXEC）](报告/计划推进（PLAN-EXEC）-2026-11-21.md) | **本轮总账**：15 项工作项落地状态、验证结果、未执行清单与回滚位置 |
+| [Wayland fd 传递（WAYLAND-FD）](报告/Wayland fd 传递实现状态（WAYLAND-FD）-2026-11-21.md) | G1：`SCM_RIGHTS` 收包、`wl_shm` mmap、13 项新测试 |
+| [draw 拆分与局部重绘（DRAW-SPLIT-DAMAGE）](报告/draw 拆分与局部重绘（DRAW-SPLIT-DAMAGE）-2026-11-21.md) | E1 + G3：draw.rs 5,369→2,498、damage 基准数据 |
+| [aether-shell 边界实现（SHELL-BOUNDARY）](报告/aether-shell 边界实现（SHELL-BOUNDARY）-2026-11-21.md) | E2：`ShellOwnership` + `--status`，边界与 ADR 对齐 |
+| [依赖迁移（DEP-MIGRATION）](报告/依赖迁移（DEP-MIGRATION）-2026-11-21.md) | ureq 3.5.1 / minifb 0.29 的 breaking change 适配记录 |
+| [CI 冒烟与发布门禁（CI-SMOKE-RELEASE-GATE）](报告/CI冒烟与发布门禁（CI-SMOKE-RELEASE-GATE）-2026-11-21.md) | E3 + E4：vm-smoke、release-gate、CI job |
+| [真实模型端到端流程（LLM-E2E-FLOW）](报告/真实模型端到端流程（LLM-E2E-FLOW）-2026-11-21.md) | R8 流程与 `llm-e2e.py`（无凭据 exit 2） |
+| [自动更新在线复测（UPDATE-ONLINE-VERIFY）](报告/自动更新在线复测（UPDATE-ONLINE-VERIFY）-2026-11-21.md) | M8 在线拉取复测流程与判据 |
+| [生产应用更新包发布流程（APP-UPDATE-RELEASE）](报告/生产应用更新包发布流程（APP-UPDATE-RELEASE）-2026-11-21.md) | 签名、打包、发布与回滚（无私钥 exit 2） |
+| [发布节奏与版本兼容策略（RELEASE-POLICY）](报告/发布节奏与版本兼容策略（RELEASE-POLICY）-2026-11-21.md) | P4：v0.1.x→v0.2 升级/回滚矩阵 |
+| [维护交接与双人发布（MAINTAINER-HANDOVER）](报告/维护交接与双人发布（MAINTAINER-HANDOVER）-2026-11-21.md) | 第二维护者、私钥保管、发布清单交接 |
+| [物理机验收执行清单（HW-RUNBOOK-45）](报告/物理机验收执行清单（HW-RUNBOOK-45）-2026-11-21.md) | H1：45 项编号清单（44 未执行 / 1 不适用） |
+| [硬件兼容矩阵（HW-MATRIX）](报告/硬件兼容矩阵（HW-MATRIX）-2026-11-21.md) | H2：54 条三态矩阵 + CSV 记录模板 |
+| [ADR-应用包签名](架构决策（ADR）-应用包签名-2026-11-21.md) | P1 决策：Ed25519 detached 签名、安装前强制验签 |
+| [ADR-DRM/KMS 与 GPU 路线](架构决策（ADR）-DRM-KMS与GPU路线-2026-11-21.md) | G2：维持 fbdev，2 周 spike 失败即回退 |
+| [ADR-多显示器与旋转](架构决策（ADR）-多显示器与旋转-2026-11-21.md) | G4：当前只画主输出，分阶段输出抽象 |
+| [ADR-镜像级 OTA 与 A-B 分区](架构决策（ADR）-镜像级OTA与A-B分区-2026-11-21.md) | P2：维持文件级更新，A/B 仅未来立项 |
+| [ADR-多用户与会话](架构决策（ADR）-多用户与会话-2026-11-21.md) | P3：先账户模型，后实现 |
+
 ### 路线图与生产化
 
 | 文档 | 用途 |
@@ -111,6 +135,8 @@
 | [等宽字体（MONO-FONT）](证据/等宽字体（MONO-FONT）-2026-10-15.md) | 字体收口 |
 | [i18n 终扫](报告/i18n终扫（I18N-FINAL-SCAN）-2026-10-04.txt) | 全库 i18n 扫描结果 |
 | [Toast 双语审计](证据/toast-i18n-审计-2026-10-11.md) | `push_toast` 结构化覆盖 |
+| [硬件验收记录模板（2026-11-21）](证据/硬件验收记录模板-2026-11-21.md)（附同目录 `.csv`） | H1 物理机验收的记录构造体：Markdown 表 + CSV |
+| [release-gate 离线结果（2026-11-21）](证据/release-gate-offline-2026-11-21.json) | E4 发布门禁聚合脚本 `release-gate.py` 的机器可读离线结果 |
 
 ### 归档（历史快照，不再维护）
 

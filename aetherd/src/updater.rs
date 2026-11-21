@@ -137,7 +137,12 @@ pub enum Outcome {
 
 #[cfg(target_os = "linux")]
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build()
+    // ureq 3：Agent 由 `Agent::config_builder()` 构建 `Config` 后 `into()` 成 Agent；
+    // 全局超时对应 v2 的 `AgentBuilder::timeout(..)`（覆盖重定向与响应体读取全程）。
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(HTTP_TIMEOUT))
+        .build();
+    config.into()
 }
 
 /// 取一段有限大小的字节（清单、签名共用）。
@@ -148,7 +153,9 @@ fn fetch_bytes(url: &str, limit: usize) -> Result<Vec<u8>, String> {
         .get(url)
         .call()
         .map_err(|e| format!("拉取失败（{url}）：{e}"))?;
-    let mut reader = resp.into_reader();
+    // ureq 3：响应体在 `http::Response<Body>` 里，先 `into_body()` 再取 reader。
+    // `take(..)` 按值消费 reader，这里不需要 mut。
+    let reader = resp.into_body().into_reader();
     let mut body = Vec::new();
     reader
         .take(limit as u64 + 1)
@@ -180,7 +187,8 @@ fn download_to(url: &str, dest: &Path) -> Result<(), String> {
         .get(url)
         .call()
         .map_err(|e| format!("下载失败（{url}）：{e}"))?;
-    let mut reader = resp.into_reader();
+    // ureq 3：响应体在 `http::Response<Body>` 里，先 `into_body()` 再取 reader。
+    let mut reader = resp.into_body().into_reader();
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建目录 {parent:?} 失败：{e}"))?;
     }

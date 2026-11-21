@@ -9,16 +9,16 @@
 
 use std::collections::HashMap;
 
-use super::object::{ObjectTable, DISPLAY_ID};
+use super::object::{ObjectTable, DISPLAY_ID, MAX_OBJECTS};
 use super::protocol::*;
-use super::shm::{read_pixels, BufferInfo};
+use super::shm::{close_fd, map_pool_fd, read_pixels, BufferInfo};
 use super::wire::{self, Arg, Message};
 
 /// pool 的数据来源。
 ///
-/// 真机上 `create_pool` 带一个 fd，服务端 `mmap` 它得到字节 —— 那一步是
-/// 平台相关的，真机阶段接。在此之前 pool 处于 `Pending`，协议流程照常走，
-/// 只是读不到像素（commit 时像素为空，不报错 —— 客户端可能真的还没写完）。
+/// Linux 真机：`create_pool` 收到的 fd 经 `mmap` 读出字节 → [`PoolData::Ready`]。
+/// [`PoolData::Pending`] 只出现在：测试用占位 fd（-1）注入、或当前平台不支持
+/// fd 传递。Pending 时协议流程照常走，commit 读不到像素（像素为 None，不报错）。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum PoolData {
     Ready(Vec<u8>),
@@ -67,7 +67,7 @@ pub struct ProtocolError {
 pub struct Session {
     pub objects: ObjectTable,
     pub surfaces: HashMap<u32, SurfaceState>,
-    /// pool id → 数据（fd 在真机上 mmap 后填 `Ready`）
+    /// pool id → 数据（Linux 下 fd 经 mmap 后填 `Ready`；占位/不支持时为 `Pending`）
     pub pools: HashMap<u32, PoolData>,
     /// buffer id → 参数（像素在 pool 里）
     pub buffers: HashMap<u32, BufferInfo>,
@@ -114,7 +114,32 @@ impl Session {
     }
 
     /// 处理一批字节（可能含多条消息），返回要发回客户端的事件。
+    ///
+    /// 不带随附 fd 的入口（测试 / 非 fd 路径）：fd 槽保留 `-1` 占位，pool 走
+    /// `Pending`。真实 socket 通道用 [`Self::handle_with_fds`]。
     pub fn handle(&mut self, buf: &[u8]) -> Result<Vec<Message>, ProtocolError> {
+        self.handle_inner(buf, &mut Vec::new(), false)
+    }
+
+    /// 处理一批字节，`fds` 是本批报文从 `SCM_RIGHTS` 收到的 fd 队列（FIFO）。
+    ///
+    /// 消息体里的 `h` 参数不占字节，解码时先填 `-1` 占位；这里按参数出现顺序
+    /// 从队列取真实 fd 回填。严格模式下队列耗尽仍有 `h` 参数 → 协议错误
+    /// （对端没按协议随附 fd）。
+    pub fn handle_with_fds(
+        &mut self,
+        buf: &[u8],
+        fds: &mut Vec<i32>,
+    ) -> Result<Vec<Message>, ProtocolError> {
+        self.handle_inner(buf, fds, true)
+    }
+
+    fn handle_inner(
+        &mut self,
+        buf: &[u8],
+        fds: &mut Vec<i32>,
+        strict_fds: bool,
+    ) -> Result<Vec<Message>, ProtocolError> {
         let mut out = Vec::new();
         let mut rest = buf;
         while !rest.is_empty() {
@@ -145,17 +170,48 @@ impl Session {
                     message: format!("{}.{} 非法 opcode {opcode}", iface.name, iface.name),
                 });
             };
-            let (msg, used) = wire::decode(rest, sig).map_err(|e| ProtocolError {
+            let (mut msg, used) = wire::decode(rest, sig).map_err(|e| ProtocolError {
                 object_id: obj_id,
                 code: 0,
                 message: e.to_string(),
             })?;
+            Self::fill_fd_slots(&mut msg, fds, strict_fds)?;
             rest = &rest[used..];
 
             let mut events = self.handle_one(&msg)?;
             out.append(&mut events);
         }
         Ok(out)
+    }
+
+    /// 按参数顺序把队列里的真实 fd 回填到 `Arg::Fd` 占位槽。
+    ///
+    /// `strict_fds` 为真（真实 socket 通道）时，队列耗尽仍有 fd 槽 → 协议错误；
+    /// 为假（测试占位入口）时保留 `-1`，pool 记 `Pending`。
+    fn fill_fd_slots(
+        msg: &mut Message,
+        fds: &mut Vec<i32>,
+        strict_fds: bool,
+    ) -> Result<(), ProtocolError> {
+        for arg in &mut msg.args {
+            if let Arg::Fd(_) = arg {
+                match fds.first().copied() {
+                    Some(fd) => {
+                        fds.remove(0);
+                        *arg = Arg::Fd(fd);
+                    }
+                    None if strict_fds => {
+                        return Err(ProtocolError {
+                            object_id: msg.object_id,
+                            code: 0,
+                            message: "消息携带 fd 参数，但 SCM_RIGHTS 未随附文件描述符".into(),
+                        });
+                    }
+                    None => {}
+                }
+            }
+        }
+        Ok(())
     }
 
     fn handle_one(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
@@ -176,8 +232,32 @@ impl Session {
             "xdg_wm_base" => self.handle_xdg_wm_base(msg),
             "xdg_surface" => self.handle_xdg_surface(msg),
             "xdg_toplevel" => self.handle_xdg_toplevel(msg),
-            // wl_callback / wl_buffer / wl_region：无需要响应的请求
+            "wl_buffer" => self.handle_buffer(msg),
+            // wl_callback / wl_region：无需要响应的请求
             _ => Ok(vec![]),
+        }
+    }
+
+    /// 插入一个对象并**检查上限**（超过 [`MAX_OBJECTS`] 回协议错误）。
+    ///
+    /// 2026-11-21：`ObjectTable::insert` 本来就会在超限时返回 `false`，但此前
+    /// 所有调用点都忽略了它 —— 对象表拒绝插入、`surfaces`/`pools`/`buffers`
+    /// 这些辅助表却照样插入。结果是"内存上限只挡住一半"，且客户端与服务端
+    /// 的对象状态分叉（后续请求全报"未知对象"）。
+    fn insert_object(
+        &mut self,
+        id: u32,
+        interface: &'static str,
+        version: u32,
+    ) -> Result<(), ProtocolError> {
+        if self.objects.insert(id, interface, version, 0) {
+            Ok(())
+        } else {
+            Err(ProtocolError {
+                object_id: id,
+                code: 0,
+                message: format!("对象数超过上限（{MAX_OBJECTS}）"),
+            })
         }
     }
 
@@ -186,7 +266,7 @@ impl Session {
             0 => {
                 // sync(new_id) → 对该 callback 发 done，然后声明它可回收
                 let cb = arg_newid(msg, 0)?;
-                self.objects.insert(cb, "wl_callback", 1, 0);
+                self.insert_object(cb, "wl_callback", 1)?;
                 let serial = self.next_serial();
                 Ok(vec![
                     event(cb, 0, vec![Arg::Uint(serial)]),
@@ -196,7 +276,7 @@ impl Session {
             1 => {
                 // get_registry(new_id) → 逐个 advertise 全局
                 let reg = arg_newid(msg, 0)?;
-                self.objects.insert(reg, "wl_registry", 1, 0);
+                self.insert_object(reg, "wl_registry", 1)?;
                 let mut out = Vec::new();
                 for (iface, _, ver) in GLOBALS {
                     out.push(event(
@@ -236,22 +316,29 @@ impl Session {
         }
         // 客户端要求的版本不能超过我们 advertise 的版本 —— 夹到交集，
         // 否则客户端会按它自己以为的版本发请求，服务端解析不了
-        self.objects
-            .insert(new_id, iface.name, ver.min(iface.version), 0);
-        Ok(vec![])
+        self.insert_object(new_id, iface.name, ver.min(iface.version))?;
+        let mut out = Vec::new();
+        if iface.name == "wl_shm" {
+            // 协议要求：bind wl_shm 后服务端逐个发 format 事件，客户端据此
+            // 决定支持哪些像素格式。spike 只支持 8888 系列（ARGB8888=0,
+            // XRGB8888=1，常量见 `shm::format`）。
+            out.push(event(new_id, 0, vec![Arg::Uint(super::shm::format::ARGB8888)]));
+            out.push(event(new_id, 0, vec![Arg::Uint(super::shm::format::XRGB8888)]));
+        }
+        Ok(out)
     }
 
     fn handle_compositor(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
         match msg.opcode {
             0 => {
                 let id = arg_newid(msg, 0)?;
-                self.objects.insert(id, "wl_surface", 4, 0);
+                self.insert_object(id, "wl_surface", 4)?;
                 self.surfaces.insert(id, SurfaceState::default());
                 Ok(vec![])
             }
             1 => {
                 let id = arg_newid(msg, 0)?;
-                self.objects.insert(id, "wl_region", 1, 0);
+                self.insert_object(id, "wl_region", 1)?;
                 Ok(vec![])
             }
             _ => Err(bad_opcode(msg, "wl_compositor")),
@@ -261,7 +348,16 @@ impl Session {
     fn handle_surface(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
         let surface = msg.object_id;
         match msg.opcode {
-            0 | 2 | 7 | 8 | 9 => Ok(vec![]),
+            // destroy：对象、surface 状态与 mapped 一起清。
+            //
+            // 2026-11-21：此前它落在"无操作"分支里 —— 反复开关窗口时
+            // `surfaces`/`mapped` 只增不减，已销毁的 surface 还会继续上屏，
+            // 客户端复用 id 时还会命中旧状态。
+            0 => {
+                self.drop_surface(surface);
+                Ok(vec![])
+            }
+            2 | 7 | 8 | 9 => Ok(vec![]),
             1 => {
                 // attach：buffer 为 0 表示"解除"，非 0 记下 id（commit 读像素用）
                 let buf = match msg.args.first() {
@@ -277,7 +373,7 @@ impl Session {
             3 => {
                 // frame(new_id)：spike 阶段立即回 done（真实实现要等 vblank）
                 let cb = arg_newid(msg, 0)?;
-                self.objects.insert(cb, "wl_callback", 1, 0);
+                self.insert_object(cb, "wl_callback", 1)?;
                 Ok(vec![event(cb, 0, vec![Arg::Uint(self.next_serial())])])
             }
             6 => self.commit(surface),
@@ -305,10 +401,10 @@ impl Session {
         }
         // 读像素：buffer → pool → 格式转换。
         //
-        // pool 未 Ready（真机 mmap 未接 / 客户端还没写完）或读失败都**不阻断协议
-        // 流程** —— 像素为 None 只表示"这次 commit 没有可显示的内容"。
-        // 把读像素失败当成协议错误会误伤合法的时序（客户端先 commit 后写像素
-        // 是常见模式，帧回调之后才画）。
+        // pool 未 Ready（占位注入 / 平台不支持 fd 传递 / 客户端还没写完）或读
+        // 失败都**不阻断协议流程** —— 像素为 None 只表示"这次 commit 没有可
+        // 显示的内容"。把读像素失败当成协议错误会误伤合法的时序（客户端先
+        // commit 后写像素是常见模式，帧回调之后才画）。
         let pixels = st
             .attached_buffer
             .and_then(|bid| self.buffers.get(&bid).cloned())
@@ -354,22 +450,41 @@ impl Session {
         let id = arg_newid(msg, 0)?;
         // fd 在签名 "nhi" 里占**索引 1**（wire 解码时保留槽位、值来自 SCM_RIGHTS），
         // 所以 size 在索引 2 —— 按索引 1 取会拿到 Fd
+        let fd = arg_fd(msg, 1)?;
         let size = arg_int(msg, 2)?;
         if size < 0 {
+            close_fd(fd);
             return Err(ProtocolError {
                 object_id: msg.object_id,
                 code: 0,
                 message: format!("create_pool 的 size 为负（{size}）"),
             });
         }
-        // fd（Arg::Fd）在 spike 阶段不 mmap：数据来源是平台相关的。
-        // pool 先记为 Pending；真机 mmap 后（或测试里）用 `attach_pool_data` 填。
-        self.objects.insert(id, "wl_shm_pool", 1, 0);
-        self.pools.insert(id, PoolData::Pending);
-        Ok(vec![])
+        self.insert_object(id, "wl_shm_pool", 1)
+            .inspect_err(|_| close_fd(fd))?;
+        if fd < 0 {
+            // 没有真实 fd：测试占位注入，或平台不支持 fd 传递。pool 先记 Pending，
+            // 协议流程照常走（commit 时像素为 None，不阻断）。
+            self.pools.insert(id, PoolData::Pending);
+            return Ok(vec![]);
+        }
+        match map_pool_fd(fd, size as usize) {
+            Ok(data) => {
+                self.pools.insert(id, PoolData::Ready(data));
+                Ok(vec![])
+            }
+            Err(e) => Err(ProtocolError {
+                object_id: msg.object_id,
+                code: 0,
+                message: format!("create_pool 映射 fd 失败：{e}"),
+            }),
+        }
     }
 
-    /// 给 pool 挂数据（真机：mmap 出的字节；测试：直接注入）。
+    /// 给 pool 直接挂字节数据。
+    ///
+    /// 真机路径是 `create_pool` 收到 fd 后由 `shm::map_pool_fd` 填 `Ready`；
+    /// 本方法只用于测试注入，或上层绕过 fd 通道直接喂数据。
     pub fn attach_pool_data(&mut self, pool_id: u32, data: Vec<u8>) {
         self.pools.insert(pool_id, PoolData::Ready(data));
     }
@@ -378,17 +493,27 @@ impl Session {
         match msg.opcode {
             0 => {
                 let id = arg_newid(msg, 0)?;
-                let offset = arg_int(msg, 1)? as usize;
+                let offset = arg_int(msg, 1)?;
                 let width = arg_int(msg, 2)?;
                 let height = arg_int(msg, 3)?;
                 let stride = arg_int(msg, 4)?;
                 let format = arg_uint(msg, 5)?;
-                self.objects.insert(id, "wl_buffer", 1, 0);
+                // offset 是**缓冲区内的偏移**，负数没有意义。
+                // 此前直接 `as usize` 会把它变成巨大值，配合 shm 侧的
+                // 边界计算可以绕过检查（见 shm.rs 的 checked 重写）。
+                if offset < 0 {
+                    return Err(ProtocolError {
+                        object_id: msg.object_id,
+                        code: 0,
+                        message: format!("create_buffer 的 offset 为负（{offset}）"),
+                    });
+                }
+                self.insert_object(id, "wl_buffer", 1)?;
                 self.buffers.insert(
                     id,
                     BufferInfo {
                         pool_id: msg.object_id,
-                        offset,
+                        offset: offset as usize,
                         width,
                         height,
                         stride,
@@ -398,12 +523,29 @@ impl Session {
                 Ok(vec![])
             }
             1 => {
-                // destroy：buffer 参数一并清掉，别留悬空引用
-                self.buffers.remove(&msg.object_id);
+                // destroy：**pool 数据与它名下的 buffer 一起清**。
+                //
+                // 2026-11-21：此前是 `self.buffers.remove(&msg.object_id)` ——
+                // 拿 pool id 去删 buffers，删错了表（pool 数据永久驻留）。
+                self.drop_pool(msg.object_id);
                 Ok(vec![])
             }
-            2 => Ok(vec![]), // resize：真机上要重新 mmap，spike 忽略
+            2 => Ok(vec![]), // resize：尚未实现（需要重新 mmap / 调整 pool 长度），当前忽略
             _ => Err(bad_opcode(msg, "wl_shm_pool")),
+        }
+    }
+
+    /// `wl_buffer.destroy`：删对象与参数，并断开所有 surface 对它的引用。
+    ///
+    /// 2026-11-21：此前 `wl_buffer` 落在 `handle_one` 的"无操作"分支里，
+    /// `buffers` 永不删除。
+    fn handle_buffer(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
+        match msg.opcode {
+            0 => {
+                self.drop_buffer(msg.object_id);
+                Ok(vec![])
+            }
+            _ => Err(bad_opcode(msg, "wl_buffer")),
         }
     }
 
@@ -419,22 +561,42 @@ impl Session {
                         message: "get_xdg_surface 的参数不是 wl_surface".into(),
                     });
                 }
-                self.objects.insert(id, "xdg_surface", 1, 0);
+                self.insert_object(id, "xdg_surface", 1)?;
                 if let Some(s) = self.surfaces.get_mut(&surface) {
                     s.xdg_surface = Some(id);
                 }
                 Ok(vec![])
             }
-            0 | 1 => Ok(vec![]),
+            0 => {
+                self.objects.remove(msg.object_id);
+                Ok(vec![])
+            }
+            1 => Ok(vec![]),
             _ => Err(bad_opcode(msg, "xdg_wm_base")),
         }
     }
 
     fn handle_xdg_surface(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
         match msg.opcode {
+            0 => {
+                // destroy：解除 xdg 关联（wl_surface 本身仍然存在，协议如此）。
+                // 2026-11-21：此前它与 2/3 一起落在"无操作"分支，role 与 mapped
+                // 都不清理 —— 已销毁的窗口会留在 `mapped` 里继续上屏。
+                self.objects.remove(msg.object_id);
+                let mut orphaned = Vec::new();
+                for (sid, st) in self.surfaces.iter_mut() {
+                    if st.xdg_surface == Some(msg.object_id) {
+                        st.xdg_surface = None;
+                        st.role = None;
+                        orphaned.push(*sid);
+                    }
+                }
+                self.mapped.retain(|m| !orphaned.contains(m));
+                Ok(vec![])
+            }
             1 => {
                 let id = arg_newid(msg, 0)?;
-                self.objects.insert(id, "xdg_toplevel", 1, 0);
+                self.insert_object(id, "xdg_toplevel", 1)?;
                 // 找到拥有这个 xdg_surface 的 wl_surface，给它赋予角色
                 for st in self.surfaces.values_mut() {
                     if st.xdg_surface == Some(msg.object_id) {
@@ -460,18 +622,39 @@ impl Session {
                 }
                 Ok(vec![])
             }
-            0 | 2 | 3 => Ok(vec![]),
+            2 | 3 => Ok(vec![]),
             _ => Err(bad_opcode(msg, "xdg_surface")),
         }
     }
 
     fn handle_xdg_toplevel(&mut self, msg: &Message) -> Result<Vec<Message>, ProtocolError> {
         match msg.opcode {
+            0 => {
+                // destroy：清角色与 mapped 记录
+                self.objects.remove(msg.object_id);
+                let mut orphaned = Vec::new();
+                for (sid, st) in self.surfaces.iter_mut() {
+                    let mine = st.role.as_ref().and_then(|r| r.toplevel) == Some(msg.object_id);
+                    if mine {
+                        st.role = None;
+                        orphaned.push(*sid);
+                    }
+                }
+                self.mapped.retain(|m| !orphaned.contains(m));
+                Ok(vec![])
+            }
+            // set_title：**只改这个 toplevel 所属的 surface**。
+            //
+            // 2026-11-21：此前遍历所有 surface 的 role 无差别赋值 —— 多窗口时
+            // 改一个窗口标题会把所有窗口标题一起改掉（app_id 同理）。
             2 => {
                 let title = arg_str(msg, 0)?;
                 for st in self.surfaces.values_mut() {
                     if let Some(role) = &mut st.role {
-                        role.title = title.clone();
+                        if role.toplevel == Some(msg.object_id) {
+                            role.title = title.clone();
+                            break;
+                        }
                     }
                 }
                 Ok(vec![])
@@ -480,13 +663,53 @@ impl Session {
                 let app_id = arg_str(msg, 0)?;
                 for st in self.surfaces.values_mut() {
                     if let Some(role) = &mut st.role {
-                        role.app_id = app_id.clone();
+                        if role.toplevel == Some(msg.object_id) {
+                            role.app_id = app_id.clone();
+                            break;
+                        }
                     }
                 }
                 Ok(vec![])
             }
-            0 | 1 | 4..=13 => Ok(vec![]),
+            1 | 4..=13 => Ok(vec![]),
             _ => Err(bad_opcode(msg, "xdg_toplevel")),
+        }
+    }
+
+    /// 彻底移除一个 surface（对象表 + surface 状态 + mapped 记录）。
+    fn drop_surface(&mut self, surface: u32) {
+        self.objects.remove(surface);
+        self.surfaces.remove(&surface);
+        self.mapped.retain(|m| *m != surface);
+    }
+
+    /// 移除一个 buffer：参数表、对象表，以及所有 surface 对它的引用。
+    fn drop_buffer(&mut self, buffer: u32) {
+        self.objects.remove(buffer);
+        self.buffers.remove(&buffer);
+        for st in self.surfaces.values_mut() {
+            if st.attached_buffer == Some(buffer) {
+                st.attached_buffer = None;
+                st.has_buffer = false;
+            }
+        }
+    }
+
+    /// 移除一个 shm pool：pool 数据与它名下的 buffer 一并清理。
+    ///
+    /// 清理 buffer 时必须同时断开 surface 的引用 —— 否则 commit 会拿着
+    /// 已删除的 `BufferInfo` 去读像素（读不到只是空白，但状态是"悬空"的）。
+    fn drop_pool(&mut self, pool: u32) {
+        self.objects.remove(pool);
+        self.pools.remove(&pool);
+        let doomed: Vec<u32> = self
+            .buffers
+            .iter()
+            .filter(|(_, b)| b.pool_id == pool)
+            .map(|(id, _)| *id)
+            .collect();
+        for b in doomed {
+            self.drop_buffer(b);
         }
     }
 
@@ -532,6 +755,17 @@ arg_getter!(arg_uint, Uint, u32, "uint");
 arg_getter!(arg_int, Int, i32, "int");
 arg_getter!(arg_object, Object, u32, "object");
 arg_getter!(arg_newid, NewId, u32, "new_id");
+
+fn arg_fd(msg: &Message, i: usize) -> Result<i32, ProtocolError> {
+    match msg.args.get(i) {
+        Some(Arg::Fd(v)) => Ok(*v),
+        other => Err(ProtocolError {
+            object_id: msg.object_id,
+            code: 0,
+            message: format!("参数 {i} 应为 fd，实得 {:?}", other),
+        }),
+    }
+}
 
 fn arg_str(msg: &Message, i: usize) -> Result<String, ProtocolError> {
     match msg.args.get(i) {
@@ -832,6 +1066,153 @@ mod tests {
         assert_eq!(pixels, &[0xff, 0, 0, 255, 0, 0, 0xff, 255], "XRGB → RGBA");
     }
 
+    /// fd 队列按 FIFO 顺序回填占位槽：先出现的 `h` 先取到先到的 fd。
+    #[test]
+    fn fd_queue_fills_slots_in_fifo_order() {
+        let mut msg = Message {
+            object_id: SHM,
+            opcode: 0,
+            args: vec![Arg::NewId(10), Arg::Fd(-1), Arg::Uint(42), Arg::Fd(-1)],
+        };
+        let mut fds = vec![30, 31];
+        Session::fill_fd_slots(&mut msg, &mut fds, true).unwrap();
+        assert_eq!(msg.args[1], Arg::Fd(30), "第一个 h 取队列头");
+        assert_eq!(msg.args[2], Arg::Uint(42), "非 fd 参数不受影响");
+        assert_eq!(msg.args[3], Arg::Fd(31), "第二个 h 取剩下的 fd");
+        assert!(fds.is_empty());
+    }
+
+    /// 消息带 `h` 参数但队列里没有 fd → 协议错误，而不是把 -1 当成真实 fd 放行。
+    #[test]
+    fn missing_fd_is_protocol_error() {
+        let mut msg = Message {
+            object_id: SHM,
+            opcode: 0,
+            args: vec![Arg::NewId(10), Arg::Fd(-1)],
+        };
+        let mut fds = Vec::new();
+        let err = Session::fill_fd_slots(&mut msg, &mut fds, true).expect_err("缺 fd 必须报错");
+        assert!(err.message.contains("SCM_RIGHTS"), "实得: {}", err.message);
+    }
+
+    /// bind `wl_shm` 后必须通告支持的像素格式（`wl_shm.format` 事件）。
+    #[test]
+    fn bind_wl_shm_advertises_formats() {
+        let mut s = setup_registry();
+        let out = s
+            .handle(&Message {
+                object_id: REGISTRY,
+                opcode: 0,
+                args: vec![
+                    Arg::Uint(2),
+                    Arg::Str("wl_shm".into()),
+                    Arg::Uint(1),
+                    Arg::NewId(SHM),
+                ],
+            }
+            .encode("usun"))
+            .unwrap();
+        assert_eq!(out.len(), 2, "ARGB8888 与 XRGB8888 各一条 format 事件");
+        assert_eq!(out[0].args[0], Arg::Uint(crate::wayland::shm::format::ARGB8888));
+        assert_eq!(out[1].args[0], Arg::Uint(crate::wayland::shm::format::XRGB8888));
+    }
+
+    /// 非 Linux 平台若进来一个真实 fd（理论上 stub 路径不会发生），映射必须
+    /// 回明确协议错误，而不是 panic 或静默当 Pending 放行。
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn real_fd_on_unsupported_platform_is_protocol_error() {
+        let mut s = setup_registry();
+        s.objects.insert(SHM, "wl_shm", 1, 0);
+        let msg = Message {
+            object_id: SHM,
+            opcode: 0,
+            args: vec![Arg::NewId(10), Arg::Fd(-1), Arg::Int(64)],
+        }
+        .encode("nhi");
+        let err = s
+            .handle_with_fds(&msg, &mut vec![42])
+            .expect_err("非 Linux 收到真实 fd 应报错");
+        assert!(
+            err.message.contains("不支持") || err.message.contains("mmap"),
+            "实得: {}",
+            err.message
+        );
+    }
+
+    /// Linux-only 端到端：真实文件 fd 经 `handle_with_fds` 进 create_pool，
+    /// pool 从 Pending 走向 Ready，commit 读出像素。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn create_pool_with_real_fd_maps_and_commits_pixels() {
+        use std::fs::File;
+        use std::io::Write as _;
+        use std::os::unix::io::IntoRawFd;
+
+        // 2×1 XRGB 像素：纯红、纯蓝（小端字节序，与 commit_reads_pixels_from_pool 对齐）
+        let tmp = std::env::temp_dir().join("aether-session-shm");
+        {
+            let mut f = File::create(&tmp).unwrap();
+            f.write_all(&[0u8, 0, 0xff, 0, 0xff, 0, 0, 0]).unwrap();
+        }
+        let file = File::open(&tmp).unwrap();
+        let raw = file.into_raw_fd();
+
+        let mut s = setup_registry();
+        s.handle(&Message {
+            object_id: REGISTRY,
+            opcode: 0,
+            args: vec![Arg::Uint(2), Arg::Str("wl_shm".into()), Arg::Uint(1), Arg::NewId(SHM)],
+        }
+        .encode("usun"))
+        .unwrap();
+
+        const POOL: u32 = 10;
+        let pool_msg = Message {
+            object_id: SHM,
+            opcode: 0,
+            args: vec![Arg::NewId(POOL), Arg::Fd(-1), Arg::Int(8)],
+        }
+        .encode("nhi");
+        s.handle_with_fds(&pool_msg, &mut vec![raw]).unwrap();
+        assert!(
+            matches!(s.pools[&POOL], PoolData::Ready(_)),
+            "真实 fd 映射后 pool 必须是 Ready"
+        );
+
+        s.handle(&Message {
+            object_id: POOL,
+            opcode: 0,
+            args: vec![
+                Arg::NewId(BUFFER),
+                Arg::Int(0),
+                Arg::Int(2),
+                Arg::Int(1),
+                Arg::Int(8),
+                Arg::Uint(1), // XRGB8888
+            ],
+        }
+        .encode("niiiiu"))
+        .unwrap();
+
+        s.objects.insert(COMPOSITOR, "wl_compositor", 4, 0);
+        s.handle(&Message { object_id: COMPOSITOR, opcode: 0, args: vec![Arg::NewId(SURFACE)] }
+            .encode("n"))
+        .unwrap();
+        s.handle(&Message {
+            object_id: SURFACE,
+            opcode: 1,
+            args: vec![Arg::Object(BUFFER), Arg::Int(0), Arg::Int(0)],
+        }
+        .encode("oii"))
+        .unwrap();
+        s.handle(&Message { object_id: SURFACE, opcode: 6, args: vec![] }.encode("")).unwrap();
+
+        let pixels = s.surfaces[&SURFACE].pixels.as_deref().expect("像素应已读出");
+        assert_eq!(pixels, &[0xff, 0, 0, 255, 0, 0, 0xff, 255]);
+        let _ = std::fs::remove_file(tmp);
+    }
+
     #[test]
     fn commit_without_buffer_unmaps() {
         let mut s = setup_registry();
@@ -893,5 +1274,172 @@ mod tests {
         let full = Message { object_id: DISPLAY_ID, opcode: 0, args: vec![Arg::NewId(2)] }
             .encode("n");
         assert!(s.handle(&full[..full.len() - 2]).is_err());
+    }
+
+    // ── 2026-11-21 回归：资源生命周期与对象上限 ───────────────────────────
+
+    /// `wl_surface.destroy` 必须把对象、surface 状态、mapped 一起清掉，
+    /// 否则反复开关窗口会让状态只增不减，已销毁的窗口还会继续上屏。
+    #[test]
+    fn surface_destroy_clears_state_and_unmaps() {
+        let mut s = Session::new();
+        s.objects.insert(COMPOSITOR, "wl_compositor", 4, 0);
+        s.handle(
+            &Message { object_id: COMPOSITOR, opcode: 0, args: vec![Arg::NewId(SURFACE)] }
+                .encode("n"),
+        )
+        .unwrap();
+        s.surfaces.get_mut(&SURFACE).unwrap().role = Some(Role {
+            toplevel: Some(TOPLEVEL),
+            acked_serial: Some(1),
+            ..Default::default()
+        });
+        s.mapped.push(SURFACE);
+
+        s.handle(&Message { object_id: SURFACE, opcode: 0, args: vec![] }.encode(""))
+            .unwrap();
+
+        assert!(!s.surfaces.contains_key(&SURFACE), "surface 状态必须删掉");
+        assert!(!s.mapped.contains(&SURFACE), "mapped 必须删掉");
+        assert_eq!(s.objects.interface_of(SURFACE), None, "对象表必须删掉");
+        // 销毁后再发请求 → 未知对象（而不是"照旧工作"）
+        assert!(
+            s.handle(&Message { object_id: SURFACE, opcode: 6, args: vec![] }.encode(""))
+                .is_err(),
+            "已销毁的 surface 不该还能 commit"
+        );
+    }
+
+    /// `wl_shm_pool.destroy` 要清 pool 数据与它名下的 buffer，并断开 surface 的
+    /// attach 引用。修复前它拿 pool id 去删 `buffers` —— 删错了表。
+    #[test]
+    fn pool_destroy_clears_pool_data_and_its_buffers() {
+        let mut s = Session::new();
+        const SHM_X: u32 = 40;
+        const POOL: u32 = 41;
+        const BUF: u32 = 42;
+        const COMP: u32 = 43;
+        s.objects.insert(SHM_X, "wl_shm", 1, 0);
+        s.handle(
+            &Message { object_id: SHM_X, opcode: 0, args: vec![Arg::NewId(POOL), Arg::Fd(-1), Arg::Int(64)] }
+                .encode("nhi"),
+        )
+        .unwrap();
+        s.objects.insert(COMP, "wl_compositor", 4, 0);
+        s.handle(&Message { object_id: COMP, opcode: 0, args: vec![Arg::NewId(SURFACE)] }.encode("n"))
+            .unwrap();
+        s.handle(
+            &Message {
+                object_id: POOL,
+                opcode: 0,
+                args: vec![Arg::NewId(BUF), Arg::Int(0), Arg::Int(2), Arg::Int(1), Arg::Int(8), Arg::Uint(1)],
+            }
+            .encode("niiiiu"),
+        )
+        .unwrap();
+        s.handle(
+            &Message { object_id: SURFACE, opcode: 1, args: vec![Arg::Object(BUF), Arg::Int(0), Arg::Int(0)] }
+                .encode("oii"),
+        )
+        .unwrap();
+        assert!(s.pools.contains_key(&POOL));
+
+        s.handle(&Message { object_id: POOL, opcode: 1, args: vec![] }.encode(""))
+            .unwrap();
+
+        assert!(!s.pools.contains_key(&POOL), "pool 数据必须删（修复前会永久驻留）");
+        assert!(!s.buffers.contains_key(&BUF), "名下的 buffer 必须一起删");
+        assert_eq!(s.surfaces[&SURFACE].attached_buffer, None, "surface 的 attach 引用必须断开");
+        assert!(!s.surfaces[&SURFACE].has_buffer);
+    }
+
+    /// `wl_buffer.destroy` 要删参数并把 surface 的 attach 引用断开。
+    #[test]
+    fn buffer_destroy_clears_attachment() {
+        let mut s = Session::new();
+        const POOL: u32 = 50;
+        const BUF: u32 = 51;
+        const SHM_X: u32 = 52;
+        s.objects.insert(SHM_X, "wl_shm", 1, 0);
+        s.handle(
+            &Message { object_id: SHM_X, opcode: 0, args: vec![Arg::NewId(POOL), Arg::Fd(-1), Arg::Int(64)] }
+                .encode("nhi"),
+        )
+        .unwrap();
+        s.objects.insert(BUF, "wl_buffer", 1, 0);
+        s.buffers.insert(
+            BUF,
+            BufferInfo { pool_id: POOL, offset: 0, width: 1, height: 1, stride: 4, format: 1 },
+        );
+        s.surfaces.insert(
+            SURFACE,
+            SurfaceState { has_buffer: true, attached_buffer: Some(BUF), ..Default::default() },
+        );
+        s.handle(&Message { object_id: BUF, opcode: 0, args: vec![] }.encode("")).unwrap();
+        assert_eq!(s.objects.interface_of(BUF), None, "对象必须删");
+        assert!(!s.buffers.contains_key(&BUF), "参数必须删");
+        assert_eq!(s.surfaces[&SURFACE].attached_buffer, None);
+    }
+
+    /// `set_title` / `set_app_id` **只改自己那个 toplevel 的窗口**。
+    /// 修复前是遍历所有 surface 无差别赋值 —— 多窗口时标题会互相串。
+    #[test]
+    fn set_title_only_touches_its_own_toplevel() {
+        let mut s = Session::new();
+        const TL_A: u32 = 61;
+        const TL_B: u32 = 62;
+        s.objects.insert(TL_A, "xdg_toplevel", 1, 0);
+        s.objects.insert(TL_B, "xdg_toplevel", 1, 0);
+        s.surfaces.insert(
+            1,
+            SurfaceState { role: Some(Role { toplevel: Some(TL_A), ..Default::default() }), ..Default::default() },
+        );
+        s.surfaces.insert(
+            2,
+            SurfaceState { role: Some(Role { toplevel: Some(TL_B), ..Default::default() }), ..Default::default() },
+        );
+
+        s.handle(
+            &Message { object_id: TL_A, opcode: 2, args: vec![Arg::Str("窗口A".into())] }.encode("s"),
+        )
+        .unwrap();
+        s.handle(
+            &Message { object_id: TL_A, opcode: 3, args: vec![Arg::Str("app-a".into())] }.encode("s"),
+        )
+        .unwrap();
+
+        assert_eq!(s.surfaces[&1].role.as_ref().unwrap().title, "窗口A");
+        assert_eq!(s.surfaces[&1].role.as_ref().unwrap().app_id, "app-a");
+        assert_eq!(
+            s.surfaces[&2].role.as_ref().unwrap().title,
+            "",
+            "另一个窗口的标题不该被改（修复前会一起变）"
+        );
+        assert_eq!(s.surfaces[&2].role.as_ref().unwrap().app_id, "");
+    }
+
+    /// 对象数超过上限时**必须回协议错误，且不能留辅助表状态**。
+    ///
+    /// 修复前 `insert` 的 false 被忽略：对象表拒绝、surface 照样插入。
+    #[test]
+    fn object_limit_is_enforced() {
+        let mut s = Session::new();
+        // display 占 1 个；再填到"只差 1 个就满"，那最后一个空位留给 compositor
+        for i in 0..(MAX_OBJECTS as u32 - 2) {
+            assert!(
+                s.objects.insert(1000 + i, "wl_callback", 1, 0),
+                "填充到上限前不应失败（第 {i} 个）"
+            );
+        }
+        assert!(s.objects.insert(COMPOSITOR, "wl_compositor", 4, 0), "最后一个空位给 compositor");
+
+        let err = s
+            .handle(&Message { object_id: COMPOSITOR, opcode: 0, args: vec![Arg::NewId(3000)] }.encode("n"))
+            .expect_err("超过对象上限必须回协议错误");
+        assert!(err.message.contains("上限"), "要说清是对象上限：{}", err.message);
+        assert!(
+            !s.surfaces.contains_key(&3000),
+            "对象没插进去时，surface 辅助表也不许插入（修复前会留下悬空状态）"
+        );
     }
 }

@@ -40,7 +40,8 @@ AetherOS 镜像里没有包管理器，动态程序的依赖也不会自己出�
 产物目录结构（就是 `aetherd app install` 认的格式）：
 
     <out>/<id>/
-      app.json            清单
+      app.json            清单（必须；--sign 时内含 files 哈希清单）
+      app.json.sig        清单的 Ed25519 detached 签名（--sign 产出；目标端强制验签）
       bin/<程序>          入口
       lib/*.so*           自带的共享库（启动时经 LD_LIBRARY_PATH 生效）
       share/terminfo/     终端条目（全屏程序必需，启动时经 TERMINFO_DIRS 生效）
@@ -48,11 +49,26 @@ AetherOS 镜像里没有包管理器，动态程序的依赖也不会自己出�
 
 加 `--tar` 会额外产出 `<id>.aep`（未压缩 tar）—— 未压缩是刻意的：目标端不需要 gzip，
 少一个解析器就少一片攻击面。
+
+## 签名（2026-11-21 起目标端强制）
+
+    # 先生成密钥对一次（私钥留在仓库外；公钥入库 aetherd/keys/app_pubkey.bin）
+    python3 scripts/app-keygen.py
+
+    # 打包并签名
+    python3 scripts/mkapp.py /usr/bin/htop --id htop --name htop \
+        --image-lib-dir <镜像 rootfs> --out dist/apps \
+        --sign --private-key ~/.aether/app-signing-key.pem
+
+签名覆盖 `app.json` 落盘后的原始字节；负载文件的 sha256 + 大小登记在清单的 `files`
+字段里。未签名、签名不符、清单被改、文件哈希不符的包都会被 `aetherd app install`
+整包拒绝。
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -61,6 +77,10 @@ import sys
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+#: 清单文件名与清单签名文件名（与 aetherd/src/apps.rs 常量一致）。
+MANIFEST_NAME = "app.json"
+MANIFEST_SIG = "app.json.sig"
 
 # ── ELF 常量 ────────────────────────────────────────────────────────────────
 PT_LOAD, PT_DYNAMIC, PT_INTERP = 1, 2, 3
@@ -562,6 +582,61 @@ def collect_terminfo(names: list[str], src_dirs: list[Path], dst: Path) -> list[
 
 # ── 打包 ────────────────────────────────────────────────────────────────────
 
+def build_files_list(pkg: Path) -> list[dict]:
+    """收集包内负载文件，生成清单里的 `files` 条目（path / sha256 / bytes）。
+
+    排除清单本身、签名文件与 `bundle.json`（溯源信息，aetherd 不解析）。
+    路径一律 POSIX 形式（目标端是 Linux）。
+    """
+    files: list[dict] = []
+    for p in sorted(pkg.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(pkg).as_posix()
+        if rel in (MANIFEST_NAME, MANIFEST_SIG, "bundle.json"):
+            continue
+        files.append({
+            "path": rel,
+            "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+            "bytes": p.stat().st_size,
+        })
+    return files
+
+
+def _load_signer(private_key: Path):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    pem = private_key.read_bytes()
+    key = serialization.load_pem_private_key(pem, password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise SystemExit(f"私钥不是 Ed25519 私钥：{private_key}")
+    return key
+
+
+def sign_package(pkg: Path, private_key: Path) -> None:
+    """给包签名：把负载文件哈希登记进 `app.json`，再对 `app.json` 原始字节签 detached 签名。
+
+    签名字节范围 = `app.json` 落盘后的全部字节（不做 JSON 规范化、不重排键序），
+    与目标端 `aetherd/src/apps.rs::verify_package` 逐字节对应。
+    产物：`<pkg>/app.json.sig`（原始 64 字节 Ed25519 签名）。
+    """
+    if not private_key.is_file():
+        raise SystemExit(f"找不到私钥：{private_key}")
+    key = _load_signer(private_key)
+
+    manifest_path = pkg / MANIFEST_NAME
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"] = build_files_list(pkg)
+    raw = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    manifest_path.write_bytes(raw)
+
+    sig = key.sign(raw)
+    if len(sig) != 64:
+        raise SystemExit(f"签名长度异常：{len(sig)}（期望 64 字节）")
+    (pkg / MANIFEST_SIG).write_bytes(sig)
+
+
 def write_tar(pkg_dir: Path, tar_path: Path) -> None:
     """产出未压缩 tar。刻意不用 gzip：目标端因此不需要解压库（少一个解析器）。"""
     entries = sorted(p for p in pkg_dir.rglob("*"))
@@ -603,6 +678,10 @@ def main(argv: list[str]) -> int:
                     help="宿主上的 terminfo 目录（默认 /usr/share/terminfo）")
     ap.add_argument("--allow-missing", action="store_true",
                     help="即使有找不到的库也继续打包（默认拒绝，免得装完跑不起来）")
+    ap.add_argument("--sign", action="store_true",
+                    help="用 Ed25519 私钥给包签名（写 app.json.sig）；未签名包在目标生产策略下会被拒绝安装")
+    ap.add_argument("--private-key",
+                    help="签名私钥路径（PKCS#8 PEM，--sign 时必填；私钥必须留在仓库外）")
     args = ap.parse_args(argv)
 
     if args.selftest:
@@ -692,6 +771,18 @@ def main(argv: list[str]) -> int:
     }
     (pkg / "bundle.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n",
                                      encoding="utf-8")
+
+    if args.sign:
+        if not args.private_key:
+            print("[mkapp] --sign 需要 --private-key <PEM 私钥路径>（私钥必须留在仓库外）",
+                  file=sys.stderr)
+            shutil.rmtree(pkg, ignore_errors=True)
+            return 2
+        sign_package(pkg, Path(args.private_key))
+        print(f"[mkapp] 已签名：{pkg / MANIFEST_SIG}（Ed25519 detached 签名）")
+    else:
+        print("[mkapp] 警告：未签名包在目标生产策略下会被拒绝安装；"
+              "加 --sign --private-key <私钥路径> 签名。")
 
     print(f"\n[mkapp] 已产出 {pkg}")
     for name in res.bundled:

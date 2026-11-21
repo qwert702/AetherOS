@@ -253,14 +253,44 @@ pub fn verify_bundle(bundle: &Path, m: &UpdateManifest) -> Result<usize, String>
 /// 暂存一个已经验过的包：拷进 `staged/`，写 `ready.json`。
 ///
 /// `current_version` 用来挡降级（见 [`version_is_newer`]）。
+///
+/// **验签是第 0 步**，生产公钥写死在这里 —— 勿改成"可选验签"：
+/// 清单里的版本/路径/哈希都是攻击者可控的 JSON，先确认"这份清单是我们签的"
+/// 才谈得上后面的解析。
+///
+/// 2026-11-21：本地投递通道此前漏了这一步（在线下载路径 `updater.rs` 已验签），
+/// 于是任何能往 `incoming/` 写目录的进程都能投递"自造清单 + 自算哈希"的包，
+/// 由 PID 1 在下次启动时写进系统路径。
 pub fn stage(
     bundle: &Path,
     root: &Path,
     current_version: &str,
     now_unix: i64,
 ) -> Result<Staged, String> {
-    let text = std::fs::read_to_string(bundle.join(MANIFEST))
+    stage_with_key(bundle, root, current_version, now_unix, UPDATE_PUBKEY)
+}
+
+/// 可注入公钥的 `stage`（测试用；生产入口见 [`stage`]）。
+fn stage_with_key(
+    bundle: &Path,
+    root: &Path,
+    current_version: &str,
+    now_unix: i64,
+    public_key: &[u8],
+) -> Result<Staged, String> {
+    // ① 先验签：清单字节与签名一起读，验过之后才允许解析
+    let manifest_bytes = std::fs::read(bundle.join(MANIFEST))
         .map_err(|e| format!("读不到 {}：{e}", bundle.join(MANIFEST).display()))?;
+    let signature = std::fs::read(bundle.join(MANIFEST_SIG)).map_err(|e| {
+        format!(
+            "缺少清单签名 {}：{e}（更新包必须是签名包，未签名的一律拒绝）",
+            bundle.join(MANIFEST_SIG).display()
+        )
+    })?;
+    verify_manifest_signature_with_key(&manifest_bytes, &signature, public_key)?;
+    let text = String::from_utf8(manifest_bytes)
+        .map_err(|e| format!("{} 不是合法 UTF-8：{e}", MANIFEST))?;
+    // ② 解析并校验版本/路径/哈希
     let m = parse_manifest(&text)?;
     if !version_is_newer(&m.version, current_version) {
         return Err(format!(
@@ -443,8 +473,23 @@ mod tests {
                 bytes: body.len() as u64,
             }],
         };
-        std::fs::write(b.join(MANIFEST), serde_json::to_string_pretty(&m).unwrap()).unwrap();
+        let manifest = serde_json::to_string_pretty(&m).unwrap();
+        std::fs::write(b.join(MANIFEST), &manifest).unwrap();
+        sign_manifest(&b, &manifest);
         b
+    }
+
+    /// 用共享测试密钥给清单签一份 detached signature（存在 `update.json.sig`）。
+    ///
+    /// 共享而不是每次新建密钥对：`stage()` 的验签要用**同一把**公钥。
+    fn sign_manifest(bundle: &Path, manifest: &str) {
+        let sig = shared_test_key().0.sign(manifest.as_bytes());
+        std::fs::write(bundle.join(MANIFEST_SIG), sig.as_ref()).unwrap();
+    }
+
+    /// `stage()` 的测试侧公钥。
+    fn test_pubkey() -> &'static [u8] {
+        shared_test_key().1.as_slice()
     }
 
     #[test]
@@ -535,7 +580,8 @@ mod tests {
         // 手改包内文件（模拟下载损坏/被替换）
         let rel = "var/apps/demo/demo";
         std::fs::write(b.join(rel), b"tampered!").unwrap();
-        let err = stage(&b, &root.join("upd"), "1.0.0", 1_700_000_000).unwrap_err();
+        let err = stage_with_key(&b, &root.join("upd"), "1.0.0", 1_700_000_000, test_pubkey())
+            .unwrap_err();
         assert!(err.contains("哈希不符"), "要说清是哈希不符：{err}");
         assert!(
             !root.join("upd").join(READY).exists(),
@@ -550,7 +596,7 @@ mod tests {
         let root = tmp("stage");
         let b = make_bundle(&root, "1.0.1", b"hello update");
         let upd = root.join("upd");
-        let st = stage(&b, &upd, "1.0.0", 1_700_000_000).unwrap();
+        let st = stage_with_key(&b, &upd, "1.0.0", 1_700_000_000, test_pubkey()).unwrap();
         assert_eq!(st.version, "1.0.1");
         assert_eq!(st.staged_unix, 1_700_000_000);
         // 读回来（`aether-init` 走这条）
@@ -562,16 +608,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// **2026-11-21 回归**：本地投递通道必须验签 —— 缺签名 / 坏签名一律拒绝。
+    ///
+    /// 钉住的是"`stage()` 真的会验签"，而不只是"验签函数本身正确"：
+    /// 修复前 stage 完全没调用它，任何能写 `incoming/` 的进程都能投递自造包。
+    #[test]
+    fn unsigned_or_forged_bundles_are_rejected_before_parsing() {
+        let root = tmp("signature");
+        let upd = root.join("upd");
+        // ① 缺签名
+        let b = make_bundle(&root, "1.0.1", b"payload");
+        std::fs::remove_file(b.join(MANIFEST_SIG)).unwrap();
+        let err = stage_with_key(&b, &upd, "1.0.0", 1, test_pubkey()).unwrap_err();
+        assert!(err.contains("缺少清单签名"), "要说清是缺签名：{err}");
+        assert!(!upd.join(READY).exists(), "拒绝后不许留 ready 标记");
+
+        // ② 签名被改一个字节
+        let b = make_bundle(&root, "1.0.2", b"payload2");
+        let mut forged = std::fs::read(b.join(MANIFEST_SIG)).unwrap();
+        forged[0] ^= 0x01;
+        std::fs::write(b.join(MANIFEST_SIG), &forged).unwrap();
+        let err = stage_with_key(&b, &upd, "1.0.0", 2, test_pubkey()).unwrap_err();
+        assert!(err.contains("签名校验失败"), "要说清是验签失败：{err}");
+
+        // ③ 用另一把密钥签（模拟"没有私钥的投递者"）
+        let b = make_bundle(&root, "1.0.3", b"payload3");
+        let (other, _other_public) = test_keypair();
+        let manifest = std::fs::read_to_string(b.join(MANIFEST)).unwrap();
+        let sig = other.sign(manifest.as_bytes());
+        std::fs::write(b.join(MANIFEST_SIG), sig.as_ref()).unwrap();
+        let err = stage_with_key(&b, &upd, "1.0.0", 3, test_pubkey()).unwrap_err();
+        assert!(err.contains("签名校验失败"), "要说清是验签失败：{err}");
+
+        // 三种情况都不许留下任何可被 init 应用的标记
+        assert!(!upd.join(READY).exists() && !upd.join(APPLY_LIST).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// **不许降级**：低版本、同版本都拒绝（降级会把已修的漏洞放回来）。
     #[test]
     fn downgrades_are_refused() {
         let root = tmp("downgrade");
         let b = make_bundle(&root, "1.0.0", b"older");
         let upd = root.join("upd");
-        let err = stage(&b, &upd, "1.0.0", 1_700_000_000).unwrap_err();
+        let err = stage_with_key(&b, &upd, "1.0.0", 1_700_000_000, test_pubkey()).unwrap_err();
         assert!(err.contains("拒绝降级"), "同版本要拒：{err}");
         let b2 = make_bundle(&root, "0.9.9", b"older");
-        let err2 = stage(&b2, &upd, "1.0.0", 1_700_000_000).unwrap_err();
+        let err2 =
+            stage_with_key(&b2, &upd, "1.0.0", 1_700_000_000, test_pubkey()).unwrap_err();
         assert!(err2.contains("拒绝降级"), "低版本要拒：{err2}");
         assert!(staged(&upd).is_none());
         let _ = std::fs::remove_dir_all(&root);
@@ -599,7 +683,7 @@ mod tests {
         let root = tmp("restage");
         let upd = root.join("upd");
         let b1 = make_bundle(&root, "1.0.1", b"first");
-        stage(&b1, &upd, "1.0.0", 1).unwrap();
+        stage_with_key(&b1, &upd, "1.0.0", 1, test_pubkey()).unwrap();
         // 造第二份（换个包目录）
         let b2dir = root.join("bundle2");
         std::fs::create_dir_all(b2dir.join("var/apps/demo")).unwrap();
@@ -613,8 +697,10 @@ mod tests {
                 bytes: 6,
             }],
         };
-        std::fs::write(b2dir.join(MANIFEST), serde_json::to_string(&m).unwrap()).unwrap();
-        let st = stage(&b2dir, &upd, "1.0.1", 2).unwrap();
+        let manifest = serde_json::to_string(&m).unwrap();
+        std::fs::write(b2dir.join(MANIFEST), &manifest).unwrap();
+        sign_manifest(&b2dir, &manifest);
+        let st = stage_with_key(&b2dir, &upd, "1.0.1", 2, test_pubkey()).unwrap();
         assert_eq!(st.version, "1.0.2");
         assert_eq!(
             std::fs::read(upd.join(STAGED).join("var/apps/demo/demo")).unwrap(),
@@ -691,7 +777,7 @@ mod tests {
         let root = tmp("contract");
         let b = make_bundle(&root, "1.0.1", b"payload");
         let upd = root.join("upd");
-        stage(&b, &upd, "1.0.0", 1_700_000_000).unwrap();
+        stage_with_key(&b, &upd, "1.0.0", 1_700_000_000, test_pubkey()).unwrap();
         let list = std::fs::read_to_string(upd.join(APPLY_LIST)).unwrap();
         let mut targets = Vec::new();
         for line in list.lines() {
@@ -730,6 +816,12 @@ mod tests {
         let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("加载测试密钥失败");
         let public = pair.public_key().as_ref().to_vec();
         (pair, public)
+    }
+
+    /// 全模块共用的一对测试密钥（`make_bundle` 用它签名，`stage_with_key` 用它验签）。
+    fn shared_test_key() -> &'static (Ed25519KeyPair, Vec<u8>) {
+        static KEY: std::sync::OnceLock<(Ed25519KeyPair, Vec<u8>)> = std::sync::OnceLock::new();
+        KEY.get_or_init(test_keypair)
     }
 
     #[test]

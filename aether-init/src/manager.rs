@@ -281,9 +281,29 @@ impl Manager {
     /// 单个服务停不下来**不阻断**关机（继续停其余的，并把失败记进事件里）：
     /// 一个卡住的服务不该让用户永远关不了机。
     pub fn stop_all(&mut self) -> Vec<String> {
-        let order = self.boot_sequence().unwrap_or_default();
+        // **顺序覆盖全部服务**，不只是 autostart 的那批。
+        //
+        // 2026-11-21：此前只遍历 `boot_sequence()`（autostart 服务）。通过
+        // `ServiceControl` 手动 start 的 `autostart=false` 服务在关机时不会被停 ——
+        // 它们持有的 fd、挂载点、设备会带着未清理的状态直接掉电。
+        let mut order = self.boot_sequence().unwrap_or_default();
+        let all: Vec<String> = self.services.keys().cloned().collect();
+        for name in all {
+            if !order.contains(&name) {
+                order.push(name);
+            }
+        }
         let mut events = Vec::new();
         for name in order.iter().rev() {
+            // 已经停了的不用再停（stop() 会报"没在运行"，纯日志噪音）
+            if self
+                .services
+                .get(name)
+                .map(|s| matches!(s.state, SvcState::Stopped))
+                .unwrap_or(true)
+            {
+                continue;
+            }
             match self.stop(name) {
                 Ok(st) => events.push(format!("已停止服务 {name}（{:?}）", st.state)),
                 Err(e) => events.push(format!("停止服务 {name} 失败（继续关机）：{e}")),

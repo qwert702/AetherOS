@@ -1368,8 +1368,12 @@ mod tests {
 
     #[test]
     fn probe_runs_without_approval() {
+        // 探针是**编译期常量命令**：Windows 没有 `uname`（Linux 才有），
+        // 所以在 Windows 上用系统自带的 `whoami`。这条测试钉的是
+        // "L0 探针不需要审批即可执行"，不是"宿主机装了哪个 Unix 工具"。
+        let probe = if cfg!(windows) { "whoami" } else { "uname" };
         let mut ctx = ToolCtx::default();
-        let r = execute(&gate(), &mut ctx, "sys_probe", &serde_json::json!({"probe":"uname"}), false);
+        let r = execute(&gate(), &mut ctx, "sys_probe", &serde_json::json!({"probe": probe}), false);
         assert!(r.is_ok(), "probe failed: {r:?}");
     }
 

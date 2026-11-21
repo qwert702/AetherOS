@@ -42,6 +42,20 @@ pub const DEFAULT_DIR: &str = "/var/apps";
 /// 清单文件名（固定在包根）。
 pub const MANIFEST_NAME: &str = "app.json";
 
+/// 清单签名文件名（Ed25519 detached signature，原始 64 字节）。
+///
+/// 签名覆盖 [`MANIFEST_NAME`] 在盘上的**原始字节**（不做 JSON 规范化、不重排键序），
+/// 与 `scripts/mkapp.py --sign` 的签字范围逐字节一致。
+pub const MANIFEST_SIG: &str = "app.json.sig";
+
+/// 应用包签名公钥（32 字节原始 Ed25519 公钥）。
+///
+/// **测试密钥，非生产**：仓库内这把公钥对应的私钥不入库，仅用于开发与自测。
+/// 生产发布私钥由 owner 离线保管；公钥轮换要走发布流程（见
+/// `docs/架构决策（ADR）-应用包签名-2026-11-21.md`）。即使投递通道被攻破，
+/// 没有私钥也签不出能被这把公钥接受的清单。
+pub const APP_PUBKEY: &[u8] = include_bytes!("../keys/app_pubkey.bin");
+
 /// 计算一段字节的 SHA-256，返回小写十六进制（与 `sha256sum` 输出同格式）。
 ///
 /// 为什么需要它（2026-10-02 审计 L-9）：`scripts/serve-apps.py` 一直在回
@@ -115,6 +129,19 @@ pub fn default_root() -> PathBuf {
     }
 }
 
+/// 清单里登记的一个包内负载文件。
+///
+/// 清单本身被签名覆盖；负载文件的完整性靠这份清单里的 sha256 + 大小兜住。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AppFile {
+    /// 包内相对路径（POSIX 分隔符，不许绝对路径 / `..`）。
+    pub path: String,
+    /// sha256 小写十六进制（64 位）。
+    pub sha256: String,
+    /// 字节数。
+    pub bytes: u64,
+}
+
 /// 应用清单。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Manifest {
@@ -130,6 +157,12 @@ pub struct Manifest {
     pub args: Vec<String>,
     #[serde(default)]
     pub desc: String,
+    /// 包内负载文件清单（签名包必须逐项登记哈希与大小）。
+    ///
+    /// 旧的未签名包没有此字段；生产策略下未签名包在 [`verify_package`] 阶段就被拒，
+    /// 不会走到解析这份清单的地方。
+    #[serde(default)]
+    pub files: Vec<AppFile>,
 }
 
 /// 已安装的一个应用。
@@ -157,8 +190,13 @@ pub fn load_manifest(pkg: &Path) -> Result<Manifest> {
     let path = pkg.join(MANIFEST_NAME);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("读不到清单 {}", path.display()))?;
+    parse_manifest_text(&text)
+}
+
+/// 解析并校验清单文本（验签通过之后才允许走到这里）。
+fn parse_manifest_text(text: &str) -> Result<Manifest> {
     let m: Manifest =
-        serde_json::from_str(&text).with_context(|| format!("清单不是合法 JSON: {}", path.display()))?;
+        serde_json::from_str(text).with_context(|| "清单不是合法 JSON")?;
     if !valid_id(&m.id) {
         bail!(
             "非法的应用 id「{}」：只允许字母数字与 - _ . 且以字母数字开头（它会被当成目录名）",
@@ -172,6 +210,157 @@ pub fn load_manifest(pkg: &Path) -> Result<Manifest> {
         bail!("清单缺少 entry（指向可执行文件的包内相对路径）");
     }
     Ok(m)
+}
+
+// ---------------------------------------------------------------------------
+// 应用包签名（Ed25519；先验签、后解析清单、再核对负载文件哈希）
+// ---------------------------------------------------------------------------
+
+/// 校验应用清单的 Ed25519 签名。
+///
+/// 必须在解析清单**之前**调用：清单里的 id/entry/files 都是外部可控的 JSON，
+/// 先确认"这份清单确实是我们签的"，再去解析其中的字段。生产路径用内置
+/// [`APP_PUBKEY`]；测试通过参数注入自己的公钥。
+pub fn verify_app_signature_with_key(
+    manifest: &[u8],
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<(), String> {
+    if public_key.len() != 32 {
+        return Err(format!(
+            "应用签名公钥长度不对（期望 32 字节 Ed25519 公钥，实得 {} 字节）",
+            public_key.len()
+        ));
+    }
+    if signature.len() != 64 {
+        return Err(format!(
+            "清单签名长度不对（期望 64 字节 Ed25519 签名，实得 {} 字节）",
+            signature.len()
+        ));
+    }
+    use ring::signature::{UnparsedPublicKey, ED25519};
+    UnparsedPublicKey::new(&ED25519, public_key)
+        .verify(manifest, signature)
+        .map_err(|_| {
+            "应用清单签名校验失败：签名与公钥不匹配（清单或包可能被篡改，整包拒绝）".to_string()
+        })
+}
+
+/// 安装前的信任边界：验签 → 解析清单 → 逐项核对负载文件哈希与大小。
+///
+/// # 签名字节范围
+///
+/// 签名覆盖 `app.json` 在包目录里的**原始字节**（读到什么就签什么，不做 Unicode
+/// 规范化、不重排 JSON 键序、不去掉末尾换行）。打包器 `scripts/mkapp.py --sign`
+/// 在写完 `app.json` 后对同一份字节签字，两边必须一致。
+pub fn verify_package(pkg: &Path, public_key: &[u8]) -> Result<Manifest> {
+    let manifest_path = pkg.join(MANIFEST_NAME);
+    let manifest_bytes = std::fs::read(&manifest_path)
+        .with_context(|| format!("读不到清单 {}", manifest_path.display()))?;
+    let sig_path = pkg.join(MANIFEST_SIG);
+    let signature = std::fs::read(&sig_path).map_err(|e| {
+        anyhow::anyhow!(
+            "缺少应用包签名 {}：{e}（未签名包在生产策略下一律拒绝安装）",
+            sig_path.display()
+        )
+    })?;
+    verify_app_signature_with_key(&manifest_bytes, &signature, public_key)
+        .map_err(anyhow::Error::msg)?;
+    let text = String::from_utf8(manifest_bytes)
+        .map_err(|e| anyhow::anyhow!("{} 不是合法 UTF-8：{e}", MANIFEST_NAME))?;
+    let manifest = parse_manifest_text(&text)?;
+    verify_package_files(pkg, &manifest)?;
+    Ok(manifest)
+}
+
+fn is_hex64(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+}
+
+/// 遍历包目录里的普通文件，对每个相对路径（POSIX 形式）回调。
+///
+/// 符号链接在这里直接拒掉：它能指向系统任意位置，不能进包。
+fn for_each_regular_file(root: &Path, dir: &Path, visit: &mut impl FnMut(&str, &Path)) -> Result<()> {
+    for e in std::fs::read_dir(dir).with_context(|| format!("读目录失败 {}", dir.display()))? {
+        let e = e?;
+        let ty = e.file_type()?;
+        if ty.is_symlink() {
+            bail!("包里含符号链接（{}），拒绝安装", e.path().display());
+        }
+        if ty.is_dir() {
+            for_each_regular_file(root, &e.path(), visit)?;
+        } else if ty.is_file() {
+            let entry_path = e.path();
+            let rel = entry_path
+                .strip_prefix(root)
+                .with_context(|| format!("路径越界 {}", entry_path.display()))?;
+            visit(&posix(rel), &entry_path);
+        }
+    }
+    Ok(())
+}
+
+fn verify_package_files(pkg: &Path, manifest: &Manifest) -> Result<()> {
+    if manifest.files.is_empty() {
+        bail!("签名包缺少 files 文件清单：包内每个负载文件都必须逐项登记 sha256 与大小");
+    }
+    let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for f in &manifest.files {
+        let p = Path::new(&f.path);
+        if p.is_absolute()
+            || f.path.contains('\\')
+            || p.components().any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            bail!("清单登记的文件路径不合法（包内相对路径，不许绝对路径或 ..）：{}", f.path);
+        }
+        if !is_hex64(&f.sha256) {
+            bail!("{}：sha256 不是 64 位小写十六进制", f.path);
+        }
+        if !declared.insert(f.path.clone()) {
+            bail!("{}：在清单里出现了两次", f.path);
+        }
+        let full = pkg.join(&f.path);
+        let md = std::fs::symlink_metadata(&full)
+            .with_context(|| format!("包内找不到登记的文件：{}", f.path))?;
+        if md.file_type().is_symlink() {
+            bail!("包里含符号链接（{}），拒绝安装", f.path);
+        }
+        if !md.is_file() {
+            bail!("{}：不是普通文件", f.path);
+        }
+        if md.len() != f.bytes {
+            bail!(
+                "{}：大小不符（清单 {} / 实际 {}）—— 整包拒绝",
+                f.path,
+                f.bytes,
+                md.len()
+            );
+        }
+        let got = sha256_file(&full)?;
+        if got != f.sha256 {
+            bail!(
+                "{}：哈希不符（清单 {} / 实际 {}）—— 整包拒绝",
+                f.path,
+                f.sha256,
+                got
+            );
+        }
+    }
+
+    // 包内实际存在、却没在清单里登记的文件 = 清单之外夹带，整包拒绝。
+    let mut extra: Vec<String> = Vec::new();
+    for_each_regular_file(pkg, pkg, &mut |rel, _| {
+        if rel == MANIFEST_NAME || rel == MANIFEST_SIG || rel == "bundle.json" {
+            return;
+        }
+        if !declared.contains(rel) {
+            extra.push(rel.to_string());
+        }
+    })?;
+    if !extra.is_empty() {
+        bail!("包内有清单未登记的文件（{}）—— 整包拒绝", extra.join("、"));
+    }
+    Ok(())
 }
 
 /// 校验 entry：必须是**包内**的相对路径，不能借 `..` 或绝对路径跑出去。
@@ -229,19 +418,44 @@ fn dir_size(p: &Path) -> u64 {
 }
 
 /// 安装一个应用（源是**目录**）。返回安装结果，其中 `preflight.detail` 是要给用户看的一句话。
+/// 安装一个应用（源是**目录**）。返回安装结果，其中 `preflight.detail` 是要给用户看的一句话。
+///
+/// 生产入口：用内置 [`APP_PUBKEY`] 验签。测试走 [`install_with_key`] 注入自己的公钥。
 pub fn install(root: &Path, src: &Path) -> Result<(Installed, Preflight)> {
+    install_with_key(root, src, APP_PUBKEY)
+}
+
+/// 可注入公钥的安装实现（测试用；生产入口见 [`install`]）。
+///
+/// 顺序刻意固定：**验签 → 解析清单 → 预检 → 复制**。签名不过就不许读清单字段，
+/// 更不许往应用目录写任何东西。
+pub fn install_with_key(
+    root: &Path,
+    src: &Path,
+    public_key: &[u8],
+) -> Result<(Installed, Preflight)> {
     let src = std::fs::canonicalize(src)
         .with_context(|| format!("源目录不存在: {}", src.display()))?;
     if !src.is_dir() {
         bail!("安装源必须是目录（现在只支持目录形式的包）: {}", src.display());
     }
-    let manifest = load_manifest(&src)?;
+    let manifest = verify_package(&src, public_key)?;
     let entry = resolve_entry(&src, &manifest.entry)?;
 
     // **预检在复制之前做**：别先装进去再说跑不起来。
     let pre = preflight(&src, &entry);
     if let PreflightKind::Unusable = pre.kind {
         bail!("这个包不能用：{}\n（没有改动系统）", pre.detail);
+    }
+    // 缺系统 soname 是硬拒绝：这种包装上去必然 `error while loading shared libraries`，
+    // 旧流程只算不用、照样装上，等于把"装完跑不起来"留给用户撞。
+    if !pre.missing_libs.is_empty() {
+        bail!(
+            "这个包缺少 {} 个共享库（{}），装上也跑不起来，已停止安装、没有改动系统。\
+             要么让作者改成静态链接（`gcc -static`），要么把缺的 .so 一起放进包的 lib/ 目录。",
+            pre.missing_libs.len(),
+            pre.missing_libs.join("、")
+        );
     }
 
     let dest = root.join(&manifest.id);
@@ -466,6 +680,11 @@ pub struct Preflight {
     pub kind: PreflightKind,
     /// 给用户看的一句话（装成功也要展示 —— 他得知道这个东西能不能跑）
     pub detail: String,
+    /// 依赖闭包里既不在包内 `lib/`、也不在系统库目录里的 soname。
+    ///
+    /// 非空时安装阶段硬拒绝（见 [`install_with_key`]）：这种包装上去必然
+    /// `error while loading shared libraries`，不能再"先装上再说"。
+    pub missing_libs: Vec<String>,
 }
 
 /// 系统里找共享库的目录。镜像里没有 `ld.so.cache`，所以就是这几条固定路径。
@@ -599,6 +818,7 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
             return Preflight {
                 kind: PreflightKind::Unusable,
                 detail: format!("读不了可执行文件 {}：{e}", entry.display()),
+                missing_libs: Vec::new(),
             }
         }
     };
@@ -612,17 +832,20 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
             return Preflight {
                 kind: PreflightKind::Unusable,
                 detail: "脚本的 #! 行是空的".into(),
+                missing_libs: Vec::new(),
             };
         }
         return if Path::new(exe).exists() {
             Preflight {
                 kind: PreflightKind::Runnable,
                 detail: format!("Shell 脚本，解释器 {exe} 在系统里"),
+                missing_libs: Vec::new(),
             }
         } else {
             Preflight {
                 kind: PreflightKind::Risky,
                 detail: format!("Shell 脚本，但解释器 {exe} 不在系统里，跑不起来"),
+                missing_libs: Vec::new(),
             }
         };
     }
@@ -635,6 +858,7 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
                  程序，或者只是个数据文件",
                 entry.display()
             ),
+            missing_libs: Vec::new(),
         };
     };
 
@@ -642,6 +866,7 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
         return Preflight {
             kind: PreflightKind::Runnable,
             detail: "静态链接的可执行文件，不依赖任何共享库".into(),
+            missing_libs: Vec::new(),
         };
     }
 
@@ -658,6 +883,7 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
                  把这些文件从包的 lib/ 里删掉即可；用 scripts/mkapp.py 打包不会出现这种情况。",
                 bad_glibc.join("、")
             ),
+            missing_libs: Vec::new(),
         };
     }
 
@@ -673,6 +899,7 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
                 missing.len(),
                 missing.join("、")
             ),
+            missing_libs: missing,
         };
     }
 
@@ -689,6 +916,7 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
                      share/terminfo —— 用打包器（scripts/mkapp.py）加 --terminfo 重新打一个，\
                      它会把条目放进包的 share/terminfo。"
                 .into(),
+            missing_libs: Vec::new(),
         };
     }
 
@@ -699,7 +927,11 @@ pub fn preflight(pkg: &Path, entry: &Path) -> Preflight {
     } else {
         "需要的共享库都在（系统里或包内 lib/）"
     };
-    Preflight { kind: PreflightKind::Runnable, detail: format!("动态链接，{how}") }
+    Preflight {
+        kind: PreflightKind::Runnable,
+        detail: format!("动态链接，{how}"),
+        missing_libs: Vec::new(),
+    }
 }
 
 fn read_head(p: &Path) -> Result<Vec<u8>> {
@@ -892,6 +1124,72 @@ mod tests {
         pkg
     }
 
+    // ── Ed25519 测试签名（与 update.rs 测试同一套路；私钥只存在于内存，不落盘）───
+    use ring::rand::SystemRandom;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    fn test_keypair() -> (Ed25519KeyPair, Vec<u8>) {
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("生成测试密钥失败");
+        let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("加载测试密钥失败");
+        let public = pair.public_key().as_ref().to_vec();
+        (pair, public)
+    }
+
+    /// 全模块共用的一对测试密钥（签名与验签必须用同一把公钥）。
+    fn shared_test_key() -> &'static (Ed25519KeyPair, Vec<u8>) {
+        static KEY: std::sync::OnceLock<(Ed25519KeyPair, Vec<u8>)> = std::sync::OnceLock::new();
+        KEY.get_or_init(test_keypair)
+    }
+
+    fn test_pubkey() -> &'static [u8] {
+        shared_test_key().1.as_slice()
+    }
+
+    /// 收集包内普通负载文件（排除清单/签名/溯源文件），回调相对路径与完整路径。
+    fn collect_test_files(root: &Path, dir: &Path, visit: &mut impl FnMut(&str, &Path)) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let ty = e.file_type().unwrap();
+            if ty.is_dir() {
+                collect_test_files(root, &e.path(), visit);
+            } else if ty.is_file() {
+                let entry_path = e.path();
+                let rel = entry_path.strip_prefix(root).unwrap();
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if rel == MANIFEST_NAME || rel == MANIFEST_SIG || rel == "bundle.json" {
+                    continue;
+                }
+                visit(&rel, &entry_path);
+            }
+        }
+    }
+
+    /// 把包内负载文件登记进 `app.json` 的 `files` 字段，再对 `app.json` 的原始字节
+    /// 签名，写出 `app.json.sig`（与 `scripts/mkapp.py --sign` 同一格式）。
+    fn sign_package(pkg: &Path) {
+        let (pair, _) = shared_test_key();
+        let mut files: Vec<AppFile> = Vec::new();
+        collect_test_files(pkg, pkg, &mut |rel: &str, full: &Path| {
+            let bytes = full.metadata().unwrap().len();
+            let sha256 = sha256_file(full).unwrap();
+            files.push(AppFile { path: rel.to_string(), sha256, bytes });
+        });
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let text = std::fs::read_to_string(pkg.join(MANIFEST_NAME)).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        value["files"] = serde_json::to_value(&files).unwrap();
+        let bytes = serde_json::to_vec_pretty(&value).unwrap();
+        std::fs::write(pkg.join(MANIFEST_NAME), &bytes).unwrap();
+        let sig = pair.sign(&bytes);
+        std::fs::write(pkg.join(MANIFEST_SIG), sig.as_ref()).unwrap();
+    }
+
+    fn write_signed_pkg(dir: &Path, id: &str, entry_body: &[u8]) -> PathBuf {
+        let pkg = write_pkg(dir, id, entry_body);
+        sign_package(&pkg);
+        pkg
+    }
+
     #[test]
     fn id_must_be_a_safe_path_segment() {
         for bad in ["", "..", "../etc", "a/b", "/abs", ".hidden", "有中文", "a b", "x\"y"] {
@@ -916,15 +1214,15 @@ mod tests {
     fn install_list_remove_roundtrip() {
         let d = tmp("roundtrip");
         let root = d.join("apps");
-        let pkg = write_pkg(&d, "hello", b"#!/bin/sh\necho hi\n");
+        let pkg = write_signed_pkg(&d, "hello", b"#!/bin/sh\necho hi\n");
 
-        let (installed, pre) = install(&root, &pkg).expect("安装应成功");
+        let (installed, pre) = install_with_key(&root, &pkg, test_pubkey()).expect("安装应成功");
         assert_eq!(installed.manifest.id, "hello");
         assert!(installed.dir.join("bin/hello").is_file());
         assert!(pre.kind != PreflightKind::Unusable);
 
         // 重复安装必须被挡住（否则会静默覆盖掉用户装的东西）
-        let err = install(&root, &pkg).expect_err("重复安装应被拒绝");
+        let err = install_with_key(&root, &pkg, test_pubkey()).expect_err("重复安装应被拒绝");
         assert!(err.to_string().contains("已经装过"), "实得: {err}");
 
         let items = list(&root);
@@ -947,7 +1245,8 @@ mod tests {
             let root = d.join("apps");
             let pkg = write_pkg(&d, "evil", b"#!/bin/sh\n");
             std::os::unix::fs::symlink("/etc/passwd", pkg.join("bin/leak")).unwrap();
-            let err = install(&root, &pkg).expect_err("含符号链接的包应被拒绝");
+            sign_package(&pkg);
+            let err = install_with_key(&root, &pkg, test_pubkey()).expect_err("含符号链接的包应被拒绝");
             assert!(err.to_string().contains("符号链接"), "实得: {err}");
             // 失败的安装不该留下半个目录
             assert!(!root.join("evil").exists(), "半途失败必须清干净");
@@ -964,6 +1263,7 @@ mod tests {
                 entry: "bin/hello".into(),
                 args: vec!["--greet".into()],
                 desc: String::new(),
+                files: Vec::new(),
             },
             dir: PathBuf::from("/var/apps/hello"),
             bytes: 0,
@@ -982,8 +1282,8 @@ mod tests {
         let d = tmp("link");
         let root = d.join("apps");
         let bindir = d.join("bin");
-        let pkg = write_pkg(&d, "hello", b"#!/bin/sh\necho hi\n");
-        install(&root, &pkg).expect("安装应成功");
+        let pkg = write_signed_pkg(&d, "hello", b"#!/bin/sh\necho hi\n");
+        install_with_key(&root, &pkg, test_pubkey()).expect("安装应成功");
 
         let names = link_all(&root, &bindir).expect("挂载应成功");
         assert_eq!(names, vec!["hello"]);
@@ -1188,6 +1488,18 @@ mod tests {
         pkg
     }
 
+    /// 同 [`write_elf_pkg`]，但随后用测试密钥签名（走安装路径）。
+    fn write_elf_signed_pkg(
+        dir: &Path,
+        id: &str,
+        entry_needs: &[&str],
+        libs: &[(&str, &[&str])],
+    ) -> PathBuf {
+        let pkg = write_elf_pkg(dir, id, entry_needs, libs);
+        sign_package(&pkg);
+        pkg
+    }
+
     #[test]
     fn dependency_closure_is_recursive() {
         let d = tmp("dep-closure");
@@ -1316,6 +1628,7 @@ mod tests {
                 entry: "bin/htop".into(),
                 args: vec![],
                 desc: String::new(),
+                files: Vec::new(),
             },
             dir: PathBuf::from("/var/apps/htop"),
             bytes: 0,
@@ -1375,6 +1688,138 @@ mod tests {
         assert!(user_data.exists(), "用户的数据文件不该被删（判据太宽的老问题）");
         assert!(user_bin.exists(), "非脚本文件不该被删");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── 应用包签名：负向 / 正向用例（2026-11-21 P1）──────────────────────────
+
+    /// ① 未签名包（缺 `app.json.sig`）在生产策略下必须被拒，且不留下安装目录。
+    #[test]
+    fn unsigned_package_is_rejected_before_copying() {
+        let d = tmp("sig-unsigned");
+        let root = d.join("apps");
+        let pkg = write_pkg(&d, "plain", b"#!/bin/sh\necho hi\n"); // 故意不签名
+        let err = install_with_key(&root, &pkg, test_pubkey()).expect_err("未签名包应被拒绝");
+        assert!(err.to_string().contains("缺少应用包签名"), "要说清是缺签名：{err}");
+        assert!(!root.join("plain").exists(), "拒绝后不许留下半个目录");
+    }
+
+    /// ② 签名被改一个字节 → 验签失败。
+    #[test]
+    fn forged_signature_bytes_are_rejected() {
+        let d = tmp("sig-forged");
+        let root = d.join("apps");
+        let pkg = write_signed_pkg(&d, "forged", b"#!/bin/sh\necho hi\n");
+        let mut sig = std::fs::read(pkg.join(MANIFEST_SIG)).unwrap();
+        sig[0] ^= 0x01;
+        std::fs::write(pkg.join(MANIFEST_SIG), &sig).unwrap();
+        let err = install_with_key(&root, &pkg, test_pubkey()).expect_err("坏签名应被拒绝");
+        assert!(err.to_string().contains("签名校验失败"), "要说清是验签失败：{err}");
+        assert!(!root.join("forged").exists());
+    }
+
+    /// ③ 签完之后改清单字节 → 验签失败（清单被篡改）。
+    #[test]
+    fn tampered_manifest_after_signing_is_rejected() {
+        let d = tmp("sig-tamper");
+        let pkg = write_signed_pkg(&d, "tamper", b"#!/bin/sh\necho hi\n");
+        let mut bytes = std::fs::read(pkg.join(MANIFEST_NAME)).unwrap();
+        bytes[0] ^= 0x01;
+        std::fs::write(pkg.join(MANIFEST_NAME), &bytes).unwrap();
+        let err = verify_package(&pkg, test_pubkey()).expect_err("篡改后的清单必须被拒");
+        assert!(err.to_string().contains("签名校验失败"), "要说清是验签失败：{err}");
+    }
+
+    /// ④ 用另一把密钥签（没有对应私钥的投递者）→ 公钥不匹配，拒绝。
+    #[test]
+    fn wrong_public_key_is_rejected() {
+        let d = tmp("sig-wrongkey");
+        let root = d.join("apps");
+        let pkg = write_signed_pkg(&d, "wrongkey", b"#!/bin/sh\necho hi\n");
+        let (_other, other_public) = test_keypair();
+        let err = install_with_key(&root, &pkg, &other_public).expect_err("错误公钥必须被拒");
+        assert!(err.to_string().contains("签名校验失败"), "要说清是验签失败：{err}");
+        assert!(!root.join("wrongkey").exists());
+    }
+
+    /// ⑤ 清单与签名都对，但负载文件被换掉 → 哈希不符，整包拒绝。
+    #[test]
+    fn payload_hash_mismatch_is_rejected() {
+        let d = tmp("sig-hash");
+        let root = d.join("apps");
+        let pkg = write_signed_pkg(&d, "hash", b"#!/bin/sh\necho original\n");
+        std::fs::write(pkg.join("bin/hello"), b"#!/bin/sh\necho tampered\n").unwrap();
+        let err = install_with_key(&root, &pkg, test_pubkey()).expect_err("负载被换必须被拒");
+        assert!(err.to_string().contains("哈希不符"), "要说清是哈希不符：{err}");
+        assert!(!root.join("hash").exists());
+    }
+
+    /// ⑥ 清单之外夹带未登记的文件 → 整包拒绝。
+    #[test]
+    fn undeclared_extra_file_is_rejected() {
+        let d = tmp("sig-extra");
+        let pkg = write_signed_pkg(&d, "extra", b"#!/bin/sh\necho hi\n");
+        std::fs::write(pkg.join("bin/evil.so"), b"hidden").unwrap();
+        let err = verify_package(&pkg, test_pubkey()).expect_err("夹带文件必须被拒");
+        assert!(err.to_string().contains("未登记"), "要说清是未登记文件：{err}");
+    }
+
+    /// ⑦ 依赖闭包发现缺系统 soname → 安装阶段硬拒绝，并列出缺失项。
+    #[test]
+    fn missing_shared_library_rejects_install() {
+        let d = tmp("sig-missing-lib");
+        let root = d.join("apps");
+        let pkg = write_elf_signed_pkg(
+            &d,
+            "dyn",
+            &["libdefinitely-not-here.so"],
+            &[],
+        );
+        let err = install_with_key(&root, &pkg, test_pubkey()).expect_err("缺库包应被拒绝");
+        assert!(
+            err.to_string().contains("libdefinitely-not-here.so"),
+            "要列出缺失的 soname：{err}"
+        );
+        assert!(!root.join("dyn").exists(), "拒绝后不许留下半个目录");
+    }
+
+    /// ⑧ 正向：正常签名、文件哈希齐全、依赖满足的包安装成功。
+    #[test]
+    fn valid_signed_package_installs() {
+        let d = tmp("sig-ok");
+        let root = d.join("apps");
+        let pkg = write_signed_pkg(&d, "hello", b"#!/bin/sh\necho hi\n");
+        let (installed, pre) =
+            install_with_key(&root, &pkg, test_pubkey()).expect("签名包应安装成功");
+        assert_eq!(installed.manifest.id, "hello");
+        assert!(installed.dir.join("bin/hello").is_file());
+        assert!(pre.kind != PreflightKind::Unusable);
+        assert!(pre.missing_libs.is_empty());
+    }
+
+    /// 验签函数基准：精确字节通过；改一个字节即失败；截断签名被拒。
+    #[test]
+    fn signature_round_trip_and_tamper_detection() {
+        let (pair, public) = test_keypair();
+        let msg = br#"{"id":"hello","entry":"bin/hello"}"#;
+        let sig = pair.sign(msg);
+        assert!(verify_app_signature_with_key(msg, sig.as_ref(), &public).is_ok());
+
+        let mut tampered = msg.to_vec();
+        tampered[0] ^= 0x01;
+        let err = verify_app_signature_with_key(&tampered, sig.as_ref(), &public)
+            .expect_err("篡改消息必须被拒");
+        assert!(err.contains("签名校验失败"), "实得: {err}");
+
+        let err = verify_app_signature_with_key(msg, &sig.as_ref()[..63], &public)
+            .expect_err("63 字节签名必须被拒");
+        assert!(err.contains("长度不对"), "实得: {err}");
+    }
+
+    /// 生产内嵌公钥必须是 32 字节 Ed25519 公钥；对伪造签名必须验不过。
+    #[test]
+    fn production_public_key_is_a_real_ed25519_key() {
+        assert_eq!(APP_PUBKEY.len(), 32, "生产公钥必须是 32 字节 Ed25519 公钥");
+        assert!(verify_app_signature_with_key(b"not signed", &[0u8; 64], APP_PUBKEY).is_err());
     }
 
 }

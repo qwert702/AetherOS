@@ -14,16 +14,23 @@
 //! ## fd 的处理
 //!
 //! `wl_shm.create_pool` 带一个 fd，经 `SCM_RIGHTS` 传（**不在消息体里**）。
-//! 本层用 `recvmsg` 收 ancillary data 是下一步（W5 剩余部分）；在此之前
-//! `Session` 里的 pool 停在 `Pending`，协议流程照常走，只是读不到像素。
+//! 本层用 `recvmsg` 收 ancillary data，解析出的 fd 进 `Session` 的 fd 队列，
+//! 由 `handle_with_fds` 按 `h` 参数顺序回填；`shm` 模块在 Linux 下 mmap 成
+//! pool 数据。收包解析见 `fd` 模块，映射见 `shm::map_pool_fd`。
 //!
-//! 先不做 fd 的原因：它需要 `libc::recvmsg` + `CMSG` 手工解析，且**必须在真机上验证**
-//! （开发机没有 Unix socket 的 fd 传递场景）。把协议与线程模型先做扎实，
-//! 再叠这一层，出问题时能分清是哪一层的错。
+//! 平台边界：本文件整体在 `cfg(target_os = "linux")` 下；Windows 开发机
+//! 不编译此实现，fd 映射走 `shm` 的 stub（明确报错，不 panic）。
+//!
+//! ## 槽位的生命周期（2026-11-21 审计）
+//!
+//! 早期版本断开连接只把槽位**覆盖**成空会话、从不回收，`Vec` 长度只增不减：
+//! 桌面正常开关 16 次客户端之后，`len == MAX_WAYLAND_CONNS`，之后所有新连接
+//! 全被拒 —— 表现是"新窗口再也开不出来"，直到合成器重启。现在槽位是
+//! `Option<Session>`，断开置 `None`，新连接优先复用。
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -47,8 +54,8 @@ mod imp {
 
     /// 监听中的 Wayland 服务端。
     pub struct WaylandServer {
-        /// 所有连接的会话快照（渲染主循环每帧读）
-        sessions: Arc<Mutex<Vec<Session>>>,
+        /// 所有连接的会话快照（渲染主循环每帧读）；`None` = 已断开的空槽
+        sessions: Arc<Mutex<Vec<Option<Session>>>>,
         socket_path: PathBuf,
     }
 
@@ -68,16 +75,19 @@ mod imp {
             Ok(Self { sessions, socket_path: path.to_path_buf() })
         }
 
-        /// 当前所有连接的会话（已断开连接的槽位是空会话）。
+        /// 当前活着的连接的会话（已断开连接的槽位不在结果里）。
         pub fn sessions(&self) -> Vec<Session> {
-            self.sessions.lock().map(|g| g.clone()).unwrap_or_default()
+            self.sessions
+                .lock()
+                .map(|g| g.iter().flatten().cloned().collect())
+                .unwrap_or_default()
         }
 
         /// 有客户端在连吗（没有任何 surface 时可以让渲染省一次同步）。
         pub fn has_clients(&self) -> bool {
             self.sessions
                 .lock()
-                .map(|g| g.iter().any(|s| !s.mapped.is_empty()))
+                .map(|g| g.iter().flatten().any(|s| !s.mapped.is_empty()))
                 .unwrap_or(false)
         }
     }
@@ -89,21 +99,39 @@ mod imp {
         }
     }
 
-    fn accept_loop(listener: UnixListener, sessions: Arc<Mutex<Vec<Session>>>) {
+    /// 分配一个连接槽：优先复用已断开的空槽，其次追加；满则 `None`。
+    ///
+    /// 抽成独立函数是为了能在开发机上单测"断开后槽位能被复用"——
+    /// 这正是早期版本丢掉的那条不变量。
+    fn alloc_slot(slots: &mut Vec<Option<Session>>) -> Option<usize> {
+        if let Some(i) = slots.iter().position(|s| s.is_none()) {
+            slots[i] = Some(Session::new());
+            return Some(i);
+        }
+        if slots.len() < MAX_WAYLAND_CONNS {
+            slots.push(Some(Session::new()));
+            return Some(slots.len() - 1);
+        }
+        None
+    }
+
+    fn accept_loop(listener: UnixListener, sessions: Arc<Mutex<Vec<Option<Session>>>>) {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             // 占一个槽位；连接线程之后一直写这个索引
             let idx = match sessions.lock() {
-                Ok(mut g) => {
-                    if g.len() >= MAX_WAYLAND_CONNS {
+                Ok(mut g) => match alloc_slot(&mut g) {
+                    Some(i) => i,
+                    None => {
+                        drop(g);
                         eprintln!("[wayland] 连接数已达上限（{MAX_WAYLAND_CONNS}），拒绝新连接");
-                        // 拒绝也要节流：否则对端狂连会把控制台与日志刷爆
+                        // 拒绝也要节流：否则对端狂连会把控制台与日志刷爆。
+                        // 注意必须在**放锁之后**睡 —— 持锁睡会卡住渲染线程的
+                        // `sessions()` / `has_clients()`（每帧都调）。
                         std::thread::sleep(std::time::Duration::from_millis(50));
                         continue;
                     }
-                    g.push(Session::new());
-                    g.len() - 1
-                }
+                },
                 Err(_) => continue,
             };
             let shared = Arc::clone(&sessions);
@@ -119,18 +147,31 @@ mod imp {
         crate::wayland::wire::complete_prefix_len(buf)
     }
 
-    fn handle_conn(mut stream: UnixStream, sessions: Arc<Mutex<Vec<Session>>>, idx: usize) {
+    fn handle_conn(mut stream: UnixStream, sessions: Arc<Mutex<Vec<Option<Session>>>>, idx: usize) {
         let mut session = Session::new();
         let mut buf = [0u8; 16384];
         // 跨读残留（不足一条完整消息的尾巴），见 complete_prefix_len 的说明
         let mut pending: Vec<u8> = Vec::new();
+        // 本连接收到、尚未被消息消费的 fd（FIFO）。fd 随 `SCM_RIGHTS` 到，
+        // 由 `Session::handle_with_fds` 按 `h` 参数顺序取走；连接断开时
+        // 队列里残余的 fd 必须关闭 —— `SCM_RIGHTS` 传过来的是独立描述符
+        // 副本，不关会泄漏在合成器进程里。
+        let mut fd_queue: Vec<i32> = Vec::new();
         loop {
-            let n = match stream.read(&mut buf) {
-                Ok(0) => break, // 客户端正常关闭
-                Ok(n) => n,
-                Err(_) => break,
+            // 必须用 `recvmsg`（而不是 `read`）：pool fd 在 ancillary data 里，
+            // 普通读会把 fd 丢掉，pool 永远停在 Pending。
+            let received = match crate::wayland::fd::recvmsg_fds(&stream, &mut buf) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[wayland] recvmsg 失败: {e}");
+                    break;
+                }
             };
-            pending.extend_from_slice(&buf[..n]);
+            if received.bytes == 0 {
+                break; // 客户端正常关闭
+            }
+            fd_queue.extend(received.fds);
+            pending.extend_from_slice(&buf[..received.bytes]);
             if pending.len() > MAX_PENDING {
                 eprintln!("[wayland] 待解析缓冲超过 {MAX_PENDING} 字节，断开连接");
                 break;
@@ -139,7 +180,7 @@ mod imp {
             if complete == 0 {
                 continue; // 还没凑够一条完整消息，继续读
             }
-            let events = match session.handle(&pending[..complete]) {
+            let events = match session.handle_with_fds(&pending[..complete], &mut fd_queue) {
                 Ok(ev) => ev,
                 Err(e) => {
                     // 协议错误：按协议回 wl_display.error 再断开。
@@ -161,7 +202,7 @@ mod imp {
             // 把会话状态同步出去（渲染主循环每帧读它）
             if let Ok(mut g) = sessions.lock() {
                 if idx < g.len() {
-                    g[idx] = session.clone();
+                    g[idx] = Some(session.clone());
                 }
             }
             for ev in &events {
@@ -170,10 +211,15 @@ mod imp {
                 }
             }
         }
-        // 断开：清空该槽 —— `sync_wayland` 会把对应窗口移除
+        // 断开：关掉队列里残余的 fd，再释放槽位（置 `None` 而不是覆盖成空会话，
+        // 否则槽位永不回收、连接数上限会在开关 16 次客户端之后把新客户端全挡在外面）。
+        // `sync_wayland` 会把对应窗口移除。
+        for fd in fd_queue {
+            crate::wayland::shm::close_fd(fd);
+        }
         if let Ok(mut g) = sessions.lock() {
             if idx < g.len() {
-                g[idx] = Session::new();
+                g[idx] = None;
             }
         }
     }
@@ -190,6 +236,38 @@ mod imp {
             .and_then(|i: &'static Interface| i.event_signature_of(msg.opcode))
             .unwrap_or("");
         msg.encode(sig)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn slots_are_reused_after_disconnect() {
+            let mut slots: Vec<Option<Session>> = Vec::new();
+            for _ in 0..MAX_WAYLAND_CONNS {
+                assert!(alloc_slot(&mut slots).is_some());
+            }
+            assert_eq!(slots.len(), MAX_WAYLAND_CONNS);
+            // 满了：拒绝，而不是无限增长
+            assert_eq!(alloc_slot(&mut slots), None);
+
+            // 第 3 个客户端断开
+            slots[3] = None;
+            // 新客户端复用这个槽，而不是被上限拒绝
+            assert_eq!(alloc_slot(&mut slots), Some(3));
+            assert_eq!(slots.len(), MAX_WAYLAND_CONNS);
+        }
+
+        #[test]
+        fn allocate_prefers_lowest_free_slot() {
+            let mut slots: Vec<Option<Session>> = vec![None; 4];
+            assert_eq!(alloc_slot(&mut slots), Some(0));
+            slots[1] = None;
+            slots[2] = Some(Session::new());
+            // 0 已占，1 空 → 取 1
+            assert_eq!(alloc_slot(&mut slots), Some(1));
+        }
     }
 }
 

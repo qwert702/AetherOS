@@ -36,3 +36,13 @@
 - 本文进入 `docs/README.md` 的入口与架构索引；
 - ROADMAP M2 的 `/aether-shell` 条目改为"决策已记录"；
 - 代码不变，`cargo test --workspace --locked` 与现有门禁不受影响。
+
+## 实施状态（2026-11-21）
+
+本轮（E2）把 11 行占位骨架改成"边界明确、可运行、可测试的最小实现"，**决策不变：仍不拆分**。
+
+- 代码：`aether-shell` 新增库层 `src/lib.rs`，以 `ShellOwnership` 结构 + `ownership()` 常量集中承载归属事实（归属 crate、保留命名空间定位、M10 再评估、三类触发条件、ADR 路径与日期）；`src/main.rs` 提供 `--status` / `--describe` 子命令打印这些事实，未知参数以退出码 2 拒绝。
+- 测试：库内单元测试断言归属声明与本 ADR 一致（关键短语）、`--status` 输出包含全部必需字段、未知参数返回非 0 退出码。
+- 依赖：代码仅用 `std`，未新增 crate 依赖；Windows / Linux 均可编译运行。
+- 验证：`cargo test -p aether-shell --locked`、`cargo run -p aether-shell -- --status`、`cargo clippy -p aether-shell --all-targets --locked`（结果见 `报告/aether-shell 边界实现（SHELL-BOUNDARY）-2026-11-21.md`）。
+- 仍不做：本 crate 不实现顶栏 / Dock / 工作区 / AI 指令条等 Shell 运行时职责；这些继续由 `aether-compositor` 承担。拆分评估仍挂在 M10，触发条件见上文「后果」。

@@ -1,0 +1,71 @@
+{
+  "offline": true,
+  "summary": {
+    "PASS": 2,
+    "FAIL": 3,
+    "SKIP": 1,
+    "exit_code": 1
+  },
+  "steps": [
+    {
+      "key": "site",
+      "name": "站点自洽（gen-site --check）",
+      "cmd": "C:\\Users\\cbn\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\fa694f517e5995233c80a9a8db5212c2\\python\\python.exe scripts/gen-site.py --check",
+      "exit_code": 1,
+      "status": "FAIL",
+      "duration_s": 0.8,
+      "output_tail": "                             ^^^^^^^^^^^^ ⏎ FileNotFoundError: [WinError 2] 系统找不到指定的文件。",
+      "skipped_reason": ""
+    },
+    {
+      "key": "doc-numbers",
+      "name": "文档数字一致性",
+      "cmd": "C:\\Users\\cbn\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\fa694f517e5995233c80a9a8db5212c2\\python\\python.exe scripts/doc-numbers-check.py",
+      "exit_code": 1,
+      "status": "FAIL",
+      "duration_s": 0.6,
+      "output_tail": "        收尾报告 代码行数：文档 52659，实测 54338 ⏎         改文档，或者改代码 —— 但别让两者不一致。",
+      "skipped_reason": ""
+    },
+    {
+      "key": "links",
+      "name": "文档链接门禁",
+      "cmd": "C:\\Users\\cbn\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\fa694f517e5995233c80a9a8db5212c2\\python\\python.exe scripts/check-links.py",
+      "exit_code": 0,
+      "status": "PASS",
+      "duration_s": 2.4,
+      "output_tail": "检查 278 条本地链接，断链 0 条",
+      "skipped_reason": ""
+    },
+    {
+      "key": "repo-stats",
+      "name": "文档规模三层门禁",
+      "cmd": "C:\\Users\\cbn\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\fa694f517e5995233c80a9a8db5212c2\\python\\python.exe scripts/repo-stats.py --check",
+      "exit_code": 1,
+      "status": "FAIL",
+      "duration_s": 0.8,
+      "output_tail": "[FAIL] 代码索引（INDEX）-2026-09-11.md 测试表：`aether-compositor` 声明 469 项 `#[test]`，实测 490 ⏎ [FAIL] 代码索引（INDEX）-2026-09-11.md 测试表：`aetherd` 声明 246 项 `#[test]`，实测 258",
+      "skipped_reason": ""
+    },
+    {
+      "key": "site-health",
+      "name": "线上站点巡检",
+      "cmd": "C:\\Users\\cbn\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\fa694f517e5995233c80a9a8db5212c2\\python\\python.exe scripts/site-health-check.py",
+      "exit_code": null,
+      "status": "SKIP",
+      "duration_s": 0.0,
+      "output_tail": "",
+      "skipped_reason": "--offline 跳过线上站点巡检"
+    },
+    {
+      "key": "release-readiness",
+      "name": "发布就绪（ISO / 哈希 / isohybrid）",
+      "cmd": "C:\\Users\\cbn\\AppData\\Local\\Doubao\\User Data\\sandbox_runtime\\bases\\fa694f517e5995233c80a9a8db5212c2\\python\\python.exe scripts/release-readiness.py",
+      "exit_code": 0,
+      "status": "PASS",
+      "duration_s": 0.4,
+      "output_tail": "[PASS] ISO isohybrid  (offset 510 = 55aa（需要 55aa）) ⏎ 9/9 项通过；失败 0 项",
+      "skipped_reason": ""
+    }
+  ]
+}

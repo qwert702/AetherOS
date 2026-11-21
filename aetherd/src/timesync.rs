@@ -52,6 +52,26 @@ pub struct NtpTime {
     pub nanos: u32,
 }
 
+/// NTP 秒（1900 纪元，32 位）→ Unix 秒，**处理 2036 年的 era 回绕**。
+///
+/// 2026-11-21：此前直接 `secs as i64 - DELTA`。NTP 的 32 位秒计数在
+/// 2036-02-07 回绕到 0，之后算出来的 unix 秒会落到 1900 年附近；虽然
+/// 24 小时的合理性上限会拒绝应用（不会写坏时钟），但对时功能在那之后失效。
+///
+/// 判据用 `now_unix` 而不是"结果是否为负"：32 位时间戳本身分不清
+/// 「1900-01-01」和「2036-02-07」—— 只有"系统现在已经过了回绕点"时，
+/// 小值才必然属于第二纪元。
+pub fn ntp_secs_to_unix(secs: u32, now_unix: i64) -> i64 {
+    const ERA: i64 = 1i64 << 32;
+    /// 2036-02-07 06:28:16 UTC（第一纪元结束的 Unix 秒）
+    const ERA_END: i64 = ERA - NTP_UNIX_EPOCH_DELTA;
+    let mut unix = secs as i64 - NTP_UNIX_EPOCH_DELTA;
+    if unix < 0 && now_unix >= ERA_END {
+        unix += ERA;
+    }
+    unix
+}
+
 /// 解析 SNTP 响应。**任何可疑之处都返回 Err**（宁可不同步，也不写错时间）。
 pub fn parse_response(buf: &[u8]) -> Result<NtpTime, String> {
     if buf.len() < PACKET_LEN {
@@ -78,13 +98,13 @@ pub fn parse_response(buf: &[u8]) -> Result<NtpTime, String> {
         return Err(format!("stratum {stratum} 越界（1..=15）"));
     }
     // 发送时间戳在偏移 40..48
-    let secs = u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]) as i64;
+    let secs = u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]);
     let frac = u32::from_be_bytes([buf[44], buf[45], buf[46], buf[47]]);
     // 全零时间戳 = 服务器没填（同样不可采信）
     if secs == 0 && frac == 0 {
         return Err("发送时间戳为空".into());
     }
-    let unix_secs = secs - NTP_UNIX_EPOCH_DELTA;
+    let unix_secs = ntp_secs_to_unix(secs, now_unix().0);
     // 分数转纳秒：frac / 2^32 秒
     let nanos = ((frac as u64 * 1_000_000_000) >> 32) as u32;
     Ok(NtpTime { unix_secs, nanos })
@@ -266,6 +286,22 @@ mod tests {
         raw[1] = 2;
         raw[40..44].copy_from_slice(&1u32.to_be_bytes());
         assert_eq!(parse_response(&raw).unwrap().unix_secs, 1 - NTP_UNIX_EPOCH_DELTA);
+    }
+
+    #[test]
+    fn ntp_era_rollover_is_handled_after_2036() {
+        const ERA_END: i64 = (1i64 << 32) - NTP_UNIX_EPOCH_DELTA; // 2036-02-07T06:28:16Z
+        // 回绕后第 100 秒 → 必须解释为 2036 年之后，而不是 1900 年
+        assert_eq!(
+            ntp_secs_to_unix(100, ERA_END + 10),
+            100 + (1i64 << 32) - NTP_UNIX_EPOCH_DELTA
+        );
+        // 回绕前（2026 年）：同样的小值仍按第一纪元解释 —— 不做无依据的猜测
+        assert_eq!(ntp_secs_to_unix(100, 1_791_619_200), 100 - NTP_UNIX_EPOCH_DELTA);
+        // 正常时间戳在两种 now 下都一致
+        let ntp = (1_791_619_200 + NTP_UNIX_EPOCH_DELTA) as u32;
+        assert_eq!(ntp_secs_to_unix(ntp, 1_791_619_200), 1_791_619_200);
+        assert_eq!(ntp_secs_to_unix(ntp, ERA_END + 10), 1_791_619_200);
     }
 
     /// 这几类响应**必须拒绝**，否则会把 1900 年写进系统时钟。

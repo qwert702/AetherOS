@@ -1,9 +1,9 @@
-//! wl_shm 共享内存的像素读取。
+//! wl_shm 共享内存：fd → mmap 取数据，offset/stride/format → RGBA 读像素。
 //!
 //! 分两层：
-//! - **数据从哪来**（fd → mmap）：平台相关，真机阶段接（Linux 下 `mmap` fd）。
-//!   spike 阶段用 `InMemory` 模拟 —— 协议流程测试里直接塞字节。
-//! - **怎么读像素**（offset/stride/format → RGBA）：纯逻辑，**这里做**。
+//! - **数据从哪来**（fd → mmap）：[`map_pool_fd`]。Linux 下 `mmap` 收到的
+//!   pool fd；非 Linux 平台返回明确的不支持错误（stub，不 panic）。
+//! - **怎么读像素**（offset/stride/format → RGBA）：纯逻辑，[`read_pixels`]。
 //!   格式转换错一个字节序，客户端画红的上屏就是蓝的 —— 而且没有报错。
 //!
 //! ## 字节序（最容易错的地方）
@@ -32,6 +32,12 @@ pub enum ShmError {
     UnsupportedFormat(u32),
     /// 尺寸非法（负数 / 零宽高在协议上合法但读不出像素）
     BadGeometry { width: i32, height: i32, stride: i32 },
+    /// 当前平台不支持 fd → mmap 这条路径（Windows stub）。
+    FdTransportUnsupported,
+    /// `mmap` 失败，携带原始 errno。
+    MapFailed(i32),
+    /// pool 长度非法（0 字节或超出合理上限）。
+    BadPoolSize(usize),
 }
 
 impl std::fmt::Display for ShmError {
@@ -44,6 +50,11 @@ impl std::fmt::Display for ShmError {
             ShmError::BadGeometry { width, height, stride } => {
                 write!(f, "非法几何：{width}×{height}，stride {stride}")
             }
+            ShmError::FdTransportUnsupported => {
+                write!(f, "当前平台不支持 SCM_RIGHTS fd 传递与 mmap（仅 Linux 支持）")
+            }
+            ShmError::MapFailed(errno) => write!(f, "mmap shm pool 失败，errno={errno}"),
+            ShmError::BadPoolSize(size) => write!(f, "非法 pool 长度 {size} 字节"),
         }
     }
 }
@@ -54,11 +65,42 @@ impl std::fmt::Display for ShmError {
 /// 客户端为了对齐/性能，行末经常有 padding，逐行读而不是整块拷。
 pub fn read_pixels(pool: &[u8], info: &BufferInfo) -> Result<Vec<u8>, ShmError> {
     let BufferInfo { offset, width, height, stride, format, .. } = *info;
-    if width <= 0 || height <= 0 || stride < width * 4 {
+
+    // ① 几何先挡住：负数 / 零 / 超上限。
+    //
+    // 2026-11-21：此前 `stride < width * 4` 是 **i32 乘法** —— width ≥ 2^29
+    // 时 debug 构建直接 panic、release 构建回绕成负数，检查被绕过；后面的
+    // `offset + stride * (height-1) + width * 4` 也没有 checked 运算，
+    // 配合负 offset（协议层曾直接 `as usize`）可以让 need 回绕成小数后越界。
+    // 现在的规则：先拒绝任何会在后续乘法里溢出的输入。
+    const MAX_DIM: i32 = 16384; // 8K 单边
+    const MAX_PIXELS: usize = 4096 * 4096; // 64 MiB 的 RGBA
+    if width <= 0 || height <= 0 || width > MAX_DIM || height > MAX_DIM {
         return Err(ShmError::BadGeometry { width, height, stride });
     }
-    let stride = stride as usize;
-    let need = offset + stride * (height as usize - 1) + width as usize * 4;
+    let bpp = 4usize;
+    let row_bytes = (width as usize)
+        .checked_mul(bpp)
+        .ok_or(ShmError::BadGeometry { width, height, stride })?;
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .filter(|p| *p <= MAX_PIXELS)
+        .ok_or(ShmError::BadGeometry { width, height, stride })?;
+
+    // ② stride 必须非负，且不小于一行像素的字节数（否则像素会互相覆盖）
+    let stride = usize::try_from(stride)
+        .map_err(|_| ShmError::BadGeometry { width, height, stride })?;
+    if stride < row_bytes {
+        return Err(ShmError::BadGeometry { width, height, stride: stride as i32 });
+    }
+
+    // ③ 边界一律 checked：任何一步溢出都当作"几何非法"，而不是回绕后放行
+    let bad = ShmError::BadGeometry { width, height, stride: stride as i32 };
+    let need = stride
+        .checked_mul(height as usize - 1)
+        .and_then(|tail| tail.checked_add(row_bytes))
+        .and_then(|n| offset.checked_add(n))
+        .ok_or_else(|| bad.clone())?;
     if need > pool.len() {
         return Err(ShmError::OutOfBounds { need, pool_size: pool.len() });
     }
@@ -66,7 +108,7 @@ pub fn read_pixels(pool: &[u8], info: &BufferInfo) -> Result<Vec<u8>, ShmError> 
         return Err(ShmError::UnsupportedFormat(format));
     }
 
-    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut out = Vec::with_capacity(pixels * 4);
     for row in 0..height as usize {
         let line = &pool[offset + row * stride..];
         for px in 0..width as usize {
@@ -78,6 +120,74 @@ pub fn read_pixels(pool: &[u8], info: &BufferInfo) -> Result<Vec<u8>, ShmError> 
         }
     }
     Ok(out)
+}
+
+/// pool 长度上限（spike）：256 MiB。超过即拒绝 mmap，防止恶意客户端用
+/// 一个巨大 size 把合成器地址空间/内存撑爆。
+const MAX_POOL_SIZE: usize = 256 * 1024 * 1024;
+
+/// 把 `SCM_RIGHTS` 收到的 pool fd 映射成字节数据。
+///
+/// Linux：`mmap(MAP_SHARED)` → 拷进 `Vec<u8>` → `munmap` + `close(fd)`。
+///
+/// **spike 阶段的刻意取舍**：当前 `Session` 需要 `Clone`（连接线程每批消息
+/// 克隆一份同步给渲染主循环），而 mmap 映射区不能直接随 Clone 复制，所以
+/// 这里读出后解除映射。生产化阶段应改为持有映射区（`Arc` 包裹）做零拷贝，
+/// 避免每帧整池拷贝。fd 在成功与失败路径上都会被关闭。
+///
+/// 非 Linux：返回 [`ShmError::FdTransportUnsupported`]，不触碰 fd、不 panic。
+pub fn map_pool_fd(fd: i32, size: usize) -> Result<Vec<u8>, ShmError> {
+    if size == 0 || size > MAX_POOL_SIZE {
+        close_fd(fd);
+        return Err(ShmError::BadPoolSize(size));
+    }
+    map_pool_fd_impl(fd, size)
+}
+
+#[cfg(target_os = "linux")]
+fn map_pool_fd_impl(fd: i32, size: usize) -> Result<Vec<u8>, ShmError> {
+    use libc::{close, mmap, munmap, MAP_FAILED, MAP_SHARED, PROT_READ};
+    // 合成器只从 pool 读像素（读出后拷进 Vec 再解除映射），因此映射权限取
+    // PROT_READ：既兼容客户端以 O_RDWR 打开的常规 pool，也兼容只读 fd。
+    let ptr = unsafe {
+        mmap(
+            std::ptr::null_mut(),
+            size,
+            PROT_READ,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+    };
+    if ptr == MAP_FAILED {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        unsafe { close(fd) };
+        return Err(ShmError::MapFailed(errno));
+    }
+    let data = unsafe { std::slice::from_raw_parts(ptr as *const u8, size) }.to_vec();
+    unsafe {
+        munmap(ptr, size);
+        close(fd);
+    }
+    Ok(data)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn map_pool_fd_impl(_fd: i32, _size: usize) -> Result<Vec<u8>, ShmError> {
+    Err(ShmError::FdTransportUnsupported)
+}
+
+/// 关闭一个收到的 fd。
+///
+/// Linux：真正 `close`；非 Linux：不可能进来真实 fd（stub 路径直接报错），
+/// 这里是空操作，避免平台相关类型泄漏到公共签名。
+pub fn close_fd(fd: i32) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::close(fd);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = fd;
 }
 
 /// buffer 的参数（像素数据在所属 pool 里）。
@@ -225,5 +335,71 @@ mod tests {
         }
         let out = read_pixels(&data, &info(4, 2, 16, format::XRGB8888)).unwrap();
         assert_eq!(out, expect);
+    }
+
+    #[test]
+    fn zero_pool_size_is_rejected() {
+        let err = map_pool_fd(-1, 0).expect_err("0 长度必须拒绝");
+        assert!(matches!(err, ShmError::BadPoolSize(0)), "实得: {err}");
+    }
+
+    /// 非 Linux：fd 映射必须返回明确的"平台不支持"错误，而不是 panic 或静默成功。
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn non_linux_fd_mapping_is_explicit_error() {
+        let err = map_pool_fd(42, 64).expect_err("Windows stub 必须报错");
+        assert!(matches!(err, ShmError::FdTransportUnsupported), "实得: {err}");
+    }
+
+    /// Linux-only：真实文件 fd 经 mmap 读回字节（收到的 fd 由映射路径关闭）。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn maps_real_file_fd_into_bytes() {
+        use std::fs::File;
+        use std::io::Write as _;
+        use std::os::unix::io::IntoRawFd;
+        let tmp = std::env::temp_dir().join("aether-shm-probe");
+        {
+            let mut f = File::create(&tmp).unwrap();
+            f.write_all(&[1u8, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        }
+        let file = File::open(&tmp).unwrap();
+        let raw = file.into_raw_fd();
+        let data = map_pool_fd(raw, 8).unwrap();
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    /// **2026-11-21 回归**：会溢出的几何必须被拒绝 —— 不是 panic，也不是回绕放行。
+    ///
+    /// 修复前 `width * 4` 在 i32 上溢出（debug panic / release 变负数使检查失效），
+    /// `need` 也没有 checked 运算，配合巨大 offset 可以越界切片。
+    #[test]
+    fn overflow_prone_geometry_is_rejected() {
+        let data = vec![0u8; 64];
+        // ① 超宽 / 超单边上限：`width * 4` 会溢出 i32
+        for (w, h, s) in [(1 << 29, 1, 8), (1 << 30, 1, 4), (16385, 1, 4)] {
+            let err = read_pixels(&data, &info(w, h, s, format::XRGB8888))
+                .expect_err("超宽必须拒绝");
+            assert!(
+                matches!(err, ShmError::BadGeometry { .. }),
+                "{w}×{h}/{s} 应报几何非法，实得：{err}"
+            );
+        }
+        // ② 像素总数超上限（4096×4096）
+        let err = read_pixels(&data, &info(4097, 4097, 4097 * 4, format::XRGB8888))
+            .expect_err("超过 4096×4096 的像素总数必须拒绝");
+        assert!(matches!(err, ShmError::BadGeometry { .. }), "实得：{err}");
+        // ③ 负 stride
+        let err = read_pixels(&data, &info(1, 1, -4, format::XRGB8888))
+            .expect_err("负 stride 必须拒绝");
+        assert!(matches!(err, ShmError::BadGeometry { .. }), "实得：{err}");
+        // ④ 巨大 offset：旧代码在 usize 上回绕后可以绕过边界检查
+        let mut i = info(1, 1, 4, format::XRGB8888);
+        i.offset = usize::MAX - 3;
+        assert!(
+            read_pixels(&data, &i).is_err(),
+            "巨大 offset 必须被拒绝（而不是回绕成小数）"
+        );
     }
 }

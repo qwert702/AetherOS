@@ -466,6 +466,30 @@ mod tests {
         assert_eq!(back.args[1], Arg::Uint(42), "fd 之后的参数位置必须正确");
     }
 
+    /// 多个 fd 夹在普通参数之间：槽位顺序必须保持，消息体只装非 fd 参数。
+    #[test]
+    fn multiple_fds_keep_slots_in_order() {
+        let m = Message {
+            object_id: 1,
+            opcode: 0,
+            args: vec![Arg::Fd(3), Arg::Uint(7), Arg::Fd(9)],
+        };
+        let bytes = m.encode("huh");
+        assert_eq!(bytes.len(), 8 + 4, "两个 fd 都不占消息体，只剩中间的 uint");
+        let (back, _) = decode(&bytes, "huh").unwrap();
+        assert_eq!(back.args[0], Arg::Fd(-1), "fd 槽位保留，值由 SCM_RIGHTS 侧回填");
+        assert_eq!(back.args[1], Arg::Uint(7));
+        assert_eq!(back.args[2], Arg::Fd(-1));
+    }
+
+    /// fd 的具体值不影响线格式：两个不同 fd 编出的字节串必须一致。
+    #[test]
+    fn fd_value_is_not_serialized() {
+        let a = Message { object_id: 1, opcode: 0, args: vec![Arg::Fd(3), Arg::Uint(1)] };
+        let b = Message { object_id: 1, opcode: 0, args: vec![Arg::Fd(99), Arg::Uint(1)] };
+        assert_eq!(a.encode("hu"), b.encode("hu"));
+    }
+
     #[test]
     fn align4_rounds_up() {
         assert_eq!(align4(0), 0);

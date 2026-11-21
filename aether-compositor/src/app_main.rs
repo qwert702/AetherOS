@@ -420,6 +420,55 @@ pub(crate) fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // G3 脏区上屏基准：全量 vs 局部脏区拷贝，多分辨率/多字号缩放。
+    // 只测软件缓冲拷贝成本（不上真实 fbdev）——真机帧缓冲的写入带宽另算，见报告标注。
+    if let Some(pos) = argv.iter().position(|a| a == "--damage-bench") {
+        let n: u32 = argv.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(200);
+        let resolutions: [(usize, usize); 2] = [(1920, 1080), (3840, 2160)];
+        let scales: [u32; 2] = [100, 150];
+        println!("damage-bench（软件缓冲拷贝基准；非真机 fbdev 数据），每格 {n} 次");
+        for &(w, h) in &resolutions {
+            for &scale in &scales {
+                let k = scale as f32 / 100.0;
+                let src = vec![0x2a6fb0_u32; w * h];
+                let mut dst = vec![0u32; w * h];
+                let screen = draw::Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+                // 代表性脏区：顶部菜单栏条带 + 一个窗口 + 软件光标
+                let menu = draw::Rect { x: 0, y: 0, w: w as i32, h: 28 };
+                let win = draw::Rect {
+                    x: (w as f32 * 0.10) as i32,
+                    y: (h as f32 * 0.15) as i32,
+                    w: (620.0 * k) as i32,
+                    h: (500.0 * k) as i32,
+                };
+                let cursor = draw::Rect { x: (w / 2) as i32, y: (h / 2) as i32, w: 24, h: 24 };
+                let mut damage = draw::Damage::empty();
+                damage.mark(menu, screen);
+                damage.mark(win, screen);
+                damage.mark(cursor, screen);
+                let dirty = damage.dirty_pixels();
+
+                let t0 = std::time::Instant::now();
+                for _ in 0..n {
+                    draw::present_full(&mut dst, &src, w, h);
+                }
+                let full_ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
+
+                let t1 = std::time::Instant::now();
+                for _ in 0..n {
+                    draw::present_rects(&mut dst, &src, w, h, damage.rects());
+                }
+                let part_ms = t1.elapsed().as_secs_f64() * 1000.0 / n as f64;
+                let ratio = dirty as f64 / (w * h) as f64 * 100.0;
+                println!(
+                    "  {w}x{h} @ {scale}%: 全量 {full_ms:.3} ms/帧 · 局部 {part_ms:.3} ms/帧 · 脏区 {dirty} px ({ratio:.1}%) · 局部/全量 {:.2}x",
+                    part_ms / full_ms.max(1e-9)
+                );
+            }
+        }
+        return Ok(());
+    }
+
     // 字体标本模式：`--fonttest` 渲染 11–15px 中英文/粗细同屏单帧（文字渲染质量调参用）
     #[cfg(not(target_os = "linux"))]
     if args.iter().any(|a| a == "--fonttest") {
@@ -485,8 +534,9 @@ pub(crate) fn preview_main() -> anyhow::Result<()> {
         HEIGHT,
         minifb::WindowOptions::default(),
     )?;
-    #[allow(deprecated)]
-    window.limit_update_rate(Some(std::time::Duration::from_micros(16_600)));
+    // 限帧 60 FPS：`limit_update_rate` 自 minifb 0.26 起 deprecated，0.29 推荐
+    // `set_target_fps`；60fps ≈ 16.67ms/帧，与原先 16_600µs 的限帧间隔等价。
+    window.set_target_fps(60);
 
     let start = Instant::now();
     let mut drag: Option<(usize, f32, f32)> = None;

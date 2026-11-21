@@ -64,6 +64,26 @@ jobs:
             exit 1
           fi
 
+  release-gate:
+    name: 发布门禁（离线）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # E4：文档/站点/发布事实聚合门禁。--offline 跳过线上站点巡检；
+      # release-readiness 在干净 checkout（无 ISO）上按脚本自身语义判红，
+      # 不在这里吞掉——红灯即提示需要先构建 / 挂上 ISO artifact。
+      - name: 跑离线发布门禁
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/release-gate.py --offline
+
   test:
     name: 编译与测试（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}

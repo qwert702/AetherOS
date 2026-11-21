@@ -1,0 +1,117 @@
+name: VM Smoke
+
+# E3 硬件 CI / VM 冒烟：在 QEMU 里 headless 启动 AetherOS ISO，等串口就绪关键字。
+# 与 `iso-smoke.yml` 的区别：那一条手动下载指定 artifact 做一次性验证；
+# 这一条是进日常流程的冒烟（push 主线路径过滤 + 每周定时 + 手动触发），
+# 环境不具备（无 QEMU / 无 ISO）时脚本以退出码 77 明确跳过，记为 skip 而非 failure。
+
+# 注意：YAML 1.1 会把裸 `on:` 解析成布尔 True；这里写成带引号的 `"on"`，
+# 保证 pyyaml 解析与 GitHub Actions 两侧都拿到同一个字符串键。
+"on":
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "包含 ISO artifact 的 ISO Build run id（留空则用仓库内现有 ISO）"
+        required: false
+        default: ""
+      artifact_name:
+        description: "ISO artifact 名称（留空则不下载 artifact）"
+        required: false
+        default: ""
+  schedule:
+    # 每周一 03:25（UTC）跑一次定时冒烟。
+    - cron: "25 3 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "aether-compositor/**"
+      - "aether-init/**"
+      - "platform/**"
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  vm-smoke:
+    name: QEMU 启动冒烟
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 下载 ISO artifact（可选）
+        if: ${{ inputs.artifact_name != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: iso
+
+      - name: 安装 QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: 运行 VM 冒烟
+        id: smoke
+        shell: bash
+        run: |
+          set +e
+          iso_arg=""
+          if [ -d iso ]; then
+            iso="$(find iso -name '*.iso' -type f | head -1)"
+            [ -n "$iso" ] && iso_arg="--iso $iso"
+          fi
+          python scripts/vm-smoke.py $iso_arg --timeout 120
+          code=$?
+          set -e
+          echo "vm-smoke exit=$code"
+          # 77 = 环境不具备的明确 skip：记为 neutral/skip，不算 failure。
+          if [ "$code" -eq 77 ]; then
+            echo "::notice title=vm-smoke::VM 冒烟跳过（环境不具备：无 QEMU 或无 ISO）"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+
+      - name: 上传冒烟日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-smoke-logs
+          path: dist/vm-smoke-logs/
+          if-no-files-found: warn
+
+  # —— 预留：自托管构建机上的 VM / 真机冒烟 ——
+  # 托管 runner 只有 TCG 软件模拟；自托管机可接 KVM 加速、本地 ISO 与真实串口。
+  # 启用方式：把下面整段注释去掉，把 `runs-on` 改成对应的 self-hosted label，
+  # 并按需调整 ISO 路径与超时。
+  #
+  # vm-smoke-self-hosted:
+  #   name: 自托管 VM 冒烟（KVM）
+  #   runs-on: [self-hosted, Linux]
+  #   timeout-minutes: 20
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.11"
+  #     - name: 运行 VM 冒烟（自托管）
+  #       run: python scripts/vm-smoke.py --timeout 180 --keep-logs
+  #     - name: 上传冒烟日志
+  #       if: always()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: vm-smoke-self-hosted-logs
+  #         path: dist/vm-smoke-logs/
+  #         if-no-files-found: warn

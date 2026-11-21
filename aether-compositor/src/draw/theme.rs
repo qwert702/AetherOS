@@ -438,8 +438,20 @@ fn scale_rounds_to_nearest_and_keeps_symmetry() {
 #[test]
 fn every_size_constant_is_actually_used() {
     // 2026-11-13：设置页绘制拆到 draw/settings.rs，尺寸常量的调用点可能在那里；
-    // 源码探针必须同时覆盖两个文件，否则拆模块会把"已使用"误报成"没调用"。
-    let src = concat!(include_str!("../draw.rs"), include_str!("settings.rs"));
+    // 2026-11-21：继续拆出 primitives/wallpaper/files/desk/icons/overlays/content 子模块，
+    // 源码探针必须覆盖 draw/ 下全部同级文件，否则拆模块会把"已使用"误报成"没调用"。
+    let src = concat!(
+        include_str!("../draw.rs"),
+        include_str!("settings.rs"),
+        include_str!("control_layout.rs"),
+        include_str!("primitives.rs"),
+        include_str!("wallpaper.rs"),
+        include_str!("files.rs"),
+        include_str!("desk.rs"),
+        include_str!("icons.rs"),
+        include_str!("overlays.rs"),
+        include_str!("content.rs"),
+    );
     for name in [
         "CONTENT_PAD",
         "CONTROL_INSET",

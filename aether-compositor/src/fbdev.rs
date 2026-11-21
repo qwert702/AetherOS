@@ -371,6 +371,96 @@ impl Fbdev {
             self.prev[y * fw..(y + 1) * fw].copy_from_slice(&buf[y * w..y * w + fw]);
         }
     }
+
+    /// 按脏矩形局部上屏（G3）。
+    ///
+    /// 与 `blit_dirty` 的差别：脏区由渲染/事件路径**主动登记**（窗口旧位 + 新位、
+    /// 光标、菜单弹出等都进表），不再逐行 memcmp 全帧。行粒度组装：只要一行与任一
+    /// 脏矩形相交，整行重新组装并写回；x 方向的精裁剪在跨平台原语
+    /// [`crate::draw::present_rects`] 里，本后端通路与之像素等价。
+    ///
+    /// 调用方必须保证脏区是本帧变化区域的**超集**；首帧或整屏变化请退回 [`blit`](Self::blit)。
+    // G3 保留上屏原语：实时循环当前仍走 blit_dirty，本方法待脏区登记补齐并真机验证后接入。
+    #[allow(dead_code)]
+    pub fn blit_rects(&mut self, buf: &[u32], w: usize, h: usize, rects: &[crate::draw::Rect]) {
+        let fw = w.min(self.width);
+        let fh = h.min(self.height);
+        let bytes_pp = (self.bpp / 8).max(1) as usize;
+        let stride = self.stride.max(fw * bytes_pp);
+        let screen = crate::draw::Rect { x: 0, y: 0, w: fw as i32, h: fh as i32 };
+
+        let mut touched = vec![false; fh];
+        for &r in rects {
+            let r = r.intersect(screen);
+            if r.w <= 0 || r.h <= 0 {
+                continue;
+            }
+            let y0 = r.y.max(0) as usize;
+            let y1 = (r.y + r.h).min(fh as i32).max(y0 as i32) as usize;
+            touched[y0..y1].fill(true);
+        }
+        if !touched.iter().any(|&t| t) {
+            return;
+        }
+
+        // 只组装脏行（frame 其余字节保留上一帧内容）
+        for row in 0..fh {
+            if !touched[row] {
+                continue;
+            }
+            let mut dst = row * stride;
+            for &p in &buf[row * w..row * w + fw] {
+                let r = (p >> 16) & 0xff;
+                let g = (p >> 8) & 0xff;
+                let b = p & 0xff;
+                match self.order {
+                    PixelOrder::Bgrx | PixelOrder::Rgbx => {
+                        let (b0, b1, b2) = if self.order == PixelOrder::Bgrx {
+                            (b, g, r)
+                        } else {
+                            (r, g, b)
+                        };
+                        self.frame[dst] = b0 as u8;
+                        self.frame[dst + 1] = b1 as u8;
+                        self.frame[dst + 2] = b2 as u8;
+                        self.frame[dst + 3] = 0xff;
+                        dst += 4;
+                    }
+                    PixelOrder::Bgr24 | PixelOrder::Rgb24 => {
+                        let (b0, b1, b2) = if self.order == PixelOrder::Bgr24 {
+                            (b, g, r)
+                        } else {
+                            (r, g, b)
+                        };
+                        self.frame[dst] = b0 as u8;
+                        self.frame[dst + 1] = b1 as u8;
+                        self.frame[dst + 2] = b2 as u8;
+                        dst += 3;
+                    }
+                    PixelOrder::Rgb565 | PixelOrder::Bgr565 => {
+                        let v = if self.order == PixelOrder::Rgb565 {
+                            (((r >> 3) as u16) << 11) | (((g >> 2) as u16) << 5) | ((b >> 3) as u16)
+                        } else {
+                            (((b >> 3) as u16) << 11) | (((g >> 2) as u16) << 5) | ((r >> 3) as u16)
+                        };
+                        self.frame[dst..dst + 2].copy_from_slice(&v.to_le_bytes());
+                        dst += 2;
+                    }
+                }
+            }
+        }
+
+        // 逐脏行 seek + write
+        use std::io::{Seek, SeekFrom, Write};
+        for row in 0..fh {
+            if !touched[row] {
+                continue;
+            }
+            let _ = self.file.seek(SeekFrom::Start((row * stride) as u64));
+            let end = ((row + 1) * stride).min(self.frame.len());
+            let _ = self.file.write(&self.frame[row * stride..end]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +490,5 @@ mod tests {
         assert_eq!(PixelOrder::fallback_for(8), PixelOrder::Bgrx);
     }
 }
-
 // `dirty_rows`（脏行检测）已移到 `draw.rs`：那个模块跨平台，其单元测试
 // 在开发机上就能跑；fbdev 只在 Linux 编译，测试跑不到。

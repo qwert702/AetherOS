@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "AetherOS 自研 Shell：顶栏、启动器、工作区与 AI 对话面板"
+description = "AetherOS 保留命名空间 crate：Shell 归属边界声明（Shell 运行时职责由 aether-compositor 承担）"
 
 [dependencies]
 aether-ipc = { path = "../aether-ipc" }

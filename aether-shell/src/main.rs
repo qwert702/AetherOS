@@ -1,11 +1,27 @@
-//! aether-shell — AetherOS 自研 Shell（M2 实现）。
+//! aether-shell — 保留命名空间 crate（见 ADR 2026-11-13）。
 //!
-//! 规划：顶栏、应用启动器、工作区切换、通知中心，以及作为系统灵魂的
-//! 常驻 AI 对话面板。界面渲染复用 aether-compositor 的 draw 视觉语言，
-//! 与 aetherd 通过 aether-ipc 协议通信。
-//!
-//! 当前为 M0 骨架占位，防止结构空转。
+//! 本二进制不启动任何 Shell 运行时；只提供 `--status` / `--describe` 查询
+//! 当前 Shell 职责归属与边界事实。事实来源在库层 `aether_shell`，便于单测断言。
+
+use aether_shell::{describe_text, exit_code, parse_args, CliCommand};
 
 fn main() {
-    println!("aether-shell: AetherOS Shell（M2 里实现，当前为骨架占位）");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = parse_args(args);
+    match cmd {
+        CliCommand::Status => println!("{}", describe_text()),
+        CliCommand::Help => {
+            println!(
+                "aether-shell: 保留命名空间 crate（Shell 职责由 aether-compositor 承担，见 ADR）"
+            );
+            println!();
+            println!("用法：aether-shell [选项]");
+            println!("  --status, --describe  打印 Shell 归属与本 crate 边界事实");
+            println!("  --help, -h            显示本帮助");
+        }
+        CliCommand::Unknown => {
+            eprintln!("aether-shell: 未识别的参数（见 --help）");
+        }
+    }
+    std::process::exit(exit_code(cmd));
 }
