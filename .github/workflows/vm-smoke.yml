@@ -86,7 +86,7 @@ jobs:
 
       - name: 上传冒烟日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vm-smoke-logs
           path: dist/vm-smoke-logs/
@@ -110,7 +110,7 @@ jobs:
   #       run: python scripts/vm-smoke.py --timeout 180 --keep-logs
   #     - name: 上传冒烟日志
   #       if: always()
-  #       uses: actions/upload-artifact@v4
+  #       uses: actions/upload-artifact@v7
   #       with:
   #         name: vm-smoke-self-hosted-logs
   #         path: dist/vm-smoke-logs/

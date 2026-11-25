@@ -74,7 +74,7 @@ jobs:
 
       - name: 上传安装与启动日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iso-install-logs
           path: |
