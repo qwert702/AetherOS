@@ -13,4 +13,4 @@
 paramiko==5.0.0
 cryptography==49.0.0
 Pillow==12.2.0
-fonttools==4.63.0
+fonttools==4.68.0
